@@ -157,6 +157,11 @@
   border-bottom: 1px solid #302e2a;
 }
 
+/* Rows are clickable: clicking one plays the move on Chessable's board. */
+.clo-table tbody tr {
+  cursor: pointer;
+}
+
 .clo-table tr:hover td {
   background: rgba(255, 255, 255, 0.04);
 }

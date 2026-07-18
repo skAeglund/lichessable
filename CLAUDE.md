@@ -51,6 +51,11 @@ current position. Currently working (v0.5.x).
   content script, worker, and options.js; keep all three in sync.
 - 429 → 61 s cooldown, then one auto-retry. 401 → in-panel settings prompt.
   Saving a token in options triggers a retry via `chrome.storage.onChanged`.
+- Clicking a panel move row plays it on the board: synthetic
+  pointer+mouse+click sequences on the source then destination square
+  (`playMove`/`pressSquare`). Square ids (`e4-<uuid>`) are matched via
+  `SELECTORS.boardSquare`. A plain `.click()` is NOT enough for Chessable's
+  handlers — keep the full event sequence.
 
 ## Verification (no automated tests)
 

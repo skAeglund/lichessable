@@ -32,7 +32,8 @@
     movesTbody:     '#nextMovesBit',        // <tbody> of Chessable's own move table
     movesTableWrap: '.nextMovesTable',      // DIV directly wrapping that table
     movesContainer: '.nextMovesContainer',  // DIV we inject the panel into (right after movesTableWrap)
-    board:          '.chessboard-63f37',    // chessboard.js container — not used, documented for completeness
+    board:          '.chessboard-63f37',    // chessboard.js container — scopes the square lookups below
+    boardSquare:    '[id^="%s-"]',          // square lookup template; %s = algebraic name ("e4") — squares carry ids like "e4-<uuid>"
   };
 
   const CONFIG = {
@@ -500,7 +501,62 @@
     };
 
     state.ui.toggle.addEventListener('click', onToggle); // no inline handlers
+    // One delegated listener instead of per-row handlers: rows are rebuilt on
+    // every render, the tbody lives as long as the panel.
+    state.ui.tbody.addEventListener('click', onMoveRowClick);
     applyHidden();
+  }
+
+  // --- click-to-play ---------------------------------------------------------
+
+  function onMoveRowClick(event) {
+    const row = event.target.closest('tr');
+    if (!row || !row.dataset.uci) return;
+    playMove(row.dataset.uci);
+  }
+
+  /**
+   * Plays a move on Chessable's board by simulating click-click input: a full
+   * pointer/mouse press sequence on the source square, then on the destination
+   * square. Chessable's board treats this exactly like a user clicking the two
+   * squares, so all their own bookkeeping (move list / notation, FEN input,
+   * their stats table) runs normally — and the FEN change then triggers our
+   * usual refresh. Squares are looked up by algebraic name: Chessable ids them
+   * "e4-<uuid>", orientation-independent, so no flip handling is needed.
+   *
+   * Promotion moves (5-char UCI, e.g. e7e8q) open Chessable's own promotion
+   * picker after the two clicks; the piece choice is left to the user there.
+   */
+  function playMove(uci) {
+    if (!uci || uci.length < 4) return;
+    const fromEl = findSquare(uci.slice(0, 2));
+    const toEl = findSquare(uci.slice(2, 4));
+    if (!fromEl || !toEl) { warn('cannot play', uci, '— board squares not found'); return; }
+    log('playing move', uci);
+    pressSquare(fromEl);
+    pressSquare(toEl);
+  }
+
+  function findSquare(name) {
+    const board = document.querySelector(SELECTORS.board);
+    return (board || document).querySelector(SELECTORS.boardSquare.replace('%s', name));
+  }
+
+  function pressSquare(el) {
+    const rect = el.getBoundingClientRect();
+    const opts = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: rect.x + rect.width / 2,
+      clientY: rect.y + rect.height / 2,
+      button: 0,
+    };
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      el.dispatchEvent(type.startsWith('pointer')
+        ? new PointerEvent(type, opts)
+        : new MouseEvent(type, opts));
+    }
   }
 
   function onToggle() {
@@ -589,11 +645,16 @@
       const moveTotal = (move.white || 0) + (move.draws || 0) + (move.black || 0);
 
       const tr = document.createElement('tr');
+      // Clicking the row plays the move on the board (see onMoveRowClick).
+      if (move.uci) tr.dataset.uci = move.uci;
 
       const tdMove = document.createElement('td');
       tdMove.className = 'clo-move';
       tdMove.textContent = move.san || move.uci || '?';
-      if (move.averageRating) tdMove.title = `Avg rating ${move.averageRating}`;
+      const playHint = `Click to play ${move.san || move.uci}`;
+      tdMove.title = move.averageRating
+        ? `Avg rating ${move.averageRating} · ${playHint}`
+        : playHint;
 
       const tdPct = document.createElement('td');
       tdPct.className = 'clo-pct';

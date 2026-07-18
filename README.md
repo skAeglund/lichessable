@@ -87,6 +87,13 @@ lichessable/
   listeners/observers if the app re-renders its DOM (SPA-style navigation
   between explore pages). All re-attachment is idempotent, so there are never
   duplicate panels or leaked observers.
+- **Click to play** — clicking a move row plays that move on Chessable's
+  board, by simulating click-click input (a full pointer/mouse press sequence
+  on the source square, then the destination square — squares carry
+  orientation-independent ids like `e4-<uuid>`). Chessable handles it exactly
+  like a user move, and the resulting FEN change triggers the panel's normal
+  refresh. Promotion moves open Chessable's own promotion picker; pick the
+  piece there.
 - **Stale responses** — each fetch carries a sequence number; responses for
   positions you've already left are not rendered (though still cached).
 - **Toggle** — Hide/Show collapses the panel body (header stays so you can
