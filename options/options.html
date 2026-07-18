@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>LiChessable settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <h1>LiChessable</h1>
+
+  <p>
+    The Lichess opening explorer requires authentication.
+    Create a free
+    <a href="https://lichess.org/account/oauth/token/create?description=LiChessable"
+       target="_blank" rel="noopener">personal access token</a>
+    — leave <strong>all scope checkboxes unchecked</strong>, the explorer only
+    needs a valid token, no permissions — and paste it below.
+  </p>
+
+  <label for="token">Lichess API token</label>
+  <input type="password" id="token" placeholder="lip_..." autocomplete="off" spellcheck="false">
+  <label class="inline"><input type="checkbox" id="show"> Show token</label>
+
+  <div class="buttons">
+    <button id="save">Save</button>
+    <button id="test" class="secondary">Test</button>
+  </div>
+
+  <p id="status" aria-live="polite"></p>
+
+  <p class="fineprint">
+    The token is stored only in this browser's extension storage
+    (<code>chrome.storage.local</code>) and is sent only to
+    <code>explorer.lichess.org</code>. You can revoke it any time on
+    <a href="https://lichess.org/account/oauth/token" target="_blank" rel="noopener">your Lichess token page</a>.
+  </p>
+
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "LiChessable",
+  "version": "0.3.0",
+  "description": "Shows Lichess opening-database statistics beneath Chessable's move table on Explore pages.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://explorer.lichess.org/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options/options.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.chessable.com/*"],
+      "all_frames": true,
+      "js": ["content/lichessable.js"],
+      "css": ["content/lichessable.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

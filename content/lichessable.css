@@ -1,0 +1,207 @@
+/*
+ * LiChessable panel styles.
+ * Everything is namespaced under .clo- so nothing can collide with Chessable's
+ * own CSS (this file is injected into every chessable.com frame, but the
+ * selectors only ever match our injected panel).
+ * Colors are picked to blend with Chessable's dark Explore theme.
+ */
+
+.clo-panel {
+  margin-top: 10px;
+  border: 1px solid #3d3d3d;
+  border-radius: 4px;
+  background: #1f1f1f;
+  color: #ddd;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+/* --- header ---------------------------------------------------------------- */
+
+.clo-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #262626;
+  border-bottom: 1px solid #3d3d3d;
+}
+
+.clo-title {
+  flex: 1;
+  font-weight: 700;
+  color: #fff;
+}
+
+/* Yellow badge shown while fetchLichessData is still the stub. */
+.clo-stub-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #111;
+  background: #d3a836;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.clo-toggle {
+  border: 1px solid #4a4a4a;
+  background: #333;
+  color: #ddd;
+  padding: 2px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+/* Hover uses Chessable's green accent (matches their action buttons). */
+.clo-toggle:hover {
+  background: #5c9d31;
+  border-color: #5c9d31;
+  color: #fff;
+}
+
+/* --- body ------------------------------------------------------------------ */
+
+.clo-body {
+  padding: 8px 10px;
+}
+
+/* Subtle loading state: keep the previous data visible, just dimmed. */
+.clo-body.clo-busy {
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+}
+
+/* Opening name / ECO code for the current position. */
+.clo-opening {
+  color: #a8a8a8;
+  font-style: italic;
+  margin-bottom: 6px;
+}
+
+/* Aggregate row: total game count + overall W/D/B bar. */
+.clo-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.clo-total {
+  white-space: nowrap;
+  color: #bbb;
+}
+
+.clo-summary .clo-bar {
+  flex: 1;
+}
+
+/* Loading / empty / error one-liners. */
+.clo-status {
+  color: #999;
+  font-style: italic;
+  padding: 4px 0;
+}
+
+.clo-status.clo-error {
+  color: #e57373;
+}
+
+/* Button shown in the 401 state to open the extension's options page. */
+.clo-settings-btn {
+  margin-top: 8px;
+  border: 1px solid #5c9d31;
+  background: #5c9d31;
+  color: #fff;
+  padding: 3px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  font-style: normal;
+}
+
+.clo-settings-btn:hover {
+  background: #6cb83a;
+  border-color: #6cb83a;
+}
+
+/* --- move table ------------------------------------------------------------ */
+
+.clo-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.clo-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: #999;
+  padding: 2px 6px 4px;
+  border-bottom: 1px solid #3d3d3d;
+}
+
+.clo-table th.clo-th-games {
+  text-align: right;
+}
+
+.clo-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid #2c2c2c;
+}
+
+.clo-table tr:hover td {
+  background: #2a2a2a;
+}
+
+.clo-move {
+  width: 3.5em;
+  font-weight: 700;
+  color: #fff;
+}
+
+.clo-games {
+  width: 5em;
+  text-align: right;
+  white-space: nowrap;
+  color: #bbb;
+}
+
+/* --- W/D/B percentage bars (mirrors Chessable's moveWin bars) -------------- */
+
+.clo-bar {
+  display: flex;
+  height: 16px;
+  min-width: 90px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #333; /* visible only when a bar has no segments */
+}
+
+.clo-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.clo-seg-white {
+  background: #f0f0f0;
+  color: #222;
+}
+
+.clo-seg-draw {
+  background: #8f8f8f;
+  color: #1c1c1c;
+}
+
+.clo-seg-black {
+  background: #3a3a3a;
+  color: #ddd;
+}
