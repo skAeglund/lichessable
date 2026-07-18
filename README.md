@@ -1,9 +1,17 @@
 # LiChessable
 
-Chrome extension (Manifest V3) that injects a **Lichess Database** panel beneath
-Chessable's own move table on Explore pages
-(`https://www.chessable.com/explore/<number>/`), so you can compare Chessable
-course statistics against real-world Lichess games for the current position.
+Chrome extension (Manifest V3) that injects a **Lichess Database** panel on
+Chessable Explore pages (`https://www.chessable.com/explore/<number>/`) and the
+Analysis board (`https://www.chessable.com/analysis/`), so you can compare
+Chessable course statistics against real-world Lichess games for the current
+position. On wide windows (≥ 1700px) the panel occupies the empty space to the
+right of Chessable's content column; on narrower windows it falls back to
+sitting beneath Chessable's move table.
+
+On the Analysis board the panel sits beneath Chessable's notation/explorer
+area and is always visible — deliberately independent of the **Toggle Opening
+Explorer** toolbar button, which Chessable disables in some entry states
+(e.g. opening the page via a `?fen=` link).
 
 Plain JS/HTML/CSS. No bundler, no npm, no frameworks, no remote code.
 
@@ -42,8 +50,11 @@ lichessable/
       (log in, leave **all scope checkboxes unchecked**, click Create).
    3. Copy the token (starts with `lip_`), paste it into the options page,
       click **Test** (should say "Token works ✓"), then **Save**.
-6. Open an Explore page, e.g. `https://www.chessable.com/explore/287495/`.
-   The "Lichess Database" panel appears directly under Chessable's move table.
+6. Open an Explore page, e.g. `https://www.chessable.com/explore/287495/`,
+   or the Analysis board, `https://www.chessable.com/analysis/`. The
+   "Lichess Database" panel appears to the right of Chessable's content
+   (or under their move table / notation area, if the window is narrower
+   than 1700px).
 7. After editing any file: click the ↻ reload icon on the extension's card in
    `chrome://extensions`, then reload the Chessable tab.
 
@@ -60,7 +71,8 @@ lichessable/
 
 - **Frame targeting** — the manifest injects into all `www.chessable.com`
   frames (`"all_frames": true`); the script immediately exits unless
-  `location.pathname` starts with `/mt1/explore/`.
+  `location.pathname` starts with `/mt1/explore/` or `/mt1/analysis/`
+  (both pages render the same widgets inside the same mt1 iframe app).
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.
@@ -100,7 +112,7 @@ Query defaults (all in `CONFIG.lichess` at the top of the content script):
 
 - **Ratings:** 1600+ (Lichess buckets 1600, 1800, 2000, 2200, 2500)
 - **Speeds:** blitz, rapid, classical, correspondence ("blitz and slower")
-- **Moves:** up to 12 candidates; `topGames`/`recentGames` are 0 to keep
+- **Moves:** up to 20 candidates; `topGames`/`recentGames` are 0 to keep
   payloads small.
 - The response's `opening` field (ECO + name) is shown above the summary bar,
   and each move's `averageRating` appears as a tooltip on the move cell.
@@ -139,6 +151,21 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
 - If a Lichess fetch fails with an ordinary error, the error state stays until
   the position changes (no retry loop, to avoid hammering the API). A 429 is
   the exception: it retries once automatically after the ~61 s cooldown.
-- The panel lives inside Chessable's `.nextMovesContainer`, so if that area
-  scrolls, the panel scrolls with Chessable's own stats — by design, per spec.
+- On Explore the panel lives inside Chessable's `.nextMovesContainer` in the
+  DOM; on Analysis it is that container's next sibling (see below). The side
+  placement is pure CSS (absolute positioning against the container — or, on
+  Analysis, its parent column — which `mountPanel` makes `position:
+  relative`). Chessable centers a 940px
+  content block, so the side-mode geometry (`50vw ± …` in the media query) is
+  derived from that width — if Chessable changes their column width, those two
+  CSS constants are the thing to retune.
+- In side mode the panel caps its height at the viewport and scrolls the move
+  list internally.
+- On the Analysis board, Chessable's `.nextMovesContainer` is shown only
+  while the Opening Explorer toggle is active — and that toggle is disabled
+  in some entry states (e.g. `?fen=` deep links). The panel therefore mounts
+  as the container's next sibling in the fixed-height column and is always
+  visible. Below the side-mode breakpoint the panel (`.clo-panel--analysis`)
+  caps itself at ~55% of that column and scrolls internally; Chessable's own
+  flexed panels (notation view / move table) shrink to make room.
 - All class names Chessable-side are treated as fragile; see `SELECTORS`.

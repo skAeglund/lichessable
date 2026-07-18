@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "LiChessable",
-  "version": "0.3.0",
-  "description": "Shows Lichess opening-database statistics beneath Chessable's move table on Explore pages.",
+  "version": "0.5.1",
+  "description": "Shows Lichess opening-database statistics alongside Chessable's move table on Explore and Analysis pages.",
   "permissions": ["storage"],
   "host_permissions": ["https://explorer.lichess.org/*"],
   "background": {

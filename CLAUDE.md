@@ -2,9 +2,12 @@
 
 Personal Chrome extension (Manifest V3), loaded unpacked. Injects a "Lichess
 Database" panel beneath Chessable's move table on Explore pages
-(`https://www.chessable.com/explore/<id>/`) so course statistics can be
-compared against real Lichess games for the current position. Currently
-working (v0.3.x).
+(`https://www.chessable.com/explore/<id>/`) and the Analysis board
+(`https://www.chessable.com/analysis/`, as sibling after the Opening
+Explorer container — always visible, since Chessable's explorer toggle is
+sometimes disabled)
+so course statistics can be compared against real Lichess games for the
+current position. Currently working (v0.5.x).
 
 ## Structure
 
@@ -12,7 +15,7 @@ working (v0.3.x).
   `explorer.lichess.org`. Nothing else, keep it that way.
 - `content/lichessable.js` — the only content script. Runs inside Chessable's
   same-origin mt1 iframe (`all_frames: true`; exits unless
-  `location.pathname` starts with `/mt1/explore/`).
+  `location.pathname` starts with `/mt1/explore/` or `/mt1/analysis/`).
 - `content/lichessable.css` — panel styles, all namespaced `.clo-`.
 - `background.js` — service worker; does the authenticated explorer fetch.
   Message types: `clo-fetch-explorer`, `clo-open-options`.

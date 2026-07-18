@@ -1,11 +1,20 @@
 /**
  * LiChessable — content script
  *
- * Runs inside Chessable's mt1 Explore iframe (https://www.chessable.com/mt1/explore/<n>/)
- * and injects a "Lichess Database" panel directly beneath Chessable's own move table.
+ * Runs inside Chessable's mt1 iframes on Explore pages
+ * (https://www.chessable.com/mt1/explore/<n>/) and the Analysis board
+ * (https://www.chessable.com/mt1/analysis/) and injects a "Lichess Database"
+ * panel: on wide windows it sits to the right of Chessable's content column;
+ * on narrow ones, beneath their move table. Both pages use the exact same
+ * widgets (#inputFEN, .nextMovesContainer, …); the difference is that on
+ * Analysis the moves container is only visible while Chessable's "Toggle
+ * Opening Explorer" button is active — and that button is sometimes disabled
+ * outright (e.g. entering the page with a ?fen= parameter) — so there the
+ * panel mounts as a sibling AFTER the container instead of inside it, and is
+ * always visible.
  *
  * The manifest injects this into EVERY chessable.com frame ("all_frames": true);
- * the script bails out immediately in any frame that isn't the mt1 explore app.
+ * the script bails out immediately in any frame that isn't one of those apps.
  *
  * All console output is prefixed [CLO]. Note: the logs appear in the IFRAME's
  * console context — in DevTools, pick the mt1 frame from the context dropdown,
@@ -27,7 +36,8 @@
   };
 
   const CONFIG = {
-    framePathPrefix: '/mt1/explore/', // only activate in the mt1 iframe document
+    // Only activate in these mt1 iframe documents.
+    framePathPrefixes: ['/mt1/explore/', '/mt1/analysis/'],
     debounceMs:      300,             // settle time after any detected change before refreshing
     fenPollMs:       500,             // safety-net poll: the FEN value can change with no event or mutation
     bootPollMs:      250,             // fallback poll while waiting for the async app to render
@@ -47,7 +57,7 @@
       // (0, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2500).
       speeds:  ['blitz', 'rapid', 'classical', 'correspondence'],
       ratings: [1600, 1800, 2000, 2200, 2500],
-      movesLimit: 12,             // max candidate moves to request
+      movesLimit: 20,             // max candidate moves to request (side panel has room)
       cacheMax: 200,              // positions kept in the in-memory LRU cache
       rateLimitCooldownMs: 61000, // Lichess asks for a full minute after a 429
     },
@@ -59,7 +69,11 @@
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
 
   // Wrong frame (e.g. the top /explore/<n>/ document, or any other iframe): do nothing.
-  if (!location.pathname.startsWith(CONFIG.framePathPrefix)) return;
+  if (!CONFIG.framePathPrefixes.some((p) => location.pathname.startsWith(p))) return;
+
+  // On Analysis the panel needs a CSS modifier (see lichessable.css) to share
+  // the fixed-height Opening Explorer column with Chessable's own move table.
+  const IS_ANALYSIS = location.pathname.startsWith('/mt1/analysis/');
 
   // Guard against accidental double-injection into the same document.
   if (window.__lichessableLoaded) { warn('already initialised in this frame — skipping'); return; }
@@ -409,13 +423,28 @@
     const container = document.querySelector(SELECTORS.movesContainer);
     if (!container) { warn('moves container not found — cannot mount panel'); return; }
 
+    // On Analysis the panel cannot live INSIDE the container: Chessable hides
+    // it unless the "Toggle Opening Explorer" button is active, and disables
+    // that button entirely in some entry states (e.g. ?fen= deep links). The
+    // panel mounts after the container instead, and the parent column becomes
+    // the side-mode anchor. No extra selector needed: the parent is reached
+    // relationally from the one configured container selector.
+    const anchor = IS_ANALYSIS ? container.parentElement : container;
+
+    // Side-mode anchor: on wide windows the CSS positions the panel absolutely
+    // against this element (see the media query in lichessable.css), so it
+    // must establish a positioning context.
+    if (getComputedStyle(anchor).position === 'static') {
+      anchor.style.position = 'relative';
+    }
+
     // Remove any stale copy (defensive: avoids duplicates across re-inits).
     const stale = document.getElementById(PANEL_ID);
     if (stale) stale.remove();
 
     const panel = document.createElement('div');
     panel.id = PANEL_ID;
-    panel.className = 'clo-panel';
+    panel.className = 'clo-panel' + (IS_ANALYSIS ? ' clo-panel--analysis' : '');
     // Static skeleton only — no user/remote data ever goes through innerHTML.
     panel.innerHTML = `
       <div class="clo-header">
@@ -434,6 +463,7 @@
           <thead>
             <tr>
               <th class="clo-th-move">Move</th>
+              <th class="clo-th-pct">%</th>
               <th class="clo-th-games">Games</th>
               <th class="clo-th-wdb">White / Draw / Black</th>
             </tr>
@@ -442,11 +472,18 @@
         </table>
       </div>`;
 
-    // Insert directly AFTER Chessable's own table wrapper so the panel sits
-    // right beneath their stats, inside the same container.
-    const tableWrap = container.querySelector(SELECTORS.movesTableWrap);
-    if (tableWrap) tableWrap.after(panel);
-    else container.appendChild(panel); // fallback if the wrapper class changed
+    // Explore: insert directly AFTER Chessable's own table wrapper, inside
+    // the container — in narrow-window mode the panel flows right beneath
+    // their stats; in side mode the CSS pulls it out to the right, but this
+    // stays its DOM home either way. Analysis: insert after the container
+    // itself (see the comment above).
+    if (IS_ANALYSIS) {
+      container.after(panel);
+    } else {
+      const tableWrap = container.querySelector(SELECTORS.movesTableWrap);
+      if (tableWrap) tableWrap.after(panel);
+      else container.appendChild(panel); // fallback if the wrapper class changed
+    }
 
     state.panel = panel;
     state.ui = {
@@ -558,6 +595,12 @@
       tdMove.textContent = move.san || move.uci || '?';
       if (move.averageRating) tdMove.title = `Avg rating ${move.averageRating}`;
 
+      const tdPct = document.createElement('td');
+      tdPct.className = 'clo-pct';
+      const pct = total ? (100 * moveTotal) / total : 0;
+      tdPct.textContent = (pct >= 10 ? Math.round(pct) : pct.toFixed(1)) + '%';
+      tdPct.title = `${pct.toFixed(1)}% of games`;
+
       const tdGames = document.createElement('td');
       tdGames.className = 'clo-games';
       tdGames.textContent = formatGames(moveTotal);
@@ -570,7 +613,7 @@
       buildBar(bar, move.white, move.draws, move.black);
       tdBar.appendChild(bar);
 
-      tr.append(tdMove, tdGames, tdBar);
+      tr.append(tdMove, tdPct, tdGames, tdBar);
       ui.tbody.appendChild(tr);
     }
     ui.table.hidden = false;

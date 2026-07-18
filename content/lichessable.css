@@ -3,16 +3,20 @@
  * Everything is namespaced under .clo- so nothing can collide with Chessable's
  * own CSS (this file is injected into every chessable.com frame, but the
  * selectors only ever match our injected panel).
- * Colors are picked to blend with Chessable's dark Explore theme.
+ * Palette/typography lifted from lichess.org's own opening-explorer panel
+ * (analyse__tools / .explorer-box: panel bg rgb(38,36,33), body text
+ * rgb(186,186,186), Noto Sans) so the panel reads as a native extension of
+ * that UI rather than a Chessable-themed bolt-on.
  */
 
 .clo-panel {
   margin-top: 10px;
-  border: 1px solid #3d3d3d;
+  border: 1px solid #1b1a17;
   border-radius: 4px;
-  background: #1f1f1f;
-  color: #ddd;
+  background: #262421;
+  color: #bababa;
   font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
   overflow: hidden;
 }
 
@@ -23,14 +27,14 @@
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  background: #262626;
-  border-bottom: 1px solid #3d3d3d;
+  background: #262421;
+  border-bottom: 1px solid #3a3630;
 }
 
 .clo-title {
   flex: 1;
-  font-weight: 700;
-  color: #fff;
+  font-weight: 500;
+  color: #dcdcdc;
 }
 
 /* Yellow badge shown while fetchLichessData is still the stub. */
@@ -44,21 +48,19 @@
   border-radius: 3px;
 }
 
+/* Lichess styles its explorer tab-switcher as bare text buttons, no chrome —
+   mirrored here instead of Chessable's bordered/filled button look. */
 .clo-toggle {
-  border: 1px solid #4a4a4a;
-  background: #333;
-  color: #ddd;
-  padding: 2px 10px;
-  border-radius: 3px;
+  border: none;
+  background: transparent;
+  color: #949494;
+  padding: 2px 4px;
   cursor: pointer;
   font-size: 12px;
   font-family: inherit;
 }
 
-/* Hover uses Chessable's green accent (matches their action buttons). */
 .clo-toggle:hover {
-  background: #5c9d31;
-  border-color: #5c9d31;
   color: #fff;
 }
 
@@ -76,7 +78,7 @@
 
 /* Opening name / ECO code for the current position. */
 .clo-opening {
-  color: #a8a8a8;
+  color: #949494;
   font-style: italic;
   margin-bottom: 6px;
 }
@@ -91,7 +93,7 @@
 
 .clo-total {
   white-space: nowrap;
-  color: #bbb;
+  color: #bababa;
 }
 
 .clo-summary .clo-bar {
@@ -100,20 +102,22 @@
 
 /* Loading / empty / error one-liners. */
 .clo-status {
-  color: #999;
+  color: #949494;
   font-style: italic;
   padding: 4px 0;
 }
 
 .clo-status.clo-error {
-  color: #e57373;
+  color: #d85c5c;
 }
 
-/* Button shown in the 401 state to open the extension's options page. */
+/* Button shown in the 401 state to open the extension's options page.
+   Green accent matches lichess's own active/accent green (sampled from the
+   explorer panel's active-tab underline: rgb(98,153,36)). */
 .clo-settings-btn {
   margin-top: 8px;
-  border: 1px solid #5c9d31;
-  background: #5c9d31;
+  border: 1px solid #629924;
+  background: #629924;
   color: #fff;
   padding: 3px 12px;
   border-radius: 3px;
@@ -124,8 +128,8 @@
 }
 
 .clo-settings-btn:hover {
-  background: #6cb83a;
-  border-color: #6cb83a;
+  background: #71ad2a;
+  border-color: #71ad2a;
 }
 
 /* --- move table ------------------------------------------------------------ */
@@ -138,10 +142,10 @@
 .clo-table th {
   text-align: left;
   font-size: 11px;
-  font-weight: 600;
-  color: #999;
+  font-weight: 300;
+  color: #949494;
   padding: 2px 6px 4px;
-  border-bottom: 1px solid #3d3d3d;
+  border-bottom: 1px solid #3a3630;
 }
 
 .clo-table th.clo-th-games {
@@ -150,33 +154,46 @@
 
 .clo-table td {
   padding: 3px 6px;
-  border-bottom: 1px solid #2c2c2c;
+  border-bottom: 1px solid #302e2a;
 }
 
 .clo-table tr:hover td {
-  background: #2a2a2a;
+  background: rgba(255, 255, 255, 0.04);
 }
 
+/* Lichess renders the move column as plain body text, not a bold/white
+   badge — keep it visually level with the rest of the row. */
 .clo-move {
   width: 3.5em;
-  font-weight: 700;
-  color: #fff;
+  font-weight: 400;
+  color: #bababa;
+}
+
+.clo-th-pct {
+  text-align: right;
+}
+
+.clo-pct {
+  width: 3em;
+  text-align: right;
+  white-space: nowrap;
+  color: #bababa;
 }
 
 .clo-games {
   width: 5em;
   text-align: right;
   white-space: nowrap;
-  color: #bbb;
+  color: #949494;
 }
 
-/* --- W/D/B percentage bars (mirrors Chessable's moveWin bars) -------------- */
+/* --- W/D/B percentage bars (mirrors lichess's own explorer bars) ----------- */
 
 .clo-bar {
   display: flex;
-  height: 16px;
+  height: 18px;
   min-width: 90px;
-  border-radius: 3px;
+  border-radius: 8px;
   overflow: hidden;
   background: #333; /* visible only when a bar has no segments */
 }
@@ -192,16 +209,103 @@
 }
 
 .clo-seg-white {
-  background: #f0f0f0;
+  background: #cccccc;
   color: #222;
 }
 
 .clo-seg-draw {
-  background: #8f8f8f;
-  color: #1c1c1c;
+  background: #666666;
+  color: #ddd;
 }
 
 .clo-seg-black {
-  background: #3a3a3a;
+  background: #333333;
   color: #ddd;
+}
+
+/* --- analysis page ----------------------------------------------------------
+   On /analysis/ the panel mounts as a SIBLING right after Chessable's moves
+   container, inside the fixed-height flex column that also holds their
+   notation view and the toolbar (mounting inside the container as on Explore
+   would tie the panel to the "Toggle Opening Explorer" button, which is
+   sometimes disabled outright — e.g. entering the page via a ?fen= link).
+   Below the side-mode breakpoint, cap the panel at roughly half the column
+   and scroll its body internally so it shares the height with whichever
+   Chessable panel is visible (their notation view or their move table — both
+   flex and scroll rather than overflow). In side mode the absolute
+   positioning further down takes the panel out of the column, anchored to
+   the parent column (which mountPanel makes position: relative), and those
+   later rules win. */
+.clo-panel--analysis {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: 55%;
+}
+
+.clo-panel--analysis .clo-header {
+  flex: none;
+}
+
+.clo-panel--analysis .clo-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* --- side mode --------------------------------------------------------------
+   On wide windows the panel leaves the below-the-table flow and instead fills
+   part of the unused space to the RIGHT of Chessable's centered content
+   column (mountPanel makes the moves container the positioning anchor).
+   Chessable centers a 940px content block, so the free space starts at
+   50vw + 470px; the 502px below = 470px + a 16px gap on each side of the
+   panel. The width itself is ~70% of that: narrower than the available strip
+   on purpose, so it reads as a compact sidebar rather than filling it all.
+   Below the breakpoint the original below-the-table layout applies unchanged. */
+@media (min-width: 1700px) {
+  .clo-panel {
+    position: absolute;
+    top: 0;
+    left: calc(100% + 16px);
+    width: clamp(260px, calc((50vw - 502px) * 0.7), 550px);
+    margin-top: 0;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 90px);
+    font-size: 14px;
+  }
+
+  .clo-header {
+    flex: none;
+    padding: 8px 12px;
+  }
+
+  .clo-body {
+    padding: 10px 12px;
+    overflow-y: auto; /* tall move lists scroll inside the panel */
+    scrollbar-width: none;    /* Firefox */
+    -ms-overflow-style: none; /* old Edge */
+  }
+
+  .clo-body::-webkit-scrollbar {
+    display: none; /* Chrome/Edge/Safari */
+  }
+
+  .clo-table th {
+    font-size: 12px;
+    padding: 3px 6px 5px;
+  }
+
+  .clo-table td {
+    padding: 5px 6px;
+  }
+
+  .clo-bar {
+    height: 20px;
+    min-width: 60px; /* narrower column budget than the below-the-table layout */
+  }
+
+  .clo-seg {
+    font-size: 11px;
+  }
 }
