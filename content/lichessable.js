@@ -13,12 +13,21 @@
  * panel mounts as a sibling AFTER the container instead of inside it, and is
  * always visible.
  *
- * The manifest injects this into EVERY chessable.com frame ("all_frames": true);
- * the script bails out immediately in any frame that isn't one of those apps.
+ * It also adds a small "Overstudy" widget to Chessable's REVIEW sessions
+ * (https://www.chessable.com/practice/…). Those render in the TOP document
+ * (MoveTrainer2 — no mt1 iframe, none of the explore widgets), so the widget
+ * is a separate, self-contained module (section 9) that shares nothing with
+ * the panel machinery except CONFIG and the log helpers.
  *
- * All console output is prefixed [CLO]. Note: the logs appear in the IFRAME's
- * console context — in DevTools, pick the mt1 frame from the context dropdown,
- * or just filter the console for "[CLO]".
+ * The manifest injects this into EVERY chessable.com frame ("all_frames": true);
+ * the script bails out immediately in any frame that isn't one of those apps —
+ * except the top document, which must stay resident (idle) because review
+ * sessions are reached by SPA-style pushState with no page load.
+ *
+ * All console output is prefixed [CLO]. Note: the panel logs appear in the
+ * IFRAME's console context — in DevTools, pick the mt1 frame from the context
+ * dropdown, or just filter the console for "[CLO]". Review-widget logs appear
+ * in the normal top context.
  */
 (() => {
   'use strict';
@@ -34,6 +43,11 @@
     movesContainer: '.nextMovesContainer',  // DIV we inject the panel into (right after movesTableWrap)
     board:          '.chessboard-63f37',    // chessboard.js container — scopes the square lookups below
     boardSquare:    '[id^="%s-"]',          // square lookup template; %s = algebraic name ("e4") — squares carry ids like "e4-<uuid>"
+
+    // MoveTrainer2 (review/learn sessions, top document — sections 9/10):
+    trainerIconBtn:   '.board-footer__icon-btn', // footer icon buttons (hint, pause, …)
+    trainerPauseIcon: '.fa-pause',               // icon inside the pause-timer button
+    trainerFooter:    '.board-footer',           // Exit / nav row under the board — widget sits below it
   };
 
   const CONFIG = {
@@ -62,6 +76,13 @@
       cacheMax: 200,              // positions kept in the in-memory LRU cache
       rateLimitCooldownMs: 61000, // Lichess asks for a full minute after a 429
     },
+
+    // --- Review-mode overstudy widget (top document, section 9) ------------
+    review: {
+      pathPrefix: '/practice/', // review sessions live here (NOT an mt1 iframe)
+      learnPrefix: '/learn/',   // Chessable's overstudy = the learn route for a learned variation
+      pollMs: 500,              // URL poll; the player rewrites the URL via replaceState (no event)
+    },
   };
 
   const PANEL_ID = 'lichessable-panel';
@@ -69,8 +90,13 @@
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
 
-  // Wrong frame (e.g. the top /explore/<n>/ document, or any other iframe): do nothing.
-  if (!CONFIG.framePathPrefixes.some((p) => location.pathname.startsWith(p))) return;
+  // Frame targeting. Explore/Analysis render inside mt1 iframes: any OTHER
+  // iframe exits immediately. The TOP document never exits: review sessions
+  // (/practice/…) render there and are reached by SPA pushState from any
+  // chessable.com page without a load, so it runs the lightweight overstudy
+  // watcher (section 9) instead of the panel.
+  const IS_FRAME_APP = CONFIG.framePathPrefixes.some((p) => location.pathname.startsWith(p));
+  if (!IS_FRAME_APP && window !== window.top) return;
 
   // On Analysis the panel needs a CSS modifier (see lichessable.css) to share
   // the fixed-height Opening Explorer column with Chessable's own move table.
@@ -79,6 +105,12 @@
   // Guard against accidental double-injection into the same document.
   if (window.__lichessableLoaded) { warn('already initialised in this frame — skipping'); return; }
   window.__lichessableLoaded = true;
+
+  if (!IS_FRAME_APP) { // top document: review watcher + background-tab auto-pause only
+    initReviewOverstudy();
+    initOverstudyAutoPause();
+    return;
+  }
 
   // ==========================================================================
   // 2) State
@@ -750,6 +782,185 @@
     clearInterval(state.fenPollTimer);
     chrome.storage.onChanged.removeListener(onStorageChanged);
     if (state.tbodyObserver) state.tbodyObserver.disconnect();
+  }
+
+  // ==========================================================================
+  // 9) Review-mode overstudy widget (top document, /practice/…)
+  //
+  // Chessable's review player keeps the CURRENT variation in the URL,
+  // rewriting it via replaceState (no event) as the queue advances:
+  //     /practice/<courseId>/<variationId>[/<chapterId>][/w|b]
+  // and /practice/<courseId> once the end-of-session summary shows.
+  // Overstudy on chessable.com is simply the learn route for an already
+  // learned variation — their own Overstudy buttons navigate to
+  // /learn/<courseId>/<variationId>… — so the widget swaps /practice/ for
+  // /learn/ and has the service worker open it in a background tab.
+  //
+  // Two buttons: the variation on the board now, and the previous one (= the
+  // most recently completed, once the queue auto-advances past it).
+  //
+  // The widget mounts on document.body — never inside Chessable's React tree,
+  // where foreign children can crash their reconciliation. The URL poll also
+  // re-mounts the widget if an app re-render removes it (same self-healing
+  // philosophy as section 4).
+  // ==========================================================================
+  function initReviewOverstudy() {
+    const WIDGET_ID = 'lichessable-review';
+
+    const rs = {
+      current: null,   // { vid, path } — variation on the board right now
+      previous: null,  // { vid, path } — the one before it (last completed)
+      widget: null,
+      buttons: null,   // { current, previous }
+    };
+
+    // A variation id of 0 means "queue not resolved yet" — the player rewrites
+    // it to a real id as soon as the first variation loads.
+    const PRACTICE_RE = /^\/practice\/(\d+)\/(\d+)((?:\/\d+)?(?:\/[wb])?)\/?$/;
+
+    function parsePracticePath(pathname) {
+      const m = PRACTICE_RE.exec(pathname);
+      if (!m || m[2] === '0') return null;
+      return { vid: m[2], path: pathname };
+    }
+
+    function tick() {
+      const inReview = location.pathname.startsWith(CONFIG.review.pathPrefix);
+      const parsed = inReview ? parsePracticePath(location.pathname) : null;
+      if (parsed) {
+        if (!rs.current || rs.current.vid !== parsed.vid) {
+          if (rs.current) rs.previous = rs.current;
+          rs.current = parsed;
+          log('review variation:', parsed.vid);
+        }
+      } else if (rs.current) {
+        rs.previous = rs.current; // summary screen, or left the session
+        rs.current = null;
+      }
+      updateWidget(inReview);
+    }
+
+    function updateWidget(inReview) {
+      if (!inReview || (!rs.current && !rs.previous)) {
+        if (rs.widget) rs.widget.hidden = true;
+        return;
+      }
+      if (!rs.widget || !rs.widget.isConnected) mountWidget(); // idempotent self-heal
+      rs.widget.hidden = false;
+      positionWidget();
+      // After in-session back-navigation "previous" can equal "current" —
+      // showing both would just open the same overstudy twice.
+      const previous = rs.previous && (!rs.current || rs.previous.vid !== rs.current.vid)
+        ? rs.previous : null;
+      syncButton(rs.buttons.current, rs.current, 'current');
+      syncButton(rs.buttons.previous, previous, 'previous');
+    }
+
+    /**
+     * Centers the widget beneath the board (below Chessable's Exit/nav footer
+     * row). position:fixed + getBoundingClientRect are both viewport-relative,
+     * so the coordinates line up directly; the 500 ms tick (plus resize/scroll
+     * listeners) keeps them fresh. If the board isn't in the DOM the inline
+     * styles are never set and the stylesheet's bottom-right fallback applies.
+     */
+    function positionWidget() {
+      if (!rs.widget || rs.widget.hidden) return;
+      const board = document.querySelector(SELECTORS.board);
+      if (!board) return;
+      const rect = board.getBoundingClientRect();
+      if (!rect.width) return;
+      const footer = document.querySelector(SELECTORS.trainerFooter);
+      const footerRect = footer ? footer.getBoundingClientRect() : null;
+      const top = (footerRect && footerRect.height ? footerRect.bottom : rect.bottom) + 10;
+      rs.widget.style.left = rect.left + rect.width / 2 + 'px';
+      rs.widget.style.top = top + 'px';
+      rs.widget.style.right = 'auto';
+      rs.widget.style.bottom = 'auto';
+      rs.widget.style.transform = 'translateX(-50%)';
+    }
+
+    function syncButton(btn, entry, which) {
+      btn.hidden = !entry;
+      if (entry) {
+        btn.title = `Open overstudy for the ${which} variation (#${entry.vid}) in a background tab`;
+      }
+    }
+
+    function mountWidget() {
+      const stale = document.getElementById(WIDGET_ID);
+      if (stale) stale.remove(); // defensive: avoids duplicates across re-inits
+
+      const widget = document.createElement('div');
+      widget.id = WIDGET_ID;
+      widget.className = 'clo-review';
+
+      const title = document.createElement('span');
+      title.className = 'clo-review-title';
+      title.textContent = 'Overstudy';
+
+      const btnCurrent = makeOverstudyButton('This variation', 'current', '');
+      const btnPrevious = makeOverstudyButton('Previous variation', 'previous', ' clo-review-btn--secondary');
+
+      widget.append(title, btnCurrent, btnPrevious);
+      document.body.appendChild(widget);
+
+      rs.widget = widget;
+      rs.buttons = { current: btnCurrent, previous: btnPrevious };
+    }
+
+    function makeOverstudyButton(label, which, extraClass) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'clo-review-btn' + extraClass;
+      btn.textContent = label;
+      btn.hidden = true;
+      btn.addEventListener('click', () => { // no inline handlers
+        const entry = which === 'current' ? rs.current : rs.previous;
+        if (!entry) return;
+        const url = location.origin +
+          entry.path.replace(CONFIG.review.pathPrefix, CONFIG.review.learnPrefix);
+        log('opening overstudy in a background tab:', url);
+        chrome.runtime.sendMessage({ type: 'clo-open-overstudy', url });
+      });
+      return btn;
+    }
+
+    const pollTimer = setInterval(tick, CONFIG.review.pollMs);
+    window.addEventListener('pagehide', () => clearInterval(pollTimer));
+    // Keep the board anchoring snappy between ticks.
+    window.addEventListener('resize', positionWidget);
+    window.addEventListener('scroll', positionWidget, true);
+    tick();
+    log('review overstudy watcher active (top document)');
+  }
+
+  // ==========================================================================
+  // 10) Auto-pause for background overstudy tabs (top document, /learn/…)
+  //
+  // Overstudy tabs open with active:false, but the session's timer starts as
+  // soon as the player loads. If a learn session boots while this document is
+  // HIDDEN (a background tab — ours or any other), click Chessable's own
+  // pause-timer footer control once it renders. Their native paused UI takes
+  // over: the board dims behind a play overlay, which the user clicks to
+  // resume when they actually switch to the tab. If the user focuses the tab
+  // before the control appears, back off and leave the timer alone.
+  // ==========================================================================
+  function initOverstudyAutoPause() {
+    if (!location.pathname.startsWith(CONFIG.review.learnPrefix)) return;
+    if (!document.hidden) return; // foreground load — user is already watching
+
+    const startedAt = Date.now();
+    const pollTimer = setInterval(() => {
+      if (!document.hidden) { clearInterval(pollTimer); return; } // user got here first
+      if (Date.now() - startedAt > CONFIG.bootTimeoutMs) { clearInterval(pollTimer); return; }
+      const btn = [...document.querySelectorAll(SELECTORS.trainerIconBtn)]
+        .find((el) => el.querySelector(SELECTORS.trainerPauseIcon));
+      if (!btn) return; // player still booting
+      clearInterval(pollTimer);
+      btn.click();
+      log('background overstudy tab — paused the session timer');
+    }, CONFIG.bootPollMs);
+    window.addEventListener('pagehide', () => clearInterval(pollTimer));
   }
 
   // ==========================================================================

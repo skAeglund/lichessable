@@ -13,6 +13,21 @@ area and is always visible — deliberately independent of the **Toggle Opening
 Explorer** toolbar button, which Chessable disables in some entry states
 (e.g. opening the page via a `?fen=` link).
 
+It also adds an **Overstudy widget** to review sessions
+(`https://www.chessable.com/practice/…`): a small floating card centered
+beneath the board (below the Exit/nav row; bottom-right corner as fallback)
+with two buttons — overstudy **this variation** and overstudy
+the **previous variation** (i.e. the one you most recently completed, after
+the review queue advances). Each opens the variation's overstudy in a
+**background tab**, so the running review session keeps focus. On
+chessable.com, "overstudy" is simply the learn route
+(`/learn/<course>/<variation>/…`) for an already-learned variation — exactly
+where Chessable's own Overstudy buttons navigate. Because the session timer
+would otherwise start running unseen, a learn session that boots in a
+**hidden** tab gets its timer auto-paused (the extension clicks Chessable's
+own pause control once it renders); switch to the tab and click the play
+overlay to start.
+
 Plain JS/HTML/CSS. No bundler, no npm, no frameworks, no remote code.
 
 ## Folder structure
@@ -22,7 +37,7 @@ lichessable/
 ├── manifest.json            Manifest V3 definition
 ├── background.js            Service worker: authenticated explorer fetches
 ├── content/
-│   ├── lichessable.js       Panel logic (runs inside the mt1 iframe)
+│   ├── lichessable.js       Panel logic (mt1 iframe) + review overstudy widget (top document)
 │   └── lichessable.css      Panel styling (namespaced under .clo-)
 ├── options/
 │   ├── options.html         Settings page: Lichess API token entry + test
@@ -70,9 +85,32 @@ lichessable/
 ## Architecture notes
 
 - **Frame targeting** — the manifest injects into all `www.chessable.com`
-  frames (`"all_frames": true`); the script immediately exits unless
+  frames (`"all_frames": true`); iframes exit immediately unless
   `location.pathname` starts with `/mt1/explore/` or `/mt1/analysis/`
   (both pages render the same widgets inside the same mt1 iframe app).
+  The **top document never exits**: it runs the lightweight review watcher
+  below, because chessable.com navigates SPA-style (`pushState`) — a review
+  session can be reached from any page without a load, so the script must
+  already be resident.
+- **Review overstudy widget** — review sessions (`/practice/…`) render in the
+  top document (MoveTrainer2 — no mt1 iframe, no `#inputFEN`). The player
+  keeps the current variation in the URL, rewritten via `replaceState` (which
+  fires no event, hence a 500 ms poll):
+  `/practice/<course>/<variation>[/<chapter>][/w|b]`, and `/practice/<course>`
+  on the end-of-session summary. The watcher tracks current/previous
+  variation from that URL, mounts the widget on `document.body` (never inside
+  Chessable's React tree, where foreign children can crash reconciliation),
+  and re-mounts it if an app re-render removes it. Clicking a button swaps
+  `/practice/` for `/learn/` and messages the worker
+  (`clo-open-overstudy`), which validates the URL shape and opens it via
+  `chrome.tabs.create({ active: false })`.
+- **Background-tab auto-pause** — a `/learn/…` session that boots while its
+  document is hidden (i.e. any background tab, which is what the overstudy
+  buttons create) gets its move timer paused: the script polls for the
+  trainer's pause-timer footer control (`SELECTORS.trainerIconBtn` containing
+  `SELECTORS.trainerPauseIcon`) and clicks it once. If the tab becomes
+  visible before the control appears, it backs off. Resuming is Chessable's
+  native play overlay on the board.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.
@@ -150,8 +188,10 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
   explorer with the Authorization header, exempt from CORS. This became
   necessary when Lichess put the explorer behind authentication; before that,
   a plain content-script fetch was enough.
-- Nothing else: no tabs, no scripting, no access beyond chessable.com
-  (content script) and explorer.lichess.org (worker).
+- Nothing else: no tabs permission, no scripting, no access beyond
+  chessable.com (content script) and explorer.lichess.org (worker). Note the
+  overstudy widget's `chrome.tabs.create` call does **not** require the
+  `tabs` permission — that permission only gates reading tab metadata.
 
 ## Known behavior / limitations
 

@@ -12,11 +12,19 @@
  *   { type: 'clo-fetch-explorer', url }  -> { ok:true, data }
  *                                        |  { ok:false, status, error, noToken? }
  *   { type: 'clo-open-options' }         -> opens the extension options page
+ *   { type: 'clo-open-overstudy', url }  -> opens a chessable.com /learn/ URL
+ *                                           in a BACKGROUND tab (review-mode
+ *                                           overstudy widget; needs no "tabs"
+ *                                           permission)
  */
 'use strict';
 
 const ALLOWED_URL_PREFIX = 'https://explorer.lichess.org/';
 const TOKEN_KEY = 'lichessToken'; // must match content/lichessable.js and options/options.js
+
+// Overstudy tabs may only ever point at Chessable's learn route:
+// /learn/<courseId>/<variationId>[/<chapterId>][/w|b]
+const OVERSTUDY_URL_RE = /^https:\/\/www\.chessable\.com\/learn\/\d+\/\d+(?:\/\d+)?(?:\/[wb])?\/?$/;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === 'clo-fetch-explorer') {
@@ -26,8 +34,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === 'clo-open-options') {
     chrome.runtime.openOptionsPage();
   }
+  if (msg && msg.type === 'clo-open-overstudy') {
+    openOverstudyTab(msg.url);
+  }
   return false;
 });
+
+function openOverstudyTab(url) {
+  if (typeof url !== 'string' || !OVERSTUDY_URL_RE.test(url)) {
+    console.warn('[CLO] blocked overstudy tab for unexpected URL:', url);
+    return;
+  }
+  // active:false — the review session keeps focus; the overstudy tab waits.
+  chrome.tabs.create({ url, active: false });
+}
 
 async function handleExplorerFetch(url) {
   try {
