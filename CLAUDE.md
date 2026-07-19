@@ -64,13 +64,18 @@ Currently working (v0.7.x).
   `SELECTORS.boardSquare`. A plain `.click()` is NOT enough for Chessable's
   handlers — keep the full event sequence.
 - Review mode (`/practice/…`) is MoveTrainer2 in the TOP document — no mt1
-  iframe, no `#inputFEN`, none of the explore widgets. The current variation
-  id lives in the URL, rewritten via `replaceState` (no event → 500 ms poll):
-  `/practice/<course>/<vid>[/<chapter>][/w|b]`; `/practice/<course>` = summary
-  screen; vid `0` = queue not yet resolved. Overstudy = the `/learn/…` route
-  for an already-learned variation, so the widget just swaps `/practice/` →
-  `/learn/` and the worker validates the URL shape (`OVERSTUDY_URL_RE`) and
-  opens it `active: false`. The widget mounts on `document.body` — NEVER
+  iframe, no `#inputFEN`, none of the explore widgets. The review URL is
+  CONSTANT for the whole session (`/practice/<course>/0/<listId>`) — the
+  variation id is NEVER in it (ground-truthed by hooking `replaceState`
+  through a live session; do not resurrect URL-swap approaches). The current
+  variation comes from the DOM instead, polled at 500 ms: the active drawer
+  row (parent of the `#currentStudyingVariation` marker div) carries `oid`
+  (variation id), `lid` (list id), and `title` as plain attributes; fallback
+  is the panel header's title link to `/variation/<oid>/`. Overstudy = the
+  `/learn/…` route: Chessable's own Overstudy buttons navigate to
+  `/learn/<course>/<oid>/<lid>[/w|b]` (color suffix optional — verified), so
+  the widget builds that URL and the worker validates it (`OVERSTUDY_URL_RE`)
+  and opens it `active: false`. The widget mounts on `document.body` — NEVER
   inside Chessable's React tree (foreign children can crash reconciliation).
 - A `/learn/…` session booting in a hidden document (= background overstudy
   tab) auto-pauses its timer by clicking Chessable's pause control

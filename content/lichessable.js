@@ -48,6 +48,13 @@
     trainerIconBtn:   '.board-footer__icon-btn', // footer icon buttons (hint, pause, …)
     trainerPauseIcon: '.fa-pause',               // icon inside the pause-timer button
     trainerFooter:    '.board-footer',           // Exit / nav row under the board — widget sits below it
+    // Review drawer: an empty marker div sits INSIDE the active variation row;
+    // the row itself carries the ids as plain attributes (+ name in `title`).
+    reviewCurrentMarker: '#currentStudyingVariation',
+    reviewRowVidAttr:    'oid', // attribute on the marker's parent row: variation id
+    reviewRowListAttr:   'lid', // attribute on the marker's parent row: list id
+    // Fallback: the panel header's variation name links to /variation/<oid>/.
+    reviewTitleLink: '.practice-header__title a[href^="/variation/"]',
   };
 
   const CONFIG = {
@@ -787,55 +794,86 @@
   // ==========================================================================
   // 9) Review-mode overstudy widget (top document, /practice/…)
   //
-  // Chessable's review player keeps the CURRENT variation in the URL,
-  // rewriting it via replaceState (no event) as the queue advances:
-  //     /practice/<courseId>/<variationId>[/<chapterId>][/w|b]
-  // and /practice/<courseId> once the end-of-session summary shows.
-  // Overstudy on chessable.com is simply the learn route for an already
-  // learned variation — their own Overstudy buttons navigate to
-  // /learn/<courseId>/<variationId>… — so the widget swaps /practice/ for
-  // /learn/ and has the service worker open it in a background tab.
+  // The review URL is CONSTANT for the whole session —
+  // /practice/<courseId>/0/<listId> — the variation id never appears in it
+  // (confirmed by hooking history.replaceState through a live session), so
+  // the old "swap /practice/ for /learn/ in the URL" approach could never
+  // identify a variation. The real sources, in the DOM:
+  //
+  //   * The active drawer row (parent of the #currentStudyingVariation
+  //     marker div) carries the variation id and list id as plain `oid` /
+  //     `lid` attributes, plus the variation name in `title`.
+  //   * Fallback: the panel header title is a link to /variation/<oid>/.
+  //
+  // Overstudy = Chessable's learn route: their own Overstudy buttons navigate
+  // to /learn/<courseId>/<variationId>/<listId>[/w|b] (the color suffix is
+  // optional — verified). The widget builds that URL and has the service
+  // worker open it in a background tab.
   //
   // Two buttons: the variation on the board now, and the previous one (= the
   // most recently completed, once the queue auto-advances past it).
   //
   // The widget mounts on document.body — never inside Chessable's React tree,
-  // where foreign children can crash their reconciliation. The URL poll also
-  // re-mounts the widget if an app re-render removes it (same self-healing
-  // philosophy as section 4).
+  // where foreign children can crash their reconciliation. The 500 ms poll
+  // also re-mounts the widget if an app re-render removes it (same
+  // self-healing philosophy as section 4).
   // ==========================================================================
   function initReviewOverstudy() {
     const WIDGET_ID = 'lichessable-review';
 
     const rs = {
-      current: null,   // { vid, path } — variation on the board right now
-      previous: null,  // { vid, path } — the one before it (last completed)
+      current: null,    // { bid, oid, lid, title } — variation on the board now
+      previous: null,   // { bid, oid, lid, title } — the one before it
       widget: null,
-      buttons: null,   // { current, previous }
+      buttons: null,    // { current, previous }
+      warnedNoDetect: false, // one warning per detection outage, not per tick
     };
 
-    // A variation id of 0 means "queue not resolved yet" — the player rewrites
-    // it to a real id as soon as the first variation loads.
-    const PRACTICE_RE = /^\/practice\/(\d+)\/(\d+)((?:\/\d+)?(?:\/[wb])?)\/?$/;
+    // Course id from the session URL; the trailing list id doubles as a
+    // fallback when the drawer row is unavailable.
+    const PRACTICE_URL_RE = /^\/practice\/(\d+)(?:\/(\d+))?(?:\/(\d+))?/;
 
-    function parsePracticePath(pathname) {
-      const m = PRACTICE_RE.exec(pathname);
-      if (!m || m[2] === '0') return null;
-      return { vid: m[2], path: pathname };
+    function readCurrentVariation() {
+      const m = PRACTICE_URL_RE.exec(location.pathname);
+      if (!m) return null;
+      const bid = m[1];
+      const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
+      const row = marker && marker.parentElement;
+      const oid = row && row.getAttribute(SELECTORS.reviewRowVidAttr);
+      if (oid && oid !== '0') {
+        return {
+          bid, oid,
+          lid: row.getAttribute(SELECTORS.reviewRowListAttr) || m[3] || '',
+          title: row.getAttribute('title') || '',
+        };
+      }
+      const link = document.querySelector(SELECTORS.reviewTitleLink);
+      const hm = link && /^\/variation\/(\d+)/.exec(link.getAttribute('href') || '');
+      if (hm && hm[1] !== '0') {
+        return { bid, oid: hm[1], lid: m[3] || '', title: (link.textContent || '').trim() };
+      }
+      return null;
     }
 
     function tick() {
       const inReview = location.pathname.startsWith(CONFIG.review.pathPrefix);
-      const parsed = inReview ? parsePracticePath(location.pathname) : null;
-      if (parsed) {
-        if (!rs.current || rs.current.vid !== parsed.vid) {
+      const cur = inReview ? readCurrentVariation() : null;
+      if (cur) {
+        rs.warnedNoDetect = false;
+        if (!rs.current || rs.current.oid !== cur.oid) {
           if (rs.current) rs.previous = rs.current;
-          rs.current = parsed;
-          log('review variation:', parsed.vid);
+          rs.current = cur;
+          log('review variation:', cur.oid, cur.title);
         }
-      } else if (rs.current) {
-        rs.previous = rs.current; // summary screen, or left the session
-        rs.current = null;
+      } else {
+        if (inReview && !rs.warnedNoDetect) {
+          rs.warnedNoDetect = true; // summary screen, or markup changed
+          log('review session, but no current variation detected:', location.pathname);
+        }
+        if (rs.current) {
+          rs.previous = rs.current;
+          rs.current = null;
+        }
       }
       updateWidget(inReview);
     }
@@ -850,7 +888,7 @@
       positionWidget();
       // After in-session back-navigation "previous" can equal "current" —
       // showing both would just open the same overstudy twice.
-      const previous = rs.previous && (!rs.current || rs.previous.vid !== rs.current.vid)
+      const previous = rs.previous && (!rs.current || rs.previous.oid !== rs.current.oid)
         ? rs.previous : null;
       syncButton(rs.buttons.current, rs.current, 'current');
       syncButton(rs.buttons.previous, previous, 'previous');
@@ -882,7 +920,8 @@
     function syncButton(btn, entry, which) {
       btn.hidden = !entry;
       if (entry) {
-        btn.title = `Open overstudy for the ${which} variation (#${entry.vid}) in a background tab`;
+        const name = entry.title || '#' + entry.oid;
+        btn.title = `Open overstudy for the ${which} variation (${name}) in a background tab`;
       }
     }
 
@@ -917,8 +956,8 @@
       btn.addEventListener('click', () => { // no inline handlers
         const entry = which === 'current' ? rs.current : rs.previous;
         if (!entry) return;
-        const url = location.origin +
-          entry.path.replace(CONFIG.review.pathPrefix, CONFIG.review.learnPrefix);
+        const url = location.origin + CONFIG.review.learnPrefix +
+          entry.bid + '/' + entry.oid + (entry.lid ? '/' + entry.lid : '');
         log('opening overstudy in a background tab:', url);
         chrome.runtime.sendMessage({ type: 'clo-open-overstudy', url });
       });

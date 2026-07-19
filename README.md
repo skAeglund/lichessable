@@ -93,16 +93,19 @@ lichessable/
   session can be reached from any page without a load, so the script must
   already be resident.
 - **Review overstudy widget** — review sessions (`/practice/…`) render in the
-  top document (MoveTrainer2 — no mt1 iframe, no `#inputFEN`). The player
-  keeps the current variation in the URL, rewritten via `replaceState` (which
-  fires no event, hence a 500 ms poll):
-  `/practice/<course>/<variation>[/<chapter>][/w|b]`, and `/practice/<course>`
-  on the end-of-session summary. The watcher tracks current/previous
-  variation from that URL, mounts the widget on `document.body` (never inside
-  Chessable's React tree, where foreign children can crash reconciliation),
-  and re-mounts it if an app re-render removes it. Clicking a button swaps
-  `/practice/` for `/learn/` and messages the worker
-  (`clo-open-overstudy`), which validates the URL shape and opens it via
+  top document (MoveTrainer2 — no mt1 iframe, no `#inputFEN`). The review URL
+  stays **constant** for the whole session (`/practice/<course>/0/<listId>`);
+  the variation id never appears in it. The watcher instead polls the DOM
+  every 500 ms: the active drawer row (parent of the
+  `#currentStudyingVariation` marker) exposes the variation id, list id, and
+  name as plain `oid`/`lid`/`title` attributes, with the panel header's
+  `/variation/<id>/` title link as fallback. Current/previous variation are
+  tracked from that. The widget mounts on `document.body` (never inside
+  Chessable's React tree, where foreign children can crash reconciliation)
+  and re-mounts if an app re-render removes it. Clicking a button builds
+  `/learn/<course>/<variation>/<listId>` — the same route Chessable's own
+  Overstudy buttons use — and messages the worker (`clo-open-overstudy`),
+  which validates the URL shape and opens it via
   `chrome.tabs.create({ active: false })`.
 - **Background-tab auto-pause** — a `/learn/…` session that boots while its
   document is hidden (i.e. any background tab, which is what the overstudy

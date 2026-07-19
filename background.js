@@ -23,7 +23,9 @@ const ALLOWED_URL_PREFIX = 'https://explorer.lichess.org/';
 const TOKEN_KEY = 'lichessToken'; // must match content/lichessable.js and options/options.js
 
 // Overstudy tabs may only ever point at Chessable's learn route:
-// /learn/<courseId>/<variationId>[/<chapterId>][/w|b]
+// /learn/<courseId>/<variationId>[/<listId>][/w|b] — ground-truthed against
+// Chessable's own Overstudy buttons (they navigate to e.g.
+// /learn/<bid>/<oid>/<lid>/b; the color suffix is optional).
 const OVERSTUDY_URL_RE = /^https:\/\/www\.chessable\.com\/learn\/\d+\/\d+(?:\/\d+)?(?:\/[wb])?\/?$/;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
