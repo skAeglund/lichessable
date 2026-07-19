@@ -315,6 +315,40 @@
   }
 }
 
+/* --- review-mode panel ------------------------------------------------------
+   In the trainer's post-completion browse state the panel mounts on
+   document.body and is fixed-positioned beneath the board; left/top/width/
+   max-height are inline styles recomputed every tick (positionReviewPanel).
+   The doubled class selector outranks the wide-window media query above,
+   which would otherwise turn this into an absolutely-positioned sidebar. */
+
+.clo-panel.clo-panel--review {
+  position: fixed;
+  z-index: 99999;
+  margin-top: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* display:flex would defeat the hidden attribute without this. */
+.clo-panel.clo-panel--review[hidden] {
+  display: none;
+}
+
+.clo-panel.clo-panel--review .clo-header {
+  flex: none;
+}
+
+.clo-panel.clo-panel--review .clo-body {
+  min-height: 0;
+  overflow-y: auto; /* viewport-capped height — long move lists scroll inside */
+}
+
+/* No click-to-play here: the trainer's board is not free-play. */
+.clo-panel.clo-panel--review .clo-table tbody tr {
+  cursor: default;
+}
+
 /* --- review-mode overstudy widget ------------------------------------------ */
 /* Floating card shown during review sessions (/practice/…). The content
    script anchors it centered beneath the board (inline left/top/transform,

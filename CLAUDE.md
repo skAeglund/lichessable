@@ -9,8 +9,10 @@ sometimes disabled)
 so course statistics can be compared against real Lichess games for the
 current position. Also adds an "Overstudy" widget to review sessions
 (`https://www.chessable.com/practice/…`): two buttons (current / previous
-variation) that open the variation's overstudy in a background tab.
-Currently working (v0.7.x).
+variation) that open the variation's overstudy in a background tab. In those
+trainer sessions the Lichess panel also appears once a variation is completed
+(browse state), following the board via a DOM-derived FEN.
+Currently working (v0.9.x).
 
 ## Structure
 
@@ -77,6 +79,19 @@ Currently working (v0.7.x).
   the widget builds that URL and the worker validates it (`OVERSTUDY_URL_RE`)
   and opens it `active: false`. The widget mounts on `document.body` — NEVER
   inside Chessable's React tree (foreign children can crash reconciliation).
+- Review-mode Lichess panel (top document): shows ONLY in the trainer's
+  post-completion browse state — gated on the `practiceProgress` "Completed"
+  block + `commentMove` list, so it can never spoil an active quiz. No
+  `#inputFEN` exists there; the FEN is rebuilt from the DOM each 500 ms tick:
+  placement from `[data-piece]` divs in the board squares, side to move +
+  fullmove parsed from the SAN numbering around the currently shown move
+  (`commentMove_shownOnBoard` / `commentSubMove_shownOnBoard`; neither =
+  initial position). Castling is a home-square heuristic and en passant is
+  always "-" — accepted approximations. Mid-animation frames are skipped by
+  requiring exactly one king per side. The panel mounts on `document.body`
+  (fixed, under the board/overstudy widget) and reuses ALL of the explore
+  fetch/cache/render machinery via `IS_REVIEW` branches; move rows are not
+  clickable in this mode.
 - A `/learn/…` session booting in a hidden document (= background overstudy
   tab) auto-pauses its timer by clicking Chessable's pause control
   (`SELECTORS.trainerIconBtn` + `trainerPauseIcon`); backs off if the tab is

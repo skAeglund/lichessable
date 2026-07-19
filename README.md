@@ -13,6 +13,15 @@ area and is always visible — deliberately independent of the **Toggle Opening
 Explorer** toolbar button, which Chessable disables in some entry states
 (e.g. opening the page via a `?fen=` link).
 
+The same panel also appears in **review and learn sessions** once a variation
+is **completed** and the trainer enters its browse state (stepping through the
+moves, reading comments). It follows whatever position is on the board —
+mainline moves, clickable subvariation moves, the initial-position dot, and
+the prev/next buttons all included. It never shows during an active quiz, so
+it cannot spoil an answer. Because the trainer has no FEN field, the position
+is reconstructed from the DOM (see Architecture notes); the panel is
+fixed-positioned beneath the board, below the Overstudy widget.
+
 It also adds an **Overstudy widget** to review sessions
 (`https://www.chessable.com/practice/…`): a small floating card centered
 beneath the board (below the Exit/nav row; bottom-right corner as fallback)
@@ -107,6 +116,22 @@ lichessable/
   Overstudy buttons use — and messages the worker (`clo-open-overstudy`),
   which validates the URL shape and opens it via
   `chrome.tabs.create({ active: false })`.
+- **Review-mode panel** — in the trainer's post-completion browse state
+  (detected by the `practiceProgress` "Completed" block plus the
+  `commentMove` move list) the panel mounts on `document.body`,
+  fixed-positioned beneath the board (below the overstudy widget), and the
+  same 500 ms tick doubles as its watchdog. With no `#inputFEN` in the top
+  document, the FEN is rebuilt from the DOM: piece placement from the board
+  squares' `[data-piece]` divs, side to move + move number by parsing the SAN
+  numbering around the currently shown move (`commentMove_shownOnBoard`, or
+  `commentSubMove_shownOnBoard` when a clickable subvariation move is on the
+  board; neither marker = the variation's initial position). Two deliberate
+  approximations, both fine for explorer statistics: castling rights are
+  inferred from king/rook standing on their home squares (over-grants after a
+  piece moves away and back), and the en-passant field is always `-`. Frames
+  where the board is mid-animation (a piece momentarily on two squares) are
+  skipped by requiring exactly one king per side. Move rows are **not**
+  clickable here — the trainer's board is not free-play.
 - **Background-tab auto-pause** — a `/learn/…` session that boots while its
   document is hidden (i.e. any background tab, which is what the overstudy
   buttons create) gets its move timer paused: the script polls for the

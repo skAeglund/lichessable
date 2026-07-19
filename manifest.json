@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "LiChessable",
-  "version": "0.8.0",
-  "description": "Shows Lichess opening-database statistics alongside Chessable's move table on Explore and Analysis pages, and adds Overstudy shortcuts to review sessions.",
+  "version": "0.9.0",
+  "description": "Shows Lichess opening-database statistics alongside Chessable's move table on Explore and Analysis pages, follows the board when browsing a completed variation in review, and adds Overstudy shortcuts to review sessions.",
   "permissions": ["storage"],
   "host_permissions": ["https://explorer.lichess.org/*"],
   "background": {

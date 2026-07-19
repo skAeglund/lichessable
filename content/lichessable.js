@@ -19,6 +19,11 @@
  * is a separate, self-contained module (section 9) that shares nothing with
  * the panel machinery except CONFIG and the log helpers.
  *
+ * The TOP document additionally gets the Lichess Database panel in the
+ * trainer's post-completion browse state (section 11): once a variation is
+ * completed you can step through its moves, and the panel follows the board.
+ * There is no #inputFEN there, so the FEN is reconstructed from the DOM.
+ *
  * The manifest injects this into EVERY chessable.com frame ("all_frames": true);
  * the script bails out immediately in any frame that isn't one of those apps —
  * except the top document, which must stay resident (idle) because review
@@ -55,6 +60,20 @@
     reviewRowListAttr:   'lid', // attribute on the marker's parent row: list id
     // Fallback: the panel header's variation name links to /variation/<oid>/.
     reviewTitleLink: '.practice-header__title a[href^="/variation/"]',
+
+    // Trainer browse state (completed variation — section 11). The comment
+    // panel lists the mainline as commentMove spans; the move currently shown
+    // on the board carries the "_shownOnBoard" testid variant. Clickable
+    // subvariation moves work the same way with the commentSubMove testids,
+    // grouped per line inside one .commentInMove parent.
+    reviewProgress:     '[data-testid="practiceProgress"]', // "Completed" stats block — only present in the browse state
+    reviewMoves:        '[data-testid="commentMove"], [data-testid="commentMove_shownOnBoard"]',
+    reviewMoveShown:    '[data-testid="commentMove_shownOnBoard"]',
+    reviewSubMoves:     '[data-testid="commentSubMove"], [data-testid="commentSubMove_shownOnBoard"]',
+    reviewSubMoveShown: '[data-testid="commentSubMove_shownOnBoard"]',
+    reviewBoardWrap:    '[data-testid="boardContainer"]', // scopes the board lookup to the trainer's own board
+    reviewSquare:       '.square-%s',   // square lookup by class; %s = algebraic name — orientation-independent
+    reviewPiece:        '[data-piece]', // piece div inside a square; attribute value like "wK" / "bP"
   };
 
   const CONFIG = {
@@ -93,6 +112,7 @@
   };
 
   const PANEL_ID = 'lichessable-panel';
+  const REVIEW_WIDGET_ID = 'lichessable-review'; // overstudy widget (section 9); the review panel anchors below it
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
@@ -108,16 +128,13 @@
   // On Analysis the panel needs a CSS modifier (see lichessable.css) to share
   // the fixed-height Opening Explorer column with Chessable's own move table.
   const IS_ANALYSIS = location.pathname.startsWith('/mt1/analysis/');
+  // Top document = MoveTrainer2 territory: the panel machinery below runs in
+  // review mode (DOM-derived FEN, body-mounted panel — section 11).
+  const IS_REVIEW = !IS_FRAME_APP;
 
   // Guard against accidental double-injection into the same document.
   if (window.__lichessableLoaded) { warn('already initialised in this frame — skipping'); return; }
   window.__lichessableLoaded = true;
-
-  if (!IS_FRAME_APP) { // top document: review watcher + background-tab auto-pause only
-    initReviewOverstudy();
-    initOverstudyAutoPause();
-    return;
-  }
 
   // ==========================================================================
   // 2) State
@@ -218,6 +235,7 @@
 
   /** Always read the FEN fresh from the DOM — the input element itself may be replaced. */
   function readFen() {
+    if (IS_REVIEW) return readReviewFen(); // no #inputFEN in the trainer — section 11
     const input = document.querySelector(SELECTORS.fenInput);
     const value = input ? input.value.trim() : '';
     return value || null;
@@ -460,22 +478,25 @@
   // ==========================================================================
 
   function mountPanel() {
-    const container = document.querySelector(SELECTORS.movesContainer);
-    if (!container) { warn('moves container not found — cannot mount panel'); return; }
+    let container = null;
+    if (!IS_REVIEW) {
+      container = document.querySelector(SELECTORS.movesContainer);
+      if (!container) { warn('moves container not found — cannot mount panel'); return; }
 
-    // On Analysis the panel cannot live INSIDE the container: Chessable hides
-    // it unless the "Toggle Opening Explorer" button is active, and disables
-    // that button entirely in some entry states (e.g. ?fen= deep links). The
-    // panel mounts after the container instead, and the parent column becomes
-    // the side-mode anchor. No extra selector needed: the parent is reached
-    // relationally from the one configured container selector.
-    const anchor = IS_ANALYSIS ? container.parentElement : container;
+      // On Analysis the panel cannot live INSIDE the container: Chessable hides
+      // it unless the "Toggle Opening Explorer" button is active, and disables
+      // that button entirely in some entry states (e.g. ?fen= deep links). The
+      // panel mounts after the container instead, and the parent column becomes
+      // the side-mode anchor. No extra selector needed: the parent is reached
+      // relationally from the one configured container selector.
+      const anchor = IS_ANALYSIS ? container.parentElement : container;
 
-    // Side-mode anchor: on wide windows the CSS positions the panel absolutely
-    // against this element (see the media query in lichessable.css), so it
-    // must establish a positioning context.
-    if (getComputedStyle(anchor).position === 'static') {
-      anchor.style.position = 'relative';
+      // Side-mode anchor: on wide windows the CSS positions the panel absolutely
+      // against this element (see the media query in lichessable.css), so it
+      // must establish a positioning context.
+      if (getComputedStyle(anchor).position === 'static') {
+        anchor.style.position = 'relative';
+      }
     }
 
     // Remove any stale copy (defensive: avoids duplicates across re-inits).
@@ -484,7 +505,9 @@
 
     const panel = document.createElement('div');
     panel.id = PANEL_ID;
-    panel.className = 'clo-panel' + (IS_ANALYSIS ? ' clo-panel--analysis' : '');
+    panel.className = 'clo-panel' +
+      (IS_ANALYSIS ? ' clo-panel--analysis' : '') +
+      (IS_REVIEW ? ' clo-panel--review' : '');
     // Static skeleton only — no user/remote data ever goes through innerHTML.
     panel.innerHTML = `
       <div class="clo-header">
@@ -516,8 +539,11 @@
     // the container — in narrow-window mode the panel flows right beneath
     // their stats; in side mode the CSS pulls it out to the right, but this
     // stays its DOM home either way. Analysis: insert after the container
-    // itself (see the comment above).
-    if (IS_ANALYSIS) {
+    // itself (see the comment above). Review: on document.body — never inside
+    // Chessable's React tree — fixed-positioned under the board (section 11).
+    if (IS_REVIEW) {
+      document.body.appendChild(panel);
+    } else if (IS_ANALYSIS) {
       container.after(panel);
     } else {
       const tableWrap = container.querySelector(SELECTORS.movesTableWrap);
@@ -684,16 +710,17 @@
       const moveTotal = (move.white || 0) + (move.draws || 0) + (move.black || 0);
 
       const tr = document.createElement('tr');
-      // Clicking the row plays the move on the board (see onMoveRowClick).
-      if (move.uci) tr.dataset.uci = move.uci;
+      // Clicking the row plays the move on the board (see onMoveRowClick) —
+      // except in review mode, where the trainer's board is not free-play.
+      if (move.uci && !IS_REVIEW) tr.dataset.uci = move.uci;
 
       const tdMove = document.createElement('td');
       tdMove.className = 'clo-move';
       tdMove.textContent = move.san || move.uci || '?';
-      const playHint = `Click to play ${move.san || move.uci}`;
-      tdMove.title = move.averageRating
-        ? `Avg rating ${move.averageRating} · ${playHint}`
-        : playHint;
+      const hints = [];
+      if (move.averageRating) hints.push(`Avg rating ${move.averageRating}`);
+      if (!IS_REVIEW) hints.push(`Click to play ${move.san || move.uci}`);
+      if (hints.length) tdMove.title = hints.join(' · ');
 
       const tdPct = document.createElement('td');
       tdPct.className = 'clo-pct';
@@ -819,7 +846,7 @@
   // self-healing philosophy as section 4).
   // ==========================================================================
   function initReviewOverstudy() {
-    const WIDGET_ID = 'lichessable-review';
+    const WIDGET_ID = REVIEW_WIDGET_ID;
 
     const rs = {
       current: null,    // { bid, oid, lid, title } — variation on the board now
@@ -1003,11 +1030,198 @@
   }
 
   // ==========================================================================
+  // 11) Review-mode Lichess panel (top document — /practice/… and /learn/…)
+  //
+  // Once a variation is completed, MoveTrainer2 enters a browse state: the
+  // comment panel lists the moves (clickable, prev/next buttons under the
+  // board) and a "Completed" stats block appears. Only then does the panel
+  // show — never during an active quiz, where it would spoil the answer.
+  //
+  // There is no #inputFEN in the trainer, so readReviewFen() rebuilds the FEN
+  // from the DOM: piece placement from the board squares' [data-piece] divs,
+  // side to move + move number by parsing the SAN numbering around the
+  // currently shown move (SELECTORS.reviewMoveShown / reviewSubMoveShown;
+  // neither present = the variation's initial position). Two approximations,
+  // both fine for explorer statistics: castling rights are inferred from king
+  // and rook standing on their home squares (over-grants after a piece moves
+  // away and back), and the en-passant field is always "-".
+  //
+  // Everything else — debounce, fetch, cache, 429/401 handling, rendering —
+  // is the shared machinery of sections 2–8 running with IS_REVIEW branches.
+  // The 500 ms tick below is this mode's watchdog: it mounts/hides the panel,
+  // re-positions it under the board (fixed, like the overstudy widget), and
+  // detects position changes by comparing the derived FEN.
+  // ==========================================================================
+
+  async function initReviewPanel() {
+    state.hidden = await loadHiddenPref();
+    chrome.storage.onChanged.addListener(onStorageChanged);
+    setInterval(reviewPanelTick, CONFIG.review.pollMs);
+    window.addEventListener('resize', positionReviewPanel);
+    window.addEventListener('scroll', positionReviewPanel, true);
+    reviewPanelTick();
+    log('review Lichess panel watcher active (top document)');
+  }
+
+  function reviewPanelTick() {
+    if (!reviewBrowseReady()) {
+      if (state.panel) state.panel.hidden = true;
+      state.fen = null; // the next completed variation starts with a fresh fetch
+      return;
+    }
+    if (!state.panel || !state.panel.isConnected) mountPanel(); // idempotent self-heal
+    if (!state.panel) return;
+    state.panel.hidden = false;
+    positionReviewPanel();
+    const fen = readFen();
+    if (fen && fen !== state.fen) scheduleRefresh();
+  }
+
+  /** The browse state exists only after completion (progress block + move list). */
+  function reviewBrowseReady() {
+    return Boolean(document.querySelector(SELECTORS.reviewProgress) &&
+                   document.querySelector(SELECTORS.reviewMoves) &&
+                   getReviewBoard());
+  }
+
+  function getReviewBoard() {
+    const wrap = document.querySelector(SELECTORS.reviewBoardWrap);
+    return (wrap || document).querySelector(SELECTORS.board);
+  }
+
+  /**
+   * Anchors the panel beneath the board, below the overstudy widget (or the
+   * Exit/nav footer when the widget is hidden), matching the board's width.
+   * position:fixed + getBoundingClientRect are both viewport-relative, so the
+   * coordinates line up directly; the 500 ms tick plus resize/scroll listeners
+   * keep them fresh. Remaining viewport height caps the panel; the body
+   * scrolls internally (see .clo-panel--review in lichessable.css).
+   */
+  function positionReviewPanel() {
+    if (!IS_REVIEW || !state.panel || state.panel.hidden) return;
+    const board = getReviewBoard();
+    if (!board) return;
+    const rect = board.getBoundingClientRect();
+    if (!rect.width) return;
+    let anchorBottom = rect.bottom;
+    const footer = document.querySelector(SELECTORS.trainerFooter);
+    const footerRect = footer ? footer.getBoundingClientRect() : null;
+    if (footerRect && footerRect.height) anchorBottom = Math.max(anchorBottom, footerRect.bottom);
+    const widget = document.getElementById(REVIEW_WIDGET_ID);
+    const widgetRect = widget && !widget.hidden ? widget.getBoundingClientRect() : null;
+    if (widgetRect && widgetRect.height) anchorBottom = Math.max(anchorBottom, widgetRect.bottom);
+    const top = Math.round(anchorBottom + 10);
+    const width = Math.round(Math.max(rect.width, 320));
+    state.panel.style.left = Math.round(rect.left + (rect.width - width) / 2) + 'px';
+    state.panel.style.top = top + 'px';
+    state.panel.style.width = width + 'px';
+    state.panel.style.maxHeight = Math.max(120, window.innerHeight - top - 12) + 'px';
+  }
+
+  /** Full FEN from the trainer DOM, or null while the board is mid-render. */
+  function readReviewFen() {
+    const board = getReviewBoard();
+    if (!board) return null;
+    const turn = readReviewTurn();
+    if (!turn) return null;
+    const at = {}; // square name -> FEN piece letter, for the castling checks
+    let whiteKings = 0, blackKings = 0;
+    const ranks = [];
+    for (let rank = 8; rank >= 1; rank--) {
+      let row = '', empty = 0;
+      for (const file of 'abcdefgh') {
+        const name = file + rank;
+        const squareEl = board.querySelector(SELECTORS.reviewSquare.replace('%s', name));
+        if (!squareEl) return null; // board mid-render
+        const pieceEl = squareEl.querySelector(SELECTORS.reviewPiece);
+        const dp = pieceEl ? pieceEl.getAttribute('data-piece') : null;
+        if (dp && /^[wb][PNBRQK]$/.test(dp)) {
+          const ch = dp[0] === 'w' ? dp[1] : dp[1].toLowerCase();
+          at[name] = ch;
+          if (ch === 'K') whiteKings++;
+          else if (ch === 'k') blackKings++;
+          if (empty) { row += empty; empty = 0; }
+          row += ch;
+        } else {
+          empty++;
+        }
+      }
+      if (empty) row += empty;
+      ranks.push(row);
+    }
+    // A move animation can briefly show a piece on two squares — skip the tick.
+    if (whiteKings !== 1 || blackKings !== 1) return null;
+    let castling = '';
+    if (at.e1 === 'K') {
+      if (at.h1 === 'R') castling += 'K';
+      if (at.a1 === 'R') castling += 'Q';
+    }
+    if (at.e8 === 'k') {
+      if (at.h8 === 'r') castling += 'k';
+      if (at.a8 === 'r') castling += 'q';
+    }
+    return ranks.join('/') + ' ' + turn.side + ' ' + (castling || '-') + ' - 0 ' + turn.fullmove;
+  }
+
+  /**
+   * Side to move + fullmove number for the position on the board, derived
+   * from the currently shown move's place in its line. A shown subvariation
+   * move takes precedence over the mainline marker; neither marker means the
+   * initial position of the variation (the state Chessable's own
+   * initial-position dot navigates to).
+   */
+  function readReviewTurn() {
+    const shownSub = document.querySelector(SELECTORS.reviewSubMoveShown);
+    if (shownSub) {
+      const line = [...shownSub.parentElement.querySelectorAll(SELECTORS.reviewSubMoves)];
+      return turnFromLine(line, shownSub);
+    }
+    const moves = [...document.querySelectorAll(SELECTORS.reviewMoves)];
+    if (!moves.length) return null;
+    const shown = document.querySelector(SELECTORS.reviewMoveShown);
+    if (!shown) {
+      const first = parseMoveNumber(moves[0].textContent);
+      return first ? { side: first.black ? 'b' : 'w', fullmove: first.num } : null;
+    }
+    return turnFromLine(moves, shown);
+  }
+
+  /** "50." -> white's 50th; "50..." (or "50…") -> black's 50th; plain SAN -> null. */
+  function parseMoveNumber(text) {
+    const m = /^(\d+)\s*(\.{3}|…|\.)/.exec(text.trim());
+    return m ? { num: Number(m[1]), black: m[2] !== '.' } : null;
+  }
+
+  /**
+   * Walks back from the shown move to the nearest numbered one and converts
+   * to a ply count — unnumbered moves (Black's replies, and continuation
+   * moves after a comment) simply advance the ply by their distance.
+   */
+  function turnFromLine(line, shownEl) {
+    const idx = line.indexOf(shownEl);
+    for (let i = idx; i >= 0; i--) {
+      const parsed = parseMoveNumber(line[i].textContent);
+      if (!parsed) continue;
+      const ply = (parsed.black ? 2 * parsed.num : 2 * parsed.num - 1) + (idx - i);
+      return { side: ply % 2 ? 'b' : 'w', fullmove: Math.floor(ply / 2) + 1 };
+    }
+    return null; // no numbered move found — cannot trust a side-to-move guess
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
+  function start() {
+    if (IS_FRAME_APP) { boot(); return; }
+    // Top document: overstudy widget, background-tab auto-pause, review panel.
+    initReviewOverstudy();
+    initOverstudyAutoPause();
+    initReviewPanel();
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot, { once: true });
+    document.addEventListener('DOMContentLoaded', start, { once: true });
   } else {
-    boot();
+    start();
   }
 })();
