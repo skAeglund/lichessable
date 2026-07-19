@@ -496,3 +496,122 @@
   border-color: #71ad2a;
   color: #fff;
 }
+
+/* --- quick-edit comment (section 12) ----------------------------------------
+   A hover pencil next to a mainline move (review browse panel or variation
+   page), and the comment popup it opens. Both are singletons mounted on
+   document.body and fixed-positioned from the hovered move's rect (see
+   initQuickEditUi) — never inserted into Chessable's React-managed move list. */
+
+.clo-qe-pencil {
+  position: fixed;
+  z-index: 100000;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 16px;
+  text-align: center;
+  font-size: 11px;
+  border: 1px solid #629924;
+  border-radius: 3px;
+  background: #262421;
+  color: #a5c96a;
+  cursor: pointer;
+}
+
+.clo-qe-pencil:hover {
+  background: #629924;
+  color: #fff;
+}
+
+.clo-qe-pencil[hidden] { display: none; }
+
+.clo-qe-popup {
+  position: fixed;
+  z-index: 100001;
+  width: 280px;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid #1b1a17;
+  border-radius: 4px;
+  background: #262421;
+  color: #bababa;
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+.clo-qe-popup[hidden] { display: none; }
+
+.clo-qe-move {
+  color: #dcdcdc;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.clo-qe-text {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  background: #1b1a17;
+  border: 1px solid #3a3630;
+  border-radius: 3px;
+  color: #dcdcdc;
+  font-size: 13px;
+  font-family: inherit;
+  padding: 4px 6px;
+}
+
+.clo-qe-scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  color: #949494;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.clo-qe-status {
+  color: #949494;
+  font-style: italic;
+  font-size: 12px;
+  padding: 2px 0 4px;
+}
+
+.clo-qe-status.clo-error { color: #d85c5c; }
+.clo-qe-status[hidden] { display: none; }
+
+.clo-qe-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Save = lichess-green accent (as .clo-settings-btn); Cancel = quiet text. */
+.clo-qe-save {
+  border: 1px solid #629924;
+  background: #629924;
+  color: #fff;
+  padding: 3px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-qe-save:hover { background: #71ad2a; border-color: #71ad2a; }
+.clo-qe-save:disabled { opacity: 0.6; cursor: default; }
+
+.clo-qe-cancel {
+  border: none;
+  background: transparent;
+  color: #949494;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-qe-cancel:hover { color: #fff; }
+.clo-qe-cancel:disabled { opacity: 0.6; cursor: default; }

@@ -37,6 +37,15 @@ would otherwise start running unseen, a learn session that boots in a
 own pause control once it renders); switch to the tab and click the play
 overlay to start.
 
+You can also **quick-edit a move's comment**: hover a mainline move and a small
+pencil appears; its popup lets you type a note and append it as a PGN comment
+after that move (with the same "For this variation only" toggle Chessable's
+editor has). This works in two places — the completed-variation browse state
+during review, and any standalone **variation page**
+(`/variation/<id>/`). It only shows for courses you can edit, and it works by
+driving Chessable's own edit page in a background tab — see "Quick-edit
+comment" under Architecture notes.
+
 The panel can also run **optional local Stockfish analysis** (eval + top 3
 lines in SAN) for the current position — see "Local engine (optional)" below.
 
@@ -49,9 +58,9 @@ optional engine is a vendored Stockfish WASM build, downloaded manually.)
 lichessable/
 ├── manifest.json            Manifest V3 definition
 ├── background.js            Service worker: authenticated explorer fetches
-│                            + engine message hub
+│                            + engine message hub + quick-edit tab driver hub
 ├── content/
-│   ├── lichessable.js       Panel logic (mt1 iframe) + review overstudy widget (top document)
+│   ├── lichessable.js       Panel logic (mt1 iframe) + review overstudy widget + quick-edit UI (top document)
 │   └── lichessable.css      Panel styling (namespaced under .clo-)
 ├── engine/
 │   ├── offscreen.html       Offscreen document hosting the engine
@@ -149,6 +158,30 @@ lichessable/
   `SELECTORS.trainerPauseIcon`) and clicks it once. If the tab becomes
   visible before the control appears, it backs off. Resuming is Chessable's
   native play overlay on the board.
+- **Quick-edit comment** — hovering a mainline move shows a pencil (a
+  body-mounted singleton, never inserted into Chessable's move list) whose popup
+  appends a PGN comment to the variation. It runs on two host pages behind a
+  small adapter: the completed-variation browse state (moves are `commentMove`
+  spans; ply = index in that list; edit rights probed once per course) and the
+  standalone variation page (moves live in `#theOpeningMoves`, where each move
+  div's id already *is* its 0-based ply index and its class gives the colour;
+  the variation id comes from the URL and edit rights are simply whether
+  Chessable rendered the "Edit Variation" link, so no probe tab is needed).
+  There is no JSON API for this, and several of Chessable's edit-form
+  POST fields are session/CSRF-bound and opaque, so the only safe path is to
+  drive Chessable's **own edit page**: the worker opens `/explore/edit/<oid>/`
+  in a background tab (`clo-quick-edit-run`), and the driver there clicks the
+  target move by its position in `#interactivePGN` (matched by ply index, since
+  the edit page renumbers each variation from move 1 while review keeps the
+  source game's numbering), appends to the "Comments After" textarea,
+  sets the "For This Variation Only" checkbox, clicks "Update variation", and
+  confirms Chessable's SweetAlert dialog — which is what actually submits the
+  full-variation form. Success is detected when the POST lands the iframe on
+  `/mt1/explore/?edit=<oid>`; the worker then relays the result to the review
+  tab and closes the background tab. Edit rights are a per-course property, so
+  they're probed once per course per session (one throwaway background tab) and
+  cached — the pencil only appears for courses you can edit. The move rows
+  themselves are read only; nothing in Chessable's DOM is mutated.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.
@@ -273,7 +306,8 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
   a plain content-script fetch was enough.
 - Nothing else: no tabs permission, no scripting, no access beyond
   chessable.com (content script) and explorer.lichess.org (worker). Note the
-  overstudy widget's `chrome.tabs.create` call does **not** require the
+  overstudy widget's and the quick-edit feature's `chrome.tabs.create` /
+  `chrome.tabs.remove` / `chrome.tabs.sendMessage` calls do **not** require the
   `tabs` permission — that permission only gates reading tab metadata.
 
 ## Known behavior / limitations

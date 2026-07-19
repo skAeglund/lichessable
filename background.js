@@ -17,6 +17,21 @@
  *                                           overstudy widget; needs no "tabs"
  *                                           permission)
  *
+ * Quick-edit comment (content section 12): drives Chessable's own edit page in
+ * a background tab to append a PGN comment. One job at a time, kept in
+ * chrome.storage.session so it survives a worker idle-restart:
+ *   { type:'clo-quick-edit-run', mode:'probe'|'save', oid, bid, san, color,
+ *     plyIndex, commentText, forThisVariationOnly }  (review tab -> worker)
+ *       -> opens /explore/edit/<oid>/ active:false
+ *   { type:'clo-quick-edit-claim', oid }   (edit-tab driver -> worker)
+ *       -> { claimed, mode, san, color, plyIndex, commentText, forThisVariationOnly }
+ *   { type:'clo-quick-edit-submitting', oid } (driver -> worker; marks phase)
+ *   { type:'clo-quick-edit-landing', oid }    (post-POST doc -> worker)
+ *       -> { isOurs }  (true = the job's submit succeeded)
+ *   { type:'clo-quick-edit-result', oid, ok, canEdit?, error? } (driver -> worker)
+ *   The worker relays a clo-quick-edit-result back to the review tab via
+ *   chrome.tabs.sendMessage and closes the hidden tab.
+ *
  * Engine messages (Stockfish runs in an offscreen document; this worker is
  * the hub because offscreen sendMessage can never reach content scripts).
  * All engine messages carry a `target` field ('sw' | 'offscreen'); each
@@ -45,6 +60,14 @@ const OVERSTUDY_URL_RE = /^https:\/\/www\.chessable\.com\/learn\/\d+\/\d+(?:\/\d
 // chrome.storage.session key: {tabId, frameId} of the tab the engine serves.
 const ENGINE_TARGET_KEY = 'cloEngineTarget';
 
+// Quick-edit comment (content section 12): the worker opens Chessable's own
+// edit page in a background tab and the driver there submits the change. Only
+// the numeric variation id is ever interpolated into the URL.
+const QUICK_EDIT_BASE = 'https://www.chessable.com/explore/edit/';
+const QUICK_EDIT_JOB_KEY = 'cloQuickEditJob'; // chrome.storage.session; one job at a time
+const QUICK_EDIT_TIMEOUT_MS = 25000;          // hard cap; force-fail + close the tab
+let quickEditTimer = null;
+
 // Last engine-hub failure, surfaced via clo-engine-ping (the worker console
 // is hard to reach; the content script asks for this when the engine goes
 // quiet and logs it in the page console).
@@ -64,6 +87,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg && msg.type === 'clo-open-overstudy') {
     openOverstudyTab(msg.url);
+  }
+  // Quick-edit comment hub.
+  if (msg && msg.type === 'clo-quick-edit-run') {
+    startQuickEditJob(msg, sender);
+  }
+  if (msg && msg.type === 'clo-quick-edit-claim') {
+    claimQuickEditJob(msg, sender).then(sendResponse);
+    return true;
+  }
+  if (msg && msg.type === 'clo-quick-edit-submitting') {
+    markQuickEditSubmitting(msg);
+  }
+  if (msg && msg.type === 'clo-quick-edit-landing') {
+    handleQuickEditLanding(msg, sender).then(sendResponse);
+    return true;
+  }
+  if (msg && msg.type === 'clo-quick-edit-result') {
+    finishQuickEditJob(msg);
   }
   // Engine hub.
   if (msg && msg.target === 'sw') {
@@ -158,6 +199,123 @@ function openOverstudyTab(url) {
   }
   // active:false — the review session keeps focus; the overstudy tab waits.
   chrome.tabs.create({ url, active: false });
+}
+
+// --- quick-edit comment hub -------------------------------------------------
+// A single job at a time, stored in chrome.storage.session so routing/cleanup
+// survives a worker idle-restart (same rationale as ENGINE_TARGET_KEY).
+
+async function getQuickEditJob() {
+  try {
+    const stored = await chrome.storage.session.get(QUICK_EDIT_JOB_KEY);
+    return stored[QUICK_EDIT_JOB_KEY] || null;
+  } catch (err) { return null; }
+}
+async function setQuickEditJob(job) {
+  try { await chrome.storage.session.set({ [QUICK_EDIT_JOB_KEY]: job }); } catch (err) { /* ignore */ }
+}
+async function clearQuickEditJob() {
+  try { await chrome.storage.session.remove(QUICK_EDIT_JOB_KEY); } catch (err) { /* ignore */ }
+}
+
+function relayQuickEditResult(job, result) {
+  chrome.tabs.sendMessage(job.requesterTabId, {
+    type: 'clo-quick-edit-result',
+    oid: job.oid, bid: job.bid, mode: result.mode || job.mode,
+    ok: Boolean(result.ok), canEdit: result.canEdit, error: result.error,
+  }, { frameId: job.requesterFrameId }).catch(() => {});
+}
+
+async function startQuickEditJob(msg, sender) {
+  const oid = String(msg.oid || '');
+  if (!/^\d+$/.test(oid)) return;
+  if (!sender.tab || typeof sender.tab.id !== 'number') return;
+
+  // One job at a time: reject a second concurrent request outright.
+  if (await getQuickEditJob()) {
+    chrome.tabs.sendMessage(sender.tab.id, {
+      type: 'clo-quick-edit-result', oid, bid: msg.bid, mode: msg.mode,
+      ok: false, error: 'another quick-edit is in progress',
+    }, { frameId: sender.frameId || 0 }).catch(() => {});
+    return;
+  }
+
+  const url = QUICK_EDIT_BASE + oid + '/';
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url, active: false });
+  } catch (err) {
+    chrome.tabs.sendMessage(sender.tab.id, {
+      type: 'clo-quick-edit-result', oid, bid: msg.bid, mode: msg.mode,
+      ok: false, error: 'could not open the edit tab',
+    }, { frameId: sender.frameId || 0 }).catch(() => {});
+    return;
+  }
+
+  const job = {
+    oid, bid: msg.bid || '', mode: msg.mode === 'probe' ? 'probe' : 'save',
+    san: msg.san, color: msg.color, plyIndex: msg.plyIndex,
+    commentText: msg.commentText, forThisVariationOnly: Boolean(msg.forThisVariationOnly),
+    requesterTabId: sender.tab.id, requesterFrameId: sender.frameId || 0,
+    hiddenTabId: tab.id, phase: 'loading',
+  };
+  await setQuickEditJob(job);
+  clearTimeout(quickEditTimer);
+  quickEditTimer = setTimeout(() => failQuickEditJob('timeout'), QUICK_EDIT_TIMEOUT_MS);
+}
+
+/** The driver (in the hidden tab's edit iframe) asks whether it has a job. */
+async function claimQuickEditJob(msg, sender) {
+  const job = await getQuickEditJob();
+  if (!job || String(job.oid) !== String(msg.oid)) return { claimed: false };
+  if (!sender.tab || typeof sender.tab.id !== 'number') return { claimed: false };
+  // Bind the hidden tab id on first claim (tabs.create resolves before the
+  // page's content script runs, so this is normally already set).
+  if (job.hiddenTabId == null) { job.hiddenTabId = sender.tab.id; await setQuickEditJob(job); }
+  if (job.hiddenTabId !== sender.tab.id) return { claimed: false };
+  return {
+    claimed: true, mode: job.mode,
+    san: job.san, color: job.color, plyIndex: job.plyIndex,
+    commentText: job.commentText, forThisVariationOnly: job.forThisVariationOnly,
+  };
+}
+
+async function markQuickEditSubmitting(msg) {
+  const job = await getQuickEditJob();
+  if (!job || String(job.oid) !== String(msg.oid)) return;
+  job.phase = 'submitted';
+  await setQuickEditJob(job);
+}
+
+/** Post-submit landing (/mt1/explore/?edit=<oid>) from the hidden tab = success. */
+async function handleQuickEditLanding(msg, sender) {
+  const job = await getQuickEditJob();
+  if (!job || job.phase !== 'submitted' || String(job.oid) !== String(msg.oid)) return { isOurs: false };
+  if (!sender.tab || sender.tab.id !== job.hiddenTabId) return { isOurs: false };
+  await finalizeQuickEditJob(job, { ok: true, mode: 'save' });
+  return { isOurs: true };
+}
+
+/** From the driver (probe result, or a save error). */
+async function finishQuickEditJob(msg) {
+  const job = await getQuickEditJob();
+  if (!job || String(job.oid) !== String(msg.oid)) return;
+  await finalizeQuickEditJob(job, { ok: msg.ok, mode: msg.mode, canEdit: msg.canEdit, error: msg.error });
+}
+
+async function failQuickEditJob(reason) {
+  const job = await getQuickEditJob();
+  if (!job) return;
+  await finalizeQuickEditJob(job, { ok: false, error: reason });
+}
+
+/** Relay the outcome to the review tab, close the hidden tab, clear the job. */
+async function finalizeQuickEditJob(job, result) {
+  clearTimeout(quickEditTimer);
+  quickEditTimer = null;
+  relayQuickEditResult(job, result);
+  if (job.hiddenTabId != null) chrome.tabs.remove(job.hiddenTabId).catch(() => {});
+  await clearQuickEditJob();
 }
 
 async function handleExplorerFetch(url) {

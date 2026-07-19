@@ -74,6 +74,31 @@
     reviewBoardWrap:    '[data-testid="boardContainer"]', // scopes the board lookup to the trainer's own board
     reviewSquare:       '.square-%s',   // square lookup by class; %s = algebraic name — orientation-independent
     reviewPiece:        '[data-piece]', // piece div inside a square; attribute value like "wK" / "bP"
+
+    // Explore EDIT page (quick-edit-comment feature — section 12). The edit
+    // page reuses the mt1 explore iframe (/mt1/explore/edit/<oid>/), so these
+    // only ever match there. Each mainline ply is a div in #interactivePGN with
+    // id "{san}_{w|b}_{moveNumber}" (e.g. "d4_w_8", "Qe6+_b_5") — built
+    // dynamically and looked up with getElementById (the ids contain +, #, =,
+    // which would need escaping in a CSS selector). NOTE: the ids KEEP check/
+    // mate (+ #) but STRIP evaluation glyphs (!?, =, …), so the SAN read from
+    // the review panel must be normalised the same way (quickEditSan).
+    editInteractivePGN: '#interactivePGN',  // mainline move list on the edit page
+    editCommentAfter:   '#moveComment',     // "Comments After <move>" textarea (React-controlled)
+    editVariationOnly:  '#specificAltMove', // "For This Variation Only" checkbox
+    editSubmitButton:   '#submitButton',    // "Update variation" button (onclick=addVariation → swal confirm)
+    editConfirmButton:  '.swal2-confirm',   // SweetAlert2 "Update" button that actually submits the form
+
+    // Standalone variation page (/variation/<oid>/ — second quick-edit host,
+    // section 12). Wholly different markup from both the trainer and the edit
+    // page: #theOpeningMoves holds one <span> per ply, each wrapping a
+    // .whiteMove/.blackMove div whose id IS the 0-based ply index ("0", "1", …)
+    // — so no SAN-numbering parsing is needed here at all. Move-number labels
+    // are .openingNum (no id) and comments are .commentInMove spans, which
+    // never contain move divs (verified on a variation with 14 comments and
+    // subvariations), hence the > span > child scoping.
+    variationMoves:    '#theOpeningMoves > span > .whiteMove, #theOpeningMoves > span > .blackMove',
+    variationEditLink: 'a[href*="/explore/edit/"]', // "Edit Variation" — rendered only with edit rights
   };
 
   const CONFIG = {
@@ -115,10 +140,24 @@
       enabledKey: 'cloEngineEnabled', // chrome.storage.local; off by default
       pvCount: 3,                     // rendered rows; matches MULTIPV in engine/engine.js
     },
+
+    // --- Quick-edit comment (section 12) -----------------------------------
+    // Adds a hover pencil to mainline moves in the review browse panel that
+    // appends a PGN comment to the real Chessable variation by driving its own
+    // edit page in a background tab (opened by background.js).
+    quickEdit: {
+      editPathPrefix:   '/mt1/explore/edit/', // the edit page inside the mt1 iframe
+      commentJoin:      '\n\n', // separator when appending to an existing comment
+      settleMs:         150,    // wait after clicking a move for #moveComment to update
+      bootTimeoutMs:    15000,  // wait for the edit form (absence ⇒ no edit rights)
+      confirmTimeoutMs: 6000,   // wait for the SweetAlert confirm button after submit
+    },
   };
 
   const PANEL_ID = 'lichessable-panel';
   const REVIEW_WIDGET_ID = 'lichessable-review'; // overstudy widget (section 9); the review panel anchors below it
+  const QE_PENCIL_ID = 'lichessable-qe-pencil';  // quick-edit hover pencil (section 12)
+  const QE_POPUP_ID  = 'lichessable-qe-popup';   // quick-edit comment popup (section 12)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
@@ -134,9 +173,18 @@
   // On Analysis the panel needs a CSS modifier (see lichessable.css) to share
   // the fixed-height Opening Explorer column with Chessable's own move table.
   const IS_ANALYSIS = location.pathname.startsWith('/mt1/analysis/');
+  // The explore EDIT page (also inside the mt1 iframe): host of the quick-edit
+  // driver (section 12). Its path is a subset of the explore prefix, so it is
+  // also an IS_FRAME_APP page.
+  const IS_EDIT_PAGE = location.pathname.startsWith(CONFIG.quickEdit.editPathPrefix);
   // Top document = MoveTrainer2 territory: the panel machinery below runs in
   // review mode (DOM-derived FEN, body-mounted panel — section 11).
   const IS_REVIEW = !IS_FRAME_APP;
+  // The standalone variation page (top document, no mt1 iframe): the SECOND
+  // host of the quick-edit UI (section 12). Nothing else runs there — the
+  // review panel/overstudy gates below never match it.
+  const VARIATION_PATH_RE = /^\/variation\/(\d+)\/?/;
+  const IS_VARIATION_PAGE = IS_REVIEW && VARIATION_PATH_RE.test(location.pathname);
 
   // Guard against accidental double-injection into the same document.
   if (window.__lichessableLoaded) { warn('already initialised in this frame — skipping'); return; }
@@ -1429,14 +1477,547 @@
   }
 
   // ==========================================================================
+  // 12) Quick-edit comment (review browse state ↔ background edit tab)
+  //
+  // In the review browse state, hovering a mainline move shows a pencil; the
+  // popup appends a PGN comment to the real Chessable variation. There is no
+  // JSON API for this — the only safe path is to drive Chessable's own edit
+  // page (verified: several of its POST fields are session/CSRF-bound and
+  // opaque). So background.js opens /explore/edit/<oid>/ in a background tab;
+  // the driver below (running in that tab's mt1 edit iframe) clicks the target
+  // move, appends to the "Comments After" textarea, sets the scope checkbox,
+  // clicks "Update variation", and confirms Chessable's SweetAlert dialog —
+  // which is what actually submits the full-variation form. Success is detected
+  // when the form's POST lands the iframe on /mt1/explore/?edit=<oid>.
+  //
+  // Edit rights are a per-COURSE property, so they are probed once per course
+  // per session (one throwaway background tab) and cached; the pencil only
+  // appears for courses the user can edit.
+  // ==========================================================================
+
+  /**
+   * Normalises a review-panel move label (e.g. "8. d4", "4... Qxd5", "Qe6+!",
+   * "Bd7=") to the SAN used in the edit page's element ids: the move-number
+   * prefix is dropped, check/mate (+ #) and promotion (=Q) are kept, and
+   * evaluation glyphs (!, ?, =, ±, …) are stripped — matching how Chessable
+   * ids the moves in #interactivePGN.
+   */
+  function quickEditSan(text) {
+    const t = String(text).trim().replace(/^\d+\s*(?:\.{3}|…|\.)\s*/, '');
+    const m = /^(O-O-O|O-O|[KQRNB]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRNB])?[+#]?)/.exec(t);
+    return m ? m[1] : null;
+  }
+
+  /**
+   * Descriptor for a mainline move element: its 0-based PLY INDEX within the
+   * variation plus its own SAN and colour (for verification). The move is
+   * matched on the edit page BY POSITION, not by absolute move number: the edit
+   * page renumbers each variation from move 1 (verified — a tactics puzzle shown
+   * as "25. Qc2!" in review is "Qc2_w_1" on the edit page), while the review
+   * panel keeps the source game's numbering. The review commentMove list and
+   * the edit page's #interactivePGN list are the same mainline in the same
+   * order, so index N maps to index N. Colour still comes from turnFromLine
+   * (correct regardless of the absolute number).
+   */
+  function reviewMoveDescriptor(el) {
+    const moves = [...document.querySelectorAll(SELECTORS.reviewMoves)];
+    const plyIndex = moves.indexOf(el);
+    if (plyIndex < 0) return null;
+    const turn = turnFromLine(moves, el);
+    if (!turn) return null;
+    const san = quickEditSan(el.textContent);
+    if (!san) return null;
+    const color = turn.side === 'w' ? 'b' : 'w';
+    return { san, color, plyIndex };
+  }
+
+  /**
+   * Same descriptor from the standalone variation page, where Chessable hands
+   * us everything directly: the move div's id IS the 0-based ply index and its
+   * class carries the colour, so no move-number parsing is involved.
+   */
+  function variationMoveDescriptor(el) {
+    const plyIndex = Number(el.id);
+    if (!Number.isInteger(plyIndex) || plyIndex < 0) return null;
+    const san = quickEditSan(el.textContent);
+    if (!san) return null;
+    return { san, color: el.classList.contains('whiteMove') ? 'w' : 'b', plyIndex };
+  }
+
+  /** Current variation id in the review browse state (marker row, then link). */
+  function readQuickEditOid() {
+    const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
+    const row = marker && marker.parentElement;
+    const oid = row && row.getAttribute(SELECTORS.reviewRowVidAttr);
+    if (oid && oid !== '0') return oid;
+    const link = document.querySelector(SELECTORS.reviewTitleLink);
+    const hm = link && /^\/variation\/(\d+)/.exec(link.getAttribute('href') || '');
+    return hm && hm[1] !== '0' ? hm[1] : null;
+  }
+
+  const QUICK_EDIT_BID_RE = /^\/practice\/(\d+)/;
+  function readQuickEditBid() {
+    const m = QUICK_EDIT_BID_RE.exec(location.pathname);
+    return m ? m[1] : null;
+  }
+
+  // --- driver (runs in the background edit tab's mt1 iframe) -----------------
+
+  /**
+   * Sets a React-controlled textarea's value so the framework notices: the
+   * native value setter bypasses React's own value tracker, and the dispatched
+   * input event then reaches its onChange (a bare `.value =` would be ignored).
+   */
+  function setReactTextareaValue(el, value) {
+    const proto = Object.getPrototypeOf(el);
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value') &&
+                   Object.getOwnPropertyDescriptor(proto, 'value').set;
+    if (setter) setter.call(el, value);
+    else el.value = value; // fallback: plain assignment
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function quickEditWaitFor(selector, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const found = document.querySelector(selector);
+      if (found) return resolve(found);
+      let observer = null, pollTimer = 0, timeoutTimer = 0;
+      const finish = (el, err) => {
+        if (observer) observer.disconnect();
+        clearInterval(pollTimer);
+        clearTimeout(timeoutTimer);
+        el ? resolve(el) : reject(err);
+      };
+      observer = new MutationObserver(() => {
+        const el = document.querySelector(selector);
+        if (el) finish(el);
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      pollTimer = setInterval(() => {
+        const el = document.querySelector(selector);
+        if (el) finish(el);
+      }, CONFIG.bootPollMs);
+      timeoutTimer = setTimeout(() => finish(null, new Error('timeout: ' + selector)), timeoutMs);
+    });
+  }
+
+  const quickEditDelay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /**
+   * Called from start() only on the edit page. Asks the worker whether this
+   * background tab was opened for a quick-edit job; if so, drives it and
+   * returns true (so the caller skips the normal explore panel). Returns false
+   * for a manual visit, so the normal panel still mounts.
+   */
+  async function runQuickEditDriverIfJob() {
+    const m = /^\/mt1\/explore\/edit\/(\d+)\//.exec(location.pathname);
+    if (!m) return false;
+    const oid = m[1];
+    let job;
+    try {
+      job = await chrome.runtime.sendMessage({ type: 'clo-quick-edit-claim', oid });
+    } catch (err) {
+      warn('quick-edit claim failed:', err);
+      return false;
+    }
+    if (!job || !job.claimed) return false; // manual visit — let the normal panel boot
+    log('quick-edit driver claimed job', job.mode, 'for variation', oid);
+    driveQuickEdit(oid, job).catch((err) => {
+      warn('quick-edit driver error:', err);
+      try {
+        chrome.runtime.sendMessage({
+          type: 'clo-quick-edit-result', oid, mode: job.mode,
+          ok: false, error: String((err && err.message) || err),
+        }).catch(() => {});
+      } catch (e) { /* worker gone */ }
+    });
+    return true;
+  }
+
+  async function driveQuickEdit(oid, job) {
+    let hasForm = true;
+    try {
+      await quickEditWaitFor(SELECTORS.editInteractivePGN, CONFIG.quickEdit.bootTimeoutMs);
+    } catch (err) {
+      hasForm = false; // no edit form rendered ⇒ no edit rights on this course
+    }
+
+    if (job.mode === 'probe') {
+      chrome.runtime.sendMessage({ type: 'clo-quick-edit-result', oid, mode: 'probe', ok: true, canEdit: hasForm }).catch(() => {});
+      return;
+    }
+
+    if (!hasForm) throw new Error('edit form not available (no edit rights?)');
+
+    // Match the move by POSITION (the edit page renumbers from move 1), then
+    // verify SAN + colour against the element id to catch any list mismatch.
+    const moveEls = [...document.querySelectorAll(SELECTORS.editInteractivePGN + ' div[id]')];
+    const moveEl = moveEls[job.plyIndex];
+    if (!moveEl) throw new Error(`move #${job.plyIndex} not found on the edit page (${moveEls.length} moves listed)`);
+    const idm = /^(.+)_([wb])_\d+$/.exec(moveEl.id);
+    if (!idm || idm[1] !== job.san || idm[2] !== job.color) {
+      throw new Error(`move mismatch at #${job.plyIndex}: id "${moveEl.id}" vs expected ${job.san}/${job.color}`);
+    }
+    moveEl.click(); // selects the move; #moveComment updates synchronously
+    await quickEditDelay(CONFIG.quickEdit.settleMs);
+
+    const ta = document.querySelector(SELECTORS.editCommentAfter);
+    if (!ta) throw new Error('comment field not found');
+    const existing = ta.value || '';
+    const next = existing.trim()
+      ? existing + CONFIG.quickEdit.commentJoin + job.commentText
+      : job.commentText;
+    setReactTextareaValue(ta, next);
+
+    const box = document.querySelector(SELECTORS.editVariationOnly);
+    if (box && box.checked !== Boolean(job.forThisVariationOnly)) box.click();
+
+    // Tell the worker we're about to submit, so the post-POST landing document
+    // (/mt1/explore/?edit=<oid>) is recognised as this job's success.
+    try { await chrome.runtime.sendMessage({ type: 'clo-quick-edit-submitting', oid }); } catch (e) { /* worker gone */ }
+
+    const submitBtn = document.querySelector(SELECTORS.editSubmitButton);
+    if (!submitBtn) throw new Error('submit button not found');
+    submitBtn.click(); // fires addVariation() → SweetAlert confirm dialog
+
+    // Chessable only serialises + POSTs the variation after the user confirms
+    // the "Update variation?" dialog, so click its confirm button. The POST
+    // then navigates the iframe; success is reported by the landing document.
+    const confirmBtn = await quickEditWaitFor(SELECTORS.editConfirmButton, CONFIG.quickEdit.confirmTimeoutMs);
+    confirmBtn.click();
+  }
+
+  /**
+   * On any explore-frame boot, recognise the post-submit landing
+   * (/mt1/explore/?edit=<oid>) of a quick-edit job and report success. Returns
+   * true when handled (caller skips the normal panel boot in that throwaway
+   * tab, which the worker closes anyway). Cheap: only pings the worker when an
+   * ?edit= query param is actually present.
+   */
+  async function maybeReportQuickEditLanding() {
+    const editParam = new URLSearchParams(location.search).get('edit');
+    if (!editParam || !/^\d+$/.test(editParam)) return false;
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'clo-quick-edit-landing', oid: editParam });
+      return Boolean(res && res.isOurs);
+    } catch (err) {
+      return false;
+    }
+  }
+
+  // --- review-side UI (hover pencil + popup) ---------------------------------
+
+  function initQuickEditUi() {
+    const qe = {
+      rightsByBid: new Map(), // bid -> boolean (edit rights), cached per session
+      probing: new Set(),     // bids with a probe in flight
+      pencil: null,
+      popup: null,
+      els: null,              // cached popup child refs
+      pencilTarget: null,     // move element the pencil currently points at
+      popupTarget: null,      // move element the open popup refers to
+      hideTimer: 0,
+      saving: false,
+    };
+
+    // Host adapter. The two pages that offer quick-edit differ ONLY in how
+    // moves are found, how a move maps to a ply, where the variation id comes
+    // from, and how edit rights become known. Everything below this — pencil,
+    // popup, save round-trip, and the whole edit-page driver — is shared.
+    const HOSTS = {
+      review: {
+        name: 'review browse state',
+        moveSelector: SELECTORS.reviewMoves,
+        ready: () => reviewBrowseReady(),
+        oid: () => readQuickEditOid(),
+        descriptor: (el) => reviewMoveDescriptor(el),
+        bid: () => readQuickEditBid(),
+        // The trainer DOM carries no ownership signal, so rights are probed
+        // once per course in a hidden tab and cached (fail-closed until known).
+        hasRights: () => {
+          const bid = readQuickEditBid();
+          return Boolean(bid) && qe.rightsByBid.get(bid) === true;
+        },
+        poll: () => maybeProbe(),
+      },
+      variation: {
+        name: 'variation page',
+        moveSelector: SELECTORS.variationMoves,
+        ready: () => Boolean(document.querySelector(SELECTORS.variationMoves)),
+        oid: () => {
+          const m = VARIATION_PATH_RE.exec(location.pathname);
+          return m ? m[1] : null;
+        },
+        descriptor: (el) => variationMoveDescriptor(el),
+        bid: () => '',
+        // No probe needed here: the page itself is the rights signal, since
+        // Chessable only renders the "Edit Variation" link (Repertoire Admin
+        // box) for a course you can actually edit.
+        hasRights: () => Boolean(document.querySelector(SELECTORS.variationEditLink)),
+        poll: () => {},
+      },
+    };
+    const host = IS_VARIATION_PAGE ? HOSTS.variation : HOSTS.review;
+
+    function buildPencil() {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.id = QE_PENCIL_ID;
+      btn.className = 'clo-qe-pencil';
+      btn.title = 'Add a comment after this move';
+      btn.textContent = '✎';
+      btn.hidden = true;
+      btn.addEventListener('mouseenter', cancelHide);
+      btn.addEventListener('mouseleave', scheduleHide);
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (qe.pencilTarget) openPopup(qe.pencilTarget);
+      });
+      document.body.appendChild(btn);
+      qe.pencil = btn;
+    }
+
+    function buildPopup() {
+      const popup = document.createElement('div');
+      popup.id = QE_POPUP_ID;
+      popup.className = 'clo-qe-popup';
+      popup.hidden = true;
+
+      const moveLabel = document.createElement('div');
+      moveLabel.className = 'clo-qe-move';
+
+      const textarea = document.createElement('textarea');
+      textarea.className = 'clo-qe-text';
+      textarea.rows = 3;
+      textarea.placeholder = 'Comment after this move…';
+
+      const scopeLabel = document.createElement('label');
+      scopeLabel.className = 'clo-qe-scope';
+      const scopeBox = document.createElement('input');
+      scopeBox.type = 'checkbox';
+      scopeLabel.appendChild(scopeBox);
+      scopeLabel.appendChild(document.createTextNode(' For this variation only'));
+
+      const status = document.createElement('div');
+      status.className = 'clo-qe-status';
+      status.hidden = true;
+
+      const actions = document.createElement('div');
+      actions.className = 'clo-qe-actions';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'clo-qe-cancel';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', closePopup);
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'clo-qe-save';
+      save.textContent = 'Save';
+      save.addEventListener('click', doSave);
+      actions.append(cancel, save);
+
+      popup.append(moveLabel, textarea, scopeLabel, status, actions);
+      // Keep the pencil alive while the pointer is inside the popup.
+      popup.addEventListener('mouseenter', cancelHide);
+      // MoveTrainer2 binds single-key shortcuts ("n" = next variation, space,
+      // …) on document in the BUBBLE phase and does NOT skip them while a text
+      // field has focus — so typing a comment would drive the trainer. Swallow
+      // key events here, once they have already reached their target inside the
+      // popup: the default action (inserting the character) still happens, but
+      // they never bubble on to Chessable's listeners. Bubble-phase is enough —
+      // verified live that a capture-phase guard is not needed.
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        popup.addEventListener(type, (e) => {
+          e.stopPropagation();
+          if (type === 'keydown' && e.key === 'Escape' && !qe.saving) closePopup();
+        });
+      }
+      document.body.appendChild(popup);
+
+      qe.popup = popup;
+      qe.els = { moveLabel, textarea, scopeBox, status, save, cancel };
+    }
+
+    function ensureElements() {
+      if (!qe.pencil || !qe.pencil.isConnected) buildPencil();
+      if (!qe.popup || !qe.popup.isConnected) buildPopup();
+    }
+
+    function cancelHide() { clearTimeout(qe.hideTimer); }
+    function scheduleHide() {
+      clearTimeout(qe.hideTimer);
+      qe.hideTimer = setTimeout(() => {
+        if (qe.pencil) qe.pencil.hidden = true;
+        qe.pencilTarget = null;
+      }, 200);
+    }
+
+    function showPencilFor(moveEl) {
+      ensureElements();
+      qe.pencilTarget = moveEl;
+      cancelHide();
+      const rect = moveEl.getBoundingClientRect();
+      qe.pencil.style.left = Math.round(rect.right + 2) + 'px';
+      qe.pencil.style.top = Math.round(rect.top - 2) + 'px';
+      qe.pencil.hidden = false;
+    }
+
+    function openPopup(moveEl) {
+      ensureElements();
+      qe.popupTarget = moveEl;
+      qe.saving = false;
+      qe.els.moveLabel.textContent = 'After ' + moveEl.textContent.trim();
+      qe.els.textarea.value = '';
+      qe.els.scopeBox.checked = false; // matches Chessable's own default
+      setStatus('', false);
+      setSavingUi(false);
+      const rect = moveEl.getBoundingClientRect();
+      qe.popup.style.left = Math.round(Math.min(rect.left, window.innerWidth - 300)) + 'px';
+      qe.popup.style.top = Math.round(rect.bottom + 6) + 'px';
+      qe.popup.hidden = false;
+      qe.pencil.hidden = true;
+      qe.els.textarea.focus();
+    }
+
+    function closePopup() {
+      if (qe.popup) qe.popup.hidden = true;
+      qe.popupTarget = null;
+      qe.saving = false;
+    }
+
+    function setStatus(text, isError) {
+      if (!qe.els) return;
+      qe.els.status.textContent = text || '';
+      qe.els.status.className = 'clo-qe-status' + (isError ? ' clo-error' : '');
+      qe.els.status.hidden = !text;
+    }
+
+    function setSavingUi(busy) {
+      if (!qe.els) return;
+      qe.els.save.disabled = busy;
+      qe.els.cancel.disabled = busy;
+      qe.els.textarea.disabled = busy;
+      qe.els.scopeBox.disabled = busy;
+      qe.els.save.textContent = busy ? 'Saving…' : 'Save';
+    }
+
+    function doSave() {
+      if (qe.saving || !qe.popupTarget) return;
+      const text = qe.els.textarea.value.trim();
+      if (!text) { setStatus('Enter a comment first.', true); return; }
+      const desc = host.descriptor(qe.popupTarget);
+      if (!desc) { setStatus('Could not identify the move.', true); return; }
+      const oid = host.oid();
+      if (!oid) { setStatus('Could not identify the variation.', true); return; }
+      const bid = host.bid();
+      qe.saving = true;
+      setSavingUi(true);
+      setStatus('Saving…', false);
+      try {
+        chrome.runtime.sendMessage({
+          type: 'clo-quick-edit-run', mode: 'save', oid, bid,
+          san: desc.san, color: desc.color, plyIndex: desc.plyIndex,
+          commentText: text, forThisVariationOnly: qe.els.scopeBox.checked,
+        }).catch(() => {});
+      } catch (err) {
+        qe.saving = false;
+        setSavingUi(false);
+        setStatus('Could not reach the extension worker.', true);
+      }
+    }
+
+    function onResult(msg) {
+      if (msg.mode === 'probe') {
+        if (msg.bid) {
+          qe.probing.delete(msg.bid);
+          qe.rightsByBid.set(msg.bid, Boolean(msg.canEdit));
+          log('quick-edit rights for course', msg.bid, '=', Boolean(msg.canEdit));
+        }
+        return;
+      }
+      // save result
+      if (!qe.popup || qe.popup.hidden) return;
+      qe.saving = false;
+      setSavingUi(false);
+      if (msg.ok) {
+        setStatus('Saved.', false);
+        setTimeout(() => { if (!qe.saving) closePopup(); }, 900);
+      } else {
+        setStatus(msg.error === 'another quick-edit is in progress'
+          ? 'Another save is in progress — try again in a moment.'
+          : 'Save failed or timed out — your text is kept, you can retry.', true);
+      }
+    }
+
+    function maybeProbe() {
+      const bid = readQuickEditBid();
+      const oid = readQuickEditOid();
+      if (!bid || !oid) return;
+      if (qe.rightsByBid.has(bid) || qe.probing.has(bid)) return;
+      qe.probing.add(bid);
+      log('quick-edit: probing edit rights for course', bid);
+      try {
+        chrome.runtime.sendMessage({ type: 'clo-quick-edit-run', mode: 'probe', oid, bid }).catch(() => {});
+      } catch (err) {
+        qe.probing.delete(bid);
+      }
+    }
+
+    function tick() {
+      if (!host.ready()) {
+        if (qe.pencil) qe.pencil.hidden = true;
+        if (qe.popup && !qe.popup.hidden) closePopup();
+        return;
+      }
+      host.poll();
+    }
+
+    // Hover detection: read-only, never mutates Chessable's move list.
+    document.addEventListener('pointerover', (e) => {
+      const moveEl = e.target.closest && e.target.closest(host.moveSelector);
+      if (!moveEl) return;
+      if (!host.ready() || !host.hasRights()) return;
+      if (qe.popup && !qe.popup.hidden) return; // don't fight an open popup
+      showPencilFor(moveEl);
+    });
+    document.addEventListener('pointerout', (e) => {
+      const moveEl = e.target.closest && e.target.closest(host.moveSelector);
+      if (moveEl) scheduleHide();
+    });
+
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg && msg.type === 'clo-quick-edit-result') onResult(msg);
+    });
+
+    setInterval(tick, CONFIG.review.pollMs);
+    tick();
+    log('quick-edit UI active (' + host.name + ')');
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
-  function start() {
-    if (IS_FRAME_APP) { boot(); return; }
-    // Top document: overstudy widget, background-tab auto-pause, review panel.
+  async function start() {
+    if (IS_FRAME_APP) {
+      // Recognise a quick-edit post-submit landing before anything else.
+      if (await maybeReportQuickEditLanding()) return;
+      // On the edit page, drive a pending quick-edit job (if this tab was
+      // opened for one); otherwise fall through to the normal explore panel.
+      if (IS_EDIT_PAGE && await runQuickEditDriverIfJob()) return;
+      boot();
+      return;
+    }
+    // The standalone variation page hosts ONLY the quick-edit UI — every other
+    // top-document feature is MoveTrainer2 machinery whose gates never match
+    // there, so don't start their pollers.
+    if (IS_VARIATION_PAGE) { initQuickEditUi(); return; }
+    // Top document: overstudy widget, background-tab auto-pause, review panel,
+    // and the quick-edit hover UI.
     initReviewOverstudy();
     initOverstudyAutoPause();
     initReviewPanel();
+    initQuickEditUi();
   }
 
   if (document.readyState === 'loading') {

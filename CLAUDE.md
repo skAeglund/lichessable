@@ -11,8 +11,11 @@ current position. Also adds an "Overstudy" widget to review sessions
 (`https://www.chessable.com/practice/…`): two buttons (current / previous
 variation) that open the variation's overstudy in a background tab. In those
 trainer sessions the Lichess panel also appears once a variation is completed
-(browse state), following the board via a DOM-derived FEN.
-Currently working (v0.9.x).
+(browse state), following the board via a DOM-derived FEN. In that same browse
+state, hovering a mainline move shows a pencil that appends a PGN comment to the
+variation (for courses you can edit) by driving Chessable's own edit page in a
+background tab.
+Currently working (v0.11.x).
 
 ## Structure
 
@@ -119,6 +122,52 @@ Currently working (v0.9.x).
   and toggling OFF closes the offscreen document (frees ~300 MB; it also
   self-closes after 5 idle minutes). Scores are normalized to White's
   perspective in engine.js, not in the panel.
+- Quick-edit comment (section 12 in lichessable.js): hovering a mainline move
+  shows a body-mounted pencil (singleton, NOT inserted into Chessable's move
+  list) whose popup appends a PGN comment to the variation. TWO host pages,
+  behind a `HOSTS` adapter in `initQuickEditUi`; they differ ONLY in move
+  lookup, ply mapping, oid source and rights signal — popup, save round-trip and
+  the entire edit-page driver are shared:
+  (a) review browse state (`commentMove` spans; ply = index in that list; rights
+  probed per course), and (b) the standalone variation page `/variation/<oid>/`
+  (top document, no mt1 iframe, wholly different markup:
+  `#theOpeningMoves > span > .whiteMove|.blackMove`, where the move div's id IS
+  the 0-based ply index and its class is the colour, so NO move-number parsing
+  happens there; oid from the URL; rights = presence of the "Edit Variation"
+  link, which Chessable renders only for editable courses, so no probe tab is
+  opened). Verified live that both hosts' ply indices map 1:1 onto the edit
+  page's `#interactivePGN` order. There is NO JSON API — several of Chessable's edit-form POST fields
+  are session/CSRF-bound and opaque — so the ONLY safe path is to DRIVE
+  Chessable's own edit page: `background.js` opens `/explore/edit/<oid>/`
+  `active:false`, and the driver in that tab's mt1 edit iframe (`IS_EDIT_PAGE`)
+  clicks the target move by POSITION (the Nth `#interactivePGN div[id]`),
+  appends to `#moveComment` (React-controlled: native value setter + dispatched
+  `input` event, NOT a bare `.value =`), sets `#specificAltMove` ("For This
+  Variation Only"), clicks `#submitButton`, and MUST also click the SweetAlert2
+  confirm (`.swal2-confirm`) — `addVariation()` only serialises + POSTs the
+  whole variation after that dialog is confirmed. CRUCIAL: match the move by its
+  0-based ply INDEX in the move list, NOT by absolute number — the edit page
+  renumbers every variation from move 1 (a tactics puzzle shown as "25. Qc2!" in
+  review is `Qc2_w_1` on the edit page), while review keeps the source game's
+  numbering. The review `commentMove` list and `#interactivePGN` are the same
+  mainline in the same order, so index N ↔ index N; the driver still verifies
+  SAN+colour against the element id (`{san}_{w|b}_{n}`; ids KEEP `+`/`#` but
+  STRIP eval glyphs, hence `quickEditSan`). Colour comes from `turnFromLine`.
+  Success is detected when the POST lands the iframe on
+  `/mt1/explore/?edit=<oid>` (query form; a failed reload returns to the path
+  form). Message hub in background.js (`clo-quick-edit-run`/`-claim`/
+  `-submitting`/`-landing`/`-result`), one job at a time, job in
+  `chrome.storage.session`, 25 s hard timeout, hidden tab closed on finish. Edit
+  rights are per-COURSE: probed once per `bid` per session (one throwaway tab)
+  and cached; the pencil only appears when `canEdit` is true. Append convention
+  (`CONFIG.quickEdit.commentJoin`) and the exact stored wrapper (`( { … } )`)
+  are the one thing to confirm in a manual save test.
+  The popup MUST swallow `keydown`/`keypress`/`keyup` (bubble phase,
+  `stopPropagation`) — MoveTrainer2 binds single-key shortcuts ("n" = next
+  variation, space, …) on `document` and does NOT skip them while a text field
+  has focus, so without this, typing a comment drives the trainer. Bubble phase
+  is enough (verified live); the default action still inserts the character, and
+  Escape closes the popup.
 
 ## Verification (no automated tests)
 

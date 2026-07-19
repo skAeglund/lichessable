@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "LiChessable",
-  "version": "0.10.0",
-  "description": "Shows Lichess opening-database statistics alongside Chessable's move table on Explore and Analysis pages, follows the board when browsing a completed variation in review, adds Overstudy shortcuts to review sessions, and offers optional local Stockfish analysis.",
+  "version": "0.12.0",
+  "description": "Shows Lichess opening-database statistics alongside Chessable's move table on Explore and Analysis pages, follows the board when browsing a completed variation in review, adds Overstudy shortcuts to review sessions, lets you append a comment to a mainline move from the review browse panel or a variation page, and offers optional local Stockfish analysis.",
   "permissions": ["storage", "offscreen"],
   "host_permissions": ["https://explorer.lichess.org/*"],
   "content_security_policy": {
