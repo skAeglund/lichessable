@@ -5,7 +5,8 @@ Database" panel beneath Chessable's move table on Explore pages
 (`https://www.chessable.com/explore/<id>/`) and the Analysis board
 (`https://www.chessable.com/analysis/`, as sibling after the Opening
 Explorer container — always visible, since Chessable's explorer toggle is
-sometimes disabled)
+sometimes disabled — the panel fills the whole column right of the board and
+ADOPTS Chessable's own move tree into its top section)
 so course statistics can be compared against real Lichess games for the
 current position. Also adds an "Overstudy" widget to review sessions
 (`https://www.chessable.com/practice/…`): two buttons (current / previous
@@ -78,6 +79,34 @@ Currently working (v0.11.x).
   (`playMove`/`pressSquare`). Square ids (`e4-<uuid>`) are matched via
   `SELECTORS.boardSquare`. A plain `.click()` is NOT enough for Chessable's
   handlers — keep the full event sequence.
+- Analysis-page placement: the panel's DOM home stays the sibling slot after
+  `.nextMovesContainer` (inside `.row-analysis__col1`, which `mountPanel`
+  makes `position: relative`), but `positionAnalysisPanel()` then pins it as
+  an absolute overlay filling the WHOLE column: top 0, height = column height
+  minus `SELECTORS.analysisControls` (Chessable's toolbar stays uncovered),
+  floored at `CONFIG.analysis.panelMinHeight`, `auto` while collapsed.
+  Recomputed on the FEN poll, on resize and in `applyHidden`. The doubled-class
+  CSS rule `.clo-panel.clo-panel--analysis` is what beats the ≥1700px side-mode
+  media query — keep it doubled.
+- Analysis move tree: the panel does NOT re-implement it. `adoptAnalysisMoves()`
+  MOVES Chessable's own `SELECTORS.analysisMovesBox` node into the panel's
+  `.clo-moves` host, so click-to-navigate, both right-click menus and every
+  other handler keep working because it is still their element (verified live:
+  Vue survives the move and clicks still navigate). Rules: never insert
+  anything of ours into that subtree; `analysisMovesHome` remembers
+  `{node,parent,next}` in a VARIABLE (not via the panel — a detached panel must
+  not take their list with it); `releaseAnalysisMoves()` puts it back on
+  remount, on collapse ("Hide" = Chessable gets its UI back) and on `pagehide`;
+  re-adoption on the poll heals re-renders. Their `.movesContainer` does NOT
+  stretch as a flex item, and their stylesheet outranks ours on their own
+  element — so its height CANNOT come from lichessable.css.
+  `sizeAnalysisMovesHost()` sets host and box height INLINE to the moves'
+  natural height (measured by briefly setting `height: auto` and reading
+  `scrollHeight`), clamped between `CONFIG.analysis.movesMinHeight` and
+  `movesMaxFraction` of the panel; `releaseAnalysisMoves()` clears those
+  inline styles again. Their context menus compute their
+  own coordinates — if placement ever looks off, that math (not the adoption)
+  is the suspect.
 - Review mode (`/practice/…`) is MoveTrainer2 in the TOP document — no mt1
   iframe, no `#inputFEN`, none of the explore widgets. The review URL is
   CONSTANT for the whole session (`/practice/<course>/0/<listId>`) — the
@@ -102,7 +131,16 @@ Currently working (v0.11.x).
   initial position). Castling is a home-square heuristic and en passant is
   always "-" — accepted approximations. Mid-animation frames are skipped by
   requiring exactly one king per side. The panel mounts on `document.body`
-  (fixed, under the board/overstudy widget) and reuses ALL of the explore
+  (fixed; preferred spot is the gutter LEFT of the board, top-aligned, falling
+  back to under the board/overstudy widget when that gutter is narrower than
+  `CONFIG.review.panelMinWidth`). Chessable centers the whole trainer row
+  (board + comment column), so `centerReviewBoard()` puts a `translateX` on
+  `SELECTORS.trainerRow` to center the BOARD instead — transform only (never a
+  layout property), clamped so the comment column stays on screen. It runs on
+  every tick of the WHOLE trainer session, quiz included, so the board never
+  jumps when a variation completes; the applied offset is read back off the
+  element, so a React re-render just re-centers from zero. The panel reuses
+  ALL of the explore
   fetch/cache/render machinery via `IS_REVIEW` branches; move rows are not
   clickable in this mode.
 - A `/learn/…` session booting in a hidden document (= background overstudy

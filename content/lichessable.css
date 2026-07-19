@@ -320,12 +320,23 @@
    positioning further down takes the panel out of the column, anchored to
    the parent column (which mountPanel makes position: relative), and those
    later rules win. */
-.clo-panel--analysis {
+/* --- analysis: overlay inside the move card ---------------------------------
+   On the Analysis board the panel is not a block in the column's flow; it is
+   an overlay pinned inside the card right of the board, starting just under
+   the move list and filling the (usually empty) rest of the card. The panel's
+   DOM home is still the column (never inside Chessable's own card markup) —
+   the column is already position:relative, and top/left/right/height come from
+   inline styles recomputed on the poll (positionAnalysisPanel). The doubled
+   class outranks the wide-window side-mode media query below. */
+
+.clo-panel.clo-panel--analysis {
+  position: absolute;
+  z-index: 20;
+  margin-top: 0;
+  max-height: none;
   display: flex;
   flex-direction: column;
-  flex: 0 0 auto;
   min-height: 0;
-  max-height: 55%;
 }
 
 .clo-panel--analysis .clo-header {
@@ -333,8 +344,40 @@
 }
 
 .clo-panel--analysis .clo-body {
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* Host for Chessable's own move tree, moved in here by adoptAnalysisMoves().
+   Everything inside is THEIRS — their markup, their handlers, their styling;
+   we only give it a box to live in. position:relative because their two
+   right-click menus are absolutely-positioned descendants of the adopted node. */
+.clo-moves {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  border-bottom: 1px solid #3a3630;
+  /* Height is set inline by sizeAnalysisMovesHost(): the box hugs the moves
+     and stops growing at a fraction of the panel. */
+}
+
+.clo-moves[hidden] {
+  display: none;
+}
+
+/* The adopted node. Its height cannot be set from here — Chessable's own
+   rules for that element outrank ours — so sizeAnalysisMovesHost() sets it
+   inline; only the width behaviour is safe to state as CSS. */
+.clo-moves > * {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Scrollbar hidden (it still scrolls) — `scrollbar-width: none` is set inline
+   in adoptAnalysisMoves; this is the fallback for older Chrome. */
+.clo-moves > *::-webkit-scrollbar {
+  display: none;
 }
 
 /* --- side mode --------------------------------------------------------------
@@ -396,8 +439,9 @@
 
 /* --- review-mode panel ------------------------------------------------------
    In the trainer's post-completion browse state the panel mounts on
-   document.body and is fixed-positioned beneath the board; left/top/width/
-   max-height are inline styles recomputed every tick (positionReviewPanel).
+   document.body and is fixed-positioned in the gutter left of the board (or
+   beneath it when that gutter is too narrow); left/top/width/max-height are
+   inline styles recomputed every tick (positionReviewPanel).
    The doubled class selector outranks the wide-window media query above,
    which would otherwise turn this into an absolutely-positioned sidebar. */
 

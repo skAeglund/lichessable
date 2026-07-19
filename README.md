@@ -8,10 +8,15 @@ position. On wide windows (≥ 1700px) the panel occupies the empty space to the
 right of Chessable's content column; on narrower windows it falls back to
 sitting beneath Chessable's move table.
 
-On the Analysis board the panel sits beneath Chessable's notation/explorer
-area and is always visible — deliberately independent of the **Toggle Opening
-Explorer** toolbar button, which Chessable disables in some entry states
-(e.g. opening the page via a `?fen=` link).
+On the Analysis board the panel takes over the whole column to the right of
+the board (Chessable's toolbar underneath stays where it is). Chessable's own
+move tree is moved *into* the panel — the top section of it is literally their
+move list element, so clicking moves, the right-click menus and everything
+else behave exactly as before; the Lichess data and engine lines fill the rest.
+Collapsing the panel with **Hide** hands the move tree back to Chessable's own
+card. The panel is always visible — deliberately
+independent of the **Toggle Opening Explorer** toolbar button, which Chessable
+disables in some entry states (e.g. opening the page via a `?fen=` link).
 
 The same panel also appears in **review and learn sessions** once a variation
 is **completed** and the trainer enters its browse state (stepping through the
@@ -20,7 +25,13 @@ mainline moves, clickable subvariation moves, the initial-position dot, and
 the prev/next buttons all included. It never shows during an active quiz, so
 it cannot spoil an answer. Because the trainer has no FEN field, the position
 is reconstructed from the DOM (see Architecture notes); the panel is
-fixed-positioned beneath the board, below the Overstudy widget.
+fixed-positioned in the empty gutter to the left of the board (falling back to
+below the board, under the Overstudy widget, on narrow windows). Throughout a
+review/learn session — quiz included, not just the browse state — the trainer
+row is nudged sideways so the **board** rather than Chessable's board+comments
+block sits horizontally centered, so the board never shifts as a variation
+completes. The nudge is a pure CSS transform; Chessable's own layout is
+untouched.
 
 It also adds an **Overstudy widget** to review sessions
 (`https://www.chessable.com/practice/…`): a small floating card centered
@@ -138,7 +149,11 @@ lichessable/
 - **Review-mode panel** — in the trainer's post-completion browse state
   (detected by the `practiceProgress` "Completed" block plus the
   `commentMove` move list) the panel mounts on `document.body`,
-  fixed-positioned beneath the board (below the overstudy widget), and the
+  fixed-positioned in the gutter left of the board — or beneath it (below the
+  overstudy widget) when that gutter is narrower than
+  `CONFIG.review.panelMinWidth` — while `centerReviewBoard()` (independent of
+  the panel: it runs for the whole session) translates `.row-practice` so the
+  board itself is viewport-centered, and the
   same 500 ms tick doubles as its watchdog. With no `#inputFEN` in the top
   document, the FEN is rebuilt from the DOM: piece placement from the board
   squares' `[data-piece]` divs, side to move + move number by parsing the SAN
@@ -316,10 +331,9 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
   the position changes (no retry loop, to avoid hammering the API). A 429 is
   the exception: it retries once automatically after the ~61 s cooldown.
 - On Explore the panel lives inside Chessable's `.nextMovesContainer` in the
-  DOM; on Analysis it is that container's next sibling (see below). The side
-  placement is pure CSS (absolute positioning against the container — or, on
-  Analysis, its parent column — which `mountPanel` makes `position:
-  relative`). Chessable centers a 940px
+  DOM; on Analysis it is that container's next sibling (see below). On Explore
+  the side placement is pure CSS (absolute positioning against the container,
+  which `mountPanel` makes `position: relative`). Chessable centers a 940px
   content block, so the side-mode geometry (`50vw ± …` in the media query) is
   derived from that width — if Chessable changes their column width, those two
   CSS constants are the thing to retune.
@@ -329,7 +343,14 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
   while the Opening Explorer toggle is active — and that toggle is disabled
   in some entry states (e.g. `?fen=` deep links). The panel therefore mounts
   as the container's next sibling in the fixed-height column and is always
-  visible. Below the side-mode breakpoint the panel (`.clo-panel--analysis`)
-  caps itself at ~55% of that column and scrolls internally; Chessable's own
-  flexed panels (notation view / move table) shrink to make room.
+  visible. From there `positionAnalysisPanel()` pins it (absolute, against
+  that column — `mountPanel` makes it `position: relative`) over the full
+  column height minus Chessable's toolbar row, recomputed on the 500 ms poll
+  and on resize.
+- The move tree inside the panel is not a copy: `adoptAnalysisMoves()` moves
+  Chessable's own `.movesContainer` element into the panel's `.clo-moves`
+  host, so every handler of theirs (click-to-navigate, both right-click
+  menus, promote/delete branch) keeps working untouched. The node is put back
+  where it came from whenever the panel is re-mounted, collapsed via **Hide**,
+  or the page is left, and re-adopted on the poll if their app re-renders.
 - All class names Chessable-side are treated as fragile; see `SELECTORS`.

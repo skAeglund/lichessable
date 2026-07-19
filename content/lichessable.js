@@ -46,6 +46,13 @@
     movesTbody:     '#nextMovesBit',        // <tbody> of Chessable's own move table
     movesTableWrap: '.nextMovesTable',      // DIV directly wrapping that table
     movesContainer: '.nextMovesContainer',  // DIV we inject the panel into (right after movesTableWrap)
+    // Analysis board only: the card right of the board, the move list inside
+    // it, and the toolbar under it. The panel covers the card (see
+    // positionAnalysisPanel) and ADOPTS the move list into itself
+    // (adoptAnalysisMoves) — Chessable's own element, handlers and all.
+    analysisCard:     '.analysis-container',      // card holding the move list, behind the panel
+    analysisMovesBox: '.movesContainer',          // scroll box wrapping the move tree — the adopted node
+    analysisControls: '.edit-controls-container', // toolbar under the card; stays uncovered
     board:          '.chessboard-63f37',    // chessboard.js container — scopes the square lookups below
     boardSquare:    '[id^="%s-"]',          // square lookup template; %s = algebraic name ("e4") — squares carry ids like "e4-<uuid>"
 
@@ -53,6 +60,7 @@
     trainerIconBtn:   '.board-footer__icon-btn', // footer icon buttons (hint, pause, …)
     trainerPauseIcon: '.fa-pause',               // icon inside the pause-timer button
     trainerFooter:    '.board-footer',           // Exit / nav row under the board — widget sits below it
+    trainerRow:       '.row-practice',           // flex row holding board + comment column; shifted to re-center the board
     // Review drawer: an empty marker div sits INSIDE the active variation row;
     // the row itself carries the ids as plain attributes (+ name in `title`).
     reviewCurrentMarker: '#currentStudyingVariation',
@@ -128,11 +136,23 @@
       rateLimitCooldownMs: 61000, // Lichess asks for a full minute after a 429
     },
 
+    // --- Analysis-board overlay placement (positionAnalysisPanel) ----------
+    analysis: {
+      panelMinHeight: 260,      // never shrink the overlay below this, whatever the column does
+      movesMinHeight: 44,       // adopted move box: floor, so a one-move game still reads as a box
+      movesMaxFraction: 0.45,   // …and ceiling, as a fraction of the panel height (then it scrolls)
+    },
+
     // --- Review-mode overstudy widget (top document, section 9) ------------
     review: {
       pathPrefix: '/practice/', // review sessions live here (NOT an mt1 iframe)
       learnPrefix: '/learn/',   // Chessable's overstudy = the learn route for a learned variation
       pollMs: 500,              // URL poll; the player rewrites the URL via replaceState (no event)
+      // Review-panel placement (positionReviewPanel): preferred gutter left of
+      // the board, with the below-the-board layout as the narrow-window fallback.
+      panelGap: 12,             // breathing room from the board / viewport edge
+      panelMinWidth: 300,       // narrower gutter than this → fall back below the board
+      panelMaxWidth: 420,
     },
 
     // --- Optional local Stockfish (offscreen document, section 5b) ----------
@@ -332,9 +352,17 @@
   function startWatchdog() {
     state.fenPollTimer = setInterval(() => {
       healIfDetached();
+      if (IS_ANALYSIS && !state.hidden) adoptAnalysisMoves(); // re-adopt after a re-render
+      if (IS_ANALYSIS) positionAnalysisPanel();
       const fen = readFen();
       if (fen && fen !== state.fen) scheduleRefresh();
     }, CONFIG.fenPollMs);
+    if (IS_ANALYSIS) {
+      window.addEventListener('resize', positionAnalysisPanel);
+      // Leaving the page: hand the move list back, so nothing of Chessable's
+      // is left inside a panel that is about to disappear.
+      window.addEventListener('pagehide', releaseAnalysisMoves);
+    }
   }
 
   /**
@@ -550,6 +578,7 @@
   // ==========================================================================
 
   function mountPanel() {
+    releaseAnalysisMoves(); // never let a stale panel take Chessable's move list with it
     let container = null;
     if (!IS_REVIEW) {
       container = document.querySelector(SELECTORS.movesContainer);
@@ -588,6 +617,7 @@
         <button type="button" class="clo-engine-toggle" aria-pressed="false">Engine</button>
         <button type="button" class="clo-toggle" aria-expanded="true">Hide</button>
       </div>
+      <div class="clo-moves" hidden></div>
       <div class="clo-body">
         <div class="clo-engine" hidden>
           <div class="clo-engine-head">
@@ -637,6 +667,7 @@
     state.panel = panel;
     state.ui = {
       body:       panel.querySelector('.clo-body'),
+      movesHost:  panel.querySelector('.clo-moves'),
       toggle:     panel.querySelector('.clo-toggle'),
       stubBadge:  panel.querySelector('.clo-stub-badge'),
       opening:    panel.querySelector('.clo-opening'),
@@ -664,6 +695,133 @@
     state.ui.tbody.addEventListener('click', onMoveRowClick);
     applyHidden();
     applyEngineEnabled(); // restore the engine section state on (re)mount
+    if (IS_ANALYSIS) {
+      adoptAnalysisMoves();
+      positionAnalysisPanel();
+    }
+  }
+
+  // --- analysis: adopting Chessable's move tree ------------------------------
+  //
+  // The panel covers the whole card right of the board, so the move tree has to
+  // live INSIDE it. Rather than mirroring the tree (and reimplementing click-to-
+  // navigate, the two right-click menus, promote/delete branch, …), we move
+  // Chessable's own `.movesContainer` element into the panel: it keeps every
+  // handler it had, because it IS their element. Their two right-click menus
+  // are descendants of that node and travel with it (the host is
+  // position:relative so any absolutely-positioned one still resolves inside
+  // the move box rather than against the whole panel).
+  //
+  // Two rules make this safe: we never insert anything of ours INTO their
+  // subtree, and the node always goes home before the panel is torn down
+  // (mountPanel, pagehide). If their app re-renders and rebuilds the card, the
+  // fresh copy is simply adopted again on the next poll.
+
+  /** The adopted node and where it came from, so it can be put back exactly.
+   *  Held in a variable, not looked up through the panel: a panel that got
+   *  detached by a re-render must not take Chessable's move list with it. */
+  let analysisMovesHome = null; // { node, parent, next }
+
+  function adoptAnalysisMoves() {
+    const host = state.ui && state.ui.movesHost;
+    if (!IS_ANALYSIS || !host || !host.isConnected || !state.panel) return;
+    const column = state.panel.parentElement;
+    // Prefer a node that is still in Chessable's own card: after a re-render
+    // theirs is the live one and ours is a detached leftover.
+    const card = column && column.querySelector(SELECTORS.analysisCard);
+    const fresh = card && card.querySelector(SELECTORS.analysisMovesBox);
+    const adopted = host.firstElementChild;
+    if (!fresh) {
+      host.hidden = !adopted; // nothing new to take; keep what we already hold
+      return;
+    }
+    if (fresh === adopted) return; // already ours — the common case
+    if (adopted) adopted.remove(); // stale duplicate left behind by a re-render
+    analysisMovesHome = { node: fresh, parent: fresh.parentElement, next: fresh.nextElementSibling };
+    // Their box is overflow:scroll, so the scrollbar gutter is always drawn.
+    // Hidden inline (their stylesheet outranks ours on their element); the
+    // ::-webkit-scrollbar rule in lichessable.css is the fallback for Chrome
+    // versions without scrollbar-width. Scrolling itself is unaffected.
+    fresh.style.scrollbarWidth = 'none';
+    host.appendChild(fresh);
+    host.hidden = false;
+    log('adopted Chessable\'s move list into the panel');
+  }
+
+  /**
+   * Size the moves box to its content, between a floor and a fraction of the
+   * panel — a two-move game should not leave a hole above the Lichess data,
+   * and a long tree should not push it off screen (the box scrolls instead).
+   *
+   * Our CSS pins the box's height, which also makes its scrollHeight useless
+   * as a "how tall do the moves want to be" answer — so the natural height is
+   * measured by briefly restoring `height: auto`. That is one synchronous
+   * reflow of a small subtree per poll, and unlike measuring the move tree
+   * itself it needs no assumptions about their padding, leading or wrapping.
+   */
+  function sizeAnalysisMovesHost() {
+    const host = state.ui && state.ui.movesHost;
+    const box = host && !host.hidden && host.firstElementChild;
+    if (!box || !state.panel) return;
+    const panelHeight = state.panel.getBoundingClientRect().height;
+    if (!panelHeight) return;
+    box.style.height = 'auto';
+    const natural = box.scrollHeight + 1; // +1: sub-pixel rounding, else it scrolls by a hair
+    const max = Math.round(panelHeight * CONFIG.analysis.movesMaxFraction);
+    const height = Math.max(CONFIG.analysis.movesMinHeight, Math.min(natural, max));
+    host.style.height = height + 'px';
+    // Inline, not from our stylesheet: Chessable's own rules for this element
+    // outrank ours, and it does not stretch as a flex item either — without
+    // this the box stays at its padding height and slices the moves in half.
+    box.style.boxSizing = 'border-box';
+    box.style.height = height + 'px';
+  }
+
+  /** Put the move tree back where Chessable expects it (idempotent). */
+  function releaseAnalysisMoves() {
+    const home = analysisMovesHome;
+    if (!home) return;
+    analysisMovesHome = null;
+    // Undo the inline sizing from sizeAnalysisMovesHost() — their node goes
+    // back exactly as it was found.
+    home.node.style.height = '';
+    home.node.style.boxSizing = '';
+    home.node.style.scrollbarWidth = '';
+    const parent = home.parent && home.parent.isConnected
+      ? home.parent
+      : document.querySelector(SELECTORS.analysisCard);
+    if (!parent) return; // card gone entirely — leave the node where it is
+    if (home.next && home.next.parentElement === parent) parent.insertBefore(home.node, home.next);
+    else parent.appendChild(home.node);
+  }
+
+  /**
+   * Analysis board: the panel fills the whole column right of the board, from
+   * its top down to Chessable's toolbar (which stays uncovered and usable) —
+   * move tree at the top, Lichess/engine data below. It stays a child of the
+   * column (its DOM home from mountPanel, which also makes the column a
+   * positioning context), so the card behind it is only measured, never
+   * restyled; with the move tree adopted away that card collapses, which is
+   * why the height comes from the COLUMN minus the toolbar, not from the card.
+   * Recomputed on the 500 ms poll and on resize.
+   */
+  function positionAnalysisPanel() {
+    const panel = state.panel;
+    if (!IS_ANALYSIS || !panel || !panel.isConnected) return;
+    const column = panel.parentElement;
+    if (!column) return;
+    const columnRect = column.getBoundingClientRect();
+    if (!columnRect.height) return;
+    const controls = column.querySelector(SELECTORS.analysisControls);
+    const controlsHeight = controls ? controls.getBoundingClientRect().height : 0;
+    const height = Math.max(CONFIG.analysis.panelMinHeight, columnRect.height - controlsHeight);
+    panel.style.left = '0px';
+    panel.style.right = '0px';
+    panel.style.width = 'auto';
+    panel.style.top = '0px';
+    // Collapsed ("Hide") the panel is just its header — let it shrink to that.
+    panel.style.height = state.hidden ? 'auto' : Math.round(height) + 'px';
+    sizeAnalysisMovesHost(); // depends on the height just set
   }
 
   // --- click-to-play ---------------------------------------------------------
@@ -731,6 +889,17 @@
     state.ui.body.hidden = state.hidden;
     state.ui.toggle.textContent = state.hidden ? 'Show' : 'Hide';
     state.ui.toggle.setAttribute('aria-expanded', String(!state.hidden));
+    if (IS_ANALYSIS) {
+      // Collapsing gives Chessable its own UI back: the move list returns to
+      // the card, and the panel shrinks to its header.
+      if (state.hidden) {
+        releaseAnalysisMoves();
+        state.ui.movesHost.hidden = true;
+      } else {
+        adoptAnalysisMoves();
+      }
+      positionAnalysisPanel();
+    }
   }
 
   /** Loading: if data is already on screen, just dim it; otherwise show text. */
@@ -1324,6 +1493,7 @@
     chrome.runtime.onMessage.addListener(onEngineMessage);
     document.addEventListener('visibilitychange', onVisibilityChange);
     setInterval(reviewPanelTick, CONFIG.review.pollMs);
+    window.addEventListener('resize', centerReviewBoard); // also matters mid-quiz, panel hidden
     window.addEventListener('resize', positionReviewPanel);
     window.addEventListener('scroll', positionReviewPanel, true);
     reviewPanelTick();
@@ -1331,6 +1501,9 @@
   }
 
   function reviewPanelTick() {
+    // Independent of the panel: the board stays centered for the WHOLE trainer
+    // session, so it never jumps when a variation completes.
+    centerReviewBoard();
     if (!reviewBrowseReady()) {
       if (state.panel) state.panel.hidden = true;
       state.fen = null; // the next completed variation starts with a fresh fetch
@@ -1358,8 +1531,12 @@
   }
 
   /**
-   * Anchors the panel beneath the board, below the overstudy widget (or the
-   * Exit/nav footer when the widget is hidden), matching the board's width.
+   * Anchors the panel in the empty gutter LEFT of the board, top-aligned with
+   * it, whenever that gutter is wide enough (CONFIG.review.panelMinWidth plus
+   * margins); otherwise falls back to the original spot beneath the board,
+   * below the overstudy widget (or the Exit/nav footer when the widget is
+   * hidden). The gutter also holds Chessable's collapsible variation drawer —
+   * when that is open the panel simply overlays it (z-index 99999).
    * position:fixed + getBoundingClientRect are both viewport-relative, so the
    * coordinates line up directly; the 500 ms tick plus resize/scroll listeners
    * keep them fresh. Remaining viewport height caps the panel; the body
@@ -1367,10 +1544,22 @@
    */
   function positionReviewPanel() {
     if (!IS_REVIEW || !state.panel || state.panel.hidden) return;
+    centerReviewBoard(); // keep the shift fresh on resize/scroll before measuring
     const board = getReviewBoard();
     if (!board) return;
     const rect = board.getBoundingClientRect();
     if (!rect.width) return;
+    const gap = CONFIG.review.panelGap;
+    const gutter = rect.left - gap * 2; // usable width left of the board
+    if (gutter >= CONFIG.review.panelMinWidth) {
+      const width = Math.round(Math.min(gutter, CONFIG.review.panelMaxWidth));
+      const top = Math.round(Math.max(gap, rect.top));
+      state.panel.style.left = Math.round(rect.left - gap - width) + 'px';
+      state.panel.style.top = top + 'px';
+      state.panel.style.width = width + 'px';
+      state.panel.style.maxHeight = Math.max(120, window.innerHeight - top - 12) + 'px';
+      return;
+    }
     let anchorBottom = rect.bottom;
     const footer = document.querySelector(SELECTORS.trainerFooter);
     const footerRect = footer ? footer.getBoundingClientRect() : null;
@@ -1384,6 +1573,48 @@
     state.panel.style.top = top + 'px';
     state.panel.style.width = width + 'px';
     state.panel.style.maxHeight = Math.max(120, window.innerHeight - top - 12) + 'px';
+  }
+
+  /**
+   * Chessable centers the WHOLE trainer row (board + comment column), which
+   * leaves the board itself sitting left of the viewport centre. With our panel
+   * in the left gutter the composition reads better with the BOARD centered, so
+   * the row gets a translateX — a transform, never a layout property, so
+   * Chessable's own sizing is untouched and one assignment fully reverts it.
+   * Rects already include the current shift, hence the incremental `delta`;
+   * because transforms don't reflow, this converges in a single tick. The
+   * applied offset is read back off the element (not remembered in a variable)
+   * so a React re-render that replaces the row simply re-centres from zero.
+   *
+   * Applied for the whole trainer session, quiz included — the target (board
+   * centre = viewport centre) is state-independent, so completing a variation
+   * never makes the board jump.
+   */
+  function centerReviewBoard() {
+    const row = document.querySelector(SELECTORS.trainerRow);
+    const board = getReviewBoard();
+    if (!row || !board) return; // not a trainer page (any more) — nothing to undo
+    const current = readRowShift(row);
+    const boardRect = board.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const gap = CONFIG.review.panelGap;
+    if (!boardRect.width || !rowRect.width) return;
+    let next;
+    if (rowRect.width > window.innerWidth - gap * 2) {
+      next = 0; // no slack to play with — leave Chessable's layout alone
+    } else {
+      let delta = window.innerWidth / 2 - (boardRect.left + boardRect.width / 2);
+      delta = Math.min(delta, window.innerWidth - gap - rowRect.right); // keep the comment column on screen
+      delta = Math.max(delta, gap - rowRect.left);
+      next = Math.round(current + delta);
+    }
+    if (next === current) return;
+    row.style.transform = next ? `translateX(${next}px)` : '';
+  }
+
+  function readRowShift(row) {
+    const m = /translateX\((-?[\d.]+)px\)/.exec(row.style.transform || '');
+    return m ? Math.round(parseFloat(m[1])) : 0;
   }
 
   /** Full FEN from the trainer DOM, or null while the board is mid-render. */
