@@ -16,8 +16,11 @@ Currently working (v0.9.x).
 
 ## Structure
 
-- `manifest.json` — MV3. Permissions: `storage` + host permission for
-  `explorer.lichess.org`. Nothing else, keep it that way.
+- `manifest.json` — MV3. Permissions: `storage` + `offscreen` + host
+  permission for `explorer.lichess.org`. Nothing else, keep it that way.
+  The CSP (`wasm-unsafe-eval`) and COOP/COEP keys exist solely so the
+  offscreen document can compile WASM and use SharedArrayBuffer (engine
+  threads) — do not remove them.
 - `content/lichessable.js` — the only content script. The panel runs inside
   Chessable's same-origin mt1 iframe (`all_frames: true`; other iframes exit
   unless `location.pathname` starts with `/mt1/explore/` or
@@ -25,9 +28,16 @@ Currently working (v0.9.x).
   overstudy watcher (chessable.com navigates SPA-style, so `/practice/…` can
   be reached from any page without a load).
 - `content/lichessable.css` — panel styles, all namespaced `.clo-`.
-- `background.js` — service worker; does the authenticated explorer fetch and
-  opens overstudy tabs. Message types: `clo-fetch-explorer`,
-  `clo-open-options`, `clo-open-overstudy`.
+- `background.js` — service worker; does the authenticated explorer fetch,
+  opens overstudy tabs, and is the engine message hub. Message types:
+  `clo-fetch-explorer`, `clo-open-options`, `clo-open-overstudy`, and the
+  `clo-engine-*` family (all engine messages carry `target: 'sw'|'offscreen'`).
+- `engine/` — optional local Stockfish (panel-header "Engine" toggle, off by
+  default). `offscreen.html` + `engine.js` (UCI controller, sizing constants
+  at top) + `san.js` (pure UCI→SAN converter, node-testable, no `chrome.*`).
+  `engine/vendor/` holds the Stockfish 18 multi-threaded WASM build
+  (`stockfish-18.js` + `.wasm`) — gitignored (108 MB), downloaded manually
+  per README.
 - `options/` — Lichess API token entry + Test button.
 - `README.md` — living documentation; update it alongside functional changes.
 
@@ -96,6 +106,19 @@ Currently working (v0.9.x).
   tab) auto-pauses its timer by clicking Chessable's pause control
   (`SELECTORS.trainerIconBtn` + `trainerPauseIcon`); backs off if the tab is
   focused first. Resume = Chessable's own play overlay.
+- Engine (section 5b in lichessable.js): Stockfish runs in the offscreen
+  document; the SERVICE WORKER is the mandatory hub — an offscreen document's
+  `runtime.sendMessage` never reaches content scripts, so replies are relayed
+  via `chrome.tabs.sendMessage(tabId, msg, {frameId})` using a target stored
+  in `chrome.storage.session` (survives SW idle-restarts). Latest-position-
+  wins: a new analyze during a search sends `stop` and DISCARDS all engine
+  output until the `bestmove` fence (UCI info lines carry no request id —
+  never render across that fence). Content side drops updates whose `fen` ≠
+  `state.fen`. `syncEngine()` is the single start/stop decision point; the
+  engine stops on hidden tab / collapsed panel / leaving review browse state,
+  and toggling OFF closes the offscreen document (frees ~300 MB; it also
+  self-closes after 5 idle minutes). Scores are normalized to White's
+  perspective in engine.js, not in the panel.
 
 ## Verification (no automated tests)
 
@@ -103,8 +126,14 @@ Currently working (v0.9.x).
 node --check content/lichessable.js
 node --check background.js
 node --check options/options.js
+node --check engine/engine.js
+node --check engine/san.js
 python3 -c "import json; json.load(open('manifest.json'))"
 ```
+
+`engine/san.js` is pure and requireable from node — spot-check SAN output
+(castling, disambiguation, promotion, en passant, mate `#`) directly when
+touching it.
 
 Manual test loop (user does this; end implementation turns by reminding them):
 reload the extension at `chrome://extensions` (↻ on the card), then reload the

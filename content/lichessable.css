@@ -192,6 +192,85 @@
   color: #949494;
 }
 
+/* --- optional engine section (section 5b in lichessable.js) ---------------- */
+
+/* Header toggle: same bare-text look as .clo-toggle; green when active,
+   matching the lichess accent used on .clo-settings-btn. */
+.clo-engine-toggle {
+  border: none;
+  background: transparent;
+  color: #949494;
+  padding: 2px 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-engine-toggle:hover {
+  color: #fff;
+}
+
+.clo-engine-toggle[aria-pressed="true"] {
+  color: #a5c96a;
+}
+
+/* Eval + depth + 3 PV rows, boxed off from the database content below. */
+.clo-engine {
+  border-bottom: 1px solid #3a3630;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+}
+
+/* Dims like .clo-busy on .clo-body: old lines stay visible while the engine
+   switches to a new position. */
+.clo-engine.clo-busy {
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+}
+
+.clo-engine-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.clo-engine-eval {
+  font-weight: 600;
+  font-size: 15px;
+  color: #fff;
+}
+
+.clo-engine-depth,
+.clo-engine-note {
+  font-size: 11px;
+  color: #949494;
+}
+
+.clo-engine-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.clo-line-eval {
+  flex: 0 0 3.2em;
+  text-align: right;
+  white-space: nowrap;
+  color: #bababa;
+}
+
+/* Long PVs truncate instead of wrapping; the full line is in the tooltip. */
+.clo-line-moves {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #949494;
+}
+
 /* --- W/D/B percentage bars (mirrors lichess's own explorer bars) ----------- */
 
 .clo-bar {

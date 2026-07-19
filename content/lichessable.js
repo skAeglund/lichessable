@@ -109,6 +109,12 @@
       learnPrefix: '/learn/',   // Chessable's overstudy = the learn route for a learned variation
       pollMs: 500,              // URL poll; the player rewrites the URL via replaceState (no event)
     },
+
+    // --- Optional local Stockfish (offscreen document, section 5b) ----------
+    engine: {
+      enabledKey: 'cloEngineEnabled', // chrome.storage.local; off by default
+      pvCount: 3,                     // rendered rows; matches MULTIPV in engine/engine.js
+    },
   };
 
   const PANEL_ID = 'lichessable-panel';
@@ -151,6 +157,10 @@
     rateLimitTimer: 0,    // timer that retries the current position once the cooldown ends
     panel: null,          // our injected root element
     ui: null,             // cached refs to elements inside the panel
+    engineEnabled: false, // optional Stockfish analysis on? (persisted; section 5b)
+    engineFen: null,      // FEN last sent to the engine (dedup / stop bookkeeping)
+    lastEngineMsgAt: 0,   // last engine update/status received (silence diagnostics)
+    enginePingTimer: 0,   // pending silence check after an analyze
   };
 
   // ==========================================================================
@@ -165,6 +175,7 @@
       return;
     }
     state.hidden = await loadHiddenPref();
+    state.engineEnabled = await loadEnginePref();
     mountPanel();
     bindFenInput();
     observeMovesTable();
@@ -174,14 +185,26 @@
     // When a token is saved (or changed) in the options page, retry the
     // current position immediately — no page reload needed.
     chrome.storage.onChanged.addListener(onStorageChanged);
+    // Engine updates relayed by the service worker + battery guard (stop the
+    // search while this tab is in the background).
+    chrome.runtime.onMessage.addListener(onEngineMessage);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     log('initialised on', location.pathname);
   }
 
   function onStorageChanged(changes, area) {
-    if (area === 'local' && changes[CONFIG.lichess.tokenKey]) {
+    if (area !== 'local') return;
+    if (changes[CONFIG.lichess.tokenKey]) {
       log('Lichess token changed — retrying current position');
       state.fen = null; // forget the last position so the next tick refetches
       scheduleRefresh();
+    }
+    // Keeps the toggle in sync across tabs/modes (idempotent in the tab that
+    // flipped it — syncEngine dedups on state.engineFen).
+    if (changes[CONFIG.engine.enabledKey]) {
+      state.engineEnabled = Boolean(changes[CONFIG.engine.enabledKey].newValue);
+      applyEngineEnabled();
+      syncEngine();
     }
   }
 
@@ -298,6 +321,7 @@
     if (!fen) return;
     if (fen === state.fen) return; // tbody churn without an actual position change
     state.fen = fen;
+    syncEngine(); // before the cache short-circuit: engine analysis is per-position
 
     const seq = ++state.requestSeq;
     log('position:', fen);
@@ -513,9 +537,20 @@
       <div class="clo-header">
         <span class="clo-title">Lichess Database</span>
         <span class="clo-stub-badge" hidden>stub data</span>
+        <button type="button" class="clo-engine-toggle" aria-pressed="false">Engine</button>
         <button type="button" class="clo-toggle" aria-expanded="true">Hide</button>
       </div>
       <div class="clo-body">
+        <div class="clo-engine" hidden>
+          <div class="clo-engine-head">
+            <span class="clo-engine-eval"></span>
+            <span class="clo-engine-depth"></span>
+            <span class="clo-engine-note"></span>
+          </div>
+          <div class="clo-engine-line"><span class="clo-line-eval"></span><span class="clo-line-moves"></span></div>
+          <div class="clo-engine-line"><span class="clo-line-eval"></span><span class="clo-line-moves"></span></div>
+          <div class="clo-engine-line"><span class="clo-line-eval"></span><span class="clo-line-moves"></span></div>
+        </div>
         <div class="clo-opening" hidden></div>
         <div class="clo-summary" hidden>
           <span class="clo-total"></span>
@@ -563,13 +598,24 @@
       status:     panel.querySelector('.clo-status'),
       table:      panel.querySelector('.clo-table'),
       tbody:      panel.querySelector('.clo-table tbody'),
+      engine:       panel.querySelector('.clo-engine'),
+      engineToggle: panel.querySelector('.clo-engine-toggle'),
+      engineEval:   panel.querySelector('.clo-engine-eval'),
+      engineDepth:  panel.querySelector('.clo-engine-depth'),
+      engineNote:   panel.querySelector('.clo-engine-note'),
+      engineLines:  Array.from(panel.querySelectorAll('.clo-engine-line'), (row) => ({
+        evalEl:  row.querySelector('.clo-line-eval'),
+        movesEl: row.querySelector('.clo-line-moves'),
+      })),
     };
 
     state.ui.toggle.addEventListener('click', onToggle); // no inline handlers
+    state.ui.engineToggle.addEventListener('click', onEngineToggle);
     // One delegated listener instead of per-row handlers: rows are rebuilt on
     // every render, the tbody lives as long as the panel.
     state.ui.tbody.addEventListener('click', onMoveRowClick);
     applyHidden();
+    applyEngineEnabled(); // restore the engine section state on (re)mount
   }
 
   // --- click-to-play ---------------------------------------------------------
@@ -628,6 +674,7 @@
     state.hidden = !state.hidden;
     applyHidden();
     saveHiddenPref(state.hidden);
+    syncEngine(); // a collapsed panel stops the search (engine kept warm)
   }
 
   /** Collapses the body but keeps the header, so the panel can be re-shown. */
@@ -784,6 +831,153 @@
   }
 
   // ==========================================================================
+  // 5b) Optional engine client — Stockfish runs in the extension's offscreen
+  //     document; background.js is the message hub (an offscreen document's
+  //     sendMessage can never reach content scripts). Streamed updates arrive
+  //     via chrome.tabs.sendMessage targeted at exactly this frame. The
+  //     `msg.fen === state.fen` guard is the engine's staleness rule,
+  //     mirroring requestSeq for the explorer fetches.
+  // ==========================================================================
+
+  function engineSend(msg) {
+    try {
+      chrome.runtime.sendMessage(Object.assign({ target: 'sw' }, msg)).catch(() => {});
+    } catch (err) {
+      warn('engine message failed:', err);
+    }
+  }
+
+  /**
+   * Single decision point, called from every relevant event (position change,
+   * toggles, tab visibility, review browse state): analyze when the engine
+   * should be running for the current position, stop when it should not.
+   */
+  function syncEngine() {
+    const active = state.engineEnabled && !state.hidden && !document.hidden &&
+      Boolean(state.fen) && (!IS_REVIEW || (state.panel && !state.panel.hidden));
+    if (active && state.fen !== state.engineFen) {
+      state.engineFen = state.fen;
+      if (state.ui) state.ui.engine.classList.add('clo-busy'); // dim until fresh lines land
+      log('engine: sending analyze for', state.fen);
+      engineSend({ type: 'clo-engine-analyze', fen: state.fen });
+      pingEngineIfSilent();
+    } else if (!active && state.engineFen) {
+      state.engineFen = null;
+      log('engine: sending stop (enabled=' + state.engineEnabled + ' panelHidden=' + state.hidden +
+        ' docHidden=' + document.hidden + ' fen=' + Boolean(state.fen) + ')');
+      engineSend({ type: 'clo-engine-stop' });
+    }
+  }
+
+  function onEngineToggle() {
+    state.engineEnabled = !state.engineEnabled;
+    saveEnginePref(state.engineEnabled);
+    applyEngineEnabled();
+    if (state.engineEnabled) {
+      syncEngine();
+    } else {
+      // Full shutdown (not just stop): closing the offscreen document frees
+      // the engine's few hundred MB immediately.
+      state.engineFen = null;
+      engineSend({ type: 'clo-engine-shutdown' });
+    }
+  }
+
+  function applyEngineEnabled() {
+    const ui = state.ui;
+    if (!ui) return;
+    ui.engineToggle.setAttribute('aria-pressed', String(state.engineEnabled));
+    ui.engine.hidden = !state.engineEnabled;
+    if (state.engineEnabled) resetEngineDisplay('Starting engine…');
+  }
+
+  function resetEngineDisplay(note) {
+    const ui = state.ui;
+    if (!ui) return;
+    ui.engine.classList.remove('clo-busy');
+    ui.engineEval.textContent = '—';
+    ui.engineDepth.textContent = '';
+    ui.engineNote.textContent = note || '';
+    for (const row of ui.engineLines) {
+      row.evalEl.textContent = '';
+      row.movesEl.textContent = '';
+      row.movesEl.title = '';
+    }
+  }
+
+  function onVisibilityChange() {
+    log('engine: visibilitychange, hidden =', document.hidden);
+    syncEngine();
+  }
+
+  /**
+   * If nothing at all comes back within a few seconds of an analyze, ask the
+   * hub for its state and log it — the service worker's own console is hard
+   * to reach, so its failures would otherwise be invisible.
+   */
+  function pingEngineIfSilent() {
+    clearTimeout(state.enginePingTimer);
+    const sentAt = Date.now();
+    state.enginePingTimer = setTimeout(async () => {
+      if (state.lastEngineMsgAt > sentAt) return; // engine responded — all good
+      try {
+        const res = await chrome.runtime.sendMessage({ target: 'sw', type: 'clo-engine-ping' });
+        warn('engine silent after analyze; hub state:', JSON.stringify(res));
+      } catch (err) {
+        warn('engine ping failed:', err);
+      }
+    }, 3000);
+  }
+
+  function onEngineMessage(msg) {
+    if (!msg || !state.ui || !state.engineEnabled) return;
+    if (msg.type === 'clo-engine-update' || msg.type === 'clo-engine-status') {
+      state.lastEngineMsgAt = Date.now();
+    }
+    if (msg.type === 'clo-engine-status') {
+      if (msg.status === 'debug') { log('engine:', msg.detail); return; }
+      if (msg.status === 'loading') {
+        state.ui.engineNote.textContent = 'Loading engine…';
+      } else if (msg.status === 'ready') {
+        state.ui.engineNote.textContent = '';
+      } else if (msg.status === 'error') {
+        state.ui.engine.classList.remove('clo-busy');
+        warn('engine error:', msg.detail);
+        state.ui.engineNote.textContent = 'Engine error — see the offscreen console.';
+      }
+      return;
+    }
+    if (msg.type !== 'clo-engine-update') return;
+    if (msg.fen !== state.fen) return; // stale: the board has moved on
+    renderEngineUpdate(msg);
+  }
+
+  function renderEngineUpdate(msg) {
+    const ui = state.ui;
+    ui.engine.classList.remove('clo-busy');
+    ui.engineNote.textContent = '';
+    const pvs = Array.isArray(msg.pvs) ? msg.pvs : [];
+    const best = pvs.find((p) => p.multipv === 1);
+    ui.engineEval.textContent = best ? formatEval(best) : '—';
+    ui.engineDepth.textContent = msg.depth ? 'depth ' + msg.depth + (msg.done ? '' : '…') : '';
+    for (let i = 0; i < ui.engineLines.length; i++) {
+      const pv = pvs.find((p) => p.multipv === i + 1);
+      const row = ui.engineLines[i];
+      row.evalEl.textContent = pv ? formatEval(pv) : '';
+      row.movesEl.textContent = pv ? pv.san : '';
+      row.movesEl.title = pv ? pv.san : ''; // long PVs truncate; full line on hover
+    }
+  }
+
+  /** Scores arrive already normalized to White's perspective (engine.js). */
+  function formatEval(pv) {
+    if (typeof pv.mate === 'number') return '#' + pv.mate;
+    if (typeof pv.cp !== 'number') return '—';
+    const pawns = pv.cp / 100;
+    return (pawns >= 0 ? '+' : '') + pawns.toFixed(1);
+  }
+
+  // ==========================================================================
   // 7) Persistence (chrome.storage.local) — wrapped so a storage failure
   //    (e.g. extension reloaded underneath us) never breaks the panel.
   // ==========================================================================
@@ -806,6 +1000,25 @@
     }
   }
 
+  async function loadEnginePref() {
+    try {
+      const res = await chrome.storage.local.get(CONFIG.engine.enabledKey);
+      return Boolean(res[CONFIG.engine.enabledKey]);
+    } catch (err) {
+      warn('storage read failed:', err);
+      return false;
+    }
+  }
+
+  function saveEnginePref(value) {
+    try {
+      chrome.storage.local.set({ [CONFIG.engine.enabledKey]: value })
+        .catch((err) => warn('storage write failed:', err));
+    } catch (err) {
+      warn('storage unavailable:', err);
+    }
+  }
+
   // ==========================================================================
   // 8) Teardown — mostly for hygiene; the browser reclaims everything on a
   //    real unload, but this keeps SPA-style transitions leak-free.
@@ -815,6 +1028,9 @@
     clearTimeout(state.rateLimitTimer);
     clearInterval(state.fenPollTimer);
     chrome.storage.onChanged.removeListener(onStorageChanged);
+    chrome.runtime.onMessage.removeListener(onEngineMessage);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+    if (state.engineFen) { state.engineFen = null; engineSend({ type: 'clo-engine-stop' }); }
     if (state.tbodyObserver) state.tbodyObserver.disconnect();
   }
 
@@ -1055,7 +1271,10 @@
 
   async function initReviewPanel() {
     state.hidden = await loadHiddenPref();
+    state.engineEnabled = await loadEnginePref();
     chrome.storage.onChanged.addListener(onStorageChanged);
+    chrome.runtime.onMessage.addListener(onEngineMessage);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     setInterval(reviewPanelTick, CONFIG.review.pollMs);
     window.addEventListener('resize', positionReviewPanel);
     window.addEventListener('scroll', positionReviewPanel, true);
@@ -1067,6 +1286,7 @@
     if (!reviewBrowseReady()) {
       if (state.panel) state.panel.hidden = true;
       state.fen = null; // the next completed variation starts with a fresh fetch
+      syncEngine();     // leaving the browse state stops any running search
       return;
     }
     if (!state.panel || !state.panel.isConnected) mountPanel(); // idempotent self-heal

@@ -37,7 +37,11 @@ would otherwise start running unseen, a learn session that boots in a
 own pause control once it renders); switch to the tab and click the play
 overlay to start.
 
-Plain JS/HTML/CSS. No bundler, no npm, no frameworks, no remote code.
+The panel can also run **optional local Stockfish analysis** (eval + top 3
+lines in SAN) for the current position — see "Local engine (optional)" below.
+
+Plain JS/HTML/CSS. No bundler, no npm, no frameworks, no remote code. (The
+optional engine is a vendored Stockfish WASM build, downloaded manually.)
 
 ## Folder structure
 
@@ -45,9 +49,15 @@ Plain JS/HTML/CSS. No bundler, no npm, no frameworks, no remote code.
 lichessable/
 ├── manifest.json            Manifest V3 definition
 ├── background.js            Service worker: authenticated explorer fetches
+│                            + engine message hub
 ├── content/
 │   ├── lichessable.js       Panel logic (mt1 iframe) + review overstudy widget (top document)
 │   └── lichessable.css      Panel styling (namespaced under .clo-)
+├── engine/
+│   ├── offscreen.html       Offscreen document hosting the engine
+│   ├── engine.js            UCI controller (worker lifecycle, MultiPV parsing)
+│   ├── san.js               Self-contained UCI→SAN converter
+│   └── vendor/              Stockfish WASM build — NOT in git; see below
 ├── options/
 │   ├── options.html         Settings page: Lichess API token entry + test
 │   ├── options.js
@@ -166,6 +176,45 @@ lichessable/
   re-open it); the choice persists in `chrome.storage.local` under
   `lichessableHidden`.
 
+## Local engine (optional)
+
+An **Engine** button in the panel header (all three modes: Explore, Analysis,
+review browse) toggles local Stockfish analysis of the current position:
+evaluation, search depth, and the top 3 lines (MultiPV 3) in SAN. Off by
+default; the choice persists across sessions and tabs.
+
+**Setup (one-time):** the engine binary is not in the repo (108 MB). From
+<https://github.com/nmrugg/stockfish.js/releases/tag/v18.0.0> download the two
+multi-threaded NNUE build files — the pair with **no** `lite`/`single`/`asm`
+suffix:
+
+- `stockfish-18.js`
+- `stockfish-18.wasm`
+
+and put both in `engine/vendor/` (keep the filenames — the loader derives the
+`.wasm` path from its own name). Reload the extension.
+
+**How it runs:** the engine loads in an MV3 *offscreen document*
+(`engine/offscreen.html`) — the only extension context that can both run WASM
+(`wasm-unsafe-eval` CSP) and get `SharedArrayBuffer` for the multi-threaded
+pthread build (via the manifest's COOP/COEP keys). The service worker is the
+message hub: content scripts request analysis (`clo-engine-analyze`), the
+offscreen engine streams throttled updates back, and the worker relays them to
+the requesting tab/frame (offscreen documents cannot message content scripts
+directly). Searches run `go depth 24` with 4 threads / 64 MB hash (constants
+at the top of `engine/engine.js`), so the CPUs go idle once a position is
+fully searched. Scores are always shown from White's perspective.
+
+**Resource notes:** expect roughly 250–400 MB of memory while the engine is
+enabled (check Chrome's task manager, Shift+Esc). Turning the toggle off
+closes the offscreen document and frees it immediately; an idle engine also
+self-closes after 5 minutes. The search stops automatically when the tab is
+hidden, the panel is collapsed, or a review session leaves its browse state.
+If the multi-threaded build fails to start (a clear `[CLO]` error appears in
+the offscreen console: `chrome://extensions` → LiChessable → *Inspect views:
+offscreen.html*), drop in the `-single` build pair from the same release as a
+fallback — same protocol, one thread, no SharedArrayBuffer requirement.
+
 ## Data source (Lichess opening explorer)
 
 The extension calls `https://explorer.lichess.org/lichess` — note **.org**:
@@ -209,8 +258,14 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
 
 ## Permissions rationale
 
-- `storage` — remembers the show/hide preference and holds the Lichess API
-  token.
+- `storage` — remembers the show/hide and engine preferences and holds the
+  Lichess API token; `storage.session` carries the engine's reply routing
+  across service-worker restarts.
+- `offscreen` — hosts the optional Stockfish engine in an offscreen document
+  (the service worker cannot run a persistent WASM engine; content scripts
+  are subject to the page's CSP). The manifest's `wasm-unsafe-eval` CSP and
+  COOP/COEP keys exist solely for this: they enable WASM compilation and
+  `SharedArrayBuffer` (multi-threading) on the extension's own pages.
 - `host_permissions` for `https://explorer.lichess.org/*` — lets the
   background service worker (and the options page's Test button) call the
   explorer with the Authorization header, exempt from CORS. This became
