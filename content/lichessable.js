@@ -2400,6 +2400,8 @@
       lastPointerAt: 0,        // last TRUSTED pointer down (grab) or drop
       pointerDownOnBoard: false, // a trusted drag started on the board and is in flight
       injectClassTimer: 0,     // pending removal of the html.clo-injecting gate
+      contextDead: false,      // orphaned by an extension reload — see noteDeadContext
+      pollTimer: 0,
       observer: null,
       observedBoard: null,
       rafPending: false,
@@ -2625,6 +2627,7 @@
         }
         log('auto-play: loaded', Object.keys(ap.record).length, 'proven positions for course', bid);
       } catch (err) {
+        if (noteDeadContext(err)) return;
         warn('auto-play: could not read the session record:', err);
       }
     }
@@ -2651,8 +2654,32 @@
         log('auto-play: record saved —', Object.keys(ap.record).length,
           'positions for course', ap.recordBid);
       } catch (err) {
+        if (noteDeadContext(err)) return;
         warn('auto-play: could not save the session record:', err);
       }
+    }
+
+    /**
+     * True when `err` is the "Extension context invalidated" that every
+     * chrome.* call throws in a content script orphaned by an extension
+     * reload. Such a script keeps running on the page with a record it can
+     * neither refresh nor save — and could still drive synthetic drags off it
+     * — so it stands down instead: auto-play off, pollers stopped, one clear
+     * line saying what to do. Everything else about the page keeps working;
+     * only this module retires.
+     */
+    function noteDeadContext(err) {
+      if (!/Extension context invalidated/i.test(String((err && err.message) || err))) return false;
+      if (ap.contextDead) return true;
+      ap.contextDead = true;
+      ap.enabled = false;
+      stopReplaying();
+      if (ap.observer) { ap.observer.disconnect(); ap.observer = null; }
+      clearInterval(ap.pollTimer);
+      clearTimeout(ap.saveTimer);
+      warn('auto-play: the extension was reloaded — this tab is running an orphaned ' +
+        'content script and auto-play has stood down. Reload the page to resume.');
+      return true;
     }
 
     /**
@@ -2879,6 +2906,7 @@
     }
 
     function processFrame() {
+      if (ap.contextDead) return;
       if (!location.pathname.startsWith(CONFIG.review.pathPrefix)) return;
       syncVariation();
       const vs = ap.vs;
@@ -3034,7 +3062,7 @@
      */
     function evaluateAutoPlay() {
       const vs = ap.vs;
-      if (!ap.enabled || document.hidden) return;
+      if (!ap.enabled || ap.contextDead || document.hidden) return;
       if (!vs.oid || !vs.bid || vs.suspended || vs.cancelled) return;
       if (vs.manualHold) { logHandback('manual hold on this position'); return; }
       if (vs.handedOver) { logHandback('user has taken over this variation'); return; }
@@ -3132,7 +3160,11 @@
       const toEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', entry.uci.slice(2, 4)));
       if (!fromEl || !toEl) { vs.manualHold = true; return; }
       log('auto-play: playing', entry.uci);
-      vs.injected = { uci: entry.uci, at: Date.now() };
+      // beforeKey is what the verify timer compares against: the placement the
+      // drag is supposed to change. Observing our own move is the normal way
+      // the injection gets closed out, but it is not the only evidence that it
+      // landed — see the timer below.
+      vs.injected = { uci: entry.uci, at: Date.now(), beforeKey: vs.lastKey };
       // Gate for the CSS that hides Chessable's legal-move markers during the
       // drag; removed shortly AFTER the mouseup so their own class cleanup
       // happens under cover.
@@ -3153,10 +3185,24 @@
       clearTimeout(vs.verifyTimer);
       vs.verifyTimer = setTimeout(() => {
         if (ap.vs !== vs || !vs.injected) return;
-        // The board never accepted the drag (text gate, markup change, …):
-        // fail safe to manual play for this position.
-        warn('auto-play: injected move did not land — handing back');
+        // Not having OBSERVED our move is not proof it failed. The tracker can
+        // lose the thread across an injection — the trainer bursting several
+        // plies (Key-Moves prefix, a variation resuming mid-line) re-anchors us
+        // and clears the history our own move would have been matched against —
+        // and then no 'injected' frame is ever attributed, though the move went
+        // through perfectly. Ask the board instead: only a placement still
+        // identical to the one the drag was meant to change means it was
+        // refused (text gate, markup change), and only that may hand back.
+        const snap = readBoardSnapshot();
+        const stillThere = snap && placementKey(snap) === vs.injected.beforeKey;
         vs.injected = null;
+        if (!stillThere) {
+          log('auto-play: injected move landed but was not tracked — continuing');
+          setStatus('');
+          evaluateAutoPlay(); // rejoin the chain from wherever we are now
+          return;
+        }
+        warn('auto-play: injected move did not land — handing back');
         vs.manualHold = true;
         setStatus('');
       }, C.injectVerifyMs);
@@ -3317,6 +3363,7 @@
     }
 
     function tick() {
+      if (ap.contextDead) return;
       if (!location.pathname.startsWith(CONFIG.review.pathPrefix)) {
         if (ap.vs.oid) resetVariation(null, null);
         return;
@@ -3379,9 +3426,9 @@
       else evaluateAutoPlay();              // … and re-armed on return
     });
 
-    const pollTimer = setInterval(tick, CONFIG.review.pollMs);
+    ap.pollTimer = setInterval(tick, CONFIG.review.pollMs);
     window.addEventListener('pagehide', () => {
-      clearInterval(pollTimer);
+      clearInterval(ap.pollTimer);
       clearTimeout(ap.saveTimer);
       saveRecord(); // best effort — flush an unsaved answer
     });

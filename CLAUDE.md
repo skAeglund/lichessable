@@ -295,6 +295,26 @@ Currently working (v0.18.x).
     tracker anchor both work. A read for the WRONG oid (trainer mid-swap) or
     an unusable plan retries `oracleMaxTries` times behind `oracleRetryMs`,
     then the variation goes manual.
+  - An injected move is normally closed out by OBSERVING it (`kind:'injected'`),
+    but that is not the only evidence it landed, and treating it as such caused
+    false "injected move did not land" handbacks on real courses. The tracker
+    can lose the thread across an injection — the trainer bursting several plies
+    (Key-Moves prefix, a variation that starts mid-line) re-anchors us and
+    `startTracking()` clears the history our own move would have matched
+    against — so no 'injected' frame is ever attributed even though the drag
+    worked. The verify timer therefore asks the BOARD: it stores
+    `vs.injected.beforeKey` (the placement the drag was meant to change) and
+    only hands back when the placement is still IDENTICAL to it. A changed (or
+    unreadable) board means the move went through untracked: clear
+    `vs.injected`, no `manualHold`, re-enter `evaluateAutoPlay()`. Keeping the
+    still-identical case strict is what stops a refused drag from looping.
+  - `noteDeadContext(err)`: after an extension reload, every `chrome.*` call in
+    the still-running content script throws "Extension context invalidated".
+    Such an orphan holds a record it can neither refresh nor save and could
+    still drive drags off it, so the module STANDS DOWN on the first such error
+    (auto-play off, observer disconnected, poll cleared, `ap.contextDead` gates
+    `tick`/`processFrame`/`evaluateAutoPlay`) and logs one line telling the user
+    to reload the page. Reloading the extension alone never revives a tab.
   - `logHandback(reason)` prints one console line per (position, reason) pair
     whenever auto-play declines to replay — no-record, conflicted, expired,
     promotion, oracle failed/pending, ply not found in the line,
