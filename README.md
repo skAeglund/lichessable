@@ -26,7 +26,9 @@ the prev/next buttons all included. It never shows during an active quiz, so
 it cannot spoil an answer. Because the trainer has no FEN field, the position
 is reconstructed from the DOM (see Architecture notes); the panel is
 fixed-positioned in the empty gutter to the left of the board (falling back to
-below the board, under the Overstudy widget, on narrow windows). Throughout a
+below the board, under the Overstudy widget, on narrow windows — and below the
+whole board+comments block in portrait/mobile, where the comments stack under
+the board). Throughout a
 review/learn session — quiz included, not just the browse state — the trainer
 row is nudged sideways so the **board** rather than Chessable's board+comments
 block sits horizontally centered, so the board never shifts as a variation
@@ -151,7 +153,10 @@ lichessable/
   `commentMove` move list) the panel mounts on `document.body`,
   fixed-positioned in the gutter left of the board — or beneath it (below the
   overstudy widget) when that gutter is narrower than
-  `CONFIG.review.panelMinWidth` — while `centerReviewBoard()` (independent of
+  `CONFIG.review.panelMinWidth`, dropping below the entire trainer row when
+  the comment column is stacked under the board (portrait/mobile; detected by
+  the progress block sitting under, not beside, the board) — while
+  `centerReviewBoard()` (independent of
   the panel: it runs for the whole session) translates `.row-practice` so the
   board itself is viewport-centered, and the
   same 500 ms tick doubles as its watchdog. With no `#inputFEN` in the top
@@ -177,7 +182,7 @@ lichessable/
   body-mounted singleton, never inserted into Chessable's move list) whose popup
   appends a PGN comment to the variation. It runs on two host pages behind a
   small adapter: the completed-variation browse state (moves are `commentMove`
-  spans; ply = index in that list; edit rights probed once per course) and the
+  spans; ply = index in that list; edit rights probed lazily on popup open) and the
   standalone variation page (moves live in `#theOpeningMoves`, where each move
   div's id already *is* its 0-based ply index and its class gives the colour;
   the variation id comes from the URL and edit rights are simply whether
@@ -193,10 +198,14 @@ lichessable/
   confirms Chessable's SweetAlert dialog — which is what actually submits the
   full-variation form. Success is detected when the POST lands the iframe on
   `/mt1/explore/?edit=<oid>`; the worker then relays the result to the review
-  tab and closes the background tab. Edit rights are a per-course property, so
-  they're probed once per course per session (one throwaway background tab) and
-  cached — the pencil only appears for courses you can edit. The move rows
-  themselves are read only; nothing in Chessable's DOM is mutated.
+  tab and closes the background tab. Edit rights are a per-course property,
+  probed lazily: the pencil shows without knowing them, and only opening the
+  comment popup while rights are still unknown runs the probe (one throwaway
+  background tab, result cached per course per session) — the popup's Save
+  button stays disabled until the probe confirms edit rights, and a course
+  confirmed uneditable hides the pencil from then on. So no tab ever opens
+  unless you actually try to comment. The move rows themselves are read only;
+  nothing in Chessable's DOM is mutated.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.

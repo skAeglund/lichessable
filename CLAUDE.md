@@ -133,7 +133,10 @@ Currently working (v0.11.x).
   requiring exactly one king per side. The panel mounts on `document.body`
   (fixed; preferred spot is the gutter LEFT of the board, top-aligned, falling
   back to under the board/overstudy widget when that gutter is narrower than
-  `CONFIG.review.panelMinWidth`). Chessable centers the whole trainer row
+  `CONFIG.review.panelMinWidth`; when the comment column is STACKED under the
+  board — portrait/mobile, detected by the progress block sitting under, not
+  beside, the board — the anchor drops below the entire trainer row so the
+  panel never covers Chessable's UI). Chessable centers the whole trainer row
   (board + comment column), so `centerReviewBoard()` puts a `translateX` on
   `SELECTORS.trainerRow` to center the BOARD instead — transform only (never a
   layout property), clamped so the comment column stays on screen. It runs on
@@ -167,7 +170,7 @@ Currently working (v0.11.x).
   lookup, ply mapping, oid source and rights signal — popup, save round-trip and
   the entire edit-page driver are shared:
   (a) review browse state (`commentMove` spans; ply = index in that list; rights
-  probed per course), and (b) the standalone variation page `/variation/<oid>/`
+  probed lazily on popup open), and (b) the standalone variation page `/variation/<oid>/`
   (top document, no mt1 iframe, wholly different markup:
   `#theOpeningMoves > span > .whiteMove|.blackMove`, where the move div's id IS
   the 0-based ply index and its class is the colour, so NO move-number parsing
@@ -196,8 +199,13 @@ Currently working (v0.11.x).
   form). Message hub in background.js (`clo-quick-edit-run`/`-claim`/
   `-submitting`/`-landing`/`-result`), one job at a time, job in
   `chrome.storage.session`, 25 s hard timeout, hidden tab closed on finish. Edit
-  rights are per-COURSE: probed once per `bid` per session (one throwaway tab)
-  and cached; the pencil only appears when `canEdit` is true. Append convention
+  rights are per-COURSE and TRI-STATE (`host.rights()`: true/false/null-unknown),
+  probed LAZILY: the pencil shows while rights are unknown, and the probe tab
+  only opens from `applyRightsToPopup()` when a popup opens on an unprobed
+  course — Save stays disabled until the probe confirms `canEdit` (result
+  cached per `bid` per session; only an `ok:true` probe is cached, so a
+  timeout retries on the next popup). A known-uneditable course hides the
+  pencil. Append convention
   (`CONFIG.quickEdit.commentJoin`) and the exact stored wrapper (`( { … } )`)
   are the one thing to confirm in a manual save test.
   The popup MUST swallow `keydown`/`keypress`/`keyup` (bubble phase,

@@ -1535,7 +1535,9 @@
    * it, whenever that gutter is wide enough (CONFIG.review.panelMinWidth plus
    * margins); otherwise falls back to the original spot beneath the board,
    * below the overstudy widget (or the Exit/nav footer when the widget is
-   * hidden). The gutter also holds Chessable's collapsible variation drawer —
+   * hidden) — and beneath the ENTIRE trainer row when the comment column is
+   * stacked under the board (portrait/mobile), so the panel never covers
+   * Chessable's own UI. The gutter also holds Chessable's collapsible variation drawer —
    * when that is open the panel simply overlays it (z-index 99999).
    * position:fixed + getBoundingClientRect are both viewport-relative, so the
    * coordinates line up directly; the 500 ms tick plus resize/scroll listeners
@@ -1567,6 +1569,20 @@
     const widget = document.getElementById(REVIEW_WIDGET_ID);
     const widgetRect = widget && !widget.hidden ? widget.getBoundingClientRect() : null;
     if (widgetRect && widgetRect.height) anchorBottom = Math.max(anchorBottom, widgetRect.bottom);
+    // Portrait/mobile: the comment column WRAPS BELOW the board, so anchoring
+    // under the board would overlay the comments/progress block — anchor under
+    // the whole trainer row instead. Stacking is detected by the progress
+    // block sitting under the board rather than beside it, so a desktop side
+    // column that happens to run taller than the board keeps the old anchor.
+    const progress = document.querySelector(SELECTORS.reviewProgress);
+    const row = document.querySelector(SELECTORS.trainerRow);
+    if (progress && row) {
+      const progRect = progress.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      if (progRect.width && rowRect.height && progRect.left < rect.left + rect.width / 2) {
+        anchorBottom = Math.max(anchorBottom, rowRect.bottom);
+      }
+    }
     const top = Math.round(anchorBottom + 10);
     const width = Math.round(Math.max(rect.width, 320));
     state.panel.style.left = Math.round(rect.left + (rect.width - width) / 2) + 'px';
@@ -1721,9 +1737,12 @@
   // which is what actually submits the full-variation form. Success is detected
   // when the form's POST lands the iframe on /mt1/explore/?edit=<oid>.
   //
-  // Edit rights are a per-COURSE property, so they are probed once per course
-  // per session (one throwaway background tab) and cached; the pencil only
-  // appears for courses the user can edit.
+  // Edit rights are a per-COURSE property. They are probed LAZILY: the pencil
+  // shows without knowing them, and the probe (one throwaway background tab)
+  // only runs when a popup is opened while rights are still unknown — the
+  // popup's Save button stays disabled until the probe confirms them. The
+  // result is cached per course per session; a known-uneditable course hides
+  // the pencil again.
   // ==========================================================================
 
   /**
@@ -1963,13 +1982,14 @@
         oid: () => readQuickEditOid(),
         descriptor: (el) => reviewMoveDescriptor(el),
         bid: () => readQuickEditBid(),
-        // The trainer DOM carries no ownership signal, so rights are probed
-        // once per course in a hidden tab and cached (fail-closed until known).
-        hasRights: () => {
+        // The trainer DOM carries no ownership signal, so rights come from a
+        // hidden-tab probe, run lazily on popup open. Tri-state: true / false
+        // once probed, null while unknown.
+        rights: () => {
           const bid = readQuickEditBid();
-          return Boolean(bid) && qe.rightsByBid.get(bid) === true;
+          if (!bid) return null;
+          return qe.rightsByBid.has(bid) ? qe.rightsByBid.get(bid) : null;
         },
-        poll: () => maybeProbe(),
       },
       variation: {
         name: 'variation page',
@@ -1983,9 +2003,8 @@
         bid: () => '',
         // No probe needed here: the page itself is the rights signal, since
         // Chessable only renders the "Edit Variation" link (Repertoire Admin
-        // box) for a course you can actually edit.
-        hasRights: () => Boolean(document.querySelector(SELECTORS.variationEditLink)),
-        poll: () => {},
+        // box) for a course you can actually edit. Never null.
+        rights: () => Boolean(document.querySelector(SELECTORS.variationEditLink)),
       },
     };
     const host = IS_VARIATION_PAGE ? HOSTS.variation : HOSTS.review;
@@ -2108,7 +2127,29 @@
       qe.popup.style.top = Math.round(rect.bottom + 6) + 'px';
       qe.popup.hidden = false;
       qe.pencil.hidden = true;
+      applyRightsToPopup();
       qe.els.textarea.focus();
+    }
+
+    /**
+     * Reflects the host's tri-state edit rights in the open popup: Save is
+     * only enabled once rights are KNOWN true. Unknown rights (review host,
+     * course not probed yet) trigger the hidden-tab probe now — this is the
+     * only place a probe starts, so no tab ever opens before the user asks
+     * to comment.
+     */
+    function applyRightsToPopup() {
+      if (!qe.popup || qe.popup.hidden || qe.saving) return;
+      const rights = host.rights();
+      qe.els.save.disabled = rights !== true;
+      if (rights === true) {
+        setStatus('', false);
+      } else if (rights === false) {
+        setStatus("You don't have edit rights for this course.", true);
+      } else {
+        setStatus('Checking edit rights…', false);
+        maybeProbe();
+      }
     }
 
     function closePopup() {
@@ -2126,7 +2167,7 @@
 
     function setSavingUi(busy) {
       if (!qe.els) return;
-      qe.els.save.disabled = busy;
+      qe.els.save.disabled = busy || host.rights() !== true;
       qe.els.cancel.disabled = busy;
       qe.els.textarea.disabled = busy;
       qe.els.scopeBox.disabled = busy;
@@ -2134,7 +2175,7 @@
     }
 
     function doSave() {
-      if (qe.saving || !qe.popupTarget) return;
+      if (qe.saving || !qe.popupTarget || host.rights() !== true) return;
       const text = qe.els.textarea.value.trim();
       if (!text) { setStatus('Enter a comment first.', true); return; }
       const desc = host.descriptor(qe.popupTarget);
@@ -2160,10 +2201,15 @@
 
     function onResult(msg) {
       if (msg.mode === 'probe') {
-        if (msg.bid) {
-          qe.probing.delete(msg.bid);
+        if (msg.bid) qe.probing.delete(msg.bid);
+        if (msg.ok && msg.bid) {
+          // Only a completed probe is cached — a timeout/error stays unknown
+          // so the next popup open retries instead of locking the course out.
           qe.rightsByBid.set(msg.bid, Boolean(msg.canEdit));
           log('quick-edit rights for course', msg.bid, '=', Boolean(msg.canEdit));
+          applyRightsToPopup();
+        } else if (qe.popup && !qe.popup.hidden && !qe.saving) {
+          setStatus('Could not check edit rights — close and retry.', true);
         }
         return;
       }
@@ -2181,9 +2227,10 @@
       }
     }
 
+    /** Starts the hidden-tab rights probe (review host only, once per course). */
     function maybeProbe() {
-      const bid = readQuickEditBid();
-      const oid = readQuickEditOid();
+      const bid = host.bid();
+      const oid = host.oid();
       if (!bid || !oid) return;
       if (qe.rightsByBid.has(bid) || qe.probing.has(bid)) return;
       qe.probing.add(bid);
@@ -2199,16 +2246,16 @@
       if (!host.ready()) {
         if (qe.pencil) qe.pencil.hidden = true;
         if (qe.popup && !qe.popup.hidden) closePopup();
-        return;
       }
-      host.poll();
     }
 
     // Hover detection: read-only, never mutates Chessable's move list.
     document.addEventListener('pointerover', (e) => {
       const moveEl = e.target.closest && e.target.closest(host.moveSelector);
       if (!moveEl) return;
-      if (!host.ready() || !host.hasRights()) return;
+      // Unknown rights (null) still show the pencil — only a known-uneditable
+      // course hides it. The popup's Save button is the real rights gate.
+      if (!host.ready() || host.rights() === false) return;
       if (qe.popup && !qe.popup.hidden) return; // don't fight an open popup
       showPencilFor(moveEl);
     });
