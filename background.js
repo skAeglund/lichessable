@@ -334,3 +334,32 @@ async function finalizeQuickEditJob(job, result) {
   await clearQuickEditJob();
 }
 
+// --- Lichess explorer fetch ------------------------------------------------
+
+async function handleExplorerFetch(url) {
+  try {
+    // Only ever fetch the explorer — refuse anything else on principle.
+    if (typeof url !== 'string' || !url.startsWith(ALLOWED_URL_PREFIX)) {
+      return { ok: false, status: 0, error: 'blocked non-explorer URL' };
+    }
+
+    const stored = await chrome.storage.local.get(TOKEN_KEY);
+    const token = (stored[TOKEN_KEY] || '').trim();
+    if (!token) {
+      // Same shape as a real 401 so the panel shows the token prompt.
+      return { ok: false, status: 401, error: 'no Lichess API token configured', noToken: true };
+    }
+
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+      return { ok: false, status: response.status, error: `HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err) };
+  }
+}

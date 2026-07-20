@@ -2420,7 +2420,10 @@
         lastSkippedKey: null, // placement of the last skipped mid-animation frame
         movesApplied: 0,     // total observed moves this variation (any classification)
         lastMoveAt: 0,       // when the last move (or the anchor) was observed
-        trainerDrove: true,  // last user-colour move was trainer-played (or nothing observed yet)
+        trainerDrove: false, // a user-colour move was trainer-played (Key-Moves prefix,
+                             // solution replay) — strictly that, so it stays false until
+                             // one is actually observed; `movesApplied === 0` is what
+                             // covers the nothing-seen-yet case (see evaluateAutoPlay)
         lastKey: null,       // placement key of the last processed snapshot
         history: new Map(),  // placement key -> { pos, ply } for snap-backs/restarts
         oracle: null,        // null | 'pending' | 'failed' | [{san, color, key}, …]
@@ -2855,10 +2858,31 @@
       stopReplaying();
     }
 
+    /**
+     * Pick up a variation change (and a course change) from the drawer. Runs
+     * on the 500 ms tick AND on every board frame: the board resetting to the
+     * start position is the earliest visible sign of a new variation, and
+     * waiting for the next tick to notice would spend up to 500 ms of the gap
+     * before the trainer's opening move is even ours to answer. Idempotent
+     * and cheap — two attribute reads when nothing changed.
+     */
+    function syncVariation() {
+      const bid = readQuickEditBid();
+      const oid = readQuickEditOid();
+      if (bid && bid !== ap.recordBid) loadRecord(bid);
+      // Only ever act on a POSITIVE reading. Because this now runs on every
+      // board frame, a drawer that is momentarily unreadable (mid re-render)
+      // would otherwise reset tracking in the middle of a variation, where
+      // the old 500 ms sampling would simply have missed the blink. Leaving
+      // review altogether is handled by tick(), which owns that transition.
+      if (oid && oid !== ap.vs.oid) resetVariation(oid, bid);
+    }
+
     function processFrame() {
+      if (!location.pathname.startsWith(CONFIG.review.pathPrefix)) return;
+      syncVariation();
       const vs = ap.vs;
       if (!vs.oid || vs.suspended) return;
-      if (!location.pathname.startsWith(CONFIG.review.pathPrefix)) return;
       if (reviewBrowseReady()) return; // completion is handled by tick()
       const snap = readBoardSnapshot();
       if (!snap) return;
@@ -3051,9 +3075,16 @@
         return;
       }
 
-      // While the trainer may still be auto-playing itself (variation just
-      // loaded, or it drove the last user-colour move — Key-Moves prefix),
-      // wait for the board to sit quiet so the two never race.
+      // Settle floor, for the two states where the trainer may still be
+      // moving by itself: nothing observed yet this variation (it could be
+      // mid-setup), or it drove the last user-colour move (Key-Moves prefix,
+      // solution replay) and may drive the next one too.
+      //
+      // Having just watched the OPPONENT reply is deliberately not one of
+      // them, at a variation's start no less than mid-line: chess gives the
+      // trainer no second move to race us with, and mid-line injection —
+      // which has always run with no floor at all — is the same situation and
+      // lands reliably. That default used to cost 700 ms on every variation.
       let delay = C.speeds[ap.speed];
       if (typeof delay !== 'number') delay = C.speeds[C.defaultSpeed];
       if ((vs.movesApplied === 0 && !vs.adopted) || vs.trainerDrove) {
@@ -3291,10 +3322,7 @@
         return;
       }
       ensureUi();
-      const bid = readQuickEditBid();
-      const oid = readQuickEditOid();
-      if (bid && bid !== ap.recordBid) loadRecord(bid);
-      if (oid !== ap.vs.oid) resetVariation(oid, bid);
+      syncVariation();
       ensureObserver();
       if (reviewBrowseReady()) {
         // Post-completion browse state: confirm the final answer (there is no
@@ -3310,7 +3338,7 @@
       if (ap.vs.suspended) {
         // Back in a quiz under the same oid (restarted variation without an
         // intervening oid change) — start over from a fresh anchor.
-        resetVariation(oid, bid);
+        resetVariation(ap.vs.oid, ap.vs.bid);
       }
       processFrame();       // safety net for missed mutations
       evaluateAutoPlay();   // safety net for aborted/paused injections

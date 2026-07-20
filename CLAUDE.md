@@ -18,7 +18,7 @@ variation (for courses you can edit) by driving Chessable's own edit page in a
 background tab. Review sessions can also auto-play moves the user already
 answered correctly earlier the same session (section 13; opt-in toggle on the
 overstudy widget).
-Currently working (v0.16.x).
+Currently working (v0.18.x).
 
 ## Structure
 
@@ -254,7 +254,15 @@ Currently working (v0.16.x).
   load-bearing; the explore click-click recipe does NOT work on the trainer
   board), delayed by the speed setting and by a settle floor whenever the
   trainer itself might still be auto-playing (variation start, Key-Moves
-  prefix) so the two never race. A trusted pointerdown on the board or a
+  prefix) so the two never race — but NOT merely because the opponent just
+  replied, which is the ordinary variation-start case and needs no floor at
+  all (`vs.trainerDrove` starts FALSE and means strictly "a user-colour move
+  was trainer-played"; a `true` default used to cost 700 ms per variation).
+  Variation changes are picked up by `syncVariation()`, called from the
+  500 ms tick AND from every board frame, so a new variation is recognised
+  as soon as the board resets rather than up to 500 ms later; it ignores a
+  falsy oid so a mid-re-render blink cannot reset tracking.
+  A trusted pointerdown on the board or a
   click on the status chip cancels the variation; `document.hidden` pauses
   everything. Once the user plays a move by hand in a variation
   (`vs.handedOver`), auto-play never resumes later in that SAME variation even
