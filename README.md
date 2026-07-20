@@ -50,6 +50,42 @@ would otherwise start running unseen, a learn session that boots in a
 own pause control once it renders); switch to the tab and click the play
 overlay to start.
 
+Review sessions can also **auto-play moves you already proved this session**
+(the *Auto-play* toggle on the overstudy widget, off by default, with a
+Fast/Normal/Relaxed pace select). Every move you answer correctly is recorded
+against its **position** for the rest of the browser session (12 h cap); when
+a later variation reaches a position you've already answered — typically the
+shared prefix of the next line, but any transposition counts — the extension
+plays your recorded move for you and hands control back at the first move you
+have *not* proven yet. Before anything is auto-played the move is verified
+against that variation's actual mainline, so an updated repertoire never gets
+a wrong move replayed: on any mismatch the position is left to you (and not
+retried that session). Auto-played moves count as **normal correct answers** —
+the move was proven earlier this session, and Chessable schedules it as
+passed. Failed or timed-out moves are never auto-played, and a move is never
+auto-played the first time it appears in a session. Once you've played a move
+by hand in a variation, auto-play stays out for the rest of that variation —
+even if a later transposition reaches a position you've already proven —
+because handing control back and forth mid-line is jarring; only a
+variation's opening run ever replays. A click on the board (or on the status
+chip) stops auto-play for the current variation. The proven-move record is
+kept per course, evaporates when the browser closes, and is deliberately
+**not** persisted across days — that would silently pass genuinely-due cards
+and defeat spaced repetition. Under the **Key Moves** study setting Chessable
+itself already auto-plays the non-key prefix; the feature stays enabled but
+simply finds nothing to do until the first quizzed move.
+
+A separate **Prepare course** button warms a *different*, long-lived cache:
+each variation's actual move list (needed to verify a recorded move before
+replaying it) is fetched once by rendering the real variation page in a
+background tab, and — unlike the proven-move record — this is just course
+content, so it's cached in ordinary extension storage for two weeks and
+survives closing the browser entirely. Left alone, auto-play warms this
+lazily, a few variations ahead of wherever you are; clicking **Prepare
+course** instead queues the *whole* visible review queue up front (shown as a
+progress chip), so a course only ever pays that one-time cost, typically
+completing well before you've finished the first line by hand.
+
 You can also **quick-edit a move's comment**: hover a mainline move and a small
 pencil appears; its popup lets you type a note and append it as a PGN comment
 after that move (with the same "For this variation only" toggle Chessable's
@@ -71,14 +107,17 @@ optional engine is a vendored Stockfish WASM build, downloaded manually.)
 lichessable/
 ├── manifest.json            Manifest V3 definition
 ├── background.js            Service worker: authenticated explorer fetches
-│                            + engine message hub + quick-edit tab driver hub
+│                            + engine message hub + quick-edit/line-oracle tab driver hubs
 ├── content/
-│   ├── lichessable.js       Panel logic (mt1 iframe) + review overstudy widget + quick-edit UI (top document)
+│   ├── lichessable.js       Panel logic (mt1 iframe) + review overstudy widget,
+│   │                        quick-edit UI and review auto-play (top document)
 │   └── lichessable.css      Panel styling (namespaced under .clo-)
 ├── engine/
 │   ├── offscreen.html       Offscreen document hosting the engine
 │   ├── engine.js            UCI controller (worker lifecycle, MultiPV parsing)
-│   ├── san.js               Self-contained UCI→SAN converter
+│   ├── san.js               Self-contained UCI→SAN converter + move generator
+│   │                        (also loaded as a content script: review auto-play
+│   │                        uses it to track the board and verify moves)
 │   └── vendor/              Stockfish WASM build — NOT in git; see below
 ├── options/
 │   ├── options.html         Settings page: Lichess API token entry + test
@@ -206,6 +245,40 @@ lichessable/
   confirmed uneditable hides the pencil from then on. So no tab ever opens
   unless you actually try to comment. The move rows themselves are read only;
   nothing in Chessable's DOM is mutated.
+- **Review auto-play** — runs entirely in the top document alongside the
+  overstudy watcher. A `MutationObserver` on the trainer board coalesces
+  mutations per animation frame into placement snapshots (the same
+  `[data-piece]` reads the review panel uses); consecutive snapshots are
+  diffed by asking the bundled move generator (`engine/san.js`, loaded as a
+  content script) for the unique legal move that produces the new placement —
+  castling, en passant and promotions all come out of the same comparison,
+  and the resulting position object is the authoritative game state (true
+  castling rights, side to move, ply count; the student's colour comes from
+  the board orientation). Moves are classified by colour and provenance:
+  opponent-colour ⇒ the trainer's; user-colour injected by us ⇒ bookkeeping;
+  user-colour with recent *trusted* pointer input on the board ⇒ a genuine
+  answer, recorded once the opponent replies or the variation completes
+  (vetoed if the move notification reads "Incorrect"/"Time's up");
+  user-colour with no pointer input ⇒ trainer-played (solution replays,
+  Key-Moves prefixes) and never recorded. The record lives in
+  `chrome.storage.session` keyed on placement+side+castling per course, so
+  transpositions hit and nothing survives a browser restart. Before any
+  auto-play the recorded move is checked against the variation's mainline,
+  fetched once per variation by the **line oracle**: the worker renders
+  `/variation/<oid>/` in a hidden background tab (a plain fetch returns only
+  the SPA shell), the driver there reads the SAN list (piece letters come
+  from the figurine spans' `data-piece`), and the result is cached for two
+  weeks in ordinary extension storage (course content, not a user proof, so —
+  unlike the position record above — persisting it across days is safe and is
+  the point: a course only pays the fetch cost once). The content script keeps
+  this cache warm a few variations ahead automatically, or the whole visible
+  queue at once via **Prepare course**. Any mismatch, oracle failure,
+  promotion, lost board tracking or unaccepted drag degrades to manual play —
+  never a blind move. The injection itself is a synthetic mouse **drag** with
+  ~20 ms gaps (the explore click-click recipe does not work on the trainer
+  board), only fired after the board has sat quiet long enough that
+  Chessable's own auto-plays can't race it, and paused whenever the tab is
+  hidden.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.
@@ -315,9 +388,12 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
 
 ## Permissions rationale
 
-- `storage` — remembers the show/hide and engine preferences and holds the
-  Lichess API token; `storage.session` carries the engine's reply routing
-  across service-worker restarts.
+- `storage` — remembers the show/hide, engine and auto-play preferences and
+  holds the Lichess API token; `storage.session` carries the engine's reply
+  routing and the tab-driver jobs across service-worker restarts, plus the
+  auto-play session record and line-oracle cache (the worker calls
+  `setAccessLevel('TRUSTED_AND_UNTRUSTED_CONTEXTS')` so the content script
+  can read them — an API call, not a permission).
 - `offscreen` — hosts the optional Stockfish engine in an offscreen document
   (the service worker cannot run a persistent WASM engine; content scripts
   are subject to the page's CSP). The manifest's `wasm-unsafe-eval` CSP and
@@ -362,4 +438,10 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
   menus, promote/delete branch) keeps working untouched. The node is put back
   where it came from whenever the panel is re-mounted, collapsed via **Hide**,
   or the page is left, and re-adopted on the poll if their app re-renders.
+- Auto-play is conservative by design: positions whose recorded move is a
+  promotion are handed back to you (the trainer's promotion picker markup is
+  unverified), a "stop for text" gate swallows the drag and the position falls
+  back to manual, and after a wrong answer snaps back you retry that move
+  yourself. Auto-play pauses while the tab is hidden. Records are per browser
+  session (12 h cap) — never across days.
 - All class names Chessable-side are treated as fragile; see `SELECTORS`.

@@ -15,8 +15,10 @@ trainer sessions the Lichess panel also appears once a variation is completed
 (browse state), following the board via a DOM-derived FEN. In that same browse
 state, hovering a mainline move shows a pencil that appends a PGN comment to the
 variation (for courses you can edit) by driving Chessable's own edit page in a
-background tab.
-Currently working (v0.11.x).
+background tab. Review sessions can also auto-play moves the user already
+answered correctly earlier the same session (section 13; opt-in toggle on the
+overstudy widget).
+Currently working (v0.16.x).
 
 ## Structure
 
@@ -25,7 +27,9 @@ Currently working (v0.11.x).
   The CSP (`wasm-unsafe-eval`) and COOP/COEP keys exist solely so the
   offscreen document can compile WASM and use SharedArrayBuffer (engine
   threads) — do not remove them.
-- `content/lichessable.js` — the only content script. The panel runs inside
+- `content/lichessable.js` — the main content script (`engine/san.js` is
+  loaded before it in every frame: pure, no `chrome.*`, and section 13 needs
+  its move generator). The panel runs inside
   Chessable's same-origin mt1 iframe (`all_frames: true`; other iframes exit
   unless `location.pathname` starts with `/mt1/explore/` or
   `/mt1/analysis/`). The TOP document never exits — it runs the review
@@ -214,6 +218,75 @@ Currently working (v0.11.x).
   has focus, so without this, typing a comment drives the trainer. Bubble phase
   is enough (verified live); the default action still inserts the character, and
   Escape closes the popup.
+- Auto-play (section 13; design + live ground-truthing in DESIGN-autoplay.md):
+  records every move the user answers correctly during a review session and
+  replays it when a later variation (or transposition) reaches the same
+  position, handing back at the first unproven move. Keyed on POSITION
+  (placement + side + castling, en passant dropped), per course, in
+  `chrome.storage.session` with a 12 h TTL — deliberately never
+  `storage.local`, or stale proofs would auto-pass genuinely-due cards.
+  background.js calls `chrome.storage.session.setAccessLevel` at startup so
+  the content script can read that area (content sends `clo-ping` first to
+  guarantee the worker has run). The tracker does NOT use `readReviewFen`:
+  a MutationObserver on the board (rAF-coalesced) yields placement snapshots,
+  and the unique CloSan legal move producing the new placement advances an
+  authoritative position object (real castling rights; ply count = oracle
+  index; user colour = board orientation; mid-animation frames fail the
+  one-king-per-side check exactly like readReviewFen). Classification is
+  colour + provenance: opponent colour ⇒ trainer's; ours ⇒ matches
+  `vs.injected`; user colour + recent TRUSTED pointer input on the board ⇒
+  genuine answer (recorded when the opponent replies or the variation
+  completes, vetoed if `trainerMoveNote` reads Incorrect/Time's up); user
+  colour with no pointer input ⇒ trainer-played (solution replay, Key-Moves
+  prefix) and never recorded. Before ANY injection the recorded move's SAN
+  (CloSan) must equal the variation mainline's SAN at that ply — the mainline
+  comes from the LINE ORACLE: background.js renders `/variation/<oid>/` in a
+  hidden tab (one job at a time, mirrors quick-edit; per-oid session cache;
+  a plain fetch of that page returns the SPA shell only), and the driver
+  reads `variationMoves` + `variationPieceGlyph` (`data-piece` → piece
+  letter, the text lacks it) + `variationKeyClass`. Mismatch ⇒ entry marked
+  `conflicted` for the session, manual play; any other uncertainty (oracle
+  failed, promotion recorded — trainer picker markup UNVERIFIED, drag not
+  accepted within 2.5 s, ply untrusted after losing track) also degrades to
+  manual, never a blind move. Injection is a synthetic mouse DRAG
+  (mousedown source → mousemove document → mouseup target, ≥15 ms gaps are
+  load-bearing; the explore click-click recipe does NOT work on the trainer
+  board), delayed by the speed setting and by a settle floor whenever the
+  trainer itself might still be auto-playing (variation start, Key-Moves
+  prefix) so the two never race. A trusted pointerdown on the board or a
+  click on the status chip cancels the variation; `document.hidden` pauses
+  everything. Once the user plays a move by hand in a variation
+  (`vs.handedOver`), auto-play never resumes later in that SAME variation even
+  if a transposition reaches a proven position again — jumping back in mid-line
+  was reported as jarring; only a variation's opening run ever replays. UI = a
+  cluster appended to the overstudy widget (toggle `cloAutoPlayEnabled` off by
+  default, speed `cloAutoPlaySpeed`, a **Prepare course** button, status chip).
+  Scope is `/practice/` only (not `/learn/` overstudy tabs). During an injected
+  drag `<html>` carries `clo-injecting`, which CSS uses to suppress Chessable's
+  legal-move dot/tint classes (`highlight-legal-mt2` and its `::before`) so
+  auto-play doesn't strobe them.
+  - The line-oracle cache lives in `chrome.storage.LOCAL` (not session), 14-day
+    TTL — deliberately different from the proven-move RECORD: a variation's
+    move list is course content, not a spaced-repetition-sensitive proof, so
+    persisting it across days is safe and is the whole point (background.js).
+  - Passive prefetch: while auto-play is on, the content script reads the
+    drawer's upcoming `oid`s (`readUpcomingOids`) and keeps up to the next 20
+    warmed one hidden tab at a time (`prefetchQueue`/`pumpPrefetch`), yielding
+    to the current variation's own oracle request.
+  - **Prepare course** button (`startPrepareCourse`) queues the ENTIRE visible
+    due queue regardless of the toggle state and shows progress
+    (`prepareRemaining`/`prepareTotal`/`prepareDone`) via the status chip;
+    already-cached oids resolve instantly with no tab. Independent of
+    `ap.enabled` — `pumpPrefetch`/`setStatus`/`syncUi` all check
+    `ap.enabled || ap.prepareActive`.
+  - `logHandback(reason)` prints one console line per (position, reason) pair
+    whenever auto-play declines to replay — no-record, conflicted, expired,
+    promotion, oracle failed/pending, ply not found in the simulated line,
+    illegal SAN — since a silent no-op is otherwise indistinguishable from a
+    bug. Debug-only DOM hook: dispatching a `clo-debug` event on `document`
+    dumps a summary (record/cache key counts, no move data) onto
+    `documentElement[data-clo-session]` — storage areas aren't otherwise
+    visible from the page.
 
 ## Verification (no automated tests)
 

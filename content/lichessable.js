@@ -107,6 +107,17 @@
     // subvariations), hence the > span > child scoping.
     variationMoves:    '#theOpeningMoves > span > .whiteMove, #theOpeningMoves > span > .blackMove',
     variationEditLink: 'a[href*="/explore/edit/"]', // "Edit Variation" — rendered only with edit rights
+
+    // Auto-play (section 13). trainerMoveNote is only ever a VETO on recording
+    // a move — if the testid or wording changes, the worst case is
+    // over-cautious non-recording, never a wrong record. The two variation-page
+    // entries feed the line oracle: a mainline move div may carry the key-move
+    // class, and its piece letter is an SVG figurine whose span carries
+    // data-piece ("knight", …) — the move text lacks the letter, so full SAN is
+    // pieceLetter(data-piece) + text.
+    trainerMoveNote:     '[data-testid="moveNotification"]', // "Incorrect" / "Time's up" / XP toast
+    variationKeyClass:   'is_key',                           // key-move marker class on variationMoves divs
+    variationPieceGlyph: '.commentMove__piece[data-piece]',  // figurine span → SAN piece letter
   };
 
   const CONFIG = {
@@ -171,6 +182,24 @@
       settleMs:         150,    // wait after clicking a move for #moveComment to update
       bootTimeoutMs:    15000,  // wait for the edit form (absence ⇒ no edit rights)
       confirmTimeoutMs: 6000,   // wait for the SweetAlert confirm button after submit
+    },
+
+    // --- Auto-play already-mastered moves in review (section 13) -----------
+    autoPlay: {
+      enabledKey: 'cloAutoPlayEnabled', // chrome.storage.local; off by default
+      speedKey:   'cloAutoPlaySpeed',   // chrome.storage.local; 'fast'|'normal'|'relaxed'
+      recordKey:  'cloAutoPlayRecord',  // chrome.storage.session; per-course position records
+      recordTtlMs: 12 * 3600 * 1000,    // entries older than this are ignored and pruned
+      speeds: { fast: 0, normal: 400, relaxed: 900 }, // extra pause before each auto-played move
+      defaultSpeed: 'normal',
+      dragStepMs: 20,          // gaps inside the drag sequence (same-tick bursts misbehave — verified)
+      injectVerifyMs: 2500,    // an injected move must land within this, else manual for the position
+      pointerWindowMs: 3000,   // trusted pointer input this recent ⇒ the user played the move
+      trainerSettleMs: 700,    // quiet time required before injecting while the trainer may be auto-playing
+      saveDebounceMs: 800,     // record writes are debounced
+      statusFlashMs: 2500,     // lifetime of the transient status chips
+      oracleSettleMs: 250,     // wait after the variation page's move list renders before reading it
+      oracleRetryMs: 2500,     // back-off before re-requesting the oracle after a 'busy' reply
     },
   };
 
@@ -2274,6 +2303,1281 @@
   }
 
   // ==========================================================================
+  // 13) Auto-play already-mastered moves in review (top document, /practice/…)
+  //
+  // Within one review session, every move the user answers correctly is
+  // recorded, keyed on the POSITION (placement + side + castling; en passant
+  // dropped — same normalization as the explorer cache). When the trainer
+  // later reaches a recorded position — the shared prefix of the next
+  // variation, or any transposition — the recorded move is verified against
+  // the variation's actual mainline (the "line oracle": Chessable's own
+  // /variation/<oid>/ page rendered in a hidden tab, see background.js) and
+  // then played by a synthetic DRAG (the explore click-click recipe does not
+  // work on the trainer board — verified). Control naturally returns at the
+  // first position the user has not proven: the lookup misses and nothing
+  // happens. Records live in chrome.storage.session (12 h TTL) so "proven"
+  // never leaks across days; the worker's setAccessLevel call is what lets
+  // this content script touch that storage area.
+  //
+  // The tracker: a MutationObserver on the board container coalesces
+  // mutations per animation frame into placement snapshots (the same
+  // [data-piece] reads as readReviewFen; mid-animation frames are skipped by
+  // the one-king-per-side check). Consecutive snapshots are diffed by asking
+  // CloSan (engine/san.js, loaded as a content script) for the unique legal
+  // move that produces the new placement — castling, en passant and
+  // promotions come out uniformly, and the resulting position object IS the
+  // authoritative game state (true castling rights, side to move, ply count).
+  // Moves are classified by mover colour + provenance: opponent-colour ⇒
+  // trainer; user-colour and injected by us ⇒ bookkeeping only; user-colour
+  // with recent TRUSTED pointer input on the board ⇒ a genuine answer
+  // (recorded once the opponent replies or the variation completes, unless
+  // the move notification reads "Incorrect"/"Time's up"); user-colour with no
+  // pointer input ⇒ the trainer played it (solution replay, Key-Moves prefix)
+  // and it is never recorded.
+  //
+  // Fail-safe bias throughout: any uncertainty (oracle missing or failed, SAN
+  // mismatch, unparseable board, promotion picker, text gate swallowing the
+  // drag, ply misalignment after losing track) degrades to MANUAL play —
+  // never to a blind move.
+  // ==========================================================================
+
+  // --- line-oracle driver (runs in the hidden /variation/<oid>/ tab) --------
+
+  const ORACLE_PIECE_LETTERS = { king: 'K', queen: 'Q', rook: 'R', bishop: 'B', knight: 'N', pawn: '' };
+
+  /**
+   * SAN for one variation-page move div, or null. The div's text lacks the
+   * piece letter (it is an SVG figurine), but the figurine span's data-piece
+   * names the piece. Promotion SANs come out wrong here (the glyph names the
+   * promoted piece) — harmless, because recorded promotions are never
+   * auto-played (§8 of the design) and so never reach the comparison.
+   */
+  function oracleSanFromEl(el) {
+    const glyph = el.querySelector(SELECTORS.variationPieceGlyph);
+    const dp = glyph ? glyph.getAttribute('data-piece') : null;
+    const letter = dp && Object.prototype.hasOwnProperty.call(ORACLE_PIECE_LETTERS, dp.toLowerCase())
+      ? ORACLE_PIECE_LETTERS[dp.toLowerCase()] : '';
+    let text = (el.textContent || '').trim();
+    if (glyph && glyph.textContent) text = text.replace(glyph.textContent.trim(), '').trim();
+    return quickEditSan(letter + text);
+  }
+
+  /** The variation's mainline as [{san, color, key}], or null if unreadable. */
+  function readOracleLine() {
+    const els = [...document.querySelectorAll(SELECTORS.variationMoves)];
+    if (!els.length) return null;
+    const line = new Array(els.length).fill(null);
+    for (const el of els) {
+      // The move div's id IS the 0-based ply index (verified markup) — the
+      // same index the review tracker counts, so no numbering is parsed.
+      const idx = Number(el.id);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= els.length || line[idx]) return null;
+      const san = oracleSanFromEl(el);
+      if (!san) return null; // one unparseable move fails the whole oracle — fail safe
+      line[idx] = {
+        san,
+        color: el.classList.contains('whiteMove') ? 'w' : 'b',
+        key: el.classList.contains(SELECTORS.variationKeyClass),
+      };
+    }
+    return line;
+  }
+
+  /**
+   * Called from start() on the standalone variation page. Asks the worker
+   * whether this tab was opened as a line-oracle job; if so, reads the
+   * mainline once it renders and reports it (the worker relays the result and
+   * closes this tab). Returns true when handled, so the caller skips the
+   * quick-edit UI in the throwaway tab.
+   */
+  async function runOracleDriverIfJob() {
+    const m = VARIATION_PATH_RE.exec(location.pathname);
+    if (!m) return false;
+    const oid = m[1];
+    let res;
+    try {
+      res = await chrome.runtime.sendMessage({ type: 'clo-line-oracle-claim', oid });
+    } catch (err) {
+      return false;
+    }
+    if (!res || !res.claimed) return false;
+    log('line-oracle driver claimed job for variation', oid);
+    (async () => {
+      let line = null;
+      try {
+        await quickEditWaitFor(SELECTORS.variationMoves, CONFIG.quickEdit.bootTimeoutMs);
+        await quickEditDelay(CONFIG.autoPlay.oracleSettleMs);
+        line = readOracleLine();
+      } catch (err) {
+        warn('line-oracle driver error:', err);
+      }
+      chrome.runtime.sendMessage({
+        type: 'clo-line-oracle-result', oid,
+        ok: Boolean(line), line: line || undefined,
+        error: line ? undefined : 'could not read the move list',
+      }).catch(() => {});
+    })();
+    return true;
+  }
+
+  // --- the auto-play module (review sessions only) ---------------------------
+
+  function initAutoPlay() {
+    if (typeof CloSan === 'undefined') {
+      warn('auto-play disabled: CloSan (engine/san.js) not loaded');
+      return;
+    }
+
+    const C = CONFIG.autoPlay;
+    const AP_CLUSTER_ID = 'lichessable-ap';
+    const STANDARD_START = CloSan.parseFen('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+    const SQ_FILES = 'abcdefgh';
+    const squareName = (i) => SQ_FILES[i & 7] + ((i >> 3) + 1);
+
+    const ap = {
+      enabled: false,          // the toggle (persisted; off by default)
+      speed: C.defaultSpeed,   // extra pause before each auto-played move
+      record: null,            // { posKey: entry } for the current course
+      recordBid: null,
+      saveTimer: 0,
+      ui: null,                // { root, toggle, speed, status }
+      statusTimer: 0,
+      lastPointerAt: 0,        // last TRUSTED pointer down (grab) or drop
+      pointerDownOnBoard: false, // a trusted drag started on the board and is in flight
+      prefetchedOids: new Set(), // oracle prefetches already fired this page
+      prefetchQueue: [],       // upcoming oids waiting for a prefetch slot
+      prefetchInFlight: null,  // oid whose prefetch result is outstanding
+      prepareActive: false,    // an explicit "Prepare course" batch is running
+      prepareRemaining: null,  // Set of oids from THIS batch not yet resolved
+      prepareTotal: 0,
+      prepareDone: 0,
+      injectClassTimer: 0,     // pending removal of the html.clo-injecting gate
+      observer: null,
+      observedBoard: null,
+      rafPending: false,
+      vs: null,                // per-variation state, see freshVariationState
+    };
+    ap.vs = freshVariationState(null, null);
+
+    function freshVariationState(oid, bid) {
+      return {
+        oid, bid,
+        startedAt: Date.now(),
+        adopted: false,      // position came from a recognised waiting quiz (already idle)
+        userColor: null,     // board orientation at anchor time ('w'|'b')
+        anchor: null,        // placement waiting for its first move to reveal the side to move
+        pos: null,           // CloSan position object — the authoritative game state
+        ply: 0,              // moves applied since the anchor (logging only — the oracle
+                             // is aligned by POSITION, not by this count)
+        lastSkippedKey: null, // placement of the last skipped mid-animation frame
+        movesApplied: 0,     // total observed moves this variation (any classification)
+        lastMoveAt: 0,       // when the last move (or the anchor) was observed
+        trainerDrove: true,  // last user-colour move was trainer-played (or nothing observed yet)
+        lastKey: null,       // placement key of the last processed snapshot
+        history: new Map(),  // placement key -> { pos, ply } for snap-backs/restarts
+        oracle: null,        // null | 'pending' | 'failed' | [{san, color, key}, …]
+        oracleSim: null,     // simulated line: [{pos, key}] — positions BEFORE each oracle ply
+        oracleNextTryAt: 0,  // back-off after a 'busy' reply
+        pendingRecord: null, // { posKey, uci, promo } — user answer awaiting confirmation
+        injected: null,      // { uci, at } — our drag in flight
+        injectTimer: 0,      // pending speed-delay before a drag
+        verifyTimer: 0,      // injected move must land before this fires
+        manualHold: false,   // no auto-play until the position changes
+        handedOver: false,   // the user has played a move this variation — the rest is theirs
+        cancelled: false,    // user stopped auto-play for this variation
+        suspended: false,    // browse state reached — tracker off until the next variation
+        replayed: 0,         // auto-played moves this variation
+        handbackShown: false,
+        lastHandbackLog: null, // dedupe key for logHandback
+      };
+    }
+
+    // --- board snapshots and positions --------------------------------------
+
+    /**
+     * 64-array placement (CloSan board layout, a1 = 0) from the trainer DOM,
+     * or null while the board is mid-render/mid-animation (missing squares, a
+     * piece on two squares, the paused session's empty board, …).
+     */
+    function readBoardSnapshot() {
+      const board = getReviewBoard();
+      if (!board) return null;
+      const arr = new Array(64).fill(null);
+      let whiteKings = 0, blackKings = 0;
+      for (let i = 0; i < 64; i++) {
+        const squareEl = board.querySelector(SELECTORS.reviewSquare.replace('%s', squareName(i)));
+        if (!squareEl) return null;
+        const pieceEl = squareEl.querySelector(SELECTORS.reviewPiece);
+        const dp = pieceEl ? pieceEl.getAttribute('data-piece') : null;
+        if (dp && /^[wb][PNBRQK]$/.test(dp)) {
+          const ch = dp[0] === 'w' ? dp[1] : dp[1].toLowerCase();
+          arr[i] = ch;
+          if (ch === 'K') whiteKings++;
+          else if (ch === 'k') blackKings++;
+        }
+      }
+      if (whiteKings !== 1 || blackKings !== 1) return null;
+      return arr;
+    }
+
+    const placementKey = (arr) => arr.map((p) => p || '.').join('');
+
+    function boardsEqual(a, b) {
+      for (let i = 0; i < 64; i++) if (a[i] !== b[i]) return false;
+      return true;
+    }
+
+    function countPieces(arr) {
+      let n = 0;
+      for (const p of arr) if (p) n++;
+      return n;
+    }
+
+    /**
+     * Decides whether a snapshot that matched no move is a mid-animation /
+     * mid-drag frame to be skipped. A PIECE-DEFICIT frame (fewer pieces than
+     * the reference — a lifted piece following the cursor, possibly held for
+     * many seconds while the user thinks) is skipped for as long as it lasts.
+     * Any other partial-looking frame is transient by nature, so it is
+     * skipped once; seeing the same placement again on a later poll means
+     * the board has SETTLED there and the caller should re-anchor.
+     */
+    function shouldSkipFrame(refPos, snap, key) {
+      const vs = ap.vs;
+      if (!isPartialMoveFrame(refPos, snap)) return false;
+      if (countPieces(snap) < countPieces(refPos.board)) {
+        vs.lastSkippedKey = key;
+        return true;
+      }
+      if (key === vs.lastSkippedKey) return false; // settled, not an animation
+      vs.lastSkippedKey = key;
+      return true;
+    }
+
+    /** FEN placement field for a 64-array board. */
+    function placementFen(arr) {
+      const rows = [];
+      for (let rank = 7; rank >= 0; rank--) {
+        let row = '', empty = 0;
+        for (let file = 0; file < 8; file++) {
+          const p = arr[rank * 8 + file];
+          if (p) {
+            if (empty) { row += empty; empty = 0; }
+            row += p;
+          } else empty++;
+        }
+        if (empty) row += empty;
+        rows.push(row);
+      }
+      return rows.join('/');
+    }
+
+    /** The record key: placement + side + castling; en passant dropped. */
+    const posKeyOf = (pos) => placementFen(pos.board) + ' ' + pos.side + ' ' + (pos.castling || '-');
+
+    /**
+     * Position object for a mid-game anchor. Castling is the same home-square
+     * heuristic readReviewFen uses (may over-grant); en passant unknown. Both
+     * are accepted approximations — and internally consistent, because every
+     * key is derived from positions the tracker itself maintains.
+     */
+    function posFromBoard(arr, side) {
+      let castling = '';
+      if (arr[4] === 'K') {
+        if (arr[7] === 'R') castling += 'K';
+        if (arr[0] === 'R') castling += 'Q';
+      }
+      if (arr[60] === 'k') {
+        if (arr[63] === 'r') castling += 'k';
+        if (arr[56] === 'r') castling += 'q';
+      }
+      return { board: arr.slice(), side, castling, ep: -1, fullmove: 1 };
+    }
+
+    /** The unique legal move that turns pos into the target placement, or null. */
+    function findSingleMove(pos, target) {
+      let found = null;
+      for (const move of CloSan.generateMoves(pos)) {
+        const next = CloSan.makeMove(pos, move);
+        if (boardsEqual(next.board, target)) {
+          if (found) return null; // ambiguous — be safe, treat as no match
+          found = { move, next };
+        }
+      }
+      return found;
+    }
+
+    /** Squares a move is allowed to disturb (incl. castling rook, ep pawn). */
+    function moveSquares(pos, move) {
+      const set = [move.from, move.to];
+      const piece = pos.board[move.from];
+      const type = piece && piece.toUpperCase();
+      if (type === 'K' && Math.abs((move.to & 7) - (move.from & 7)) === 2) {
+        const rank = move.from & 56;
+        if ((move.to & 7) === 6) set.push(rank + 7, rank + 5);
+        else set.push(rank + 0, rank + 3);
+      }
+      if (type === 'P' && move.to === pos.ep) {
+        set.push(move.to + (pos.side === 'w' ? -8 : 8));
+      }
+      return set;
+    }
+
+    /**
+     * True when the snapshot looks like SOME legal move caught mid-animation:
+     * it matches that move's resulting board everywhere except on the move's
+     * own squares (e.g. the piece is already on the target but not yet
+     * removed from the source — Chessable renders such frames, and only kings
+     * are caught by the snapshot sanity check). Such frames are skipped
+     * instead of derailing the tracker into a re-anchor.
+     */
+    function isPartialMoveFrame(pos, target) {
+      for (const move of CloSan.generateMoves(pos)) {
+        const next = CloSan.makeMove(pos, move);
+        const allowed = moveSquares(pos, move);
+        let partial = true;
+        for (let i = 0; i < 64; i++) {
+          if (next.board[i] !== target[i] && allowed.indexOf(i) < 0) { partial = false; break; }
+        }
+        if (partial) return true;
+      }
+      return false;
+    }
+
+    /** The trainer orients the board with the student's colour at the bottom. */
+    function readBoardOrientation() {
+      const board = getReviewBoard();
+      if (!board) return null;
+      const a1 = board.querySelector(SELECTORS.reviewSquare.replace('%s', 'a1'));
+      const h8 = board.querySelector(SELECTORS.reviewSquare.replace('%s', 'h8'));
+      if (!a1 || !h8) return null;
+      const ra = a1.getBoundingClientRect(), rh = h8.getBoundingClientRect();
+      if (!ra.height || !rh.height) return null;
+      return ra.top > rh.top ? 'w' : 'b';
+    }
+
+    // --- session record (chrome.storage.session) ----------------------------
+
+    async function loadRecord(bid) {
+      ap.recordBid = bid;
+      ap.record = {};
+      try {
+        // Wake the worker first: its startup applies the storage.session
+        // access level that lets a content script read the area at all.
+        await chrome.runtime.sendMessage({ type: 'clo-ping' }).catch(() => {});
+        const stored = await chrome.storage.session.get(C.recordKey);
+        const mine = (stored[C.recordKey] || {})[bid] || {};
+        const now = Date.now();
+        for (const [key, entry] of Object.entries(mine)) {
+          if (entry && now - entry.seenAt < C.recordTtlMs) ap.record[key] = entry;
+        }
+        log('auto-play: loaded', Object.keys(ap.record).length, 'proven positions for course', bid);
+      } catch (err) {
+        warn('auto-play: could not read the session record:', err);
+      }
+    }
+
+    function scheduleSaveRecord() {
+      clearTimeout(ap.saveTimer);
+      ap.saveTimer = setTimeout(saveRecord, C.saveDebounceMs);
+    }
+
+    async function saveRecord() {
+      if (!ap.recordBid || !ap.record) return;
+      try {
+        const stored = await chrome.storage.session.get(C.recordKey);
+        const all = stored[C.recordKey] || {};
+        all[ap.recordBid] = ap.record;
+        const now = Date.now(); // prune expired entries of every course while we're here
+        for (const bid of Object.keys(all)) {
+          for (const [key, entry] of Object.entries(all[bid])) {
+            if (!entry || now - entry.seenAt >= C.recordTtlMs) delete all[bid][key];
+          }
+          if (!Object.keys(all[bid]).length) delete all[bid];
+        }
+        await chrome.storage.session.set({ [C.recordKey]: all });
+        log('auto-play: record saved —', Object.keys(ap.record).length,
+          'positions for course', ap.recordBid);
+      } catch (err) {
+        warn('auto-play: could not save the session record:', err);
+      }
+    }
+
+    /**
+     * Debug probe: dispatching a `clo-debug` DOM event makes this content
+     * script dump a SUMMARY of the extension's session storage (counts and
+     * key names only, no contents) into a data attribute on <html>, where
+     * page-context tooling can read it. Storage areas are invisible from the
+     * page, so without this there is no way to diagnose persistence issues
+     * in a running session.
+     */
+    document.addEventListener('clo-debug', async () => {
+      let out;
+      try {
+        const all = await chrome.storage.session.get(null);
+        out = {};
+        for (const [k, v] of Object.entries(all)) {
+          if (k === C.recordKey) {
+            out[k] = Object.fromEntries(Object.entries(v).map(([bid, recs]) =>
+              [bid, Object.keys(recs).length]));
+          } else if (v && typeof v === 'object') {
+            out[k] = Object.keys(v);
+          } else {
+            out[k] = typeof v;
+          }
+        }
+      } catch (err) {
+        out = { error: String(err) };
+      }
+      document.documentElement.setAttribute('data-clo-session', JSON.stringify(out));
+    });
+
+    // --- tracker -------------------------------------------------------------
+
+    function resetVariation(oid, bid) {
+      const vs = ap.vs;
+      clearTimeout(vs.injectTimer);
+      clearTimeout(vs.verifyTimer);
+      ap.vs = freshVariationState(oid, bid);
+      setStatus('');
+      if (oid) log('auto-play: tracking variation', oid);
+    }
+
+    /**
+     * Begin (or restart) tracking from this placement. The standard starting
+     * position fixes the side to move immediately; any other position waits
+     * for the first observed move, whose mover's colour reveals it. Losing
+     * the exact ply here is fine: the oracle check aligns by POSITION (see
+     * simulateOracleLine), not by counted plies.
+     */
+    function startTracking(snap, key) {
+      const vs = ap.vs;
+      vs.pendingRecord = null;
+      vs.lastSkippedKey = null;
+      vs.pos = null;
+      vs.ply = 0;
+      vs.history.clear();
+      vs.userColor = readBoardOrientation();
+      vs.anchor = snap;
+      vs.lastMoveAt = Date.now();
+      if (boardsEqual(snap, STANDARD_START.board)) {
+        vs.pos = { board: snap.slice(), side: 'w', castling: 'KQkq', ep: -1, fullmove: 1 };
+        vs.history.set(key, { pos: vs.pos, ply: 0 });
+      }
+    }
+
+    /**
+     * First snapshot(s) of a variation: anchor, then fix the side to move.
+     * Returns 'skip' for mid-animation frames, which must not update lastKey
+     * (drag-lift frames are common here — before the side is known there is
+     * no tracked position, so this path needs its own animation tolerance or
+     * a single user drag cascades into blind re-anchoring).
+     */
+    function anchorOrFirstMove(snap, key) {
+      const vs = ap.vs;
+      if (!vs.anchor) {
+        startTracking(snap, key);
+        return;
+      }
+      let found = null;
+      for (const side of ['w', 'b']) {
+        const pos = posFromBoard(vs.anchor, side);
+        const match = findSingleMove(pos, snap);
+        if (match) {
+          if (found) return startTracking(snap, key); // ambiguous — re-anchor
+          found = { match, side };
+        }
+      }
+      if (!found) {
+        if (shouldSkipFrame(posFromBoard(vs.anchor, 'w'), snap, key) ||
+            shouldSkipFrame(posFromBoard(vs.anchor, 'b'), snap, key)) {
+          return 'skip';
+        }
+        log('auto-play: unmatched frame while the side to move is unknown — re-anchoring');
+        startTracking(snap, key);
+        return;
+      }
+      vs.lastSkippedKey = null;
+      vs.pos = posFromBoard(vs.anchor, found.side);
+      vs.history.set(placementKey(vs.anchor), { pos: vs.pos, ply: 0 });
+      applyObservedMove(found.match, key);
+    }
+
+    function readMoveNote() {
+      const el = document.querySelector(SELECTORS.trainerMoveNote);
+      return el ? (el.textContent || '').trim() : '';
+    }
+
+    /**
+     * Commit the pending user answer, unless the trainer's notification vetoes
+     * it. Called when the opponent replies (primary confirmation) or when the
+     * variation completes.
+     */
+    function confirmPendingRecord(why) {
+      const vs = ap.vs;
+      const pending = vs.pendingRecord;
+      if (!pending) return;
+      vs.pendingRecord = null;
+      const note = readMoveNote();
+      if (/incorrect|time.s up/i.test(note)) {
+        log('auto-play: not recording', pending.uci, '— notification reads:', note);
+        return;
+      }
+      if (!ap.record) return;
+      const prev = ap.record[pending.posKey];
+      ap.record[pending.posKey] = {
+        uci: pending.uci,
+        promo: pending.promo,
+        seenAt: Date.now(),
+        count: (prev && prev.count || 0) + 1,
+        // A fresh proof of a DIFFERENT move lifts the conflict flag (the
+        // oracle check still guards every future auto-play of it).
+        conflicted: Boolean(prev && prev.conflicted && prev.uci === pending.uci),
+      };
+      scheduleSaveRecord();
+      log('auto-play: recorded', pending.uci, '(' + why + ')');
+    }
+
+    function applyObservedMove(found, key) {
+      const vs = ap.vs;
+      const mover = vs.pos.side;
+      const move = found.move;
+      const uci = squareName(move.from) + squareName(move.to);
+      const posKeyBefore = posKeyOf(vs.pos);
+
+      let kind;
+      if (mover !== vs.userColor) {
+        // Opponent move: the trainer played it, and its arrival is the
+        // primary confirmation of the user's preceding answer.
+        kind = 'opponent';
+        confirmPendingRecord('opponent replied');
+      } else if (vs.injected && vs.injected.uci === uci) {
+        // Our own auto-play landed: refresh the proof's timestamp only.
+        kind = 'injected';
+        clearTimeout(vs.verifyTimer);
+        vs.verifyTimer = 0;
+        vs.injected = null;
+        vs.replayed++;
+        vs.handbackShown = false; // a later handback (transposition resume) flashes again
+        vs.trainerDrove = false;
+        const entry = ap.record && ap.record[posKeyBefore];
+        if (entry) { entry.seenAt = Date.now(); scheduleSaveRecord(); }
+      } else if (Date.now() - ap.lastPointerAt < C.pointerWindowMs) {
+        // A genuine answer. Recorded once confirmed and not vetoed — and from
+        // here on this variation belongs to the user: auto-play only ever
+        // replays the variation's OPENING run of moves, never jumps back in
+        // after the user has taken over (bouncing control back and forth on a
+        // mid-line transposition is too jarring).
+        kind = 'user';
+        vs.pendingRecord = { posKey: posKeyBefore, uci, promo: move.promo || null };
+        vs.trainerDrove = false;
+        vs.handedOver = true;
+      } else {
+        // Trainer-played user-colour move (solution replay after "Time's up",
+        // Key-Moves prefix auto-play) — never recorded, and a signal to give
+        // the trainer room before our next injection.
+        kind = 'trainer';
+        vs.trainerDrove = true;
+      }
+
+      vs.pos = found.next;
+      vs.ply++;
+      vs.movesApplied++;
+      vs.lastMoveAt = Date.now();
+      vs.manualHold = false;
+      vs.history.set(key, { pos: vs.pos, ply: vs.ply });
+      log('auto-play: observed', uci, '(' + kind + ')');
+    }
+
+    /** The board snapped back (wrong answer) or jumped to a known position. */
+    function rollbackTo(key) {
+      const vs = ap.vs;
+      const entry = vs.history.get(key);
+      vs.pos = entry.pos;
+      vs.ply = entry.ply;
+      vs.pendingRecord = null; // never record a move the board took back
+      // The user just failed here (or the trainer restarted) — leave the
+      // retry to them; auto-play resumes once the position advances.
+      vs.manualHold = true;
+      // Withdraw the pointer credit too: if the trainer now shows the
+      // solution itself, the user's earlier (failed) drag must not vouch for
+      // it — they have to touch the board again to get a move recorded.
+      ap.lastPointerAt = 0;
+      stopReplaying();
+    }
+
+    function processFrame() {
+      const vs = ap.vs;
+      if (!vs.oid || vs.suspended) return;
+      if (!location.pathname.startsWith(CONFIG.review.pathPrefix)) return;
+      if (reviewBrowseReady()) return; // completion is handled by tick()
+      const snap = readBoardSnapshot();
+      if (!snap) return;
+      const key = placementKey(snap);
+      if (key === vs.lastKey) return;
+
+      if (!vs.pos) {
+        if (anchorOrFirstMove(snap, key) === 'skip') return; // lastKey untouched
+      } else {
+        const found = findSingleMove(vs.pos, snap);
+        if (found) {
+          vs.lastSkippedKey = null;
+          applyObservedMove(found, key);
+        } else if (vs.history.has(key)) {
+          vs.lastSkippedKey = null;
+          rollbackTo(key);
+        } else if (shouldSkipFrame(vs.pos, snap, key)) {
+          return; // move animation in flight — deliberately NOT updating lastKey
+        } else {
+          log('auto-play: lost track of the board — re-anchoring');
+          startTracking(snap, key);
+        }
+      }
+      vs.lastKey = key;
+      evaluateAutoPlay();
+    }
+
+    // --- the auto-play loop --------------------------------------------------
+
+    const stripCheckGlyphs = (san) => String(san).replace(/[+#]+$/, '');
+
+    function maybeHandback() {
+      const vs = ap.vs;
+      if (vs.replayed > 0 && !vs.handbackShown) {
+        vs.handbackShown = true;
+        setStatus('✋ new move — your turn');
+      }
+    }
+
+    /**
+     * Debug trail for why auto-play did NOT act on the current position — a
+     * silent no-op is indistinguishable from a bug without this. Gated to one
+     * line per (position, reason) pair, since evaluateAutoPlay also runs on
+     * the tick() safety net (every 500 ms) while sitting on the same unproven
+     * position.
+     */
+    function logHandback(reason) {
+      const vs = ap.vs;
+      const tag = vs.lastKey + '|' + reason;
+      if (vs.lastHandbackLog === tag) return;
+      vs.lastHandbackLog = tag;
+      log('auto-play: not replaying here —', reason);
+    }
+
+    function requestOracle() {
+      const vs = ap.vs;
+      vs.oracle = 'pending';
+      setStatus('… checking the line', true);
+      // A prefetch for exactly this variation is already running — its relayed
+      // result satisfies this request too, so don't race it with a second job.
+      if (ap.prefetchInFlight && String(ap.prefetchInFlight) === String(vs.oid)) return;
+      log('auto-play: requesting line oracle for variation', vs.oid);
+      try {
+        chrome.runtime.sendMessage({ type: 'clo-line-oracle-run', oid: vs.oid })
+          .catch(() => { vs.oracle = 'failed'; setStatus(''); });
+      } catch (err) {
+        vs.oracle = 'failed';
+        setStatus('');
+      }
+    }
+
+    /**
+     * Replays the oracle's SAN line with CloSan, so every position BEFORE
+     * each ply is known exactly (true castling and en-passant included).
+     * The auto-play check then locates the CURRENT board position in this
+     * list by content — placement + side — which makes the ply alignment
+     * self-correcting: it does not matter where the tracker happened to
+     * anchor (the trainer's first moves can land before a clean frame), and
+     * transpositions match wherever they join the line. Tries the standard
+     * starting position first (openings), then the tracker's anchor (tactics
+     * lines starting mid-game). Returns [{pos, key}] aligned with the line,
+     * or null (⇒ no auto-play for the variation — fail safe).
+     */
+    function simulateOracleLine(line) {
+      const tryFrom = (startPos) => {
+        let pos = startPos;
+        const sim = [];
+        for (const item of line) {
+          if (pos.side !== item.color) return null;
+          const want = stripCheckGlyphs(item.san);
+          let match = null;
+          for (const move of CloSan.generateMoves(pos)) {
+            const uci = squareName(move.from) + squareName(move.to) + (move.promo || '');
+            const san = CloSan.moveToSan(pos, uci);
+            if (san && stripCheckGlyphs(san) === want) {
+              if (match) return null; // ambiguous — bail out entirely
+              match = move;
+            }
+          }
+          if (!match) return null;
+          sim.push({ pos, key: placementKey(pos.board) + ' ' + pos.side });
+          pos = CloSan.makeMove(pos, match);
+        }
+        return sim;
+      };
+      let sim = tryFrom(CloSan.parseFen('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'));
+      if (!sim && ap.vs.anchor) {
+        sim = tryFrom(posFromBoard(ap.vs.anchor, 'w')) || tryFrom(posFromBoard(ap.vs.anchor, 'b'));
+      }
+      return sim;
+    }
+
+    /** The current + upcoming variations, from the drawer's queue rows. */
+    function readUpcomingOids(limit) {
+      const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
+      let row = marker && marker.parentElement;
+      const out = [];
+      const cur = row && row.getAttribute(SELECTORS.reviewRowVidAttr);
+      if (cur && cur !== '0') out.push(cur);
+      while (row && out.length < limit && (row = row.nextElementSibling)) {
+        const oid = row.getAttribute && row.getAttribute(SELECTORS.reviewRowVidAttr);
+        if (oid && oid !== '0') out.push(oid);
+      }
+      return out;
+    }
+
+    /**
+     * Background warming of the worker's persistent (chrome.storage.local)
+     * oracle cache for the WHOLE visible review queue (current variation
+     * first), one hidden tab at a time — so by the time any variation loads,
+     * its line is usually answered from cache with no page render sitting
+     * between a waiting quiz and its first auto-played move. Runs
+     * automatically while auto-play is enabled (capped to the next 20, so an
+     * idle background tab doesn't churn through a huge queue unasked); the
+     * pump yields whenever the current variation has its own oracle request
+     * in flight, and a failed prefetch is retried on a later refill.
+     */
+    function refillPrefetchQueue() {
+      if (!ap.enabled || !ap.vs.oid) return;
+      for (const oid of readUpcomingOids(20)) {
+        if (!ap.prefetchedOids.has(oid) && oid !== ap.prefetchInFlight &&
+            ap.prefetchQueue.indexOf(oid) < 0) {
+          ap.prefetchQueue.push(oid);
+        }
+      }
+      pumpPrefetch();
+    }
+
+    /**
+     * "Prepare course" (button, independent of the Auto-play toggle): queues
+     * EVERY due variation currently listed in the drawer, so the persistent
+     * cache is warmed for the whole session in one go — today, and for any
+     * later day, since the cache lives in chrome.storage.local. Already-warm
+     * entries cost nothing (the worker answers from cache with no tab).
+     */
+    function startPrepareCourse() {
+      if (ap.prepareActive) return;
+      const oids = readUpcomingOids(500);
+      const pending = new Set();
+      for (const oid of oids) {
+        if (ap.prefetchedOids.has(oid)) continue; // already resolved (cached, or attempted this page-life)
+        pending.add(oid);
+        if (ap.prefetchQueue.indexOf(oid) < 0) ap.prefetchQueue.push(oid);
+      }
+      if (!pending.size) {
+        setStatus('Course already prepared ✓');
+        return;
+      }
+      ap.prepareActive = true;
+      ap.prepareRemaining = pending;
+      ap.prepareTotal = pending.size;
+      ap.prepareDone = 0;
+      syncUi();
+      setStatus('Preparing course… 0/' + ap.prepareTotal, true);
+      log('auto-play: preparing course —', pending.size, 'variation(s) queued');
+      pumpPrefetch();
+    }
+
+    function finishPrepareCourse() {
+      ap.prepareActive = false;
+      ap.prepareRemaining = null;
+      setStatus('Course prepared ✓ (' + ap.prepareDone + ' variation' + (ap.prepareDone === 1 ? '' : 's') + ')');
+      syncUi();
+    }
+
+    function pumpPrefetch() {
+      if (!(ap.enabled || ap.prepareActive) || ap.prefetchInFlight) return;
+      if (ap.vs.oracle === 'pending') return; // the current variation's own request goes first
+      let oid;
+      while ((oid = ap.prefetchQueue.shift())) {
+        if (!ap.prefetchedOids.has(oid)) break;
+      }
+      if (!oid) {
+        if (ap.prepareActive && ap.prepareRemaining && ap.prepareRemaining.size === 0) finishPrepareCourse();
+        return;
+      }
+      ap.prefetchedOids.add(oid);
+      ap.prefetchInFlight = oid;
+      log('auto-play: prefetching line oracle for variation', oid);
+      try {
+        chrome.runtime.sendMessage({ type: 'clo-line-oracle-run', oid })
+          .catch(() => { ap.prefetchInFlight = null; });
+      } catch (err) {
+        ap.prefetchInFlight = null;
+      }
+    }
+
+    function onOracleResult(msg) {
+      const vs = ap.vs;
+      // Prefetch bookkeeping first: free the slot, let a failure be retried
+      // on a later refill, and pump the next queued oid shortly (the current
+      // variation's own needs, handled below, take priority in between).
+      if (ap.prefetchInFlight && String(msg.oid) === String(ap.prefetchInFlight)) {
+        ap.prefetchInFlight = null;
+        if (!msg.ok) ap.prefetchedOids.delete(String(msg.oid));
+        if (ap.prepareActive && ap.prepareRemaining && ap.prepareRemaining.delete(String(msg.oid))) {
+          ap.prepareDone++;
+          if (ap.prepareRemaining.size === 0) finishPrepareCourse();
+          else setStatus('Preparing course… ' + ap.prepareDone + '/' + ap.prepareTotal, true);
+        }
+        setTimeout(pumpPrefetch, 250);
+      }
+      if (!vs.oid || String(msg.oid) !== String(vs.oid)) return;
+      if (msg.ok && Array.isArray(msg.line)) {
+        const sim = simulateOracleLine(msg.line);
+        if (!sim) {
+          vs.oracle = 'failed';
+          warn('auto-play: oracle line does not replay from a known start — manual for this variation');
+          setStatus('');
+          return;
+        }
+        vs.oracle = msg.line;
+        vs.oracleSim = sim;
+        log('auto-play: line oracle ready (' + msg.line.length + ' plies)');
+        setStatus('');
+        evaluateAutoPlay();
+      } else if (msg.error === 'busy') {
+        vs.oracle = null; // retry after a pause (another tab's fetch is running)
+        vs.oracleNextTryAt = Date.now() + C.oracleRetryMs;
+        setStatus('');
+      } else {
+        vs.oracle = 'failed'; // manual play for the rest of the variation
+        warn('auto-play: line oracle failed:', msg.error);
+        setStatus('');
+      }
+    }
+
+    /**
+     * A variation can load with the trainer's prefix moves already played
+     * before the tracker gets a clean frame: the anchor is then a WAITING
+     * quiz position whose side to move nothing will ever reveal (the next
+     * move is the user's). An idle quiz board means it is the user's turn,
+     * so assume the orientation colour, look the position up in the record,
+     * and let the oracle simulation CONFIRM the assumption — the anchor
+     * placement must sit on the line with the user to move — before the
+     * simulated position (true castling/en-passant) is adopted as tracked
+     * state. If the line does not confirm it, nothing is ever played.
+     */
+    function tryAdoptAnchorPosition() {
+      const vs = ap.vs;
+      if (vs.pos || !vs.anchor || !vs.userColor || !ap.record) return;
+      if (Date.now() - vs.lastMoveAt < C.trainerSettleMs) return; // board may still be settling
+      const assumed = posFromBoard(vs.anchor, vs.userColor);
+      if (!ap.record[posKeyOf(assumed)]) return; // nothing recorded here — stay passive
+      if (!vs.oracle) {
+        if (Date.now() >= vs.oracleNextTryAt) requestOracle();
+        return;
+      }
+      if (vs.oracle === 'pending' || vs.oracle === 'failed') return;
+      const here = placementKey(vs.anchor) + ' ' + vs.userColor;
+      const idx = vs.oracleSim.findIndex((step) => step.key === here);
+      if (idx < 0) return; // the line disagrees — leave the quiz alone
+      vs.pos = vs.oracleSim[idx].pos;
+      vs.ply = idx;
+      vs.adopted = true; // the idle wait is already served — no settle floor on top
+      vs.history.set(placementKey(vs.anchor), { pos: vs.pos, ply: idx });
+      log('auto-play: waiting quiz recognised at line index', idx, '— position adopted');
+    }
+
+    /**
+     * The per-position decision (§4b of the design): on a user-turn position,
+     * look up the record, verify the entry against the variation's mainline,
+     * and only then schedule the drag. Every guard degrades to manual play.
+     */
+    function evaluateAutoPlay() {
+      const vs = ap.vs;
+      if (!ap.enabled || document.hidden) return;
+      if (!vs.oid || !vs.bid || vs.suspended || vs.cancelled) return;
+      if (vs.manualHold) { logHandback('manual hold on this position'); return; }
+      if (vs.handedOver) { logHandback('user has taken over this variation'); return; }
+      if (!vs.pos) tryAdoptAnchorPosition();
+      if (!vs.pos || !vs.userColor || vs.pos.side !== vs.userColor) return;
+      if (vs.injected || vs.injectTimer) return;
+      if (!ap.record) return;
+
+      const entry = ap.record[posKeyOf(vs.pos)];
+      const now = Date.now();
+      if (!entry) { logHandback('no record for this position'); maybeHandback(); return; }
+      if (entry.conflicted) { logHandback('position marked conflicted'); maybeHandback(); return; }
+      if (now - entry.seenAt >= C.recordTtlMs) { logHandback('record expired'); maybeHandback(); return; }
+      if (entry.promo) { logHandback('recorded move is a promotion'); maybeHandback(); return; }
+
+      if (vs.oracle === 'failed') { logHandback('line oracle failed'); return; }
+      if (vs.oracle === 'pending') return; // no log — expected transient state
+      if (!vs.oracle) {
+        if (now >= vs.oracleNextTryAt) requestOracle();
+        return;
+      }
+
+      // Conflict guard: locate the CURRENT position in the simulated line by
+      // content (self-aligning — see simulateOracleLine) and require the
+      // recorded move to be exactly what the mainline plays there. The SAN is
+      // computed on the SIMULATED position, whose castling/en-passant state
+      // is exact.
+      const here = placementKey(vs.pos.board) + ' ' + vs.pos.side;
+      const idx = vs.oracleSim.findIndex((step) => step.key === here);
+      if (idx < 0) { logHandback('position not found in the simulated line'); maybeHandback(); return; }
+      const expected = vs.oracle[idx];
+      const san = CloSan.moveToSan(vs.oracleSim[idx].pos, entry.uci);
+      if (!san) { logHandback('recorded move is illegal in the simulated line'); maybeHandback(); return; }
+      if (stripCheckGlyphs(san) !== stripCheckGlyphs(expected.san)) {
+        entry.conflicted = true; // same position, different expected move — never retry this session
+        scheduleSaveRecord();
+        setStatus('⚠ line differs here — manual');
+        log('auto-play: conflict at line index', idx, '— recorded', san, 'vs expected', expected.san);
+        return;
+      }
+
+      // While the trainer may still be auto-playing itself (variation just
+      // loaded, or it drove the last user-colour move — Key-Moves prefix),
+      // wait for the board to sit quiet so the two never race.
+      let delay = C.speeds[ap.speed];
+      if (typeof delay !== 'number') delay = C.speeds[C.defaultSpeed];
+      if ((vs.movesApplied === 0 && !vs.adopted) || vs.trainerDrove) {
+        delay = Math.max(delay, vs.lastMoveAt + C.trainerSettleMs - now);
+      }
+      setStatus('▶ replaying known moves… (click to stop)', true);
+      const expectKey = vs.lastKey;
+      vs.injectTimer = setTimeout(() => {
+        vs.injectTimer = 0;
+        injectMove(entry, expectKey);
+      }, Math.max(0, delay));
+    }
+
+    /**
+     * Mouse event at the centre of `at`, dispatched on `target`. The trainer
+     * board only accepts a synthetic DRAG — mousedown on the source square,
+     * mousemove on document, mouseup on the target — with ≥15 ms gaps
+     * (same-tick bursts misbehave; both verified live).
+     */
+    function dragEvent(target, type, at) {
+      const rect = at.getBoundingClientRect();
+      target.dispatchEvent(new MouseEvent(type, {
+        bubbles: true, cancelable: true, view: window,
+        clientX: rect.x + rect.width / 2,
+        clientY: rect.y + rect.height / 2,
+        button: 0,
+        buttons: type === 'mouseup' ? 0 : 1,
+      }));
+    }
+
+    const autoPlayDelay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    async function injectMove(entry, expectKey) {
+      const vs = ap.vs;
+      // The world may have changed during the speed delay — re-verify, and
+      // drop the sticky "replaying" chip if the injection is off.
+      if (!ap.enabled || document.hidden || vs.cancelled || vs.suspended || vs.manualHold ||
+          vs.lastKey !== expectKey || !vs.pos || vs.pos.side !== vs.userColor) {
+        setStatus('');
+        evaluateAutoPlay(); // the position may have moved on — rejoin the chain
+        return;
+      }
+      const board = getReviewBoard();
+      const fromEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', entry.uci.slice(0, 2)));
+      const toEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', entry.uci.slice(2, 4)));
+      if (!fromEl || !toEl) { vs.manualHold = true; return; }
+      log('auto-play: playing', entry.uci);
+      vs.injected = { uci: entry.uci, at: Date.now() };
+      // Gate for the CSS that hides Chessable's legal-move markers during the
+      // drag; removed shortly AFTER the mouseup so their own class cleanup
+      // happens under cover.
+      clearTimeout(ap.injectClassTimer);
+      document.documentElement.classList.add('clo-injecting');
+      try {
+        dragEvent(fromEl, 'mousedown', fromEl);
+        await autoPlayDelay(C.dragStepMs);
+        dragEvent(document, 'mousemove', toEl);
+        await autoPlayDelay(C.dragStepMs);
+        dragEvent(toEl, 'mouseup', toEl);
+        dragEvent(document, 'mouseup', toEl);
+      } finally {
+        ap.injectClassTimer = setTimeout(() => {
+          document.documentElement.classList.remove('clo-injecting');
+        }, 150);
+      }
+      clearTimeout(vs.verifyTimer);
+      vs.verifyTimer = setTimeout(() => {
+        if (ap.vs !== vs || !vs.injected) return;
+        // The board never accepted the drag (text gate, markup change, …):
+        // fail safe to manual play for this position.
+        warn('auto-play: injected move did not land — handing back');
+        vs.injected = null;
+        vs.manualHold = true;
+        setStatus('');
+      }, C.injectVerifyMs);
+    }
+
+    /** Stop any in-flight/scheduled injection without cancelling the variation. */
+    function stopReplaying() {
+      const vs = ap.vs;
+      clearTimeout(vs.injectTimer);
+      vs.injectTimer = 0;
+      clearTimeout(vs.verifyTimer);
+      vs.verifyTimer = 0;
+      vs.injected = null;
+      clearTimeout(ap.injectClassTimer);
+      document.documentElement.classList.remove('clo-injecting');
+      setStatus('');
+    }
+
+    function cancelForVariation() {
+      ap.vs.cancelled = true;
+      stopReplaying();
+      log('auto-play: cancelled for this variation');
+    }
+
+    // --- UI cluster on the overstudy widget ----------------------------------
+
+    function ensureUi() {
+      const widget = document.getElementById(REVIEW_WIDGET_ID);
+      if (!widget) return;
+      if (ap.ui && ap.ui.root.isConnected && ap.ui.root.parentElement === widget) return;
+      const stale = document.getElementById(AP_CLUSTER_ID);
+      if (stale) stale.remove();
+
+      const root = document.createElement('span');
+      root.id = AP_CLUSTER_ID;
+      root.className = 'clo-ap';
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'clo-ap-toggle';
+      toggle.textContent = 'Auto-play';
+      toggle.setAttribute('aria-pressed', 'false');
+      toggle.title = 'Auto-play moves you already answered correctly this session.\n' +
+        'Auto-played moves count as normal correct answers — the move was proven earlier this ' +
+        'session, and Chessable schedules it as passed. Failed or timed-out moves are never ' +
+        'auto-played, and a move is never auto-played the first time it appears in a session.';
+      toggle.addEventListener('click', () => { // no inline handlers
+        ap.enabled = !ap.enabled;
+        saveAutoPlayPref(C.enabledKey, ap.enabled);
+        if (!ap.enabled) stopReplaying();
+        syncUi();
+        evaluateAutoPlay();
+      });
+
+      const speed = document.createElement('select');
+      speed.className = 'clo-ap-speed';
+      speed.title = 'Extra pause before each auto-played move';
+      for (const [value, label] of [['fast', 'Fast'], ['normal', 'Normal'], ['relaxed', 'Relaxed']]) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = label;
+        speed.appendChild(opt);
+      }
+      speed.addEventListener('change', () => {
+        ap.speed = Object.prototype.hasOwnProperty.call(C.speeds, speed.value)
+          ? speed.value : C.defaultSpeed;
+        saveAutoPlayPref(C.speedKey, ap.speed);
+      });
+
+      const prepare = document.createElement('button');
+      prepare.type = 'button';
+      prepare.className = 'clo-ap-prepare';
+      prepare.textContent = 'Prepare course';
+      prepare.title = 'Fetches every due variation\'s line into a cache that survives ' +
+        'browser restarts, so auto-play never has to wait on it — today or in a later session. ' +
+        'Works independently of the Auto-play toggle above.';
+      prepare.addEventListener('click', startPrepareCourse);
+
+      const status = document.createElement('button');
+      status.type = 'button';
+      status.className = 'clo-ap-status';
+      status.hidden = true;
+      status.addEventListener('click', () => {
+        if (ap.prepareActive) cancelPrepareCourse();
+        else cancelForVariation();
+      });
+
+      root.append(toggle, prepare, speed, status);
+      widget.appendChild(root);
+      ap.ui = { root, toggle, speed, prepare, status };
+      syncUi();
+    }
+
+    function syncUi() {
+      if (!ap.ui) return;
+      ap.ui.toggle.setAttribute('aria-pressed', String(ap.enabled));
+      ap.ui.toggle.classList.toggle('clo-ap-toggle--on', ap.enabled);
+      ap.ui.speed.value = ap.speed;
+      ap.ui.speed.hidden = !ap.enabled;
+      ap.ui.prepare.disabled = ap.prepareActive;
+      ap.ui.prepare.textContent = ap.prepareActive ? 'Preparing…' : 'Prepare course';
+      if (!ap.enabled && !ap.prepareActive) ap.ui.status.hidden = true;
+    }
+
+    function cancelPrepareCourse() {
+      if (!ap.prepareActive) return;
+      log('auto-play: course preparation cancelled by user');
+      ap.prepareActive = false;
+      ap.prepareRemaining = null;
+      setStatus('');
+      syncUi();
+    }
+
+    /** Status chip; sticky text stays until replaced, flashes auto-hide. */
+    function setStatus(text, sticky) {
+      clearTimeout(ap.statusTimer);
+      if (!ap.ui) return;
+      ap.ui.status.textContent = text || '';
+      ap.ui.status.hidden = !text || !(ap.enabled || ap.prepareActive);
+      if (text && !sticky) {
+        ap.statusTimer = setTimeout(() => { if (ap.ui) ap.ui.status.hidden = true; }, C.statusFlashMs);
+      }
+    }
+
+    function saveAutoPlayPref(key, value) {
+      try {
+        chrome.storage.local.set({ [key]: value })
+          .catch((err) => warn('storage write failed:', err));
+      } catch (err) {
+        warn('storage unavailable:', err);
+      }
+    }
+
+    // --- wiring --------------------------------------------------------------
+
+    function ensureObserver() {
+      const board = getReviewBoard();
+      if (!board) {
+        if (ap.observer) { ap.observer.disconnect(); ap.observer = null; ap.observedBoard = null; }
+        return;
+      }
+      if (board === ap.observedBoard && ap.observer) return;
+      if (ap.observer) ap.observer.disconnect();
+      ap.observer = new MutationObserver(onBoardMutation);
+      ap.observer.observe(board, {
+        childList: true, subtree: true,
+        attributes: true, attributeFilter: ['data-piece', 'class'],
+      });
+      ap.observedBoard = board;
+    }
+
+    function onBoardMutation() {
+      if (ap.rafPending) return;
+      ap.rafPending = true;
+      requestAnimationFrame(() => {
+        ap.rafPending = false;
+        processFrame();
+      });
+    }
+
+    function onTrustedPointer(e) {
+      if (!e.isTrusted) return; // our own synthetic drags never count
+      if (e.type === 'pointerdown') {
+        const wrap = document.querySelector(SELECTORS.reviewBoardWrap);
+        if (!wrap || !wrap.contains(e.target)) return;
+        ap.pointerDownOnBoard = true;
+        ap.lastPointerAt = Date.now();
+        // A real pointer on the board while we're replaying = "stop": hand
+        // control back for the rest of this variation.
+        if (ap.vs.injectTimer || ap.vs.injected) cancelForVariation();
+        return;
+      }
+      // Drop of a drag that STARTED on the board. The move lands at this
+      // moment, and the event's target is the floating piece under the cursor
+      // (not a board child) — so credit the drop regardless of target, or a
+      // piece held for a few seconds while thinking loses its user credit.
+      if (e.type === 'pointerup' && ap.pointerDownOnBoard) {
+        ap.pointerDownOnBoard = false;
+        ap.lastPointerAt = Date.now();
+      }
+    }
+
+    function tick() {
+      if (!location.pathname.startsWith(CONFIG.review.pathPrefix)) {
+        if (ap.vs.oid) resetVariation(null, null);
+        return;
+      }
+      ensureUi();
+      const bid = readQuickEditBid();
+      const oid = readQuickEditOid();
+      if (bid && bid !== ap.recordBid) loadRecord(bid);
+      if (oid !== ap.vs.oid) resetVariation(oid, bid);
+      ensureObserver();
+      if (reviewBrowseReady()) {
+        // Post-completion browse state: confirm the final answer (there is no
+        // opponent reply after a line-ending move) and freeze the tracker —
+        // browse navigation is not play.
+        if (!ap.vs.suspended) {
+          confirmPendingRecord('variation completed');
+          ap.vs.suspended = true;
+          stopReplaying();
+        }
+        return;
+      }
+      if (ap.vs.suspended) {
+        // Back in a quiz under the same oid (restarted variation without an
+        // intervening oid change) — start over from a fresh anchor.
+        resetVariation(oid, bid);
+      }
+      processFrame();       // safety net for missed mutations
+      evaluateAutoPlay();   // safety net for aborted/paused injections
+      refillPrefetchQueue(); // keep warming the visible queue (dedupe makes this cheap)
+      if (ap.prepareActive) pumpPrefetch(); // backstop in case the result chain ever stalls
+    }
+
+    // Prefs (shared across tabs via storage; off by default).
+    (async () => {
+      try {
+        const stored = await chrome.storage.local.get([C.enabledKey, C.speedKey]);
+        ap.enabled = Boolean(stored[C.enabledKey]);
+        const speed = stored[C.speedKey];
+        ap.speed = typeof speed === 'string' && Object.prototype.hasOwnProperty.call(C.speeds, speed)
+          ? speed : C.defaultSpeed;
+      } catch (err) {
+        warn('auto-play: pref read failed:', err);
+      }
+      syncUi();
+    })();
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') return;
+      if (changes[C.enabledKey]) {
+        ap.enabled = Boolean(changes[C.enabledKey].newValue);
+        if (!ap.enabled) stopReplaying();
+        syncUi();
+      }
+      if (changes[C.speedKey]) {
+        const v = changes[C.speedKey].newValue;
+        if (typeof v === 'string' && Object.prototype.hasOwnProperty.call(C.speeds, v)) ap.speed = v;
+        syncUi();
+      }
+    });
+
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg && msg.type === 'clo-line-oracle-result') onOracleResult(msg);
+    });
+
+    document.addEventListener('pointerdown', onTrustedPointer, true);
+    document.addEventListener('pointerup', onTrustedPointer, true);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) stopReplaying(); // paused while hidden (§8) …
+      else evaluateAutoPlay();              // … and re-armed on return
+    });
+
+    const pollTimer = setInterval(tick, CONFIG.review.pollMs);
+    window.addEventListener('pagehide', () => {
+      clearInterval(pollTimer);
+      clearTimeout(ap.saveTimer);
+      saveRecord(); // best effort — flush an unsaved answer
+    });
+    tick();
+    log('auto-play watcher active (top document)');
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -2286,16 +3590,22 @@
       boot();
       return;
     }
-    // The standalone variation page hosts ONLY the quick-edit UI — every other
-    // top-document feature is MoveTrainer2 machinery whose gates never match
-    // there, so don't start their pollers.
-    if (IS_VARIATION_PAGE) { initQuickEditUi(); return; }
+    // The standalone variation page hosts the quick-edit UI — and, when this
+    // tab was opened hidden by the worker, the line-oracle driver (section
+    // 13). Every other top-document feature is MoveTrainer2 machinery whose
+    // gates never match there, so don't start their pollers.
+    if (IS_VARIATION_PAGE) {
+      if (await runOracleDriverIfJob()) return;
+      initQuickEditUi();
+      return;
+    }
     // Top document: overstudy widget, background-tab auto-pause, review panel,
-    // and the quick-edit hover UI.
+    // the quick-edit hover UI, and review auto-play.
     initReviewOverstudy();
     initOverstudyAutoPause();
     initReviewPanel();
     initQuickEditUi();
+    initAutoPlay();
   }
 
   if (document.readyState === 'loading') {

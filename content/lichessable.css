@@ -541,6 +541,105 @@
   color: #fff;
 }
 
+/* --- auto-play cluster (section 13) -----------------------------------------
+   Lives inside the overstudy widget row: toggle, speed select, status chip.
+   The chip is a button — clicking it cancels auto-play for the variation. */
+
+.clo-ap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px;
+  border-left: 1px solid #3d3a36;
+}
+
+/* Off state mirrors the outlined secondary button; on state fills green. */
+.clo-ap-toggle {
+  border: 1px solid #629924;
+  background: transparent;
+  color: #a5c96a;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-ap-toggle:hover {
+  background: rgba(98, 153, 36, 0.25);
+  color: #fff;
+}
+
+.clo-ap-toggle--on,
+.clo-ap-toggle--on:hover {
+  background: #629924;
+  color: #fff;
+}
+
+.clo-ap-speed {
+  border: 1px solid #3d3a36;
+  border-radius: 3px;
+  background: #1b1a17;
+  color: #bababa;
+  padding: 3px 4px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+/* Independent of the toggle — works whether or not Auto-play is on. */
+.clo-ap-prepare {
+  border: 1px solid #3d3a36;
+  background: transparent;
+  color: #bababa;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-ap-prepare:hover {
+  border-color: #629924;
+  color: #a5c96a;
+}
+
+.clo-ap-prepare:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.clo-ap-status {
+  border: none;
+  background: transparent;
+  color: #d9a942;
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clo-ap-speed[hidden],
+.clo-ap-status[hidden] {
+  display: none;
+}
+
+/* While an auto-play drag is in flight (html.clo-injecting, set around the
+   synthetic mousedown→mouseup in injectMove), suppress Chessable's
+   legal-move markers: the target-square dots (::before) and tint that
+   normally accompany a picked-up piece. They exist only during the pickup,
+   so nothing else is affected; a 40 ms injected drag would otherwise strobe
+   them across the board on every replayed move. The class names are hashed
+   but stable per Chessable bundle — if they change, the only cost is the
+   markers becoming visible again. */
+html.clo-injecting .highlight-legal-mt2 {
+  background-color: transparent !important;
+}
+
+html.clo-injecting .highlight-legal-mt2::before {
+  display: none !important;
+}
+
 /* --- quick-edit comment (section 12) ----------------------------------------
    A hover pencil next to a mainline move (review browse panel or variation
    page), and the comment popup it opens. Both are singletons mounted on

@@ -1,8 +1,10 @@
 # Design: auto-play already-mastered moves in review
 
-Status: DESIGN ONLY — not implemented. Everything marked *verified* below was
-ground-truthed live on the throwaway Testing course
-(`https://www.chessable.com/course/453453/0/`, bid 453453) on 2026-07-20.
+Status: IMPLEMENTED in v0.16.0 (content section 13 + line-oracle hub in
+background.js) following this design; awaiting the manual live test.
+Everything marked *verified* below was ground-truthed live on the throwaway
+Testing course (`https://www.chessable.com/course/453453/0/`, bid 453453) on
+2026-07-20.
 
 ---
 

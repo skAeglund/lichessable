@@ -32,6 +32,29 @@
  *   The worker relays a clo-quick-edit-result back to the review tab via
  *   chrome.tabs.sendMessage and closes the hidden tab.
  *
+ * Line oracle (auto-play conflict guard, content section 13): fetches a
+ * variation's mainline SAN by rendering Chessable's own /variation/<oid>/
+ * page in a hidden tab (a plain fetch returns only the SPA shell — no moves).
+ * Same one-job-at-a-time pattern as quick-edit, plus a per-oid cache in
+ * chrome.storage.LOCAL (deliberately persistent — unlike the auto-play
+ * position record, a variation's move list is course content, not a
+ * spaced-repetition-sensitive proof, so caching it across days is safe and
+ * is the whole point: it lets a course be "prepared" once and never wait
+ * again). Content's "Prepare course" button just calls clo-line-oracle-run
+ * for every due variation up front; already-cached ones answer instantly
+ * with no tab at all:
+ *   { type:'clo-line-oracle-run', oid }      (review tab -> worker)
+ *       -> answers from cache, or opens /variation/<oid>/ active:false
+ *   { type:'clo-line-oracle-claim', oid }    (hidden-tab driver -> worker)
+ *       -> { claimed }
+ *   { type:'clo-line-oracle-result', oid, ok, line?, error? } (driver -> worker)
+ *   The worker relays a clo-line-oracle-result back to the requesting tab and
+ *   closes the hidden tab. line = [ { san, color:'w'|'b', key:bool }, … ].
+ *
+ * { type:'clo-ping' } -> { ok:true }. Exists so a content script can wake
+ * this worker (and thereby run the setAccessLevel call below) before its
+ * first chrome.storage.session read.
+ *
  * Engine messages (Stockfish runs in an offscreen document; this worker is
  * the hub because offscreen sendMessage can never reach content scripts).
  * All engine messages carry a `target` field ('sw' | 'offscreen'); each
@@ -67,6 +90,27 @@ const QUICK_EDIT_BASE = 'https://www.chessable.com/explore/edit/';
 const QUICK_EDIT_JOB_KEY = 'cloQuickEditJob'; // chrome.storage.session; one job at a time
 const QUICK_EDIT_TIMEOUT_MS = 25000;          // hard cap; force-fail + close the tab
 let quickEditTimer = null;
+
+// Line oracle (auto-play conflict guard, content section 13).
+const ORACLE_BASE = 'https://www.chessable.com/variation/';
+const ORACLE_JOB_KEY = 'cloLineOracleJob';     // chrome.storage.session; one job at a time
+// chrome.storage.LOCAL (persists across browser restarts and days — see the
+// header comment above): { oid: {line, at} }. A variation's move list only
+// changes if its owner edits it, so a long TTL is fine; the auto-play
+// conflict guard (content section 13) never trusts a cached line blindly —
+// it only ever gates whether a recorded move is REPLAYED, so a rare stale
+// entry degrades to an unnecessary manual position, never a wrong move.
+const ORACLE_CACHE_KEY = 'cloLineOracleCache';
+const ORACLE_TIMEOUT_MS = 20000;               // hard cap; force-fail + close the tab
+const ORACLE_CACHE_TTL_MS = 14 * 24 * 3600 * 1000; // 14 days
+const ORACLE_CACHE_MAX = 1000;                 // oldest entries pruned beyond this
+let oracleTimer = null;
+
+// The auto-play session record lives in chrome.storage.session but is read
+// and written by the content script, which cannot touch that area until this
+// runs. Top-level so every worker start re-applies it.
+chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })
+  .catch((err) => console.warn('[CLO] setAccessLevel failed:', err));
 
 // Last engine-hub failure, surfaced via clo-engine-ping (the worker console
 // is hard to reach; the content script asks for this when the engine goes
@@ -105,6 +149,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg && msg.type === 'clo-quick-edit-result') {
     finishQuickEditJob(msg);
+  }
+  // Line-oracle hub (auto-play conflict guard).
+  if (msg && msg.type === 'clo-line-oracle-run') {
+    startOracleJob(msg, sender);
+  }
+  if (msg && msg.type === 'clo-line-oracle-claim') {
+    claimOracleJob(msg, sender).then(sendResponse);
+    return true;
+  }
+  if (msg && msg.type === 'clo-line-oracle-result') {
+    finishOracleJob(msg);
+  }
+  if (msg && msg.type === 'clo-ping') {
+    sendResponse({ ok: true });
   }
   // Engine hub.
   if (msg && msg.target === 'sw') {
@@ -316,6 +374,123 @@ async function finalizeQuickEditJob(job, result) {
   relayQuickEditResult(job, result);
   if (job.hiddenTabId != null) chrome.tabs.remove(job.hiddenTabId).catch(() => {});
   await clearQuickEditJob();
+}
+
+// --- line-oracle hub ---------------------------------------------------------
+// Fetches a variation's mainline by rendering Chessable's own variation page
+// in a hidden tab (content section 13 extracts the SAN list and reports back).
+// One job at a time (queued in chrome.storage.session, same shape as
+// quick-edit); the per-oid cache lives in chrome.storage.LOCAL with a 14-day
+// TTL, so once a variation has been fetched — via ordinary play, background
+// prefetch, or an explicit "Prepare course" — it costs no further tab at all
+// until the cache entry expires or the extension is reloaded.
+
+async function getOracleJob() {
+  try {
+    const stored = await chrome.storage.session.get(ORACLE_JOB_KEY);
+    return stored[ORACLE_JOB_KEY] || null;
+  } catch (err) { return null; }
+}
+async function setOracleJob(job) {
+  try { await chrome.storage.session.set({ [ORACLE_JOB_KEY]: job }); } catch (err) { /* ignore */ }
+}
+async function clearOracleJob() {
+  try { await chrome.storage.session.remove(ORACLE_JOB_KEY); } catch (err) { /* ignore */ }
+}
+
+async function getOracleCache() {
+  try {
+    const stored = await chrome.storage.local.get(ORACLE_CACHE_KEY);
+    return stored[ORACLE_CACHE_KEY] || {};
+  } catch (err) { return {}; }
+}
+
+async function cacheOracleLine(oid, line) {
+  const cache = await getOracleCache();
+  const now = Date.now();
+  cache[oid] = { line, at: now };
+  // Prune: expired first, then oldest beyond the cap.
+  const entries = Object.entries(cache)
+    .filter(([, v]) => v && now - v.at < ORACLE_CACHE_TTL_MS)
+    .sort((a, b) => a[1].at - b[1].at);
+  while (entries.length > ORACLE_CACHE_MAX) entries.shift();
+  try {
+    await chrome.storage.local.set({ [ORACLE_CACHE_KEY]: Object.fromEntries(entries) });
+  } catch (err) { /* ignore */ }
+}
+
+function relayOracleResult(tabId, frameId, oid, result) {
+  chrome.tabs.sendMessage(tabId, {
+    type: 'clo-line-oracle-result', oid,
+    ok: Boolean(result.ok), line: result.line, error: result.error,
+  }, { frameId: frameId || 0 }).catch(() => {});
+}
+
+async function startOracleJob(msg, sender) {
+  const oid = String(msg.oid || '');
+  if (!/^\d+$/.test(oid)) return;
+  if (!sender.tab || typeof sender.tab.id !== 'number') return;
+  const requesterTabId = sender.tab.id;
+  const requesterFrameId = sender.frameId || 0;
+
+  // Cache first — a locally-cached line (persists across days) answers
+  // without any tab at all.
+  const cache = await getOracleCache();
+  const hit = cache[oid];
+  if (hit && Date.now() - hit.at < ORACLE_CACHE_TTL_MS) {
+    relayOracleResult(requesterTabId, requesterFrameId, oid, { ok: true, line: hit.line });
+    return;
+  }
+
+  // One job at a time; the requester retries later on 'busy'.
+  if (await getOracleJob()) {
+    relayOracleResult(requesterTabId, requesterFrameId, oid, { ok: false, error: 'busy' });
+    return;
+  }
+
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url: ORACLE_BASE + oid + '/', active: false });
+  } catch (err) {
+    relayOracleResult(requesterTabId, requesterFrameId, oid, { ok: false, error: 'could not open the variation tab' });
+    return;
+  }
+  await setOracleJob({ oid, requesterTabId, requesterFrameId, hiddenTabId: tab.id });
+  clearTimeout(oracleTimer);
+  oracleTimer = setTimeout(() => failOracleJob('timeout'), ORACLE_TIMEOUT_MS);
+}
+
+/** The driver (in the hidden variation tab) asks whether it has a job. */
+async function claimOracleJob(msg, sender) {
+  const job = await getOracleJob();
+  if (!job || String(job.oid) !== String(msg.oid)) return { claimed: false };
+  if (!sender.tab || typeof sender.tab.id !== 'number') return { claimed: false };
+  if (job.hiddenTabId == null) { job.hiddenTabId = sender.tab.id; await setOracleJob(job); }
+  if (job.hiddenTabId !== sender.tab.id) return { claimed: false };
+  return { claimed: true };
+}
+
+async function finishOracleJob(msg) {
+  const job = await getOracleJob();
+  if (!job || String(job.oid) !== String(msg.oid)) return;
+  const ok = Boolean(msg.ok) && Array.isArray(msg.line) && msg.line.length > 0;
+  if (ok) await cacheOracleLine(job.oid, msg.line);
+  await finalizeOracleJob(job, ok ? { ok: true, line: msg.line } : { ok: false, error: msg.error || 'no line' });
+}
+
+async function failOracleJob(reason) {
+  const job = await getOracleJob();
+  if (!job) return;
+  await finalizeOracleJob(job, { ok: false, error: reason });
+}
+
+/** Relay the outcome to the review tab, close the hidden tab, clear the job. */
+async function finalizeOracleJob(job, result) {
+  clearTimeout(oracleTimer);
+  oracleTimer = null;
+  relayOracleResult(job.requesterTabId, job.requesterFrameId, job.oid, result);
+  if (job.hiddenTabId != null) chrome.tabs.remove(job.hiddenTabId).catch(() => {});
+  await clearOracleJob();
 }
 
 async function handleExplorerFetch(url) {
