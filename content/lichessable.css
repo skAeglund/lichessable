@@ -586,28 +586,6 @@
   font-family: inherit;
 }
 
-/* Independent of the toggle — works whether or not Auto-play is on. */
-.clo-ap-prepare {
-  border: 1px solid #3d3a36;
-  background: transparent;
-  color: #bababa;
-  padding: 4px 10px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 12px;
-  font-family: inherit;
-}
-
-.clo-ap-prepare:hover {
-  border-color: #629924;
-  color: #a5c96a;
-}
-
-.clo-ap-prepare:disabled {
-  cursor: default;
-  opacity: 0.7;
-}
-
 .clo-ap-status {
   border: none;
   background: transparent;

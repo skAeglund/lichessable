@@ -35,6 +35,10 @@ Currently working (v0.16.x).
   `/mt1/analysis/`). The TOP document never exits — it runs the review
   overstudy watcher (chessable.com navigates SPA-style, so `/practice/…` can
   be reached from any page without a load).
+- `content/pagestate.js` — the ONLY MAIN-world script (`world: "MAIN"`, top
+  frame only). Read-only fiber walk that hands auto-play the trainer's own
+  lesson plan; see section 13. Keep it free of `chrome.*` — a MAIN-world
+  content script has no extension APIs.
 - `content/lichessable.css` — panel styles, all namespaced `.clo-`.
 - `background.js` — service worker; does the authenticated explorer fetch,
   opens overstudy tabs, and is the engine message hub. Message types:
@@ -240,13 +244,10 @@ Currently working (v0.16.x).
   colour with no pointer input ⇒ trainer-played (solution replay, Key-Moves
   prefix) and never recorded. Before ANY injection the recorded move's SAN
   (CloSan) must equal the variation mainline's SAN at that ply — the mainline
-  comes from the LINE ORACLE: background.js renders `/variation/<oid>/` in a
-  hidden tab (one job at a time, mirrors quick-edit; per-oid session cache;
-  a plain fetch of that page returns the SPA shell only), and the driver
-  reads `variationMoves` + `variationPieceGlyph` (`data-piece` → piece
-  letter, the text lacks it) + `variationKeyClass`. Mismatch ⇒ entry marked
-  `conflicted` for the session, manual play; any other uncertainty (oracle
-  failed, promotion recorded — trainer picker markup UNVERIFIED, drag not
+  comes from the LINE ORACLE: MoveTrainer2's own `lessonPlan`, read out of
+  page state by `content/pagestate.js` (see below). Mismatch ⇒ entry marked
+  `conflicted` for the session, manual play; any other uncertainty (plan
+  unreadable, promotion recorded — trainer picker markup UNVERIFIED, drag not
   accepted within 2.5 s, ply untrusted after losing track) also degrades to
   manual, never a blind move. Injection is a synthetic mouse DRAG
   (mousedown source → mousemove document → mouseup target, ≥15 ms gaps are
@@ -260,28 +261,35 @@ Currently working (v0.16.x).
   if a transposition reaches a proven position again — jumping back in mid-line
   was reported as jarring; only a variation's opening run ever replays. UI = a
   cluster appended to the overstudy widget (toggle `cloAutoPlayEnabled` off by
-  default, speed `cloAutoPlaySpeed`, a **Prepare course** button, status chip).
+  default, speed `cloAutoPlaySpeed`, status chip).
   Scope is `/practice/` only (not `/learn/` overstudy tabs). During an injected
   drag `<html>` carries `clo-injecting`, which CSS uses to suppress Chessable's
   legal-move dot/tint classes (`highlight-legal-mt2` and its `::before`) so
   auto-play doesn't strobe them.
-  - The line-oracle cache lives in `chrome.storage.LOCAL` (not session), 14-day
-    TTL — deliberately different from the proven-move RECORD: a variation's
-    move list is course content, not a spaced-repetition-sensitive proof, so
-    persisting it across days is safe and is the whole point (background.js).
-  - Passive prefetch: while auto-play is on, the content script reads the
-    drawer's upcoming `oid`s (`readUpcomingOids`) and keeps up to the next 20
-    warmed one hidden tab at a time (`prefetchQueue`/`pumpPrefetch`), yielding
-    to the current variation's own oracle request.
-  - **Prepare course** button (`startPrepareCourse`) queues the ENTIRE visible
-    due queue regardless of the toggle state and shows progress
-    (`prepareRemaining`/`prepareTotal`/`prepareDone`) via the status chip;
-    already-cached oids resolve instantly with no tab. Independent of
-    `ap.enabled` — `pumpPrefetch`/`setStatus`/`syncUi` all check
-    `ap.enabled || ap.prepareActive`.
+  - LINE ORACLE = `content/pagestate.js`, the extension's ONLY MAIN-world
+    content script. React fibers are page-world expandos, invisible to an
+    isolated content script, so the plan cannot be read any other way. It is
+    READ-only: no page state written, no page function called, nothing put on
+    `window`. Protocol: isolated world dispatches `clo-ps-req` on `document`,
+    gets one `clo-ps-res` back whose `detail` is a JSON STRING (live objects
+    would not cross the world boundary); `readLessonLine()` wraps that with a
+    timeout so every caller sees one shape. Search is by SHAPE — a context
+    object owning an array `lessonPlan` — because component names in the
+    bundle are minified; the PROPERTY names (`lessonPlan`, `san`, `sourceFen`,
+    `color`, `variationId`) come from Chessable's API payload and are not.
+    Ground-truthed live: the plan holds per ply `san`/`from`/`to`/`sourceFen`/
+    `targetFen`, swaps to the next variation ~90 ms BEFORE its first move
+    animates, and a whole variation runs with ZERO network requests. So
+    `requestOracle()` needs no fetch, no cache, no prefetch and no simulation:
+    `vs.oracleSim[i].pos` is `CloSan.parseFen(plan[i].sourceFen)` — exact
+    castling and en passant, tactics lines starting mid-game included. It
+    still aligns by POSITION, not ply index, so transpositions and a late
+    tracker anchor both work. A read for the WRONG oid (trainer mid-swap) or
+    an unusable plan retries `oracleMaxTries` times behind `oracleRetryMs`,
+    then the variation goes manual.
   - `logHandback(reason)` prints one console line per (position, reason) pair
     whenever auto-play declines to replay — no-record, conflicted, expired,
-    promotion, oracle failed/pending, ply not found in the simulated line,
+    promotion, oracle failed/pending, ply not found in the line,
     illegal SAN — since a silent no-op is otherwise indistinguishable from a
     bug. Debug-only DOM hook: dispatching a `clo-debug` event on `document`
     dumps a summary (record/cache key counts, no move data) onto
@@ -292,6 +300,7 @@ Currently working (v0.16.x).
 
 ```
 node --check content/lichessable.js
+node --check content/pagestate.js
 node --check background.js
 node --check options/options.js
 node --check engine/engine.js

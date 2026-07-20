@@ -1,10 +1,28 @@
 # Design: auto-play already-mastered moves in review
 
 Status: IMPLEMENTED in v0.16.0 (content section 13 + line-oracle hub in
-background.js) following this design; awaiting the manual live test.
-Everything marked *verified* below was ground-truthed live on the throwaway
-Testing course (`https://www.chessable.com/course/453453/0/`, bid 453453) on
-2026-07-20.
+background.js) following this design. Everything marked *verified* below was
+ground-truthed live on the throwaway Testing course
+(`https://www.chessable.com/course/453453/0/`, bid 453453) on 2026-07-20.
+
+> **SUPERSEDED IN v0.18.0 — the line oracle (§6, §4e) no longer exists as
+> designed here.** Everything below about fetching `/variation/<oid>/` in a
+> hidden tab, the `clo-line-oracle-*` message flow, the persistent oracle
+> cache, passive prefetch and the **Prepare course** button was removed. It
+> turned out MoveTrainer2 already holds the whole current variation in page
+> state: its state-machine context carries a `lessonPlan` array with, per ply,
+> `san`, `from`, `to` and the FULL `sourceFen`/`targetFen`. Verified live
+> 2026-07-21: the plan swaps to the next variation ~90 ms BEFORE that
+> variation's first move animates, and a whole variation replays with ZERO
+> network requests. `content/pagestate.js` (the extension's only MAIN-world
+> script — React fibers are page-world state) reads it over a `clo-ps-req` /
+> `clo-ps-res` CustomEvent pair. Consequences: no fetch, no tab, no cache, no
+> prefetch, no waiting; and no SAN re-simulation either, since each ply's
+> position is parsed straight from its own `sourceFen` — so the "line does not
+> replay from a known start" and ambiguity bail-outs are gone too. The
+> DECISIONS in §1–§5 and §7–§9 (what gets recorded, position keying, the
+> conflict guard's *rule*, drag injection, hand-back behaviour) all stand
+> unchanged; only the oracle's *source* changed. See CLAUDE.md section 13.
 
 ---
 

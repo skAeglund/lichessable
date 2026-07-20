@@ -116,8 +116,6 @@
     // data-piece ("knight", …) — the move text lacks the letter, so full SAN is
     // pieceLetter(data-piece) + text.
     trainerMoveNote:     '[data-testid="moveNotification"]', // "Incorrect" / "Time's up" / XP toast
-    variationKeyClass:   'is_key',                           // key-move marker class on variationMoves divs
-    variationPieceGlyph: '.commentMove__piece[data-piece]',  // figurine span → SAN piece letter
   };
 
   const CONFIG = {
@@ -198,8 +196,9 @@
       trainerSettleMs: 700,    // quiet time required before injecting while the trainer may be auto-playing
       saveDebounceMs: 800,     // record writes are debounced
       statusFlashMs: 2500,     // lifetime of the transient status chips
-      oracleSettleMs: 250,     // wait after the variation page's move list renders before reading it
-      oracleRetryMs: 2500,     // back-off before re-requesting the oracle after a 'busy' reply
+      pageStateTimeoutMs: 1500, // wait for content/pagestate.js to answer a line request
+      oracleRetryMs: 400,      // back-off before re-reading the plan (trainer mid-variation-swap)
+      oracleMaxTries: 6,       // consecutive unusable reads before the variation goes manual
     },
   };
 
@@ -2310,8 +2309,8 @@
   // dropped — same normalization as the explorer cache). When the trainer
   // later reaches a recorded position — the shared prefix of the next
   // variation, or any transposition — the recorded move is verified against
-  // the variation's actual mainline (the "line oracle": Chessable's own
-  // /variation/<oid>/ page rendered in a hidden tab, see background.js) and
+  // the variation's actual mainline (the "line oracle": the trainer's OWN
+  // lesson plan, read out of page state by content/pagestate.js) and
   // then played by a synthetic DRAG (the explore click-click recipe does not
   // work on the trainer board — verified). Control naturally returns at the
   // first position the user has not proven: the lookup misses and nothing
@@ -2339,85 +2338,41 @@
   // mismatch, unparseable board, promotion picker, text gate swallowing the
   // drag, ply misalignment after losing track) degrades to MANUAL play —
   // never to a blind move.
+  //
+  // The oracle is the trainer's own `lessonPlan`, lifted from page state by
+  // the MAIN-world content/pagestate.js: per ply a SAN plus the full
+  // `sourceFen`, so the positions the conflict guard compares against are
+  // Chessable's, exactly — no move list is re-parsed, no line is re-simulated,
+  // and nothing is fetched (the plan is in memory before the variation's first
+  // move animates). Read once per variation, in the tab auto-play runs in.
   // ==========================================================================
 
-  // --- line-oracle driver (runs in the hidden /variation/<oid>/ tab) --------
-
-  const ORACLE_PIECE_LETTERS = { king: 'K', queen: 'Q', rook: 'R', bishop: 'B', knight: 'N', pawn: '' };
+  // --- the line oracle (the trainer's own lesson plan) ----------------------
 
   /**
-   * SAN for one variation-page move div, or null. The div's text lacks the
-   * piece letter (it is an SVG figurine), but the figurine span's data-piece
-   * names the piece. Promotion SANs come out wrong here (the glyph names the
-   * promoted piece) — harmless, because recorded promotions are never
-   * auto-played (§8 of the design) and so never reach the comparison.
+   * Asks content/pagestate.js (MAIN world) for the current variation's
+   * mainline and resolves with its answer: { oid, plies:[…] } | { error }.
+   * Rejection is impossible — a missing responder resolves as an error after
+   * CONFIG.autoPlay.pageStateTimeoutMs, so every caller has exactly one shape
+   * to handle.
    */
-  function oracleSanFromEl(el) {
-    const glyph = el.querySelector(SELECTORS.variationPieceGlyph);
-    const dp = glyph ? glyph.getAttribute('data-piece') : null;
-    const letter = dp && Object.prototype.hasOwnProperty.call(ORACLE_PIECE_LETTERS, dp.toLowerCase())
-      ? ORACLE_PIECE_LETTERS[dp.toLowerCase()] : '';
-    let text = (el.textContent || '').trim();
-    if (glyph && glyph.textContent) text = text.replace(glyph.textContent.trim(), '').trim();
-    return quickEditSan(letter + text);
-  }
-
-  /** The variation's mainline as [{san, color, key}], or null if unreadable. */
-  function readOracleLine() {
-    const els = [...document.querySelectorAll(SELECTORS.variationMoves)];
-    if (!els.length) return null;
-    const line = new Array(els.length).fill(null);
-    for (const el of els) {
-      // The move div's id IS the 0-based ply index (verified markup) — the
-      // same index the review tracker counts, so no numbering is parsed.
-      const idx = Number(el.id);
-      if (!Number.isInteger(idx) || idx < 0 || idx >= els.length || line[idx]) return null;
-      const san = oracleSanFromEl(el);
-      if (!san) return null; // one unparseable move fails the whole oracle — fail safe
-      line[idx] = {
-        san,
-        color: el.classList.contains('whiteMove') ? 'w' : 'b',
-        key: el.classList.contains(SELECTORS.variationKeyClass),
+  function readLessonLine() {
+    return new Promise((resolve) => {
+      let timer = 0;
+      const onRes = (ev) => {
+        clearTimeout(timer);
+        document.removeEventListener('clo-ps-res', onRes);
+        let payload = null;
+        try { payload = JSON.parse(ev.detail); } catch (err) { /* fall through */ }
+        resolve(payload && typeof payload === 'object' ? payload : { error: 'unreadable reply' });
       };
-    }
-    return line;
-  }
-
-  /**
-   * Called from start() on the standalone variation page. Asks the worker
-   * whether this tab was opened as a line-oracle job; if so, reads the
-   * mainline once it renders and reports it (the worker relays the result and
-   * closes this tab). Returns true when handled, so the caller skips the
-   * quick-edit UI in the throwaway tab.
-   */
-  async function runOracleDriverIfJob() {
-    const m = VARIATION_PATH_RE.exec(location.pathname);
-    if (!m) return false;
-    const oid = m[1];
-    let res;
-    try {
-      res = await chrome.runtime.sendMessage({ type: 'clo-line-oracle-claim', oid });
-    } catch (err) {
-      return false;
-    }
-    if (!res || !res.claimed) return false;
-    log('line-oracle driver claimed job for variation', oid);
-    (async () => {
-      let line = null;
-      try {
-        await quickEditWaitFor(SELECTORS.variationMoves, CONFIG.quickEdit.bootTimeoutMs);
-        await quickEditDelay(CONFIG.autoPlay.oracleSettleMs);
-        line = readOracleLine();
-      } catch (err) {
-        warn('line-oracle driver error:', err);
-      }
-      chrome.runtime.sendMessage({
-        type: 'clo-line-oracle-result', oid,
-        ok: Boolean(line), line: line || undefined,
-        error: line ? undefined : 'could not read the move list',
-      }).catch(() => {});
-    })();
-    return true;
+      document.addEventListener('clo-ps-res', onRes);
+      timer = setTimeout(() => {
+        document.removeEventListener('clo-ps-res', onRes);
+        resolve({ error: 'page-state reader did not answer' });
+      }, CONFIG.autoPlay.pageStateTimeoutMs);
+      document.dispatchEvent(new CustomEvent('clo-ps-req'));
+    });
   }
 
   // --- the auto-play module (review sessions only) ---------------------------
@@ -2444,13 +2399,6 @@
       statusTimer: 0,
       lastPointerAt: 0,        // last TRUSTED pointer down (grab) or drop
       pointerDownOnBoard: false, // a trusted drag started on the board and is in flight
-      prefetchedOids: new Set(), // oracle prefetches already fired this page
-      prefetchQueue: [],       // upcoming oids waiting for a prefetch slot
-      prefetchInFlight: null,  // oid whose prefetch result is outstanding
-      prepareActive: false,    // an explicit "Prepare course" batch is running
-      prepareRemaining: null,  // Set of oids from THIS batch not yet resolved
-      prepareTotal: 0,
-      prepareDone: 0,
       injectClassTimer: 0,     // pending removal of the html.clo-injecting gate
       observer: null,
       observedBoard: null,
@@ -2476,8 +2424,9 @@
         lastKey: null,       // placement key of the last processed snapshot
         history: new Map(),  // placement key -> { pos, ply } for snap-backs/restarts
         oracle: null,        // null | 'pending' | 'failed' | [{san, color, key}, …]
-        oracleSim: null,     // simulated line: [{pos, key}] — positions BEFORE each oracle ply
-        oracleNextTryAt: 0,  // back-off after a 'busy' reply
+        oracleSim: null,     // the plan's line: [{pos, key}] — positions BEFORE each oracle ply
+        oracleNextTryAt: 0,  // back-off before re-reading a not-yet-ready plan
+        oracleTries: 0,      // unusable reads so far this variation
         pendingRecord: null, // { posKey, uci, promo } — user answer awaiting confirmation
         injected: null,      // { uci, at } — our drag in flight
         injectTimer: 0,      // pending speed-delay before a drag
@@ -2748,7 +2697,7 @@
      * position fixes the side to move immediately; any other position waits
      * for the first observed move, whose mover's colour reveals it. Losing
      * the exact ply here is fine: the oracle check aligns by POSITION (see
-     * simulateOracleLine), not by counted plies.
+     * requestOracle), not by counted plies.
      */
     function startTracking(snap, key) {
       const vs = ap.vs;
@@ -2964,197 +2913,62 @@
       log('auto-play: not replaying here —', reason);
     }
 
-    function requestOracle() {
+    /**
+     * Reads the trainer's own lesson plan for the CURRENT variation and turns
+     * it into the two arrays the conflict guard uses:
+     *   vs.oracle    — [{san, color}] per ply of the mainline
+     *   vs.oracleSim — [{pos, key}]: the position BEFORE each ply, parsed from
+     *                  the plan's own sourceFen. Exact castling and en-passant
+     *                  state, straight from Chessable — nothing is replayed,
+     *                  so there is no ambiguity to bail out on and no starting
+     *                  position to guess (tactics lines starting mid-game come
+     *                  out as naturally as openings).
+     * evaluateAutoPlay then locates the current board in oracleSim by CONTENT
+     * (placement + side to move), which keeps the ply alignment self-
+     * correcting: it does not matter where the tracker happened to anchor, and
+     * a transposition matches wherever it joins the line.
+     *
+     * An answer for a different variation, or no answer at all, means the
+     * trainer is mid-swap: retry a few times, then fall back to manual play
+     * for the variation rather than replaying anything unverified.
+     */
+    async function requestOracle() {
       const vs = ap.vs;
+      const oid = String(vs.oid);
       vs.oracle = 'pending';
       setStatus('… checking the line', true);
-      // A prefetch for exactly this variation is already running — its relayed
-      // result satisfies this request too, so don't race it with a second job.
-      if (ap.prefetchInFlight && String(ap.prefetchInFlight) === String(vs.oid)) return;
-      log('auto-play: requesting line oracle for variation', vs.oid);
-      try {
-        chrome.runtime.sendMessage({ type: 'clo-line-oracle-run', oid: vs.oid })
-          .catch(() => { vs.oracle = 'failed'; setStatus(''); });
-      } catch (err) {
-        vs.oracle = 'failed';
+
+      const res = await readLessonLine();
+      if (ap.vs !== vs || String(vs.oid) !== oid) return; // variation moved on — stale answer
+
+      const retry = (why) => {
+        vs.oracleTries++;
         setStatus('');
-      }
-    }
-
-    /**
-     * Replays the oracle's SAN line with CloSan, so every position BEFORE
-     * each ply is known exactly (true castling and en-passant included).
-     * The auto-play check then locates the CURRENT board position in this
-     * list by content — placement + side — which makes the ply alignment
-     * self-correcting: it does not matter where the tracker happened to
-     * anchor (the trainer's first moves can land before a clean frame), and
-     * transpositions match wherever they join the line. Tries the standard
-     * starting position first (openings), then the tracker's anchor (tactics
-     * lines starting mid-game). Returns [{pos, key}] aligned with the line,
-     * or null (⇒ no auto-play for the variation — fail safe).
-     */
-    function simulateOracleLine(line) {
-      const tryFrom = (startPos) => {
-        let pos = startPos;
-        const sim = [];
-        for (const item of line) {
-          if (pos.side !== item.color) return null;
-          const want = stripCheckGlyphs(item.san);
-          let match = null;
-          for (const move of CloSan.generateMoves(pos)) {
-            const uci = squareName(move.from) + squareName(move.to) + (move.promo || '');
-            const san = CloSan.moveToSan(pos, uci);
-            if (san && stripCheckGlyphs(san) === want) {
-              if (match) return null; // ambiguous — bail out entirely
-              match = move;
-            }
-          }
-          if (!match) return null;
-          sim.push({ pos, key: placementKey(pos.board) + ' ' + pos.side });
-          pos = CloSan.makeMove(pos, match);
-        }
-        return sim;
-      };
-      let sim = tryFrom(CloSan.parseFen('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'));
-      if (!sim && ap.vs.anchor) {
-        sim = tryFrom(posFromBoard(ap.vs.anchor, 'w')) || tryFrom(posFromBoard(ap.vs.anchor, 'b'));
-      }
-      return sim;
-    }
-
-    /** The current + upcoming variations, from the drawer's queue rows. */
-    function readUpcomingOids(limit) {
-      const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
-      let row = marker && marker.parentElement;
-      const out = [];
-      const cur = row && row.getAttribute(SELECTORS.reviewRowVidAttr);
-      if (cur && cur !== '0') out.push(cur);
-      while (row && out.length < limit && (row = row.nextElementSibling)) {
-        const oid = row.getAttribute && row.getAttribute(SELECTORS.reviewRowVidAttr);
-        if (oid && oid !== '0') out.push(oid);
-      }
-      return out;
-    }
-
-    /**
-     * Background warming of the worker's persistent (chrome.storage.local)
-     * oracle cache for the WHOLE visible review queue (current variation
-     * first), one hidden tab at a time — so by the time any variation loads,
-     * its line is usually answered from cache with no page render sitting
-     * between a waiting quiz and its first auto-played move. Runs
-     * automatically while auto-play is enabled (capped to the next 20, so an
-     * idle background tab doesn't churn through a huge queue unasked); the
-     * pump yields whenever the current variation has its own oracle request
-     * in flight, and a failed prefetch is retried on a later refill.
-     */
-    function refillPrefetchQueue() {
-      if (!ap.enabled || !ap.vs.oid) return;
-      for (const oid of readUpcomingOids(20)) {
-        if (!ap.prefetchedOids.has(oid) && oid !== ap.prefetchInFlight &&
-            ap.prefetchQueue.indexOf(oid) < 0) {
-          ap.prefetchQueue.push(oid);
-        }
-      }
-      pumpPrefetch();
-    }
-
-    /**
-     * "Prepare course" (button, independent of the Auto-play toggle): queues
-     * EVERY due variation currently listed in the drawer, so the persistent
-     * cache is warmed for the whole session in one go — today, and for any
-     * later day, since the cache lives in chrome.storage.local. Already-warm
-     * entries cost nothing (the worker answers from cache with no tab).
-     */
-    function startPrepareCourse() {
-      if (ap.prepareActive) return;
-      const oids = readUpcomingOids(500);
-      const pending = new Set();
-      for (const oid of oids) {
-        if (ap.prefetchedOids.has(oid)) continue; // already resolved (cached, or attempted this page-life)
-        pending.add(oid);
-        if (ap.prefetchQueue.indexOf(oid) < 0) ap.prefetchQueue.push(oid);
-      }
-      if (!pending.size) {
-        setStatus('Course already prepared ✓');
-        return;
-      }
-      ap.prepareActive = true;
-      ap.prepareRemaining = pending;
-      ap.prepareTotal = pending.size;
-      ap.prepareDone = 0;
-      syncUi();
-      setStatus('Preparing course… 0/' + ap.prepareTotal, true);
-      log('auto-play: preparing course —', pending.size, 'variation(s) queued');
-      pumpPrefetch();
-    }
-
-    function finishPrepareCourse() {
-      ap.prepareActive = false;
-      ap.prepareRemaining = null;
-      setStatus('Course prepared ✓ (' + ap.prepareDone + ' variation' + (ap.prepareDone === 1 ? '' : 's') + ')');
-      syncUi();
-    }
-
-    function pumpPrefetch() {
-      if (!(ap.enabled || ap.prepareActive) || ap.prefetchInFlight) return;
-      if (ap.vs.oracle === 'pending') return; // the current variation's own request goes first
-      let oid;
-      while ((oid = ap.prefetchQueue.shift())) {
-        if (!ap.prefetchedOids.has(oid)) break;
-      }
-      if (!oid) {
-        if (ap.prepareActive && ap.prepareRemaining && ap.prepareRemaining.size === 0) finishPrepareCourse();
-        return;
-      }
-      ap.prefetchedOids.add(oid);
-      ap.prefetchInFlight = oid;
-      log('auto-play: prefetching line oracle for variation', oid);
-      try {
-        chrome.runtime.sendMessage({ type: 'clo-line-oracle-run', oid })
-          .catch(() => { ap.prefetchInFlight = null; });
-      } catch (err) {
-        ap.prefetchInFlight = null;
-      }
-    }
-
-    function onOracleResult(msg) {
-      const vs = ap.vs;
-      // Prefetch bookkeeping first: free the slot, let a failure be retried
-      // on a later refill, and pump the next queued oid shortly (the current
-      // variation's own needs, handled below, take priority in between).
-      if (ap.prefetchInFlight && String(msg.oid) === String(ap.prefetchInFlight)) {
-        ap.prefetchInFlight = null;
-        if (!msg.ok) ap.prefetchedOids.delete(String(msg.oid));
-        if (ap.prepareActive && ap.prepareRemaining && ap.prepareRemaining.delete(String(msg.oid))) {
-          ap.prepareDone++;
-          if (ap.prepareRemaining.size === 0) finishPrepareCourse();
-          else setStatus('Preparing course… ' + ap.prepareDone + '/' + ap.prepareTotal, true);
-        }
-        setTimeout(pumpPrefetch, 250);
-      }
-      if (!vs.oid || String(msg.oid) !== String(vs.oid)) return;
-      if (msg.ok && Array.isArray(msg.line)) {
-        const sim = simulateOracleLine(msg.line);
-        if (!sim) {
+        if (vs.oracleTries >= C.oracleMaxTries) {
           vs.oracle = 'failed';
-          warn('auto-play: oracle line does not replay from a known start — manual for this variation');
-          setStatus('');
+          warn('auto-play: line oracle unavailable (' + why + ') — manual for this variation');
           return;
         }
-        vs.oracle = msg.line;
-        vs.oracleSim = sim;
-        log('auto-play: line oracle ready (' + msg.line.length + ' plies)');
-        setStatus('');
-        evaluateAutoPlay();
-      } else if (msg.error === 'busy') {
-        vs.oracle = null; // retry after a pause (another tab's fetch is running)
+        vs.oracle = null; // evaluateAutoPlay re-requests once the back-off expires
         vs.oracleNextTryAt = Date.now() + C.oracleRetryMs;
-        setStatus('');
-      } else {
-        vs.oracle = 'failed'; // manual play for the rest of the variation
-        warn('auto-play: line oracle failed:', msg.error);
-        setStatus('');
+      };
+
+      if (res.error) return retry(res.error);
+      if (String(res.oid) !== oid) return retry('plan is still on variation ' + res.oid);
+
+      const line = [];
+      const sim = [];
+      for (const ply of res.plies) {
+        const pos = CloSan.parseFen(ply.sourceFen);
+        if (!pos || pos.side !== ply.color) return retry('unparseable plan position');
+        line.push({ san: ply.san, color: ply.color });
+        sim.push({ pos, key: placementKey(pos.board) + ' ' + pos.side });
       }
+      vs.oracle = line;
+      vs.oracleSim = sim;
+      log('auto-play: line oracle ready (' + line.length + ' plies)');
+      setStatus('');
+      evaluateAutoPlay();
     }
 
     /**
@@ -3163,9 +2977,9 @@
      * quiz position whose side to move nothing will ever reveal (the next
      * move is the user's). An idle quiz board means it is the user's turn,
      * so assume the orientation colour, look the position up in the record,
-     * and let the oracle simulation CONFIRM the assumption — the anchor
+     * and let the oracle line CONFIRM the assumption — the anchor
      * placement must sit on the line with the user to move — before the
-     * simulated position (true castling/en-passant) is adopted as tracked
+     * plan's position (true castling/en-passant) is adopted as tracked
      * state. If the line does not confirm it, nothing is ever played.
      */
     function tryAdoptAnchorPosition() {
@@ -3219,17 +3033,16 @@
         return;
       }
 
-      // Conflict guard: locate the CURRENT position in the simulated line by
-      // content (self-aligning — see simulateOracleLine) and require the
-      // recorded move to be exactly what the mainline plays there. The SAN is
-      // computed on the SIMULATED position, whose castling/en-passant state
-      // is exact.
+      // Conflict guard: locate the CURRENT position in the plan's own line by
+      // content (self-aligning — see requestOracle) and require the recorded
+      // move to be exactly what the mainline plays there. The SAN is computed
+      // on the plan's position, whose castling/en-passant state is exact.
       const here = placementKey(vs.pos.board) + ' ' + vs.pos.side;
       const idx = vs.oracleSim.findIndex((step) => step.key === here);
-      if (idx < 0) { logHandback('position not found in the simulated line'); maybeHandback(); return; }
+      if (idx < 0) { logHandback('position not found in the line'); maybeHandback(); return; }
       const expected = vs.oracle[idx];
       const san = CloSan.moveToSan(vs.oracleSim[idx].pos, entry.uci);
-      if (!san) { logHandback('recorded move is illegal in the simulated line'); maybeHandback(); return; }
+      if (!san) { logHandback('recorded move is illegal in the line'); maybeHandback(); return; }
       if (stripCheckGlyphs(san) !== stripCheckGlyphs(expected.san)) {
         entry.conflicted = true; // same position, different expected move — never retry this session
         scheduleSaveRecord();
@@ -3382,27 +3195,15 @@
         saveAutoPlayPref(C.speedKey, ap.speed);
       });
 
-      const prepare = document.createElement('button');
-      prepare.type = 'button';
-      prepare.className = 'clo-ap-prepare';
-      prepare.textContent = 'Prepare course';
-      prepare.title = 'Fetches every due variation\'s line into a cache that survives ' +
-        'browser restarts, so auto-play never has to wait on it — today or in a later session. ' +
-        'Works independently of the Auto-play toggle above.';
-      prepare.addEventListener('click', startPrepareCourse);
-
       const status = document.createElement('button');
       status.type = 'button';
       status.className = 'clo-ap-status';
       status.hidden = true;
-      status.addEventListener('click', () => {
-        if (ap.prepareActive) cancelPrepareCourse();
-        else cancelForVariation();
-      });
+      status.addEventListener('click', cancelForVariation);
 
-      root.append(toggle, prepare, speed, status);
+      root.append(toggle, speed, status);
       widget.appendChild(root);
-      ap.ui = { root, toggle, speed, prepare, status };
+      ap.ui = { root, toggle, speed, status };
       syncUi();
     }
 
@@ -3412,18 +3213,7 @@
       ap.ui.toggle.classList.toggle('clo-ap-toggle--on', ap.enabled);
       ap.ui.speed.value = ap.speed;
       ap.ui.speed.hidden = !ap.enabled;
-      ap.ui.prepare.disabled = ap.prepareActive;
-      ap.ui.prepare.textContent = ap.prepareActive ? 'Preparing…' : 'Prepare course';
-      if (!ap.enabled && !ap.prepareActive) ap.ui.status.hidden = true;
-    }
-
-    function cancelPrepareCourse() {
-      if (!ap.prepareActive) return;
-      log('auto-play: course preparation cancelled by user');
-      ap.prepareActive = false;
-      ap.prepareRemaining = null;
-      setStatus('');
-      syncUi();
+      if (!ap.enabled) ap.ui.status.hidden = true;
     }
 
     /** Status chip; sticky text stays until replaced, flashes auto-hide. */
@@ -3431,7 +3221,7 @@
       clearTimeout(ap.statusTimer);
       if (!ap.ui) return;
       ap.ui.status.textContent = text || '';
-      ap.ui.status.hidden = !text || !(ap.enabled || ap.prepareActive);
+      ap.ui.status.hidden = !text || !ap.enabled;
       if (text && !sticky) {
         ap.statusTimer = setTimeout(() => { if (ap.ui) ap.ui.status.hidden = true; }, C.statusFlashMs);
       }
@@ -3524,8 +3314,6 @@
       }
       processFrame();       // safety net for missed mutations
       evaluateAutoPlay();   // safety net for aborted/paused injections
-      refillPrefetchQueue(); // keep warming the visible queue (dedupe makes this cheap)
-      if (ap.prepareActive) pumpPrefetch(); // backstop in case the result chain ever stalls
     }
 
     // Prefs (shared across tabs via storage; off by default).
@@ -3554,10 +3342,6 @@
         if (typeof v === 'string' && Object.prototype.hasOwnProperty.call(C.speeds, v)) ap.speed = v;
         syncUi();
       }
-    });
-
-    chrome.runtime.onMessage.addListener((msg) => {
-      if (msg && msg.type === 'clo-line-oracle-result') onOracleResult(msg);
     });
 
     document.addEventListener('pointerdown', onTrustedPointer, true);
@@ -3590,12 +3374,10 @@
       boot();
       return;
     }
-    // The standalone variation page hosts the quick-edit UI — and, when this
-    // tab was opened hidden by the worker, the line-oracle driver (section
-    // 13). Every other top-document feature is MoveTrainer2 machinery whose
-    // gates never match there, so don't start their pollers.
+    // The standalone variation page hosts only the quick-edit UI. Every other
+    // top-document feature is MoveTrainer2 machinery whose gates never match
+    // there, so don't start their pollers.
     if (IS_VARIATION_PAGE) {
-      if (await runOracleDriverIfJob()) return;
       initQuickEditUi();
       return;
     }

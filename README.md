@@ -75,16 +75,9 @@ and defeat spaced repetition. Under the **Key Moves** study setting Chessable
 itself already auto-plays the non-key prefix; the feature stays enabled but
 simply finds nothing to do until the first quizzed move.
 
-A separate **Prepare course** button warms a *different*, long-lived cache:
-each variation's actual move list (needed to verify a recorded move before
-replaying it) is fetched once by rendering the real variation page in a
-background tab, and — unlike the proven-move record — this is just course
-content, so it's cached in ordinary extension storage for two weeks and
-survives closing the browser entirely. Left alone, auto-play warms this
-lazily, a few variations ahead of wherever you are; clicking **Prepare
-course** instead queues the *whole* visible review queue up front (shown as a
-progress chip), so a course only ever pays that one-time cost, typically
-completing well before you've finished the first line by hand.
+The move list auto-play checks against is the trainer's own: MoveTrainer2
+already holds the current variation's full line in memory before it plays the
+first move, so nothing is fetched, cached or waited for.
 
 You can also **quick-edit a move's comment**: hover a mainline move and a small
 pencil appears; its popup lets you type a note and append it as a PGN comment
@@ -107,10 +100,12 @@ optional engine is a vendored Stockfish WASM build, downloaded manually.)
 lichessable/
 ├── manifest.json            Manifest V3 definition
 ├── background.js            Service worker: authenticated explorer fetches
-│                            + engine message hub + quick-edit/line-oracle tab driver hubs
+│                            + engine message hub + quick-edit tab driver hub
 ├── content/
 │   ├── lichessable.js       Panel logic (mt1 iframe) + review overstudy widget,
 │   │                        quick-edit UI and review auto-play (top document)
+│   ├── pagestate.js         MAIN-world reader: the trainer's own lesson plan
+│   │                        (the auto-play line oracle), read-only
 │   └── lichessable.css      Panel styling (namespaced under .clo-)
 ├── engine/
 │   ├── offscreen.html       Offscreen document hosting the engine
@@ -264,15 +259,13 @@ lichessable/
   `chrome.storage.session` keyed on placement+side+castling per course, so
   transpositions hit and nothing survives a browser restart. Before any
   auto-play the recorded move is checked against the variation's mainline,
-  fetched once per variation by the **line oracle**: the worker renders
-  `/variation/<oid>/` in a hidden background tab (a plain fetch returns only
-  the SPA shell), the driver there reads the SAN list (piece letters come
-  from the figurine spans' `data-piece`), and the result is cached for two
-  weeks in ordinary extension storage (course content, not a user proof, so —
-  unlike the position record above — persisting it across days is safe and is
-  the point: a course only pays the fetch cost once). The content script keeps
-  this cache warm a few variations ahead automatically, or the whole visible
-  queue at once via **Prepare course**. Any mismatch, oracle failure,
+  supplied by the **line oracle**: MoveTrainer2's own `lessonPlan`, which
+  carries each ply's SAN and full source FEN and is already in memory before
+  the variation's first move animates. React fibers are page-world state, so
+  `content/pagestate.js` — the extension's only MAIN-world script, read-only
+  and matched by shape rather than by minified component names — hands it to
+  the content script over a `CustomEvent` pair. Nothing is fetched or cached.
+  Any mismatch, unreadable plan,
   promotion, lost board tracking or unaccepted drag degrades to manual play —
   never a blind move. The injection itself is a synthetic mouse **drag** with
   ~20 ms gaps (the explore click-click recipe does not work on the trainer
@@ -391,7 +384,7 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
 - `storage` — remembers the show/hide, engine and auto-play preferences and
   holds the Lichess API token; `storage.session` carries the engine's reply
   routing and the tab-driver jobs across service-worker restarts, plus the
-  auto-play session record and line-oracle cache (the worker calls
+  auto-play session record (the worker calls
   `setAccessLevel('TRUSTED_AND_UNTRUSTED_CONTEXTS')` so the content script
   can read them — an API call, not a permission).
 - `offscreen` — hosts the optional Stockfish engine in an offscreen document
