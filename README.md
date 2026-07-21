@@ -267,11 +267,21 @@ lichessable/
   the content script over a `CustomEvent` pair. Nothing is fetched or cached.
   Any mismatch, unreadable plan,
   promotion, lost board tracking or unaccepted drag degrades to manual play —
-  never a blind move. The injection itself is a synthetic mouse **drag** with
-  ~20 ms gaps (the explore click-click recipe does not work on the trainer
-  board), only fired after the board has sat quiet long enough that
-  Chessable's own auto-plays can't race it, and paused whenever the tab is
-  hidden.
+  never a blind move. The move is **clicked** — one synthetic press on the
+  source square and one on the target, back to back — only after the board has
+  sat quiet long enough that Chessable's own auto-plays can't race it, and
+  paused whenever the tab is hidden. Clicking rather than dragging is what
+  makes a replayed move look like one the trainer played: Chessable animates
+  click-moves, gliding the piece across with the same tween it uses for its own
+  replies, while a drag would redraw the board instantly. Sending both presses
+  in one go also means the selection — the grey pickup tint and the legal-move
+  dots — never gets a frame to appear. The speed setting controls two waits:
+  the pause before each replayed move (*Normal* is tuned to the ~480 ms the
+  trainer itself waits before answering) and the longer quiet period required
+  before the first move of a variation, while Chessable may still be setting
+  the position up. The rest of the cycle belongs to Chessable — roughly 440 ms
+  for the move to animate onto the board and 480 ms for its reply — so a
+  replayed move takes about a second end to end even on *Fast*.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.

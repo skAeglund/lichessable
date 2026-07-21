@@ -249,10 +249,18 @@ Currently working (v0.18.x).
   `conflicted` for the session, manual play; any other uncertainty (plan
   unreadable, promotion recorded — trainer picker markup UNVERIFIED, drag not
   accepted within 2.5 s, ply untrusted after losing track) also degrades to
-  manual, never a blind move. Injection is a synthetic mouse DRAG
-  (mousedown source → mousemove document → mouseup target, ≥15 ms gaps are
-  load-bearing; the explore click-click recipe does NOT work on the trainer
-  board), delayed by the speed setting and by a settle floor whenever the
+  manual, never a blind move. Injection CLICKS the move — `pressSquare` on
+  the source then the target, the explore panel's recipe unchanged, both
+  presses in the SAME task (an older note here claimed click-click does not
+  work on the trainer board; it does, on quiet moves and captures alike, and
+  a DRAG is what should be avoided). Both halves are load-bearing and were
+  ground-truthed live: click-move is the path MoveTrainer2 ANIMATES — it
+  tints both squares yellow and glides the piece with the same ~200 ms tween
+  its own replies use, whereas mousedown-here/mouseup-there reads as a drag
+  and redraws instantly (replays used to teleport). Same-task is what keeps
+  the SELECTION invisible: the grey pickup tint and the legal-move dots come
+  from React state and never get a frame to paint. Injection is
+  delayed by the speed setting and by a settle floor whenever the
   trainer itself might still be auto-playing (variation start, Key-Moves
   prefix) so the two never race — but NOT merely because the opponent just
   replied, which is the ordinary variation-start case and needs no floor at
@@ -270,10 +278,24 @@ Currently working (v0.18.x).
   was reported as jarring; only a variation's opening run ever replays. UI = a
   cluster appended to the overstudy widget (toggle `cloAutoPlayEnabled` off by
   default, speed `cloAutoPlaySpeed`, status chip).
-  Scope is `/practice/` only (not `/learn/` overstudy tabs). During an injected
-  drag `<html>` carries `clo-injecting`, which CSS uses to suppress Chessable's
-  legal-move dot/tint classes (`highlight-legal-mt2` and its `::before`) so
-  auto-play doesn't strobe them.
+  Scope is `/practice/` only (not `/learn/` overstudy tabs). During the two
+  presses `<html>` carries `clo-injecting`; its CSS is now only a BACKSTOP for
+  the case where the trainer slips a render between them — the square tints
+  (`highlight-legal-mt2`/`highlight-hover-mt2`, partly inline ⇒ `!important`)
+  and the target markers, which are CHILD divs `legal-square-dot-mt2` /
+  `legal-square-capture-mt2` and NOT a `::before` (an earlier `::before` rule
+  matched nothing). That CSS must never touch `.piece-417db`: the element that
+  ANIMATES any move, Chessable's own replies included, is a `.piece-417db`
+  parked on `document.body` for the glide, so hiding it would break the very
+  animation the injection borrows. A speed preset is a `{move, settle}` pair,
+  both counted from the last board change: `move` is the ordinary pause before
+  a replay (the same clock the trainer answers on — ~480 ms measured live) and
+  `settle` replaces it whenever the trainer may still be auto-playing
+  (variation setup, Key-Moves prefix, solution replay), so it is the wait at a
+  variation's START. Keep `settle` above ~450 ms — that is how long one
+  animated trainer move occupies the board. The rest of a replay's cycle is
+  Chessable's and cannot be tuned: ~440 ms for our move to land, ~480 ms for
+  the reply.
   - LINE ORACLE = `content/pagestate.js`, the extension's ONLY MAIN-world
     content script. React fibers are page-world expandos, invisible to an
     isolated content script, so the plan cannot be read any other way. It is

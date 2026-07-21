@@ -188,12 +188,29 @@
       speedKey:   'cloAutoPlaySpeed',   // chrome.storage.local; 'fast'|'normal'|'relaxed'
       recordKey:  'cloAutoPlayRecord',  // chrome.storage.session; per-course position records
       recordTtlMs: 12 * 3600 * 1000,    // entries older than this are ignored and pruned
-      speeds: { fast: 0, normal: 400, relaxed: 900 }, // extra pause before each auto-played move
+      // The two waits the speed setting owns. Everything else in a replayed
+      // move's cycle belongs to Chessable and is not ours to shorten: ~440 ms
+      // for our own move to reach the board (its animation lead-in plus the
+      // ~200 ms glide) and ~480 ms for the trainer to answer it.
+      //
+      // `move` — pause before each auto-played move, counted from the board
+      //   change that made it our turn, i.e. the same clock the trainer
+      //   answers on (~480 ms measured live, hence 'normal').
+      // `settle` — quiet time required instead whenever the trainer may still
+      //   be auto-playing by itself (variation setup, Key-Moves prefix,
+      //   solution replay), so the two never race. This is the wait at the
+      //   START of a variation, and the one worth shortening if replays feel
+      //   slow to get going. Keep it above ~450 ms: that is how long a single
+      //   animated trainer move occupies the board, so a lower floor could
+      //   let an injection land mid-burst.
+      speeds: {
+        fast:    { move: 150, settle: 500 },
+        normal:  { move: 450, settle: 700 },
+        relaxed: { move: 900, settle: 900 },
+      },
       defaultSpeed: 'normal',
-      dragStepMs: 20,          // gaps inside the drag sequence (same-tick bursts misbehave — verified)
       injectVerifyMs: 2500,    // an injected move must land within this, else manual for the position
       pointerWindowMs: 3000,   // trusted pointer input this recent ⇒ the user played the move
-      trainerSettleMs: 700,    // quiet time required before injecting while the trainer may be auto-playing
       saveDebounceMs: 800,     // record writes are debounced
       statusFlashMs: 2500,     // lifetime of the transient status chips
       pageStateTimeoutMs: 1500, // wait for content/pagestate.js to answer a line request
@@ -2389,6 +2406,9 @@
     const SQ_FILES = 'abcdefgh';
     const squareName = (i) => SQ_FILES[i & 7] + ((i >> 3) + 1);
 
+    /** The `{ move, settle }` pair for the selected speed (see CONFIG). */
+    const currentSpeed = () => C.speeds[ap.speed] || C.speeds[C.defaultSpeed];
+
     const ap = {
       enabled: false,          // the toggle (persisted; off by default)
       speed: C.defaultSpeed,   // extra pause before each auto-played move
@@ -3037,7 +3057,7 @@
     function tryAdoptAnchorPosition() {
       const vs = ap.vs;
       if (vs.pos || !vs.anchor || !vs.userColor || !ap.record) return;
-      if (Date.now() - vs.lastMoveAt < C.trainerSettleMs) return; // board may still be settling
+      if (Date.now() - vs.lastMoveAt < currentSpeed().settle) return; // board may still be settling
       const assumed = posFromBoard(vs.anchor, vs.userColor);
       if (!ap.record[posKeyOf(assumed)]) return; // nothing recorded here — stay passive
       if (!vs.oracle) {
@@ -3113,10 +3133,9 @@
       // trainer no second move to race us with, and mid-line injection —
       // which has always run with no floor at all — is the same situation and
       // lands reliably. That default used to cost 700 ms on every variation.
-      let delay = C.speeds[ap.speed];
-      if (typeof delay !== 'number') delay = C.speeds[C.defaultSpeed];
+      let delay = currentSpeed().move;
       if ((vs.movesApplied === 0 && !vs.adopted) || vs.trainerDrove) {
-        delay = Math.max(delay, vs.lastMoveAt + C.trainerSettleMs - now);
+        delay = Math.max(delay, vs.lastMoveAt + currentSpeed().settle - now);
       }
       setStatus('▶ replaying known moves… (click to stop)', true);
       const expectKey = vs.lastKey;
@@ -3126,26 +3145,7 @@
       }, Math.max(0, delay));
     }
 
-    /**
-     * Mouse event at the centre of `at`, dispatched on `target`. The trainer
-     * board only accepts a synthetic DRAG — mousedown on the source square,
-     * mousemove on document, mouseup on the target — with ≥15 ms gaps
-     * (same-tick bursts misbehave; both verified live).
-     */
-    function dragEvent(target, type, at) {
-      const rect = at.getBoundingClientRect();
-      target.dispatchEvent(new MouseEvent(type, {
-        bubbles: true, cancelable: true, view: window,
-        clientX: rect.x + rect.width / 2,
-        clientY: rect.y + rect.height / 2,
-        button: 0,
-        buttons: type === 'mouseup' ? 0 : 1,
-      }));
-    }
-
-    const autoPlayDelay = (ms) => new Promise((r) => setTimeout(r, ms));
-
-    async function injectMove(entry, expectKey) {
+    function injectMove(entry, expectKey) {
       const vs = ap.vs;
       // The world may have changed during the speed delay — re-verify, and
       // drop the sticky "replaying" chip if the injection is off.
@@ -3161,27 +3161,36 @@
       if (!fromEl || !toEl) { vs.manualHold = true; return; }
       log('auto-play: playing', entry.uci);
       // beforeKey is what the verify timer compares against: the placement the
-      // drag is supposed to change. Observing our own move is the normal way
-      // the injection gets closed out, but it is not the only evidence that it
-      // landed — see the timer below.
+      // injection is supposed to change. Observing our own move is the normal
+      // way the injection gets closed out, but it is not the only evidence that
+      // it landed — see the timer below.
       vs.injected = { uci: entry.uci, at: Date.now(), beforeKey: vs.lastKey };
-      // Gate for the CSS that hides Chessable's legal-move markers during the
-      // drag; removed shortly AFTER the mouseup so their own class cleanup
-      // happens under cover.
+      // Belt and braces for the two presses below: if MoveTrainer2 ever does
+      // get a frame between them, this class hides what a half-made selection
+      // would paint. Dropped again well before the move's own animation runs.
       clearTimeout(ap.injectClassTimer);
       document.documentElement.classList.add('clo-injecting');
-      try {
-        dragEvent(fromEl, 'mousedown', fromEl);
-        await autoPlayDelay(C.dragStepMs);
-        dragEvent(document, 'mousemove', toEl);
-        await autoPlayDelay(C.dragStepMs);
-        dragEvent(toEl, 'mouseup', toEl);
-        dragEvent(document, 'mouseup', toEl);
-      } finally {
-        ap.injectClassTimer = setTimeout(() => {
-          document.documentElement.classList.remove('clo-injecting');
-        }, 150);
-      }
+      // The move is CLICKED, not dragged, and the two presses go out in the
+      // SAME task. Both halves are load-bearing (ground-truthed live, 2026-07):
+      //
+      // - Click-move is the path MoveTrainer2 animates. It paints the yellow
+      //   last-move tint on both squares and then glides the piece across with
+      //   its own ~200 ms tween — the very same animation its own replies use,
+      //   so a replayed move becomes indistinguishable from one it played.
+      //   mousedown-here/mouseup-there is read as a DRAG instead, and a drag
+      //   redraws the board instantly: that is why replays used to teleport.
+      // - Same task is what keeps the SELECTION invisible. The grey pickup
+      //   tint on the source square and the legal-move dots are rendered from
+      //   React state, so with no frame in between they are never painted.
+      //
+      // (`pressSquare` is the explore panel's recipe, unchanged. An older note
+      // claimed it did not work on the trainer board; it does — verified on
+      // quiet moves and captures alike.)
+      pressSquare(fromEl);
+      pressSquare(toEl);
+      ap.injectClassTimer = setTimeout(() => {
+        document.documentElement.classList.remove('clo-injecting');
+      }, 150);
       clearTimeout(vs.verifyTimer);
       vs.verifyTimer = setTimeout(() => {
         if (ap.vs !== vs || !vs.injected) return;

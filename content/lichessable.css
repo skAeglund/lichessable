@@ -602,19 +602,29 @@
   display: none;
 }
 
-/* While an auto-play drag is in flight (html.clo-injecting, set around the
-   synthetic mousedown→mouseup in injectMove), suppress Chessable's
-   legal-move markers: the target-square dots (::before) and tint that
-   normally accompany a picked-up piece. They exist only during the pickup,
-   so nothing else is affected; a 40 ms injected drag would otherwise strobe
-   them across the board on every replayed move. The class names are hashed
-   but stable per Chessable bundle — if they change, the only cost is the
-   markers becoming visible again. */
-html.clo-injecting .highlight-legal-mt2 {
+/* Backstop for the two presses of an auto-played move (html.clo-injecting is
+   set around them in injectMove). They are dispatched in one task precisely
+   so that a half-made selection never gets a frame to paint, which is what
+   already keeps the legal-move markers and the grey pickup tint off the
+   board — this rule only covers the case where MoveTrainer2 does slip a
+   render in between. The markers are CHILD divs (.legal-square-dot-mt2 /
+   .legal-square-capture-mt2), NOT a ::before, and the tint arrives partly
+   inline, hence !important.
+
+   Nothing here may touch .piece-417db: the piece that animates a move —
+   Chessable's own replies included — is a .piece-417db parked on
+   document.body for the length of the glide, so hiding it would break the
+   very animation an auto-played move is trying to borrow.
+
+   The class names are hashed but stable per Chessable bundle; if they change
+   the only cost is these artefacts becoming visible again. */
+html.clo-injecting .highlight-legal-mt2,
+html.clo-injecting .highlight-hover-mt2 {
   background-color: transparent !important;
 }
 
-html.clo-injecting .highlight-legal-mt2::before {
+html.clo-injecting .legal-square-dot-mt2,
+html.clo-injecting .legal-square-capture-mt2 {
   display: none !important;
 }
 
