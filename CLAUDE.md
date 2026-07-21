@@ -253,7 +253,13 @@ Currently working (v0.18.x).
   the source then the target, the explore panel's recipe unchanged, both
   presses in the SAME task (an older note here claimed click-click does not
   work on the trainer board; it does, on quiet moves and captures alike, and
-  a DRAG is what should be avoided). Both halves are load-bearing and were
+  a DRAG is what should be avoided). `pressSquare` picks its event flavour
+  (mouse sequence vs. synthesised finger tap) from the human's own trusted
+  `pointerType`, never from `navigator.maxTouchPoints` — a touchscreen laptop
+  is touch-capable while being driven with a mouse, and tapping such a board
+  left MoveTrainer2 with a stale selection, so the piece of the last injected
+  move could not be picked up (v0.18.8 regression, fixed in v0.18.9).
+  Both halves are load-bearing and were
   ground-truthed live: click-move is the path MoveTrainer2 ANIMATES — it
   tints both squares yellow and glides the piece with the same ~200 ms tween
   its own replies use, whereas mousedown-here/mouseup-there reads as a drag

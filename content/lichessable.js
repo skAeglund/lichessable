@@ -904,6 +904,32 @@
     return (board || document).querySelector(SELECTORS.boardSquare.replace('%s', name));
   }
 
+  // Input device the HUMAN is actually using, learned from their own trusted
+  // pointer events; null until one is seen. Touch CAPABILITY is not touch USE:
+  // a Windows laptop with a touchscreen reports maxTouchPoints 10 while the
+  // board is being driven with a mouse, and `maxTouchPoints` alone therefore
+  // sent such a machine down the touch path (v0.18.8) — where MoveTrainer2 is
+  // left with a stale selection and the piece of the last injected move can no
+  // longer be picked up. Ask the pointer events instead: they carry the real
+  // device, and any tap/click anywhere in this frame (the auto-play toggle, a
+  // move, the page itself) settles it long before an injection runs.
+  let observedPointerType = null; // 'mouse' | 'pen' | 'touch'
+
+  for (const type of ['pointerdown', 'pointermove']) {
+    document.addEventListener(type, (e) => {
+      if (e.isTrusted && e.pointerType) observedPointerType = e.pointerType;
+    }, { capture: true, passive: true });
+  }
+
+  /** True when a synthesised finger TAP — not a mouse click — is what this
+   *  board's live handlers are listening for (see pressSquareTouch). */
+  function useTouchInput() {
+    if (observedPointerType) return observedPointerType === 'touch';
+    // Nothing observed yet: a device with touch and no fine pointer at all is
+    // a phone/tablet; anything with a mouse available keeps the desktop path.
+    return Boolean(navigator.maxTouchPoints) && !matchMedia('(any-pointer: fine)').matches;
+  }
+
   function pressSquare(el) {
     const rect = el.getBoundingClientRect();
     const clientX = rect.x + rect.width / 2;
@@ -911,9 +937,8 @@
 
     // Desktop path — kept byte-for-byte as it was. With a mouse as the input
     // device Chessable's board consumes this plain pointer/mouse click sequence
-    // directly, so nothing about the desktop experience changes. Gated on the
-    // ABSENCE of touch points, so a pure-mouse machine always lands here.
-    if (!navigator.maxTouchPoints) {
+    // directly, so nothing about the desktop experience changes.
+    if (!useTouchInput()) {
       const opts = {
         bubbles: true,
         cancelable: true,
@@ -930,8 +955,8 @@
       return;
     }
 
-    // Touch path — on a touch-capable device (an Android phone/tablet, INCLUDING
-    // Chrome's "Desktop site" mode, since that still exposes touch) the board's
+    // Touch path — on a device actually being TAPPED (an Android phone/tablet,
+    // Chrome's "Desktop site" mode included) the board's
     // live input handlers are the touch / pointer(touch) ones; the mouse-only
     // sequence above reaches nothing, which is why click-to-play and auto-play
     // replays did not register on mobile. Replay a genuine finger tap: the same
