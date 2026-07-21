@@ -204,7 +204,7 @@
       //   animated trainer move occupies the board, so a lower floor could
       //   let an injection land mid-burst.
       speeds: {
-        fast:    { move: 150, settle: 500 },
+        fast:    { move: 0,   settle: 500 },
         normal:  { move: 450, settle: 700 },
         relaxed: { move: 900, settle: 900 },
       },
@@ -906,19 +906,104 @@
 
   function pressSquare(el) {
     const rect = el.getBoundingClientRect();
-    const opts = {
+    const clientX = rect.x + rect.width / 2;
+    const clientY = rect.y + rect.height / 2;
+
+    // Desktop path — kept byte-for-byte as it was. With a mouse as the input
+    // device Chessable's board consumes this plain pointer/mouse click sequence
+    // directly, so nothing about the desktop experience changes. Gated on the
+    // ABSENCE of touch points, so a pure-mouse machine always lands here.
+    if (!navigator.maxTouchPoints) {
+      const opts = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX,
+        clientY,
+        button: 0,
+      };
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        el.dispatchEvent(type.startsWith('pointer')
+          ? new PointerEvent(type, opts)
+          : new MouseEvent(type, opts));
+      }
+      return;
+    }
+
+    // Touch path — on a touch-capable device (an Android phone/tablet, INCLUDING
+    // Chrome's "Desktop site" mode, since that still exposes touch) the board's
+    // live input handlers are the touch / pointer(touch) ones; the mouse-only
+    // sequence above reaches nothing, which is why click-to-play and auto-play
+    // replays did not register on mobile. Replay a genuine finger tap: the same
+    // event set a real tap emits, in the same order. Whichever API the board
+    // listens on fires — and only ONCE, because a board binds exactly one of
+    // pointer/touch/click for a tap (otherwise every real tap would move twice).
+    pressSquareTouch(el, clientX, clientY);
+  }
+
+  /**
+   * Synthesises a finger tap on one square: pointer(touch) down/up, the matching
+   * touchstart/touchend, then the compatibility mouse+click a non-preventing tap
+   * also produces. Fully synchronous, so a from-tap then a to-tap issued by the
+   * caller stay in the SAME task — the property MoveTrainer2 relies on to animate
+   * the move (and keep the selection unpainted) instead of reading it as a drag.
+   */
+  function pressSquareTouch(el, clientX, clientY) {
+    const base = { bubbles: true, cancelable: true, view: window, clientX, clientY };
+    const pointer = (type, down) => new PointerEvent(type, {
+      ...base,
+      pointerId: 1,
+      pointerType: 'touch',
+      isPrimary: true,
+      width: 23,
+      height: 23,
+      button: 0,
+      buttons: down ? 1 : 0,
+      pressure: down ? 0.5 : 0,
+    });
+    const mouse = (type, down) => new MouseEvent(type, {
+      ...base,
+      button: 0,
+      buttons: down ? 1 : 0,
+    });
+
+    el.dispatchEvent(pointer('pointerdown', true));
+    dispatchTouch(el, 'touchstart', clientX, clientY);
+    el.dispatchEvent(pointer('pointerup', false));
+    dispatchTouch(el, 'touchend', clientX, clientY);
+    // A tap that isn't preventDefault()ed also emits these; a board that acts on
+    // touch/pointer ignores them, one that acts on the synthesised click gets it.
+    el.dispatchEvent(mouse('mousedown', true));
+    el.dispatchEvent(mouse('mouseup', false));
+    el.dispatchEvent(mouse('click', false));
+  }
+
+  /** One TouchEvent with a single Touch at the given point; no-op if the UA
+   *  lacks the constructors (it won't on a touch-capable Chromium). */
+  function dispatchTouch(el, type, clientX, clientY) {
+    if (typeof Touch !== 'function' || typeof TouchEvent !== 'function') return;
+    const touch = new Touch({
+      identifier: 1,
+      target: el,
+      clientX,
+      clientY,
+      pageX: clientX + window.scrollX,
+      pageY: clientY + window.scrollY,
+      screenX: clientX,
+      screenY: clientY,
+      radiusX: 11.5,
+      radiusY: 11.5,
+      rotationAngle: 0,
+      force: 1,
+    });
+    const active = type === 'touchend' ? [] : [touch];
+    el.dispatchEvent(new TouchEvent(type, {
       bubbles: true,
       cancelable: true,
-      view: window,
-      clientX: rect.x + rect.width / 2,
-      clientY: rect.y + rect.height / 2,
-      button: 0,
-    };
-    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-      el.dispatchEvent(type.startsWith('pointer')
-        ? new PointerEvent(type, opts)
-        : new MouseEvent(type, opts));
-    }
+      touches: active,
+      targetTouches: active,
+      changedTouches: [touch],
+    }));
   }
 
   function onToggle() {
@@ -3139,10 +3224,21 @@
       }
       setStatus('▶ replaying known moves… (click to stop)', true);
       const expectKey = vs.lastKey;
+      // With no pause to serve (Fast's mid-line case, move:0) skip the timer
+      // hop and play in THIS task. setTimeout(…,0) still yields to the event
+      // loop, where the callback can sit behind Chessable's own post-move work
+      // — exactly the main-thread contention that makes a phone feel laggier
+      // than a desktop. injectMove re-verifies state, so a synchronous call is
+      // safe, and its two presses still share one task (so the move animates,
+      // not drags). Any real pause (variation-start settle floor) still defers.
+      if (delay <= 0) {
+        injectMove(entry, expectKey);
+        return;
+      }
       vs.injectTimer = setTimeout(() => {
         vs.injectTimer = 0;
         injectMove(entry, expectKey);
-      }, Math.max(0, delay));
+      }, delay);
     }
 
     function injectMove(entry, expectKey) {

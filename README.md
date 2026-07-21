@@ -302,7 +302,12 @@ lichessable/
   orientation-independent ids like `e4-<uuid>`). Chessable handles it exactly
   like a user move, and the resulting FEN change triggers the panel's normal
   refresh. Promotion moves open Chessable's own promotion picker; pick the
-  piece there.
+  piece there. On a touch device (an Android phone/tablet, including Chrome's
+  "Desktop site" mode) the same helper instead replays a real finger tap —
+  pointer(touch) + touch events + the compatibility click — since the board's
+  live handlers there are the touch ones and a mouse-only sequence reaches
+  nothing; a pure-mouse desktop keeps the unchanged mouse sequence. The move
+  injection used by auto-play shares this helper, so it works on mobile too.
 - **Stale responses** — each fetch carries a sequence number; responses for
   positions you've already left are not rendered (though still cached).
 - **Toggle** — Hide/Show collapses the panel body (header stays so you can
