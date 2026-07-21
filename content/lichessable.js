@@ -116,6 +116,13 @@
     // data-piece ("knight", …) — the move text lacks the letter, so full SAN is
     // pieceLetter(data-piece) + text.
     trainerMoveNote:     '[data-testid="moveNotification"]', // "Incorrect" / "Time's up" / XP toast
+
+    // Chapter edit page (/course/<bid>/<lid>/e/ — section 14): the toolbar row
+    // holding "With selected: …" and Chessable's own "Order By" dropdown. Our
+    // Sort button is only ANCHORED to it (mounted on document.body) — this is
+    // the same React app that owns the trainer, so nothing of ours goes inside
+    // their tree.
+    chapterToolbar: '.variationSort',
   };
 
   const CONFIG = {
@@ -217,15 +224,50 @@
       oracleRetryMs: 400,      // back-off before re-reading the plan (trainer mid-variation-swap)
       oracleMaxTries: 6,       // consecutive unusable reads before the variation goes manual
     },
+
+    // --- Sort variations in a chapter (section 14) -------------------------
+    // The ONLY feature that talks to Chessable's own JSON API. It is same-origin
+    // with the page (so no host permission) and authenticated with the page's
+    // own session JWT as a Bearer token — no CSRF field is involved, unlike the
+    // variation edit form that section 12 has to drive through a real tab.
+    chapterSort: {
+      // localStorage key holding the session JWT the page itself sends.
+      jwtKey:    'chessable.web.production.JWT',
+      readPath:  '/api/v1/editVariations', // GET  ?bid&lid&includeDeleted&locale → { data: { variations[] } }
+      writePath: '/api/v1/saveOrder',      // POST { bid, lid, order: [oid…] }    → { data: { status } }
+      pollMs:         500, // mount/position watchdog (also catches SPA chapter switches)
+      gap:            12,  // breathing room from the toolbar / viewport edge
+      minGutter:      210, // narrower gutter left of the column → fixed-corner fallback
+      reloadDelayMs:  900, // let the success message register before reloading
+
+      // Sibling branches are ordered by how often the move is actually played,
+      // from the same Lichess explorer (and the same CONFIG.lichess rating and
+      // speed filters) the panel uses.
+      popularity: {
+        requestGapMs: 300,             // politeness pause between uncached explorer calls
+        cacheKey:     'cloPopularityCache', // chrome.storage.local: FEN → move counts
+        cacheMax:     3000,            // entries kept; oldest pruned first
+        // Chapters of one repertoire share their early positions, so the cache
+        // pays for itself across a course, not just on a re-run.
+      },
+    },
   };
 
   const PANEL_ID = 'lichessable-panel';
   const REVIEW_WIDGET_ID = 'lichessable-review'; // overstudy widget (section 9); the review panel anchors below it
   const QE_PENCIL_ID = 'lichessable-qe-pencil';  // quick-edit hover pencil (section 12)
   const QE_POPUP_ID  = 'lichessable-qe-popup';   // quick-edit comment popup (section 12)
+  const CHAPTER_WIDGET_ID = 'lichessable-chapter'; // chapter sort button (section 14)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
+
+  // Shared chess helpers. CloSan indexes squares 0..63 from a1, so square 0 is
+  // a1 and 63 is h8. Used by auto-play (section 13) and the chapter sort
+  // (section 14) — keep one copy.
+  const SQ_FILES = 'abcdefgh';
+  const squareName = (i) => SQ_FILES[i & 7] + ((i >> 3) + 1);
+  const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
   // Frame targeting. Explore/Analysis render inside mt1 iframes: any OTHER
   // iframe exits immediately. The TOP document never exits: review sessions
@@ -2512,9 +2554,7 @@
 
     const C = CONFIG.autoPlay;
     const AP_CLUSTER_ID = 'lichessable-ap';
-    const STANDARD_START = CloSan.parseFen('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
-    const SQ_FILES = 'abcdefgh';
-    const squareName = (i) => SQ_FILES[i & 7] + ((i >> 3) + 1);
+    const STANDARD_START = CloSan.parseFen(START_FEN);
 
     /** The `{ move, settle }` pair for the selected speed (see CONFIG). */
     const currentSpeed = () => C.speeds[ap.speed] || C.speeds[C.defaultSpeed];
@@ -3567,6 +3607,577 @@
   }
 
   // ==========================================================================
+  // 14) Sort variations in a chapter (top document, /course/<bid>/<lid>/e/)
+  //
+  // Reorders a chapter so the list reads the way you'd walk the move tree —
+  // every line sharing an opening sequence sits together — with each set of
+  // sibling branches ordered by how often that move is actually played in the
+  // Lichess database, so you meet the likeliest positions first.
+  //
+  // Chessable's own drag-and-drop is NOT what persists an order — a drag only
+  // dispatches a local React/Redux splice. The order is saved by POSTing the
+  // chapter's COMPLETE oid list to /v1/saveOrder, so one request replaces the
+  // whole ordering and N drags collapse into a single call. Ground-truthed
+  // live, including the failure mode below.
+  //
+  // CRUCIAL: send every oid you read. saveOrder does not leave omitted oids
+  // alone — it resets them to order 0, which sinks them to the FRONT of the
+  // chapter sorted by oid. A partial "just move these three" call silently
+  // scrambles everything else, hence the isPermutation() guard before the POST.
+  // (Soft-deleted variations are excluded from the read and therefore do get
+  // reset; they are invisible in the UI, so this is accepted.)
+  //
+  // The button is mounted on document.body and merely ANCHORED to Chessable's
+  // toolbar — same rule as the review widget in section 9: nothing of ours is
+  // ever inserted into their React tree.
+  // ==========================================================================
+  function initChapterSort() {
+    // /course/<courseId>/<chapterId>/e — the chapter's "Edit Variations" page.
+    // chapterId is 0 for a single-level course, so it is NOT a truthy test.
+    const CHAPTER_PATH_RE = /^\/course\/(\d+)\/(\d+)\/e\/?$/;
+
+    const cs = {
+      bid: null, lid: null,
+      widget: null, btn: null, statusEl: null,
+      busy: false,
+      job: null,   // in-flight run, so the button can cancel it
+    };
+
+    // --- the ordering itself, pure ------------------------------------------
+
+    // Chessable returns a variation's line as a PGN-ish string with the number
+    // glued to White's move ("1.e4 c5 2.Nf3 Nc6"). Tokenise it into
+    // { san, ply } pairs where ply is 0-based and ABSOLUTE (0 = White's first
+    // move), so a tactic that starts at move 25 can never share a tree node
+    // with an opening line that happens to repeat the same SAN.
+    const MOVE_NUM_RE = /^(\d+)(\.+)(.*)$/;
+    const RESULT_RE   = /^(?:1-0|0-1|1\/2-1\/2|\*)$/;
+
+    function linePlies(moves) {
+      const out = [];
+      let ply = null;
+      for (const raw of String(moves || '').trim().split(/\s+/)) {
+        if (!raw || RESULT_RE.test(raw)) continue;
+        let rest = raw;
+        const m = MOVE_NUM_RE.exec(raw);
+        if (m) {
+          // "12." → White to move, "12..." → Black. The SAN either follows in
+          // the same token ("12.Nf3") or is the next one ("12. Nf3").
+          ply = (Number(m[1]) - 1) * 2 + (m[2].length >= 3 ? 1 : 0);
+          rest = m[3];
+          if (!rest) continue;
+        }
+        const san = quickEditSan(rest); // also strips !? and other eval glyphs
+        if (!san) continue;
+        if (ply === null) ply = 0;      // unnumbered line — assume it starts at move 1
+        out.push({ san, ply });
+        ply += 1;
+      }
+      return out;
+    }
+
+    function isPermutation(a, b) {
+      if (a.length !== b.length) return false;
+      const seen = new Set(b);
+      return seen.size === b.length && a.every((oid) => seen.has(oid));
+    }
+
+    // --- popularity ordering --------------------------------------------------
+    //
+    // Where a node has 2+ sibling branches, the branches are ordered by how
+    // often that move is actually played in the Lichess database, most common
+    // first — i.e. study what you are most likely to face first. Every branching point in a repertoire is a point
+    // where the OPPONENT chooses (you don't prepare two answers to the same
+    // position), so no side detection is needed; if a chapter ever did contain
+    // your own alternatives, they would be ordered by crowd frequency too,
+    // which is meaningless — that is the one assumption this button makes.
+    //
+    // Unranked siblings (move absent from the database, or no data for the
+    // position at all) fall back to the structural rule: shortest line first,
+    // ties keeping their current relative order. A variation that ENDS at a node
+    // is emitted before the branches continuing past it.
+    //
+    // Lines that cannot be placed on a board from the start — tactics, and
+    // anything beginning mid-game — are excluded and parked at the END of the
+    // chapter in their existing order, because "most popular reply" is not a
+    // meaningful question for them.
+
+    // Check/mate suffixes are dropped on BOTH sides before comparing: Chessable
+    // and CloSan agree on the move, but not always on writing "+".
+    const bareSan = (san) => String(san).replace(/[+#]$/, '');
+
+    /** CloSan position → FEN. The halfmove clock isn't tracked (or needed). */
+    function positionToFen(pos) {
+      const rows = [];
+      for (let rank = 7; rank >= 0; rank--) {
+        let row = '', empty = 0;
+        for (let file = 0; file < 8; file++) {
+          const piece = pos.board[rank * 8 + file];
+          if (piece) { if (empty) { row += empty; empty = 0; } row += piece; } else empty++;
+        }
+        if (empty) row += empty;
+        rows.push(row);
+      }
+      return [
+        rows.join('/'),
+        pos.side,
+        pos.castling || '-',
+        pos.ep >= 0 ? squareName(pos.ep) : '-',
+        '0',
+        String(pos.fullmove),
+      ].join(' ');
+    }
+
+    /** Plays `san` on `pos`, or returns null if no legal move matches it. */
+    function playSan(pos, san) {
+      const want = bareSan(san);
+      for (const mv of CloSan.generateMoves(pos)) {
+        const uci = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
+        const got = CloSan.moveToSan(pos, uci);
+        if (got && bareSan(got) === want) return CloSan.makeMove(pos, mv);
+      }
+      return null;
+    }
+
+    /**
+     * Builds the trie with a real position on every node.
+     *
+     * A line is replayed BEFORE anything is inserted, so a line that turns out
+     * to be unplayable can never leave half of itself in the tree.
+     * Returns { root, deferred } — deferred keeps its input order.
+     */
+    function buildPositionTree(variations) {
+      const root = {
+        ends: [], kids: new Map(), san: null,
+        pos: CloSan.parseFen(START_FEN), depth: Infinity, seq: 0,
+      };
+      const deferred = [];
+
+      for (const v of variations) {
+        const line = linePlies(v.moves);
+        // Informational cards carry no moves at all (Chessable writes "1.--").
+        // They are chapter intros, so they belong at the very FRONT, not in the
+        // unrankable tail with the tactics.
+        if (!v.isTactic && !line.length) { root.ends.push(v.oid); continue; }
+        // Tactics and mid-game starts are out of scope by design; the API gives
+        // us no source FEN for them, so they could not be placed anyway.
+        if (v.isTactic || !line.length || line[0].ply !== 0) { deferred.push(v); continue; }
+
+        const path = [];
+        let pos = root.pos, playable = true;
+        for (const { san, ply } of line) {
+          const next = playSan(pos, san);
+          if (!next) { playable = false; break; }
+          pos = next;
+          path.push({ san, ply, pos });
+        }
+        if (!playable) { deferred.push(v); continue; }
+
+        const len = path.length;
+        let node = root;
+        for (const step of path) {
+          const key = step.ply + '|' + step.san;
+          let kid = node.kids.get(key);
+          if (!kid) {
+            kid = {
+              ends: [], kids: new Map(), san: step.san,
+              pos: step.pos, depth: len, seq: node.kids.size,
+            };
+            node.kids.set(key, kid);
+          } else if (len < kid.depth) {
+            kid.depth = len;
+          }
+          node = kid;
+        }
+        node.ends.push(v.oid);
+      }
+      return { root, deferred };
+    }
+
+    /** Every node where the opponent picks between 2+ continuations. */
+    function branchNodes(root) {
+      const out = [];
+      (function walk(node) {
+        if (node.kids.size >= 2) out.push(node);
+        for (const kid of node.kids.values()) walk(kid);
+      })(root);
+      return out;
+    }
+
+    // --- explorer results cache (chrome.storage.local) ----------------------
+
+    // Tagged with the filters, so changing CONFIG.lichess invalidates cleanly.
+    const popCacheTag = () =>
+      'r:' + CONFIG.lichess.ratings.join(',') + '|s:' + CONFIG.lichess.speeds.join(',');
+
+    async function loadPopCache() {
+      try {
+        const got = await chrome.storage.local.get(CONFIG.chapterSort.popularity.cacheKey);
+        const raw = got && got[CONFIG.chapterSort.popularity.cacheKey];
+        return (raw && typeof raw === 'object') ? raw : {};
+      } catch (err) {
+        warn('popularity cache unreadable — continuing without it:', err);
+        return {};
+      }
+    }
+
+    async function savePopCache(cache) {
+      const { cacheKey, cacheMax } = CONFIG.chapterSort.popularity;
+      try {
+        let entries = Object.entries(cache);
+        if (entries.length > cacheMax) { // prune oldest first
+          entries.sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
+          entries = entries.slice(0, cacheMax);
+        }
+        await chrome.storage.local.set({ [cacheKey]: Object.fromEntries(entries) });
+      } catch (err) {
+        warn('could not persist the popularity cache:', err);
+      }
+    }
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    /**
+     * Fills node.pop = { san: gameCount } for every branching node, from cache
+     * or the Lichess explorer (via the same background worker the panel uses).
+     * Reports progress and honours cancellation between requests.
+     */
+    async function fetchPopularity(nodes, job) {
+      const cache = await loadPopCache();
+      const tag = popCacheTag();
+      let fetched = 0, fromCache = 0, empty = 0, dirty = false;
+
+      for (let i = 0; i < nodes.length; i++) {
+        if (job.cancelled) throw new Error('cancelled');
+        const node = nodes[i];
+        const fen = positionToFen(node.pos);
+        const key = tag + '||' + fen;
+
+        const hit = cache[key];
+        if (hit && hit.m) { node.pop = hit.m; fromCache++; continue; }
+
+        setStatus(`Checking Lichess… ${i + 1}/${nodes.length} positions`, '');
+        let data;
+        try {
+          data = await fetchExplorerData(fen);
+        } catch (err) {
+          if (err.isRateLimit) {
+            // Same cooldown the panel honours, then one retry.
+            setStatus('Lichess rate limit — waiting 60 s…', 'warn');
+            await sleep(CONFIG.lichess.rateLimitCooldownMs);
+            if (job.cancelled) throw new Error('cancelled');
+            setStatus(`Checking Lichess… ${i + 1}/${nodes.length} positions`, '');
+            data = await fetchExplorerData(fen);
+          } else if (err.isAuth) {
+            throw new Error(err.noToken
+              ? 'a Lichess API token is needed — add one in the extension options'
+              : 'Lichess rejected the API token — check it in the extension options');
+          } else {
+            throw err;
+          }
+        }
+
+        const counts = {};
+        for (const m of (data && data.moves) || []) {
+          counts[bareSan(m.san)] = (m.white || 0) + (m.draws || 0) + (m.black || 0);
+        }
+        if (!Object.keys(counts).length) empty++;
+        node.pop = counts;
+        cache[key] = { m: counts, t: Date.now() };
+        dirty = true;
+        fetched++;
+        if (i < nodes.length - 1) await sleep(CONFIG.chapterSort.popularity.requestGapMs);
+      }
+
+      if (dirty) await savePopCache(cache);
+      return { fetched, fromCache, empty };
+    }
+
+    /**
+     * Walks the tree emitting oids, ordering siblings by popularity where it is
+     * known. Also logs one report line per branching point (SAN + share of games
+     * at that position), since a silent reshuffle is hard to sanity-check.
+     */
+    function walkByPopularity(root, yourSide) {
+      const out = [];
+      let unranked = 0, ownSide = 0;
+
+      (function walk(node, lineSan) {
+        for (const oid of node.ends) out.push(oid);
+        const kids = [...node.kids.values()];
+        const pop = node.pop || null;
+        const countOf = (kid) => {
+          if (!pop) return -1;
+          const n = pop[bareSan(kid.san)];
+          return n === undefined ? -1 : n;
+        };
+        kids.sort((a, b) => {
+          const ca = countOf(a), cb = countOf(b);
+          if (ca !== cb) return cb - ca;              // most played first
+          return a.depth - b.depth || a.seq - b.seq;  // else shortest line first
+        });
+
+        if (kids.length >= 2) {
+          const total = pop ? Object.values(pop).reduce((s, n) => s + n, 0) : 0;
+          const parts = kids.map((k) => {
+            const n = countOf(k);
+            if (n < 0) { unranked++; return `${k.san} —`; }
+            const pct = total ? Math.round((n / total) * 100) : 0;
+            return `${k.san} ${pct}% (${n})`;
+          });
+          // A branch where YOU choose is your own prepared alternatives, not
+          // something the opponent picks — ranking those by how often the crowd
+          // plays them is meaningless. Repertoires rarely have any, so they are
+          // flagged rather than treated specially.
+          const yours = yourSide && node.pos && node.pos.side === yourSide;
+          if (yours) ownSide++;
+          log(`  ${lineSan || '(start)'} → ${parts.join(', ')}${yours ? '   [your move — ranking is meaningless here]' : ''}`);
+        }
+
+        for (const kid of kids) walk(kid, (lineSan ? lineSan + ' ' : '') + kid.san);
+      })(root, '');
+
+      return { order: out, unranked, ownSide };
+    }
+
+    // --- Chessable's API ----------------------------------------------------
+
+    function apiHeaders() {
+      const jwt = localStorage.getItem(CONFIG.chapterSort.jwtKey);
+      if (!jwt) return null;
+      return {
+        'Authorization': 'Bearer ' + jwt,
+        'Content-Type': 'application/json',
+        'platform': 'web',
+      };
+    }
+
+    async function fetchChapter(headers) {
+      const url = location.origin + CONFIG.chapterSort.readPath +
+        `?bid=${cs.bid}&lid=${cs.lid}&includeDeleted=0&locale=en`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error(`could not read the chapter (HTTP ${res.status})`);
+      const body = await res.json();
+      const data = body && body.data;
+      const list = data && data.variations;
+      if (!Array.isArray(list)) throw new Error('unexpected response reading the chapter');
+      // course.color is 'white' | 'black' (the side the course is written for);
+      // anything else means "unknown", and no branch gets flagged.
+      const color = data.course && data.course.color;
+      const yourSide = color === 'white' ? 'w' : color === 'black' ? 'b' : null;
+      return { variations: list, yourSide };
+    }
+
+    async function postOrder(headers, order) {
+      const res = await fetch(location.origin + CONFIG.chapterSort.writePath, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ bid: Number(cs.bid), lid: Number(cs.lid), order }),
+      });
+      if (!res.ok) throw new Error(`could not save the order (HTTP ${res.status})`);
+      const body = await res.json().catch(() => null);
+      if (!body || !body.data || body.data.status !== 'ok') {
+        throw new Error('the server did not confirm the new order');
+      }
+    }
+
+    // --- the button ---------------------------------------------------------
+
+    /** Guard, save, reload. Returns true when the page is on its way out. */
+    async function saveComputedOrder(headers, current, order, note) {
+      // A bug that dropped or duplicated an oid would not fail loudly — it
+      // would quietly reshuffle the chapter (see the saveOrder note above).
+      if (!isPermutation(current, order)) {
+        throw new Error('computed order did not match the chapter — nothing saved');
+      }
+      const suffix = note ? ' — ' + note : '';
+      if (order.every((oid, i) => oid === current[i])) {
+        setStatus(`Already in this order (${order.length} variations)${suffix}.`, 'ok');
+        return false;
+      }
+      // Once the POST lands, the old order is gone from the page — log it so
+      // it can be restored by hand if the result isn't what was wanted.
+      log(`sorting chapter ${cs.bid}/${cs.lid}; previous order was`, current.join(','));
+      setStatus('Saving new order…', '');
+      await postOrder(headers, order);
+      log('chapter reordered:', order.join(','));
+      setStatus(`Sorted ${order.length} variations${suffix} — reloading…`, 'ok');
+      setTimeout(() => location.reload(), CONFIG.chapterSort.reloadDelayMs);
+      return true;
+    }
+
+    async function runPopularitySort() {
+      if (cs.busy || !cs.bid) return;
+      if (typeof CloSan === 'undefined') {
+        setStatus('move engine unavailable — reload the page', 'warn');
+        return;
+      }
+      cs.busy = true;
+      cs.job = { cancelled: false };
+      const job = cs.job;
+      syncButton();
+      let reloading = false;
+      try {
+        setStatus('Reading chapter…', '');
+        const headers = apiHeaders();
+        if (!headers) throw new Error('no Chessable session found — reload the page');
+        const { variations, yourSide } = await fetchChapter(headers);
+        if (!variations.length) { setStatus('This chapter has no variations.', 'warn'); return; }
+        const current = variations.map((v) => v.oid);
+
+        const { root, deferred } = buildPositionTree(variations);
+        if (deferred.length) {
+          warn(`${deferred.length} line(s) can't be ranked (tactic or mid-game start) ` +
+               '— moving them to the end of the chapter:',
+               deferred.map((v) => v.oid).join(','));
+        }
+        const nodes = branchNodes(root);
+        if (!nodes.length && !root.kids.size) {
+          setStatus('No lines here can be ranked by popularity.', 'warn');
+          return;
+        }
+
+        log(`popularity sort: ${nodes.length} branching point(s) to check`);
+        const stats = await fetchPopularity(nodes, job);
+        if (job.cancelled) throw new Error('cancelled');
+        log(`Lichess: ${stats.fetched} fetched, ${stats.fromCache} cached` +
+            (stats.empty ? `, ${stats.empty} with no data` : ''));
+
+        const { order: ranked, unranked, ownSide } = walkByPopularity(root, yourSide);
+        // Unrankable lines keep their existing relative order, at the end.
+        const order = ranked.concat(deferred.map((v) => v.oid));
+        if (ownSide) {
+          warn(`${ownSide} branching point(s) are YOUR move, not the opponent's — ` +
+               'popularity says nothing useful there (see the report above)');
+        }
+
+        const notes = [];
+        if (deferred.length) notes.push(`${deferred.length} unrankable moved to the end`);
+        if (unranked) notes.push(`${unranked} branch(es) not in the database`);
+        reloading = await saveComputedOrder(headers, current, order, notes.join(', '));
+      } catch (err) {
+        if (String(err && err.message) === 'cancelled') {
+          log('popularity sort cancelled — nothing was saved');
+          setStatus('Cancelled — nothing saved.', 'warn');
+        } else {
+          warn('popularity sort failed:', err);
+          setStatus(String(err.message || err), 'warn');
+        }
+      } finally {
+        if (!reloading) { cs.busy = false; cs.job = null; syncButton(); }
+      }
+    }
+
+    function setStatus(text, kind) {
+      if (!cs.statusEl) return;
+      cs.statusEl.textContent = text;
+      cs.statusEl.hidden = !text;
+      cs.statusEl.className = 'clo-chapter-status' +
+        (kind ? ' clo-chapter-status--' + kind : '');
+    }
+
+    /**
+     * The button doubles as Cancel while a run is in flight — a queue of
+     * Lichess calls should always be interruptible.
+     */
+    function syncButton() {
+      if (!cs.btn) return;
+      cs.btn.textContent = cs.busy ? 'Cancel' : 'Sort by popularity';
+      cs.btn.classList.toggle('clo-chapter-btn--cancel', cs.busy);
+    }
+
+    function mountWidget() {
+      const stale = document.getElementById(CHAPTER_WIDGET_ID);
+      if (stale) stale.remove(); // defensive: no duplicates across re-inits
+
+      const widget = document.createElement('div');
+      widget.id = CHAPTER_WIDGET_ID;
+      widget.className = 'clo-chapter';
+
+      const title = document.createElement('span');
+      title.className = 'clo-chapter-title';
+      title.textContent = 'LiChessable';
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'clo-chapter-btn';
+      btn.textContent = 'Sort by popularity';
+      btn.title = 'Group this chapter by the move tree, ordering every branching ' +
+        'point so the opponent\'s most commonly played move comes first ' +
+        '(Lichess database). Tactics and lines starting mid-game move to the end.';
+      btn.addEventListener('click', () => { // no inline handlers
+        if (cs.job && cs.busy) { cs.job.cancelled = true; setStatus('Cancelling…', 'warn'); return; }
+        runPopularitySort();
+      });
+
+      const statusEl = document.createElement('span');
+      statusEl.className = 'clo-chapter-status';
+      statusEl.hidden = true;
+
+      widget.append(title, btn, statusEl);
+      document.body.appendChild(widget);
+
+      cs.widget = widget;
+      cs.btn = btn;
+      cs.statusEl = statusEl;
+    }
+
+    /**
+     * Preferred home is the empty gutter LEFT of Chessable's content column,
+     * top-aligned with their toolbar row — the same gutter-first approach the
+     * review panel uses. On a narrow window that gutter disappears, and the
+     * inline styles are cleared so the stylesheet's fixed-corner fallback
+     * applies. position:fixed and getBoundingClientRect are both
+     * viewport-relative, so the numbers line up directly.
+     */
+    function positionWidget() {
+      if (!cs.widget || cs.widget.hidden) return;
+      const toolbar = document.querySelector(SELECTORS.chapterToolbar);
+      if (!toolbar) return;
+      const rect = toolbar.getBoundingClientRect();
+      if (!rect.width) return;
+      const { gap, minGutter } = CONFIG.chapterSort;
+      const width = cs.widget.offsetWidth || minGutter;
+      if (rect.left >= width + gap * 2) {
+        cs.widget.style.left = Math.max(gap, rect.left - gap - width) + 'px';
+        cs.widget.style.top = Math.max(gap, rect.top) + 'px';
+        cs.widget.style.right = 'auto';
+        cs.widget.style.bottom = 'auto';
+      } else {
+        cs.widget.style.left = '';
+        cs.widget.style.top = '';
+        cs.widget.style.right = '';
+        cs.widget.style.bottom = '';
+      }
+    }
+
+    function tick() {
+      const m = CHAPTER_PATH_RE.exec(location.pathname);
+      // The toolbar is also the "page has finished rendering" signal.
+      const toolbar = m && document.querySelector(SELECTORS.chapterToolbar);
+      if (!toolbar) {
+        if (cs.widget) cs.widget.hidden = true;
+        return;
+      }
+      if (cs.bid !== m[1] || cs.lid !== m[2]) {
+        cs.bid = m[1];
+        cs.lid = m[2];
+        setStatus('', ''); // SPA-switched to another chapter — drop the old message
+      }
+      if (!cs.widget || !cs.widget.isConnected) mountWidget(); // idempotent self-heal
+      cs.widget.hidden = false;
+      syncButton();
+      positionWidget();
+    }
+
+    const pollTimer = setInterval(tick, CONFIG.chapterSort.pollMs);
+    window.addEventListener('pagehide', () => clearInterval(pollTimer));
+    window.addEventListener('resize', positionWidget);
+    window.addEventListener('scroll', positionWidget, true);
+    tick();
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -3587,12 +4198,15 @@
       return;
     }
     // Top document: overstudy widget, background-tab auto-pause, review panel,
-    // the quick-edit hover UI, and review auto-play.
+    // the quick-edit hover UI, review auto-play, and the chapter sort button.
+    // Each one gates itself on the URL from its own poll, so SPA navigation
+    // into a review session or a chapter page is picked up without a load.
     initReviewOverstudy();
     initOverstudyAutoPause();
     initReviewPanel();
     initQuickEditUi();
     initAutoPlay();
+    initChapterSort();
   }
 
   if (document.readyState === 'loading') {

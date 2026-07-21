@@ -746,3 +746,81 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-qe-cancel:hover { color: #fff; }
 .clo-qe-cancel:disabled { opacity: 0.6; cursor: default; }
+
+/* --- chapter "Sort variations" widget (section 14) ---------------------------
+   Body-mounted and merely anchored to Chessable's toolbar (never inside their
+   React tree). initChapterSort/positionWidget parks it in the empty gutter left
+   of the content column; the right/bottom values here are the fallback for
+   windows too narrow to have that gutter. */
+
+.clo-chapter {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  width: 190px;
+  padding: 8px 10px;
+  border: 1px solid #1b1a17;
+  border-radius: 4px;
+  background: #262421;
+  color: #bababa;
+  font-size: 12px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* display:flex would defeat the hidden attribute without this. */
+.clo-chapter[hidden] {
+  display: none;
+}
+
+.clo-chapter-title {
+  color: #949494;
+  font-weight: 500;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Same lichess-green accent as the review widget's primary button. */
+.clo-chapter-btn {
+  border: 1px solid #629924;
+  background: #629924;
+  color: #fff;
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-chapter-btn:hover:not(:disabled) {
+  background: #71ad2a;
+  border-color: #71ad2a;
+}
+
+.clo-chapter-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.clo-chapter-status {
+  color: #949494;
+  line-height: 1.35;
+}
+
+.clo-chapter-status[hidden] { display: none; }
+.clo-chapter-status--ok { color: #a5c96a; }
+.clo-chapter-status--warn { color: #d9a942; }
+
+/* While the Lichess queue runs, the button becomes Cancel: it must stay enabled
+   and read as an interrupt rather than as the primary action. */
+.clo-chapter-btn--cancel,
+.clo-chapter-btn--cancel:hover:not(:disabled) {
+  border-color: #a33;
+  background: transparent;
+  color: #e08a8a;
+}

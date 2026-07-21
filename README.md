@@ -88,6 +88,29 @@ during review, and any standalone **variation page**
 driving Chessable's own edit page in a background tab — see "Quick-edit
 comment" under Architecture notes.
 
+On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
+extension adds a **Sort by popularity** button, which reorders the whole chapter to
+follow the shape of the move tree: lines that share an opening sequence end up
+next to each other, and the deeper the sequence two lines share, the closer
+together they sit. A line that is itself the prefix of longer lines is listed
+just before them.
+
+Where the tree branches, the order comes from the **Lichess database**: the move
+your opponent plays most often comes first, so you meet the positions you are
+most likely to actually face first. Branches whose move isn't in the database
+fall back to listing the shortest line first, with equally deep siblings keeping
+their current relative order. Lines that can't be put on a board from move 1 —
+tactics, anything starting mid-game — are moved to the end of the chapter with a
+warning (chapter intro cards, which have no moves at all, still lead). Every
+branching point is printed to the console with each candidate's share of games.
+
+This replaces dragging cards one at a time — the whole chapter is reordered in a
+single request, and the previous order is written to the console first so an
+unwanted result can be undone by hand. It queries one position per branching
+point, not per variation — a real 64-variation chapter needed 29 requests
+(~20 s) — results are cached across chapters and runs, and the button turns into
+**Cancel** while it works. See "Chapter sort" under Architecture notes.
+
 The panel can also run **optional local Stockfish analysis** (eval + top 3
 lines in SAN) for the current position — see "Local engine (optional)" below.
 
@@ -319,6 +342,79 @@ lichessable/
   re-open it); the choice persists in `chrome.storage.local` under
   `lichessableHidden`.
 
+### Chapter sort
+
+The **Sort by popularity** button (section 14 in `content/lichessable.js`) is the
+only part of the extension that calls Chessable's own JSON API. Notes worth
+keeping:
+
+- **Drag-and-drop is not what saves an order.** Dragging a card only dispatches
+  a local React/Redux array splice; the order is persisted by `POST
+  /api/v1/saveOrder` with `{bid, lid, order}`, where `order` is the chapter's
+  complete list of variation ids. So one request replaces the entire ordering.
+- **The complete list is mandatory.** `saveOrder` does *not* leave omitted ids
+  alone — it resets them to order 0, which sinks them to the *front* of the
+  chapter sorted by id. A partial call therefore scrambles everything you left
+  out. The code refuses to POST anything that is not a permutation of the ids it
+  just read. (Soft-deleted variations are excluded from the read and so do get
+  reset; they are invisible in the UI, so this is accepted.)
+- **Auth is the page's own session JWT** (`localStorage`, sent as a Bearer
+  token). The request is same-origin with the page, so it needs no host
+  permission, and — unlike the variation *edit* form that the quick-edit feature
+  has to drive through a real tab — no CSRF field is involved.
+- **The ordering** builds a trie of all the chapter's lines and walks it in
+  pre-order. Lines are read from the API's PGN-ish `moves` string and tokenised
+  into `{san, ply}` pairs with an *absolute* ply index, so a tactic that starts
+  at move 25 can never share a node with an opening line that repeats the same
+  SAN. At each node the variations that end there are emitted first (they are
+  shorter than anything continuing past them), then the child branches — ordered
+  by Lichess popularity, falling back to the shortest line each contains, with
+  ties keeping their existing relative order.
+- The button is mounted on `document.body` and only *anchored* to Chessable's
+  toolbar row (preferred spot: the empty gutter left of the content column,
+  fixed-corner fallback on narrow windows) — the same rule as the review
+  widget: nothing of ours goes inside their React tree.
+- The page is reloaded after a successful save, because Chessable's own React
+  state knows nothing about the change.
+
+**How this differs from Chessable's own "Logical order"** (the *Order By*
+dropdown, `POST /v1/applyLogicalOrder` with `mode: "orderOnly"`). Both produce a
+tree-grouped list; the difference is the **branch order**. Theirs depends on the
+order the chapter was already in — the same chapter run from its original vs. its
+reversed order gives two different results (from reversed, the whole `1.h3` group
+led and the deep `1.e4` lines came out longest-first). It clusters lines into
+branches but largely keeps whatever relative branch order was already there, so
+it carries an arbitrary starting order straight through. This feature decides the
+branch order from real game frequency instead, which is information Chessable's
+option has no notion of. (Both are deterministic and idempotent for a *fixed*
+input.)
+
+Notes on the popularity ranking itself:
+
+- **Positions are computed, not fetched.** `editVariations` returns SAN text
+  with no FEN, so each line is replayed from the start position with `CloSan`
+  (SAN is matched by generating the legal moves and comparing their SAN, with
+  `+`/`#` stripped on both sides, since Chessable and CloSan don't always agree
+  on writing check). A line is fully replayed *before* anything is inserted into
+  the tree, so an unplayable line can never leave half of itself behind.
+- **One request per branching point**, not per variation or per position — a
+  531-node tree over 64 variations has only 29 branching points. Results are
+  cached in `chrome.storage.local` keyed by FEN plus the rating/speed filters,
+  so chapters of one repertoire share their early positions.
+- **Same filters as the panel** (`CONFIG.lichess` ratings and speeds), so the
+  ordering agrees with the numbers the Lichess Database panel shows you.
+- **The scope assumption:** in a repertoire, every branching point is a position
+  where the *opponent* chooses — you don't prepare two answers to one position —
+  so no side detection is done. Where `course.color` makes it knowable, branches
+  that are actually *your* move are flagged in the console report and counted in
+  a warning, since ranking your own alternatives by crowd frequency is
+  meaningless.
+- **Unrankable lines** (tactics, mid-game starts, anything that fails replay) are
+  parked at the end of the chapter in their existing order. Move-less
+  informational cards are *not* in that group — they lead.
+- The result is **not stable over time**: the database shifts, so re-running the
+  sort months later can produce a slightly different order.
+
 ## Local engine (optional)
 
 An **Engine** button in the panel header (all three modes: Explore, Analysis,
@@ -418,7 +514,9 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
   necessary when Lichess put the explorer behind authentication; before that,
   a plain content-script fetch was enough.
 - Nothing else: no tabs permission, no scripting, no access beyond
-  chessable.com (content script) and explorer.lichess.org (worker). Note the
+  chessable.com (content script) and explorer.lichess.org (worker). The chapter
+  sort calls Chessable's own API, but that is same-origin with the page the
+  content script already runs in, so it needs no host permission either. Note the
   overstudy widget's and the quick-edit feature's `chrome.tabs.create` /
   `chrome.tabs.remove` / `chrome.tabs.sendMessage` calls do **not** require the
   `tabs` permission — that permission only gates reading tab metadata.
