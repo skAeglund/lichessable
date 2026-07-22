@@ -229,9 +229,11 @@ Currently working (v0.18.x).
   and toggling OFF closes the offscreen document (frees ~300 MB; it also
   self-closes after 5 idle minutes). Scores are normalized to White's
   perspective in engine.js, not in the panel.
-- Quick-edit comment (section 12 in lichessable.js): hovering a mainline move
+- Quick-edit (section 12 in lichessable.js): hovering a mainline move
   shows a body-mounted pencil (singleton, NOT inserted into Chessable's move
-  list) whose popup appends a PGN comment to the variation. TWO host pages,
+  list) whose popup has TWO TABS: append a PGN comment to the variation
+  (mode 'save'), or add an ALTERNATIVE MOVE the trainer should also accept
+  (mode 'alt'). TWO host pages,
   behind a `HOSTS` adapter in `initQuickEditUi`; they differ ONLY in move
   lookup, ply mapping, oid source and rights signal — popup, save round-trip and
   the entire edit-page driver are shared:
@@ -242,11 +244,26 @@ Currently working (v0.18.x).
   the 0-based ply index and its class is the colour, so NO move-number parsing
   happens there; oid from the URL; rights = presence of the "Edit Variation"
   link, which Chessable renders only for editable courses, so no probe tab is
-  opened). Verified live that both hosts' ply indices map 1:1 onto the edit
+  opened). BOTH hosts draw a piece move's letter as an SVG FIGURINE child
+  (span `data-piece="knight"` …) — `textContent` of "♘c6" is just "c6", so
+  SAN must come from `quickEditSanFromEl` (letter re-attached after the
+  number prefix is stripped), never from bare textContent. Verified live that both hosts' ply indices map 1:1 onto the edit
   page's `#interactivePGN` order. There is NO JSON API — several of Chessable's edit-form POST fields
   are session/CSRF-bound and opaque — so the ONLY safe path is to DRIVE
-  Chessable's own edit page: `background.js` opens `/explore/edit/<oid>/`
-  `active:false`, and the driver in that tab's mt1 edit iframe (`IS_EDIT_PAGE`)
+  Chessable's own edit page: `background.js` opens `/explore/edit/<oid>/` in a
+  SMALL FOCUSED POPUP WINDOW (`chrome.windows.create focused:true`, ~260×180,
+  placed right BESIDE the quick-edit popup — the requester computes screen
+  bounds in `driverWindowBounds()` and sends them as `msg.win`; bottom-right
+  parking when absent, hidden-tab fallback — a hidden tab clamps every timer,
+  ours AND Chessable's boot/animations/dialogs, to ~1 s, which stretched a
+  save from ~4-5 s to ~13-20 s; focused:false was tried and saved NOTHING:
+  the window opens occluded behind a maximized browser and is throttled the
+  same).
+  The popup's TOP document covers itself with an opaque "Saving…" shield
+  (`maybeMountQuickEditShield`, worker msg `clo-quick-edit-is-driver`) that
+  also swallows all keystrokes in capture phase — the window has real focus,
+  so typing would otherwise reach the edit page's own shortcuts. The driver
+  in that tab's mt1 edit iframe (`IS_EDIT_PAGE`)
   clicks the target move by POSITION (the Nth `#interactivePGN div[id]`),
   appends to `#moveComment` (React-controlled: native value setter + dispatched
   `input` event, NOT a bare `.value =`), sets `#specificAltMove` ("For This
@@ -264,7 +281,8 @@ Currently working (v0.18.x).
   `/mt1/explore/?edit=<oid>` (query form; a failed reload returns to the path
   form). Message hub in background.js (`clo-quick-edit-run`/`-claim`/
   `-submitting`/`-landing`/`-result`), one job at a time, job in
-  `chrome.storage.session`, 25 s hard timeout, hidden tab closed on finish. Edit
+  `chrome.storage.session`, 25 s hard timeout, popup window closed on finish
+  (removing its only tab closes the window). Edit
   rights are per-COURSE and TRI-STATE (`host.rights()`: true/false/null-unknown),
   probed LAZILY: the pencil shows while rights are unknown, and the probe tab
   only opens from `applyRightsToPopup()` when a popup opens on an unprobed
@@ -274,12 +292,52 @@ Currently working (v0.18.x).
   pencil. Append convention
   (`CONFIG.quickEdit.commentJoin`) and the exact stored wrapper (`( { … } )`)
   are the one thing to confirm in a manual save test.
+  Touch has no hover, so after a TAP on a move (`pointerout` with
+  `pointerType 'touch'`) the pencil lingers `touchPencilMs` (~4 s) instead of
+  the 200 ms mouse hide — tap move (which also navigates the board there),
+  then tap the lingering pencil. Any scroll hides the pencil immediately
+  (it is fixed-positioned from the move's rect at show time and would float
+  over the wrong move).
   The popup MUST swallow `keydown`/`keypress`/`keyup` (bubble phase,
   `stopPropagation`) — MoveTrainer2 binds single-key shortcuts ("n" = next
   variation, space, …) on `document` and does NOT skip them while a text field
   has focus, so without this, typing a comment drives the trainer. Bubble phase
   is enough (verified live); the default action still inserts the character, and
   Escape closes the popup.
+  ALT-MOVE mode (`driveQuickEditAltMove`; ground-truthed live 2026-07-22):
+  Chessable stores alternatives per move as `alt_white`/`alt_black` SAN arrays
+  (plus parallel `specific_alt_*` booleans) in its page-state `allTheMoves`,
+  keyed by the SAME `{san}_{w|b}_{n}` ids as `#interactivePGN` — but the driver
+  never touches page state; it drives the UI: click the target move, click the
+  `Add New Alternative Move` link (`SELECTORS.editAltAddLink`), confirm the
+  SweetAlert ("The next move you make on the board will be added as an
+  alternative") — the edit board then steps BACK one move (its `#inputFEN`
+  changes; that FEN is what the typed SAN is resolved against with CloSan,
+  `quickEditResolveSan`) — set `#specificAltMove` BEFORE the move (pushAltMove
+  reads it at store time), then PLAY the alternative with the ordinary
+  `pressSquare` click recipe (the edit board has the standard `square-55d63` /
+  `e4-<uuid>` markup, so `SELECTORS.boardSquare` matches). Chessable validates
+  everything itself — board legality, duplicate, same-as-mainline — and lists
+  the move in `#altMoves` (`quickEditAltListed` = the isolated-world success
+  check; on timeout the open dialog's text is relayed as the error). An alt
+  already listed on arrival short-circuits to success (it was saved before).
+  Dialog waits go through `quickEditOpenConfirm` (scoped to
+  `.swal2-container.swal2-shown`) because several SweetAlerts open and close in
+  one alt job — a stale hidden confirm button must never be clicked; submit and
+  landing detection are then the comment flow's unchanged. ALL waits are
+  `quickEditWaitUntil`, which is MutationObserver-driven with the interval as
+  backstop: a hidden tab clamps setInterval/setTimeout to ~1 s, so a chain of
+  polled waits cost 15-20 s there (vs 4-5 s focused) until the waits were made
+  observer-based — never add a plain fixed delay to this driver. Promotion
+  alternatives are REFUSED in popup and driver (edit-board picker unverified).
+  The alt tab is DISABLED on opponent moves (always a misclick — the trainer
+  plays those itself): the user's colour is the board's bottom side
+  (`host.userColor()`, via `boardBottomColor`; Chessable orients both hosts'
+  boards to the course colour), permissive while the board is mid-render with
+  a re-check in doSave.
+  While the popup's alt tab is open, clicking a Lichess panel move row
+  prefills the SAN input (both hosts are review documents, where rows carry no
+  `dataset.uci`, so nothing competes).
 - Auto-play (section 13; design + live ground-truthing in DESIGN-autoplay.md):
   records every move the user answers correctly during a review session and
   replays it when a later variation (or transposition) reaches the same

@@ -687,10 +687,37 @@ html.clo-injecting .legal-square-capture-mt2 {
   margin-bottom: 6px;
 }
 
-.clo-qe-text {
+/* Mode tabs: Comment | Alt move. The active tab reads as part of the popup
+   body; the inactive one as a quiet label. */
+.clo-qe-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.clo-qe-tab {
+  border: 1px solid #3a3630;
+  background: transparent;
+  color: #949494;
+  padding: 2px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-qe-tab:hover { color: #dcdcdc; }
+.clo-qe-tab--active {
+  background: #1b1a17;
+  color: #dcdcdc;
+  border-color: #629924;
+}
+.clo-qe-tab:disabled { opacity: 0.6; cursor: default; }
+
+.clo-qe-text,
+.clo-qe-san {
   width: 100%;
   box-sizing: border-box;
-  resize: vertical;
   background: #1b1a17;
   border: 1px solid #3a3630;
   border-radius: 3px;
@@ -699,6 +726,9 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-family: inherit;
   padding: 4px 6px;
 }
+
+.clo-qe-text { resize: vertical; }
+.clo-qe-san[hidden], .clo-qe-text[hidden] { display: none; }
 
 .clo-qe-scope {
   display: flex;
@@ -753,6 +783,53 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-qe-cancel:hover { color: #fff; }
 .clo-qe-cancel:disabled { opacity: 0.6; cursor: default; }
+
+/* --- quick-edit driver shield -----------------------------------------------
+   Opaque cover over the WHOLE driver popup window (its top document) while a
+   save runs — the window is focused for full-speed timers, and this makes the
+   brief appearance read as an intentional "Saving…" surface instead of a
+   flashing Chessable edit page. */
+
+.clo-qe-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  background: #1b1a17;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #dcdcdc;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.clo-qe-shield-box {
+  text-align: center;
+}
+
+.clo-qe-shield-spinner {
+  width: 28px;
+  height: 28px;
+  margin: 0 auto 12px;
+  border: 3px solid #3a3630;
+  border-top-color: #629924;
+  border-radius: 50%;
+  animation: clo-qe-spin 0.9s linear infinite;
+}
+
+@keyframes clo-qe-spin {
+  to { transform: rotate(360deg); }
+}
+
+.clo-qe-shield-label {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.clo-qe-shield-sub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #949494;
+}
 
 /* --- chapter "Sort variations" widget (section 14) ---------------------------
    Body-mounted and merely anchored to Chessable's toolbar (never inside their
@@ -961,9 +1038,15 @@ html.clo-touch .clo-qe-popup {
   font-size: 16px;
 }
 
-html.clo-touch .clo-qe-text {
+html.clo-touch .clo-qe-text,
+html.clo-touch .clo-qe-san {
   font-size: 16px;
   padding: 8px 10px;
+}
+
+html.clo-touch .clo-qe-tab {
+  font-size: 15px;
+  padding: 6px 14px;
 }
 
 html.clo-touch .clo-qe-scope,

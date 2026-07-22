@@ -95,14 +95,24 @@ The move list auto-play checks against is the trainer's own: MoveTrainer2
 already holds the current variation's full line in memory before it plays the
 first move, so nothing is fetched, cached or waited for.
 
-You can also **quick-edit a move's comment**: hover a mainline move and a small
-pencil appears; its popup lets you type a note and append it as a PGN comment
-after that move (with the same "For this variation only" toggle Chessable's
-editor has). This works in two places — the completed-variation browse state
-during review, and any standalone **variation page**
-(`/variation/<id>/`). It only shows for courses you can edit, and it works by
-driving Chessable's own edit page in a background tab — see "Quick-edit
-comment" under Architecture notes.
+You can also **quick-edit a move**: hover a mainline move and a small pencil
+appears; its popup has two tabs. **Comment** lets you type a note and append it
+as a PGN comment after that move (with the same "For this variation only"
+toggle Chessable's editor has). **Alt move** registers an alternative move the
+trainer should also accept in place of that move — type its notation (`Nf6`,
+`Qxd5`, `O-O`), or just click a move row in the Lichess panel to fill it in.
+The tab is only available on your own moves (your colour is the side at the
+bottom of the board) — an alternative to an opponent move would be a misclick,
+since the trainer plays those itself.
+This works in two places — the completed-variation browse state during review,
+and any standalone **variation page** (`/variation/<id>/`). It only shows for
+courses you can edit, and it works by driving Chessable's own edit page in a
+small popup window showing "Saving to Chessable…" that appears for the few
+seconds the save takes and closes itself (the window has to be visible and
+focused — Chrome slows hidden or covered pages down to a crawl) — see
+"Quick-edit" under Architecture notes. Promotion moves aren't supported as
+alternatives yet. On touch screens, where there is no hover, tapping a move
+keeps the pencil on screen for a few seconds so it can be tapped.
 
 On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
 extension adds a **Sort by popularity** button, which reorders the whole chapter to
@@ -289,33 +299,49 @@ lichessable/
   `SELECTORS.trainerPauseIcon`) and clicks it once. If the tab becomes
   visible before the control appears, it backs off. Resuming is Chessable's
   native play overlay on the board.
-- **Quick-edit comment** — hovering a mainline move shows a pencil (a
+- **Quick-edit** — hovering a mainline move shows a pencil (a
   body-mounted singleton, never inserted into Chessable's move list) whose popup
-  appends a PGN comment to the variation. It runs on two host pages behind a
+  appends a PGN comment to the variation or adds an alternative move the
+  trainer should also accept. It runs on two host pages behind a
   small adapter: the completed-variation browse state (moves are `commentMove`
   spans; ply = index in that list; edit rights probed lazily on popup open) and the
   standalone variation page (moves live in `#theOpeningMoves`, where each move
   div's id already *is* its 0-based ply index and its class gives the colour;
   the variation id comes from the URL and edit rights are simply whether
   Chessable rendered the "Edit Variation" link, so no probe tab is needed).
-  There is no JSON API for this, and several of Chessable's edit-form
+  There is no JSON API for either, and several of Chessable's edit-form
   POST fields are session/CSRF-bound and opaque, so the only safe path is to
   drive Chessable's **own edit page**: the worker opens `/explore/edit/<oid>/`
-  in a background tab (`clo-quick-edit-run`), and the driver there clicks the
+  in a small focused popup window covered by a "Saving…" shield
+  (`clo-quick-edit-run`; visible and focused because Chrome clamps every timer
+  on hidden or occluded pages — Chessable's own boot and dialogs included — to
+  ~1 s, tripling the save time; the shield swallows keystrokes so nothing
+  reaches the edit page, and the worker falls back to a hidden tab if the
+  window can't be created), and the driver there clicks the
   target move by its position in `#interactivePGN` (matched by ply index, since
   the edit page renumbers each variation from move 1 while review keeps the
-  source game's numbering), appends to the "Comments After" textarea,
-  sets the "For This Variation Only" checkbox, clicks "Update variation", and
+  source game's numbering), then either appends to the "Comments After"
+  textarea and sets the "For This Variation Only" checkbox, or — for an
+  alternative move — runs Chessable's own add-alternative flow: click "Add New
+  Alternative Move", confirm the "next move you make on the board" dialog
+  (the board then steps back one move), resolve the typed SAN against the edit
+  page's own `#inputFEN` with the bundled move generator, and *play* the
+  alternative on the edit board with the same synthetic click recipe used
+  everywhere else. Chessable itself validates the move (only a board-legal
+  move reaches its handler; duplicates and the mainline move raise its own
+  dialogs, whose text is relayed to the popup) and lists it under
+  "Alternative Moves", which is the success signal. Either way the driver then
+  clicks "Update variation" and
   confirms Chessable's SweetAlert dialog — which is what actually submits the
   full-variation form. Success is detected when the POST lands the iframe on
   `/mt1/explore/?edit=<oid>`; the worker then relays the result to the review
   tab and closes the background tab. Edit rights are a per-course property,
   probed lazily: the pencil shows without knowing them, and only opening the
-  comment popup while rights are still unknown runs the probe (one throwaway
+  popup while rights are still unknown runs the probe (one throwaway
   background tab, result cached per course per session) — the popup's Save
   button stays disabled until the probe confirms edit rights, and a course
   confirmed uneditable hides the pencil from then on. So no tab ever opens
-  unless you actually try to comment. The move rows themselves are read only;
+  unless you actually try to edit. The move rows themselves are read only;
   nothing in Chessable's DOM is mutated.
 - **Review auto-play** — runs entirely in the top document alongside the
   overstudy watcher. A `MutationObserver` on the trainer board coalesces

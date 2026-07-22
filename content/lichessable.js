@@ -93,9 +93,18 @@
     // the review panel must be normalised the same way (quickEditSan).
     editInteractivePGN: '#interactivePGN',  // mainline move list on the edit page
     editCommentAfter:   '#moveComment',     // "Comments After <move>" textarea (React-controlled)
-    editVariationOnly:  '#specificAltMove', // "For This Variation Only" checkbox
+    editVariationOnly:  '#specificAltMove', // "For This Variation Only" checkbox (comments AND alternatives read it)
     editSubmitButton:   '#submitButton',    // "Update variation" button (onclick=addVariation → swal confirm)
     editConfirmButton:  '.swal2-confirm',   // SweetAlert2 "Update" button that actually submits the form
+    // Alternative moves (quick-edit alt mode — section 12). The add link has no
+    // id or class, only its inline onclick; #altMoves holds one "alt_<n>" div
+    // per alternative, each wrapping a <span>{san}</span> plus a Delete link.
+    // The add flow's dialogs are SweetAlert2: instruction → confirm → the next
+    // BOARD move is captured (doAddAltMove) → success/error dialog. The shown
+    // container class scopes queries to the dialog actually open right now.
+    editAltAddLink:     'a[onclick^="addAltMove"]', // "Add New Alternative Move"
+    editAltList:        '#altMoves',                // rendered list of this move's alternatives
+    editSwalShown:      '.swal2-container.swal2-shown', // the currently OPEN SweetAlert2 dialog
 
     // Standalone variation page (/variation/<oid>/ — second quick-edit host,
     // section 12). Wholly different markup from both the trainer and the edit
@@ -107,6 +116,12 @@
     // subvariations), hence the > span > child scoping.
     variationMoves:    '#theOpeningMoves > span > .whiteMove, #theOpeningMoves > span > .blackMove',
     variationEditLink: 'a[href*="/explore/edit/"]', // "Edit Variation" — rendered only with edit rights
+    // BOTH quick-edit hosts render a piece move's letter as an SVG figurine
+    // (span class "commentMove__piece", data-piece="knight" …) — the move
+    // TEXT alone reads "c6", so the SAN letter must be prepended from this
+    // child before any SAN parsing (quickEditSanFromEl). Pawn moves and
+    // castling carry no figurine.
+    moveFigurine:      '[data-piece]',
     // The variation page ALSO has a #inputFEN (readonly, kept current by the
     // page on every move navigation — verified live), so the panel there reads
     // SELECTORS.fenInput like explore does; no DOM board reconstruction needed.
@@ -197,6 +212,16 @@
       settleMs:         150,    // wait after clicking a move for #moveComment to update
       bootTimeoutMs:    15000,  // wait for the edit form (absence ⇒ no edit rights)
       confirmTimeoutMs: 6000,   // wait for the SweetAlert confirm button after submit
+      // Alt-move driver: after the instruction dialog is confirmed the edit
+      // board steps BACK one move (its #inputFEN changes) before the
+      // alternative can be played; after the two square presses Chessable
+      // either lists the move in #altMoves or raises an error dialog.
+      altStepBackTimeoutMs: 4000, // wait for the board to reach the pre-move position
+      altResultTimeoutMs:   5000, // wait for #altMoves to list the move (or an error swal)
+      // Touch has no hover: a tap fires pointerover (pencil shows) and the
+      // finger lifting fires pointerout right after, whose 200 ms hide made
+      // the pencil unhittable. After a TAP it stays up this long instead.
+      touchPencilMs: 4000,
     },
 
     // --- Auto-play already-mastered moves in review (section 13) -----------
@@ -267,6 +292,7 @@
   const REVIEW_WIDGET_ID = 'lichessable-review'; // overstudy widget (section 9); the review panel anchors below it
   const QE_PENCIL_ID = 'lichessable-qe-pencil';  // quick-edit hover pencil (section 12)
   const QE_POPUP_ID  = 'lichessable-qe-popup';   // quick-edit comment popup (section 12)
+  const QE_SHIELD_ID = 'lichessable-qe-shield';  // "Saving…" cover in the driver popup window (section 12)
   const CHAPTER_WIDGET_ID = 'lichessable-chapter'; // chapter sort button (section 14)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
@@ -2215,18 +2241,34 @@
   }
 
   // ==========================================================================
-  // 12) Quick-edit comment (review browse state ↔ background edit tab)
+  // 12) Quick-edit (review browse state ↔ background edit tab)
   //
   // In the review browse state, hovering a mainline move shows a pencil; the
-  // popup appends a PGN comment to the real Chessable variation. There is no
-  // JSON API for this — the only safe path is to drive Chessable's own edit
+  // popup has two tabs: append a PGN comment to the real Chessable variation,
+  // or add an ALTERNATIVE MOVE the trainer should also accept. There is no
+  // JSON API for either — the only safe path is to drive Chessable's own edit
   // page (verified: several of its POST fields are session/CSRF-bound and
   // opaque). So background.js opens /explore/edit/<oid>/ in a background tab;
   // the driver below (running in that tab's mt1 edit iframe) clicks the target
-  // move, appends to the "Comments After" textarea, sets the scope checkbox,
-  // clicks "Update variation", and confirms Chessable's SweetAlert dialog —
-  // which is what actually submits the full-variation form. Success is detected
-  // when the form's POST lands the iframe on /mt1/explore/?edit=<oid>.
+  // move, then either appends to the "Comments After" textarea (mode 'save')
+  // or runs Chessable's add-alternative flow (mode 'alt' — see
+  // driveQuickEditAltMove: the "Add New Alternative Move" link arms a
+  // next-board-move capture behind a SweetAlert confirm, the board steps BACK
+  // one move, and the alternative is PLAYED on the edit board with the
+  // standard pressSquare recipe; Chessable itself validates legality — only a
+  // board-accepted move ever reaches its handler — plus duplicates and
+  // same-as-mainline, stores the SAN on the move's alt_white/alt_black list in
+  // its page state, honouring the #specificAltMove checkbox read at store
+  // time, and lists it in #altMoves, which is the isolated-world success
+  // signal). Both modes end the same way: click "Update variation" and confirm
+  // Chessable's SweetAlert dialog — which is what actually submits the
+  // full-variation form. Success is detected when the form's POST lands the
+  // iframe on /mt1/explore/?edit=<oid>. The alt SAN's legality is resolved
+  // from the edit page's own #inputFEN (exact castling/en-passant, mid-game
+  // tactics lines included), so the popup ships a bare SAN string and never
+  // reconstructs a position. Promotion alternatives are refused (the edit
+  // board's promotion picker is unverified). While the popup's alt tab is
+  // open, clicking a Lichess panel move row prefills the SAN input.
   //
   // Edit rights are a per-COURSE property. They are probed LAZILY: the pencil
   // shows without knowing them, and the probe (one throwaway background tab)
@@ -2249,6 +2291,55 @@
     return m ? m[1] : null;
   }
 
+  /** SANs compared ignoring a trailing check/mate glyph — Chessable and CloSan
+   *  agree on the move but not always on writing "+". */
+  const quickEditBareSan = (san) => String(san).replace(/[+#]$/, '');
+
+  const QE_PIECE_LETTER = { king: 'K', queen: 'Q', rook: 'R', bishop: 'B', knight: 'N', pawn: '' };
+
+  /**
+   * SAN from a move ELEMENT. Both quick-edit hosts draw the piece letter as an
+   * SVG figurine child (data-piece="knight" …) whose letter never appears in
+   * the text — el.textContent of "2. ♘f3" is "2. f3" — so the letter is
+   * re-attached after the move-number prefix is stripped. Elements without a
+   * figurine (pawn moves, castling) pass through quickEditSan unchanged.
+   */
+  function quickEditSanFromEl(el) {
+    const fig = el.querySelector(SELECTORS.moveFigurine);
+    const letter = fig ? (QE_PIECE_LETTER[fig.getAttribute('data-piece')] || '') : '';
+    if (!letter) return quickEditSan(el.textContent);
+    const stripped = String(el.textContent).trim().replace(/^\d+\s*(?:\.{3}|…|\.)\s*/, '');
+    return quickEditSan(letter + stripped);
+  }
+
+  /**
+   * Which colour sits at the BOTTOM of a board, from two square elements —
+   * the user's colour on both quick-edit hosts (Chessable orients the board
+   * to the course colour). Null while the board is mid-render.
+   */
+  function boardBottomColor(a1El, h8El) {
+    if (!a1El || !h8El) return null;
+    const ra = a1El.getBoundingClientRect(), rh = h8El.getBoundingClientRect();
+    if (!ra.height || !rh.height) return null;
+    return ra.top > rh.top ? 'w' : 'b';
+  }
+
+  /**
+   * Resolves `san` against a CloSan position to the legal {from, to, promo}
+   * move it names, or null. Same generate-and-compare recipe as the chapter
+   * sort's playSan: CloSan converts each legal move to SAN and the bare forms
+   * are compared, so user input with or without "+"/"#" both match.
+   */
+  function quickEditResolveSan(pos, san) {
+    const want = quickEditBareSan(san);
+    for (const mv of CloSan.generateMoves(pos)) {
+      const uci = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
+      const got = CloSan.moveToSan(pos, uci);
+      if (got && quickEditBareSan(got) === want) return mv;
+    }
+    return null;
+  }
+
   /**
    * Descriptor for a mainline move element: its 0-based PLY INDEX within the
    * variation plus its own SAN and colour (for verification). The move is
@@ -2266,7 +2357,7 @@
     if (plyIndex < 0) return null;
     const turn = turnFromLine(moves, el);
     if (!turn) return null;
-    const san = quickEditSan(el.textContent);
+    const san = quickEditSanFromEl(el);
     if (!san) return null;
     const color = turn.side === 'w' ? 'b' : 'w';
     return { san, color, plyIndex };
@@ -2280,7 +2371,7 @@
   function variationMoveDescriptor(el) {
     const plyIndex = Number(el.id);
     if (!Number.isInteger(plyIndex) || plyIndex < 0) return null;
-    const san = quickEditSan(el.textContent);
+    const san = quickEditSanFromEl(el);
     if (!san) return null;
     return { san, color: el.classList.contains('whiteMove') ? 'w' : 'b', plyIndex };
   }
@@ -2345,6 +2436,48 @@
   const quickEditDelay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   /**
+   * Runs `fn` until it returns a truthy value (resolved) or `timeoutMs`
+   * passes (resolves null — the CALLER decides what a timeout means, since
+   * for the alt driver it may just mean "check for an error dialog instead").
+   *
+   * DOM mutations re-run the predicate IMMEDIATELY: MutationObserver is not
+   * timer-throttled in a hidden tab, whereas setInterval is clamped to ~1 s
+   * there — and the hidden edit tab is exactly where this runs. Every state
+   * this driver waits for (board position, dialogs, the alt list) mutates the
+   * DOM when it arrives, so chaining a dozen such waits stays fast without
+   * the tab ever being focused; the interval is only a backstop for the
+   * purely time-based predicates (boot stability).
+   */
+  function quickEditWaitUntil(fn, timeoutMs) {
+    return new Promise((resolve) => {
+      let observer = null, pollTimer = 0, timeoutTimer = 0;
+      const finish = (value) => {
+        if (observer) observer.disconnect();
+        clearInterval(pollTimer);
+        clearTimeout(timeoutTimer);
+        resolve(value);
+      };
+      const check = () => {
+        let value = null;
+        try { value = fn(); } catch (err) { /* keep waiting */ }
+        if (value) finish(value);
+        return Boolean(value);
+      };
+      if (check()) return;
+      observer = new MutationObserver(check);
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+      pollTimer = setInterval(check, 100);
+      timeoutTimer = setTimeout(() => finish(null), timeoutMs);
+    });
+  }
+
+  /** The confirm button of the SweetAlert2 dialog that is open RIGHT NOW —
+   *  stale buttons from an already-closed dialog never match, because the
+   *  shown-container class scopes the query. */
+  const quickEditOpenConfirm = () =>
+    document.querySelector(SELECTORS.editSwalShown + ' ' + SELECTORS.editConfirmButton);
+
+  /**
    * Called from start() only on the edit page. Asks the worker whether this
    * background tab was opened for a quick-edit job; if so, drives it and
    * returns true (so the caller skips the normal explore panel). Returns false
@@ -2399,19 +2532,31 @@
     if (!idm || idm[1] !== job.san || idm[2] !== job.color) {
       throw new Error(`move mismatch at #${job.plyIndex}: id "${moveEl.id}" vs expected ${job.san}/${job.color}`);
     }
-    moveEl.click(); // selects the move; #moveComment updates synchronously
-    await quickEditDelay(CONFIG.quickEdit.settleMs);
+    if (job.mode === 'alt') {
+      // The alt flow does its own move click (after its board-ready gate) and
+      // its own settling — a fixed delay here would only add a ~1 s clamped
+      // timer in the hidden tab. 'already' = the alternative was saved on a
+      // previous visit (the form renders stored alternatives on selection):
+      // nothing to change, success without touching the variation at all.
+      const outcome = await driveQuickEditAltMove(job, moveEl);
+      if (outcome === 'already') {
+        chrome.runtime.sendMessage({ type: 'clo-quick-edit-result', oid, mode: 'alt', ok: true }).catch(() => {});
+        return;
+      }
+    } else {
+      moveEl.click(); // selects the move; #moveComment updates synchronously
+      await quickEditDelay(CONFIG.quickEdit.settleMs);
+      const ta = document.querySelector(SELECTORS.editCommentAfter);
+      if (!ta) throw new Error('comment field not found');
+      const existing = ta.value || '';
+      const next = existing.trim()
+        ? existing + CONFIG.quickEdit.commentJoin + job.commentText
+        : job.commentText;
+      setReactTextareaValue(ta, next);
 
-    const ta = document.querySelector(SELECTORS.editCommentAfter);
-    if (!ta) throw new Error('comment field not found');
-    const existing = ta.value || '';
-    const next = existing.trim()
-      ? existing + CONFIG.quickEdit.commentJoin + job.commentText
-      : job.commentText;
-    setReactTextareaValue(ta, next);
-
-    const box = document.querySelector(SELECTORS.editVariationOnly);
-    if (box && box.checked !== Boolean(job.forThisVariationOnly)) box.click();
+      const box = document.querySelector(SELECTORS.editVariationOnly);
+      if (box && box.checked !== Boolean(job.forThisVariationOnly)) box.click();
+    }
 
     // Tell the worker we're about to submit, so the post-POST landing document
     // (/mt1/explore/?edit=<oid>) is recognised as this job's success.
@@ -2424,8 +2569,178 @@
     // Chessable only serialises + POSTs the variation after the user confirms
     // the "Update variation?" dialog, so click its confirm button. The POST
     // then navigates the iframe; success is reported by the landing document.
-    const confirmBtn = await quickEditWaitFor(SELECTORS.editConfirmButton, CONFIG.quickEdit.confirmTimeoutMs);
+    // Scoped to the OPEN dialog: the alt flow has already shown and dismissed
+    // other SweetAlerts in this document, and a stale hidden confirm button
+    // must never be the one clicked.
+    const confirmBtn = await quickEditWaitUntil(quickEditOpenConfirm, CONFIG.quickEdit.confirmTimeoutMs);
+    if (!confirmBtn) throw new Error('update-confirm dialog did not appear');
     confirmBtn.click();
+  }
+
+  /** True when the selected move's rendered alternatives include `san`. */
+  function quickEditAltListed(san) {
+    const spans = document.querySelectorAll(SELECTORS.editAltList + ' span');
+    return [...spans].some((s) => quickEditBareSan(s.textContent.trim()) === quickEditBareSan(san));
+  }
+
+  /**
+   * Adds job.altSan as an alternative to the currently selected move by
+   * driving Chessable's own add-alternative flow (ground-truthed live):
+   * the add link arms the capture ("The next move you make on the board will
+   * be added as an alternative"), confirming steps the board BACK one move,
+   * and the next board move is recorded by doAddAltMove — which validates
+   * duplicates and same-as-mainline itself and reports either in a dialog.
+   * The move is played with the same pressSquare click recipe as everywhere
+   * else; the edit board carries the standard square markup. Returns 'already'
+   * when the alternative was stored on a previous visit (nothing to submit);
+   * otherwise the caller submits the form normally.
+   */
+  async function driveQuickEditAltMove(job, moveEl) {
+    const fenInput = document.querySelector(SELECTORS.fenInput);
+    if (!fenInput) throw new Error('edit-page FEN input not found');
+
+    // The driver starts as soon as #interactivePGN exists — BEFORE the edit
+    // board has necessarily finished booting (the comment flow never noticed:
+    // it only touches the React comment field). A move click on a half-booted
+    // board does not navigate it, so first wait until the FEN input holds a
+    // parseable value that has stopped changing (the boot navigates to move 1
+    // on its own), THEN re-click the target move and require the position
+    // AFTER it: side to move = the opponent of the move's colour. Side-based
+    // checks stay valid on renumbered tactics lines, where the FEN's fullmove
+    // number matches the source game rather than the edit page's numbering.
+    const afterSide = job.color === 'w' ? 'b' : 'w';
+    let lastFen = null, stableSince = 0;
+    const ready = await quickEditWaitUntil(() => {
+      const v = fenInput.value;
+      if (!CloSan.parseFen(v)) { lastFen = null; return null; }
+      if (v !== lastFen) { lastFen = v; stableSince = Date.now(); return null; }
+      return Date.now() - stableSince >= 450 ? v : null;
+    }, CONFIG.quickEdit.bootTimeoutMs);
+    if (!ready) throw new Error('edit board did not finish loading');
+
+    moveEl.click(); // idempotent re-select, now that the board is live
+    const fenBefore = await quickEditWaitUntil(() => {
+      const pos = CloSan.parseFen(fenInput.value);
+      return pos && pos.side === afterSide ? fenInput.value : null;
+    }, CONFIG.quickEdit.altStepBackTimeoutMs);
+    if (!fenBefore) throw new Error('edit board did not reach the selected move');
+
+    // Selecting the move rendered its stored alternatives — already listed
+    // means already saved.
+    if (quickEditAltListed(job.altSan)) return 'already';
+
+    const addLink = document.querySelector(SELECTORS.editAltAddLink);
+    if (!addLink) throw new Error('add-alternative link not found');
+    addLink.click();
+
+    const okBtn = await quickEditWaitUntil(quickEditOpenConfirm, CONFIG.quickEdit.confirmTimeoutMs);
+    if (!okBtn) throw new Error('add-alternative dialog did not appear');
+    // Keep the dialog's text: if the step-back never happens, this was most
+    // likely a REFUSAL dialog rather than the arming instruction, and its
+    // wording is the only diagnosis the closing hidden tab leaves behind.
+    const armDialog = document.querySelector(SELECTORS.editSwalShown);
+    const armText = armDialog ? armDialog.textContent.trim().replace(/\s+/g, ' ').slice(0, 160) : '';
+    okBtn.click();
+
+    // The board steps back to the position the alternative is played FROM;
+    // its FEN is the ground truth the SAN is resolved against — exact
+    // castling/en-passant state, tactics lines starting mid-game included.
+    // Require the side to move to be the target move's colour, so a mid-boot
+    // flicker can never be mistaken for the stepped-back position.
+    const fenNow = await quickEditWaitUntil(() => {
+      if (fenInput.value === fenBefore) return null;
+      const pos = CloSan.parseFen(fenInput.value);
+      return pos && pos.side === job.color ? fenInput.value : null;
+    }, CONFIG.quickEdit.altStepBackTimeoutMs);
+    if (!fenNow) {
+      throw new Error('edit board did not step back to the pre-move position'
+        + (armText ? ' (dialog said: ' + armText + ')' : ''));
+    }
+
+    // pushAltMove reads the checkbox at store time — set it BEFORE the move.
+    const box = document.querySelector(SELECTORS.editVariationOnly);
+    if (box && box.checked !== Boolean(job.forThisVariationOnly)) box.click();
+
+    const pos = CloSan.parseFen(fenNow);
+    if (!pos) throw new Error('could not read the edit board position');
+    const mv = quickEditResolveSan(pos, job.altSan);
+    if (!mv) throw new Error(job.altSan + ' is not a legal move in that position');
+    if (mv.promo) throw new Error('promotion alternatives are not supported yet');
+
+    const fromEl = findSquare(squareName(mv.from));
+    const toEl = findSquare(squareName(mv.to));
+    if (!fromEl || !toEl) throw new Error('board squares not found on the edit page');
+    pressSquare(fromEl);
+    pressSquare(toEl);
+
+    // Success = the move shows up in #altMoves. On timeout, the open dialog
+    // (if any) carries Chessable's own reason — relay it instead of a bare
+    // timeout so the popup can show something actionable.
+    const listed = await quickEditWaitUntil(
+      () => quickEditAltListed(job.altSan), CONFIG.quickEdit.altResultTimeoutMs);
+    if (!listed) {
+      const dialog = document.querySelector(SELECTORS.editSwalShown);
+      const reason = dialog ? dialog.textContent.trim().replace(/\s+/g, ' ').slice(0, 160) : '';
+      throw new Error(reason || ('the board did not accept ' + job.altSan));
+    }
+
+    // Dismiss the "Done, you added …" dialog — WAIT for it first (the list can
+    // render a beat before the dialog opens), then wait for it to actually
+    // close, so the submit-confirm wait that follows can never grab this
+    // dialog's fading confirm button. Both waits are best-effort: on timeout
+    // just proceed to the submit.
+    const doneBtn = await quickEditWaitUntil(quickEditOpenConfirm, CONFIG.quickEdit.confirmTimeoutMs);
+    if (doneBtn) doneBtn.click();
+    await quickEditWaitUntil(() => !quickEditOpenConfirm(), CONFIG.quickEdit.confirmTimeoutMs);
+    // No settle delay here: the submit-confirm wait that follows is scoped to
+    // the OPEN dialog, and a fixed timer would cost a full ~1 s clamp in the
+    // hidden tab.
+  }
+
+  /**
+   * The driver popup window's TOP document (the edit page shell around the
+   * mt1 iframe): when this tab belongs to a running quick-edit job, cover the
+   * whole window with an opaque "Saving…" shield. The window is FOCUSED (an
+   * unfocused one sits occluded behind a maximized browser and gets throttled
+   * exactly like a hidden tab — see background.js), so the shield both makes
+   * the flash look intentional and swallows stray keystrokes that would
+   * otherwise reach the edit page while the driver works. Returns true when
+   * mounted, so start() skips every other top-document feature in this tab.
+   */
+  async function maybeMountQuickEditShield() {
+    const m = /^\/explore\/edit\/(\d+)\//.exec(location.pathname);
+    if (!m) return false;
+    let res;
+    try {
+      res = await chrome.runtime.sendMessage({ type: 'clo-quick-edit-is-driver', oid: m[1] });
+    } catch (err) {
+      return false;
+    }
+    if (!res || !res.isDriver) return false; // manual visit — leave the page alone
+
+    const shield = document.createElement('div');
+    shield.id = QE_SHIELD_ID;
+    shield.className = 'clo-qe-shield';
+    const box = document.createElement('div');
+    box.className = 'clo-qe-shield-box';
+    const spinner = document.createElement('div');
+    spinner.className = 'clo-qe-shield-spinner';
+    const label = document.createElement('div');
+    label.className = 'clo-qe-shield-label';
+    label.textContent = res.mode === 'probe' ? 'Checking edit rights…' : 'Saving to Chessable…';
+    const sub = document.createElement('div');
+    sub.className = 'clo-qe-shield-sub';
+    sub.textContent = 'This window closes itself.';
+    box.append(spinner, label, sub);
+    shield.appendChild(box);
+    (document.body || document.documentElement).appendChild(shield);
+
+    // Capture-phase swallow: the focused window receives real keyboard input,
+    // and the edit page binds its own shortcuts — nothing may reach it.
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      window.addEventListener(type, (e) => { e.stopPropagation(); e.preventDefault(); }, true);
+    }
+    return true;
   }
 
   /**
@@ -2459,6 +2774,7 @@
       popupTarget: null,      // move element the open popup refers to
       hideTimer: 0,
       saving: false,
+      mode: 'comment',        // 'comment' | 'alt' — which popup tab is active
     };
 
     // Host adapter. The two pages that offer quick-edit differ ONLY in how
@@ -2481,6 +2797,16 @@
           if (!bid) return null;
           return qe.rightsByBid.has(bid) ? qe.rightsByBid.get(bid) : null;
         },
+        // The user's colour = the board's bottom side (the trainer orients the
+        // board to the course colour). Gates the alt tab: an alternative on an
+        // opponent move is always a misclick.
+        userColor: () => {
+          const board = getReviewBoard();
+          if (!board) return null;
+          return boardBottomColor(
+            board.querySelector(SELECTORS.reviewSquare.replace('%s', 'a1')),
+            board.querySelector(SELECTORS.reviewSquare.replace('%s', 'h8')));
+        },
       },
       variation: {
         name: 'variation page',
@@ -2496,6 +2822,9 @@
         // Chessable only renders the "Edit Variation" link (Repertoire Admin
         // box) for a course you can actually edit. Never null.
         rights: () => Boolean(document.querySelector(SELECTORS.variationEditLink)),
+        // Same bottom-of-board signal as review; the variation page's board is
+        // the standard chessboard.js one, so squares come from findSquare.
+        userColor: () => boardBottomColor(findSquare('a1'), findSquare('h8')),
       },
     };
     const host = IS_VARIATION_PAGE ? HOSTS.variation : HOSTS.review;
@@ -2505,7 +2834,7 @@
       btn.type = 'button';
       btn.id = QE_PENCIL_ID;
       btn.className = 'clo-qe-pencil';
-      btn.title = 'Add a comment after this move';
+      btn.title = 'Add a comment or alternative move';
       btn.textContent = '✎';
       btn.hidden = true;
       btn.addEventListener('mouseenter', cancelHide);
@@ -2528,10 +2857,32 @@
       const moveLabel = document.createElement('div');
       moveLabel.className = 'clo-qe-move';
 
+      // Mode tabs: append a comment (the original feature) or register an
+      // alternative move the trainer should also accept.
+      const tabs = document.createElement('div');
+      tabs.className = 'clo-qe-tabs';
+      const tabButtons = {};
+      for (const [mode, label] of [['comment', 'Comment'], ['alt', 'Alt move']]) {
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = 'clo-qe-tab';
+        tab.textContent = label;
+        tab.addEventListener('click', () => { if (!qe.saving) applyMode(mode); });
+        tabs.appendChild(tab);
+        tabButtons[mode] = tab;
+      }
+
       const textarea = document.createElement('textarea');
       textarea.className = 'clo-qe-text';
       textarea.rows = 3;
       textarea.placeholder = 'Comment after this move…';
+
+      const sanInput = document.createElement('input');
+      sanInput.type = 'text';
+      sanInput.className = 'clo-qe-san';
+      sanInput.placeholder = 'e.g. Nf6 — or click a move in the Lichess panel';
+      sanInput.spellcheck = false;
+      sanInput.hidden = true;
 
       const scopeLabel = document.createElement('label');
       scopeLabel.className = 'clo-qe-scope';
@@ -2558,7 +2909,7 @@
       save.addEventListener('click', doSave);
       actions.append(cancel, save);
 
-      popup.append(moveLabel, textarea, scopeLabel, status, actions);
+      popup.append(moveLabel, tabs, textarea, sanInput, scopeLabel, status, actions);
       // Keep the pencil alive while the pointer is inside the popup.
       popup.addEventListener('mouseenter', cancelHide);
       // MoveTrainer2 binds single-key shortcuts ("n" = next variation, space,
@@ -2577,7 +2928,25 @@
       document.body.appendChild(popup);
 
       qe.popup = popup;
-      qe.els = { moveLabel, textarea, scopeBox, status, save, cancel };
+      qe.els = { moveLabel, tabButtons, textarea, sanInput, scopeBox, status, save, cancel };
+    }
+
+    /** Switches the popup between its comment and alt-move tabs. */
+    function applyMode(mode) {
+      qe.mode = mode;
+      const alt = mode === 'alt';
+      qe.els.textarea.hidden = alt;
+      qe.els.sanInput.hidden = !alt;
+      for (const [m, tab] of Object.entries(qe.els.tabButtons)) {
+        tab.classList.toggle('clo-qe-tab--active', m === mode);
+      }
+      // The element's own text lacks the figurine piece letter ("c6" for
+      // ♘c6) — show the descriptor's full SAN when it resolves.
+      const desc = qe.popupTarget ? host.descriptor(qe.popupTarget) : null;
+      const moveText = desc ? desc.san
+        : qe.popupTarget ? qe.popupTarget.textContent.trim() : '';
+      qe.els.moveLabel.textContent = (alt ? 'Alternative to ' : 'After ') + moveText;
+      if (!qe.popup.hidden) (alt ? qe.els.sanInput : qe.els.textarea).focus();
     }
 
     function ensureElements() {
@@ -2586,12 +2955,17 @@
     }
 
     function cancelHide() { clearTimeout(qe.hideTimer); }
-    function scheduleHide() {
+    function scheduleHide(ms) {
       clearTimeout(qe.hideTimer);
       qe.hideTimer = setTimeout(() => {
         if (qe.pencil) qe.pencil.hidden = true;
         qe.pencilTarget = null;
-      }, 200);
+      }, ms != null ? ms : 200);
+    }
+    function hidePencilNow() {
+      clearTimeout(qe.hideTimer);
+      if (qe.pencil) qe.pencil.hidden = true;
+      qe.pencilTarget = null;
     }
 
     function showPencilFor(moveEl) {
@@ -2608,8 +2982,8 @@
       ensureElements();
       qe.popupTarget = moveEl;
       qe.saving = false;
-      qe.els.moveLabel.textContent = 'After ' + moveEl.textContent.trim();
       qe.els.textarea.value = '';
+      qe.els.sanInput.value = '';
       qe.els.scopeBox.checked = false; // matches Chessable's own default
       setStatus('', false);
       setSavingUi(false);
@@ -2618,8 +2992,17 @@
       qe.popup.style.top = Math.round(rect.bottom + 6) + 'px';
       qe.popup.hidden = false;
       qe.pencil.hidden = true;
+      // An alternative on an OPPONENT move is always a misclick (the trainer
+      // plays those itself), so the alt tab is disabled for them — the user's
+      // colour being the board's bottom side. Unknown colour (board
+      // mid-render) stays permissive; doSave re-checks.
+      const desc = host.descriptor(moveEl);
+      const uc = host.userColor();
+      const altOk = !(desc && uc && desc.color !== uc);
+      qe.els.tabButtons.alt.disabled = !altOk;
+      qe.els.tabButtons.alt.title = altOk ? '' : "Opponent's move — alternatives apply to your own moves";
+      applyMode(altOk ? qe.mode : 'comment'); // keeps the last-used tab; sets the label and focus
       applyRightsToPopup();
-      qe.els.textarea.focus();
     }
 
     /**
@@ -2661,28 +3044,78 @@
       qe.els.save.disabled = busy || host.rights() !== true;
       qe.els.cancel.disabled = busy;
       qe.els.textarea.disabled = busy;
+      qe.els.sanInput.disabled = busy;
       qe.els.scopeBox.disabled = busy;
+      for (const tab of Object.values(qe.els.tabButtons)) tab.disabled = busy;
       qe.els.save.textContent = busy ? 'Saving…' : 'Save';
+    }
+
+    /**
+     * Screen bounds for the driver popup window: a small window right beside
+     * the open quick-edit popup, so the "Saving…" surface appears attached to
+     * the action that launched it. Screen coords ≈ window.screenX/Y plus the
+     * browser chrome height plus the popup's viewport rect (exact enough for
+     * placement); clamped to the current screen. Null when the popup is not
+     * open — the worker then falls back to its bottom-right parking spot.
+     */
+    function driverWindowBounds() {
+      if (!qe.popup || qe.popup.hidden) return null;
+      const W = 260, H = 180;
+      const r = qe.popup.getBoundingClientRect();
+      const chromeH = Math.max(0, window.outerHeight - window.innerHeight);
+      let left = Math.round(window.screenX + r.right + 10);
+      let top = Math.round(window.screenY + chromeH + r.top);
+      const availLeft = screen.availLeft != null ? screen.availLeft : 0;
+      const availTop = screen.availTop != null ? screen.availTop : 0;
+      left = Math.min(Math.max(left, availLeft), availLeft + screen.availWidth - W);
+      top = Math.min(Math.max(top, availTop), availTop + screen.availHeight - H);
+      return { left, top, width: W, height: H };
     }
 
     function doSave() {
       if (qe.saving || !qe.popupTarget || host.rights() !== true) return;
-      const text = qe.els.textarea.value.trim();
-      if (!text) { setStatus('Enter a comment first.', true); return; }
       const desc = host.descriptor(qe.popupTarget);
       if (!desc) { setStatus('Could not identify the move.', true); return; }
       const oid = host.oid();
       if (!oid) { setStatus('Could not identify the variation.', true); return; }
       const bid = host.bid();
+
+      const payload = {
+        type: 'clo-quick-edit-run', oid, bid,
+        san: desc.san, color: desc.color, plyIndex: desc.plyIndex,
+        forThisVariationOnly: qe.els.scopeBox.checked,
+        win: driverWindowBounds(),
+      };
+      if (qe.mode === 'alt') {
+        // Light checks only — legality is decided by the DRIVER against the
+        // edit board's own FEN, which is exact for any position. Zero-notation
+        // castling ("0-0") is normalised to the letter form SAN uses.
+        const raw = qe.els.sanInput.value.trim()
+          .replace(/^0-0-0/, 'O-O-O').replace(/^0-0/, 'O-O');
+        const altSan = quickEditSan(raw);
+        if (!altSan) { setStatus('Not a valid move (e.g. Nf6, Qxd5, O-O).', true); return; }
+        if (altSan.includes('=')) { setStatus('Promotion alternatives are not supported yet.', true); return; }
+        if (quickEditBareSan(altSan) === quickEditBareSan(desc.san)) {
+          setStatus('That is the main move itself.', true); return;
+        }
+        const uc = host.userColor();
+        if (uc && desc.color !== uc) {
+          setStatus("That is the opponent's move — alternatives apply to your own moves.", true); return;
+        }
+        payload.mode = 'alt';
+        payload.altSan = altSan;
+      } else {
+        const text = qe.els.textarea.value.trim();
+        if (!text) { setStatus('Enter a comment first.', true); return; }
+        payload.mode = 'save';
+        payload.commentText = text;
+      }
+
       qe.saving = true;
       setSavingUi(true);
       setStatus('Saving…', false);
       try {
-        chrome.runtime.sendMessage({
-          type: 'clo-quick-edit-run', mode: 'save', oid, bid,
-          san: desc.san, color: desc.color, plyIndex: desc.plyIndex,
-          commentText: text, forThisVariationOnly: qe.els.scopeBox.checked,
-        }).catch(() => {});
+        chrome.runtime.sendMessage(payload).catch(() => {});
       } catch (err) {
         qe.saving = false;
         setSavingUi(false);
@@ -2705,16 +3138,21 @@
         return;
       }
       // save result
+      if (msg.timing) log('quick-edit timing:', msg.timing);
       if (!qe.popup || qe.popup.hidden) return;
       qe.saving = false;
       setSavingUi(false);
       if (msg.ok) {
         setStatus('Saved.', false);
         setTimeout(() => { if (!qe.saving) closePopup(); }, 900);
+      } else if (msg.error === 'another quick-edit is in progress') {
+        setStatus('Another save is in progress — try again in a moment.', true);
+      } else if (msg.error && msg.error !== 'timeout') {
+        // Driver errors are written to be shown ("g6 is not a legal move in
+        // that position", Chessable's own dialog text, …).
+        setStatus(msg.error, true);
       } else {
-        setStatus(msg.error === 'another quick-edit is in progress'
-          ? 'Another save is in progress — try again in a moment.'
-          : 'Save failed or timed out — your text is kept, you can retry.', true);
+        setStatus('Save failed or timed out — your text is kept, you can retry.', true);
       }
     }
 
@@ -2727,7 +3165,10 @@
       qe.probing.add(bid);
       log('quick-edit: probing edit rights for course', bid);
       try {
-        chrome.runtime.sendMessage({ type: 'clo-quick-edit-run', mode: 'probe', oid, bid }).catch(() => {});
+        chrome.runtime.sendMessage({
+          type: 'clo-quick-edit-run', mode: 'probe', oid, bid,
+          win: driverWindowBounds(),
+        }).catch(() => {});
       } catch (err) {
         qe.probing.delete(bid);
       }
@@ -2752,7 +3193,34 @@
     });
     document.addEventListener('pointerout', (e) => {
       const moveEl = e.target.closest && e.target.closest(host.moveSelector);
-      if (moveEl) scheduleHide();
+      if (!moveEl) return;
+      // A tap has no hover: the finger lifting fires pointerout right after
+      // the pencil appeared, so on touch it stays up long enough to press
+      // (tapping a move also navigates the board there — tap move, then tap
+      // the lingering pencil is the intended mobile flow).
+      scheduleHide(e.pointerType === 'touch' ? CONFIG.quickEdit.touchPencilMs : undefined);
+    });
+
+    // The pencil is fixed-positioned from the move's rect at show time, so
+    // any scroll (page or an inner container) leaves it floating over the
+    // wrong move — hide it rather than chase the anchor. Matters mostly on
+    // touch, where it now lingers for seconds.
+    window.addEventListener('scroll', () => {
+      if (qe.pencil && !qe.pencil.hidden) hidePencilNow();
+    }, { capture: true, passive: true });
+
+    // While the popup is open on its alt-move tab, clicking a move row in the
+    // Lichess panel prefills the SAN input. Both quick-edit hosts are review
+    // documents where panel rows are otherwise non-clickable (no dataset.uci),
+    // so this never competes with the explore click-to-play handler.
+    document.addEventListener('click', (e) => {
+      if (!qe.popup || qe.popup.hidden || qe.mode !== 'alt' || qe.saving) return;
+      const cell = e.target.closest && e.target.closest('#' + PANEL_ID + ' td.clo-move');
+      if (!cell) return;
+      const san = quickEditSan(cell.textContent);
+      if (!san) return;
+      qe.els.sanInput.value = san;
+      setStatus('', false);
     });
 
     chrome.runtime.onMessage.addListener((msg) => {
@@ -4493,6 +4961,9 @@
       initQuickEditUi();
       return;
     }
+    // Quick-edit driver popup window: its top document only shows the
+    // "Saving…" shield — none of the review machinery belongs there.
+    if (await maybeMountQuickEditShield()) return;
     // Top document: overstudy widget, background-tab auto-pause, review panel,
     // the quick-edit hover UI, review auto-play, and the chapter sort button.
     // Each one gates itself on the URL from its own poll, so SPA navigation

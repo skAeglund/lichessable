@@ -17,14 +17,19 @@
  *                                           overstudy widget; needs no "tabs"
  *                                           permission)
  *
- * Quick-edit comment (content section 12): drives Chessable's own edit page in
- * a background tab to append a PGN comment. One job at a time, kept in
- * chrome.storage.session so it survives a worker idle-restart:
- *   { type:'clo-quick-edit-run', mode:'probe'|'save', oid, bid, san, color,
- *     plyIndex, commentText, forThisVariationOnly }  (review tab -> worker)
- *       -> opens /explore/edit/<oid>/ active:false
+ * Quick-edit (content section 12): drives Chessable's own edit page in a
+ * small unfocused popup window to append a PGN comment (mode 'save') or add
+ * an alternative move (mode 'alt'; altSan = the SAN the trainer should also
+ * accept). A visible window rather than a hidden tab because Chrome clamps
+ * every timer on hidden pages to ~1 s, tripling the save time. One job
+ * at a time, kept in chrome.storage.session so it survives a worker
+ * idle-restart:
+ *   { type:'clo-quick-edit-run', mode:'probe'|'save'|'alt', oid, bid, san,
+ *     color, plyIndex, commentText, altSan, forThisVariationOnly }
+ *     (review tab -> worker) -> opens /explore/edit/<oid>/ focused:false
  *   { type:'clo-quick-edit-claim', oid }   (edit-tab driver -> worker)
- *       -> { claimed, mode, san, color, plyIndex, commentText, forThisVariationOnly }
+ *       -> { claimed, mode, san, color, plyIndex, commentText, altSan,
+ *            forThisVariationOnly }
  *   { type:'clo-quick-edit-submitting', oid } (driver -> worker; marks phase)
  *   { type:'clo-quick-edit-landing', oid }    (post-POST doc -> worker)
  *       -> { isOurs }  (true = the job's submit succeeded)
@@ -119,6 +124,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg && msg.type === 'clo-quick-edit-result') {
     finishQuickEditJob(msg);
+  }
+  if (msg && msg.type === 'clo-quick-edit-is-driver') {
+    // The popup window's TOP document asks whether it belongs to a running
+    // job, so it can cover the page with the "Saving…" shield.
+    (async () => {
+      const job = await getQuickEditJob();
+      const isDriver = Boolean(job && sender.tab && sender.tab.id === job.hiddenTabId
+        && String(job.oid) === String(msg.oid));
+      sendResponse({ isDriver, mode: isDriver ? job.mode : undefined });
+    })();
+    return true;
   }
 
   if (msg && msg.type === 'clo-ping') {
@@ -241,6 +257,7 @@ function relayQuickEditResult(job, result) {
     type: 'clo-quick-edit-result',
     oid: job.oid, bid: job.bid, mode: result.mode || job.mode,
     ok: Boolean(result.ok), canEdit: result.canEdit, error: result.error,
+    timing: quickEditTiming(job),
   }, { frameId: job.requesterFrameId }).catch(() => {});
 }
 
@@ -261,21 +278,60 @@ async function startQuickEditJob(msg, sender) {
   const url = QUICK_EDIT_BASE + oid + '/';
   let tab;
   try {
-    tab = await chrome.tabs.create({ url, active: false });
+    // A small FOCUSED popup window, not a hidden tab: Chrome clamps every
+    // timer on a hidden page to ~1 s — Chessable's own boot, animations and
+    // dialogs included — which stretched a save from ~4-5 s to ~13-20 s. It
+    // must be focused: an unfocused window opens BEHIND a maximized browser,
+    // where the occlusion tracker throttles it exactly like a hidden tab
+    // (verified: focused:false saved nothing). The content script covers the
+    // window with a "Saving…" shield that also swallows stray keystrokes, and
+    // closing the job's tab (finalize) closes the window, returning focus.
+    // Placement: the requester sends screen bounds putting the window right
+    // BESIDE its quick-edit popup (msg.win — position sanity-checked here,
+    // sizes clamped; Chrome additionally enforces its own popup minimums);
+    // fallback is the bottom-right of the user's current window.
+    let req = msg.win;
+    if (!req || ![req.left, req.top, req.width, req.height].every(Number.isFinite)) req = null;
+    const width = req ? Math.min(Math.max(req.width, 200), 800) : 380;
+    const height = req ? Math.min(Math.max(req.height, 120), 800) : 320;
+    let left, top;
+    if (req) {
+      left = req.left;
+      top = req.top;
+    } else {
+      let bounds = null;
+      try { bounds = await chrome.windows.getLastFocused(); } catch (e) { /* fall through */ }
+      left = bounds ? Math.max(0, bounds.left + bounds.width - width - 8) : undefined;
+      top = bounds ? Math.max(0, bounds.top + bounds.height - height - 8) : undefined;
+    }
+    const win = await chrome.windows.create({
+      url, focused: true, type: 'popup', width, height, left, top,
+    });
+    tab = win && win.tabs && win.tabs[0];
+    if (!tab) throw new Error('popup window has no tab');
   } catch (err) {
-    chrome.tabs.sendMessage(sender.tab.id, {
-      type: 'clo-quick-edit-result', oid, bid: msg.bid, mode: msg.mode,
-      ok: false, error: 'could not open the edit tab',
-    }, { frameId: sender.frameId || 0 }).catch(() => {});
-    return;
+    // Popup creation can be refused (e.g. odd window managers) — fall back to
+    // the hidden tab: slower, but the job still completes.
+    try {
+      tab = await chrome.tabs.create({ url, active: false });
+    } catch (err2) {
+      chrome.tabs.sendMessage(sender.tab.id, {
+        type: 'clo-quick-edit-result', oid, bid: msg.bid, mode: msg.mode,
+        ok: false, error: 'could not open the edit tab',
+      }, { frameId: sender.frameId || 0 }).catch(() => {});
+      return;
+    }
   }
 
   const job = {
-    oid, bid: msg.bid || '', mode: msg.mode === 'probe' ? 'probe' : 'save',
+    oid, bid: msg.bid || '',
+    mode: msg.mode === 'probe' ? 'probe' : msg.mode === 'alt' ? 'alt' : 'save',
     san: msg.san, color: msg.color, plyIndex: msg.plyIndex,
-    commentText: msg.commentText, forThisVariationOnly: Boolean(msg.forThisVariationOnly),
+    commentText: msg.commentText, altSan: msg.altSan,
+    forThisVariationOnly: Boolean(msg.forThisVariationOnly),
     requesterTabId: sender.tab.id, requesterFrameId: sender.frameId || 0,
     hiddenTabId: tab.id, phase: 'loading',
+    t0: Date.now(), // phase timestamps for the timing line in the result
   };
   await setQuickEditJob(job);
   clearTimeout(quickEditTimer);
@@ -289,12 +345,15 @@ async function claimQuickEditJob(msg, sender) {
   if (!sender.tab || typeof sender.tab.id !== 'number') return { claimed: false };
   // Bind the hidden tab id on first claim (tabs.create resolves before the
   // page's content script runs, so this is normally already set).
-  if (job.hiddenTabId == null) { job.hiddenTabId = sender.tab.id; await setQuickEditJob(job); }
+  if (job.hiddenTabId == null) job.hiddenTabId = sender.tab.id;
   if (job.hiddenTabId !== sender.tab.id) return { claimed: false };
+  job.tClaim = Date.now();
+  await setQuickEditJob(job);
   return {
     claimed: true, mode: job.mode,
     san: job.san, color: job.color, plyIndex: job.plyIndex,
-    commentText: job.commentText, forThisVariationOnly: job.forThisVariationOnly,
+    commentText: job.commentText, altSan: job.altSan,
+    forThisVariationOnly: job.forThisVariationOnly,
   };
 }
 
@@ -302,7 +361,18 @@ async function markQuickEditSubmitting(msg) {
   const job = await getQuickEditJob();
   if (!job || String(job.oid) !== String(msg.oid)) return;
   job.phase = 'submitted';
+  job.tSubmit = Date.now();
   await setQuickEditJob(job);
+}
+
+/** "load 3.2s, drive 7.8s, post 1.9s" — where a job's wall time went. */
+function quickEditTiming(job) {
+  if (!job.t0) return '';
+  const s = (a, b) => (a && b ? ((b - a) / 1000).toFixed(1) + 's' : '?');
+  const now = Date.now();
+  return 'load ' + s(job.t0, job.tClaim)
+    + ', drive ' + s(job.tClaim, job.tSubmit || now)
+    + (job.tSubmit ? ', post ' + s(job.tSubmit, now) : '');
 }
 
 /** Post-submit landing (/mt1/explore/?edit=<oid>) from the hidden tab = success. */
@@ -310,7 +380,7 @@ async function handleQuickEditLanding(msg, sender) {
   const job = await getQuickEditJob();
   if (!job || job.phase !== 'submitted' || String(job.oid) !== String(msg.oid)) return { isOurs: false };
   if (!sender.tab || sender.tab.id !== job.hiddenTabId) return { isOurs: false };
-  await finalizeQuickEditJob(job, { ok: true, mode: 'save' });
+  await finalizeQuickEditJob(job, { ok: true, mode: job.mode });
   return { isOurs: true };
 }
 
