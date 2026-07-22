@@ -41,6 +41,16 @@ block sits horizontally centered, so the board never shifts as a variation
 completes. The nudge is a pure CSS transform; Chessable's own layout is
 untouched.
 
+The panel also appears on any standalone **variation page**
+(`https://www.chessable.com/variation/<id>/`), following the board as you step
+through the moves. That page has a real (readonly) FEN field that Chessable
+keeps current on every move navigation, so no DOM reconstruction is needed
+there; placement works like review — the gutter left of the board, falling
+back to below the whole page content (FEN row, Review box, Comments) on
+narrow windows, so nothing gets covered. The quick-edit pencil (below) works
+on the same page, so variation pages are now a full study surface: Lichess
+stats, engine, and comment editing in one place.
+
 It also adds an **Overstudy widget** to review sessions
 (`https://www.chessable.com/practice/…`): a small floating card centered
 beneath the board (below the Exit/nav row; bottom-right corner as fallback)
@@ -259,6 +269,19 @@ lichessable/
   where the board is mid-animation (a piece momentarily on two squares) are
   skipped by requiring exactly one king per side. Move rows are **not**
   clickable here — the trainer's board is not free-play.
+- **Variation-page panel** — the standalone variation page
+  (`/variation/<id>/`) is the panel's third host (section 11b). Also a React
+  top document, so the panel body-mounts absolutely in document coordinates
+  like review — but the page has a real (readonly) `#inputFEN` that Chessable
+  rewrites on every move navigation (verified live), so `readFen()` takes the
+  ordinary input path and none of the DOM board reconstruction runs. No
+  browse-state gate: the panel shows whenever the board and FEN input exist.
+  Placement reuses the review thresholds — gutter left of the board, falling
+  back below the **entire page content** (`#bodyContainer`: FEN row, Review
+  box, Comments) on narrow windows, since unlike the trainer this page has
+  real content under the board that an overlay must not cover. A `hashchange`
+  listener (move navigation rewrites `#/<move>/<side>`) supplements the
+  500 ms tick. Move rows are not clickable here either.
 - **Background-tab auto-pause** — a `/learn/…` session that boots while its
   document is hidden (i.e. any background tab, which is what the overstudy
   buttons create) gets its move timer paused: the script polls for the

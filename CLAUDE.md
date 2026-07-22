@@ -15,7 +15,9 @@ trainer sessions the Lichess panel also appears once a variation is completed
 (browse state), following the board via a DOM-derived FEN. In that same browse
 state, hovering a mainline move shows a pencil that appends a PGN comment to the
 variation (for courses you can edit) by driving Chessable's own edit page in a
-background tab. Review sessions can also auto-play moves the user already
+background tab; the same pencil works on standalone variation pages
+(`/variation/<id>/`), which also get the full Lichess panel (section 11b).
+Review sessions can also auto-play moves the user already
 answered correctly earlier the same session (section 13; opt-in toggle on the
 overstudy widget).
 Currently working (v0.18.x).
@@ -181,6 +183,20 @@ Currently working (v0.18.x).
   ALL of the explore
   fetch/cache/render machinery via `IS_REVIEW` branches; move rows are not
   clickable in this mode.
+- Variation-page Lichess panel (section 11b): the standalone
+  `/variation/<id>/` page is the panel's THIRD host — also a React top
+  document (mountPanel body-mounts it with the `--review` class), but the
+  page has a real readonly `#inputFEN` that Chessable rewrites on every move
+  navigation (verified live), so `readFen()` takes the ordinary input path
+  there (`IS_REVIEW && !IS_VARIATION_PAGE` gates the DOM reconstruction) and
+  NONE of the trainer machinery (browse gates, board centering, anchor hold)
+  runs. `positionVariationPanel()` reuses the `CONFIG.review` thresholds:
+  gutter left of the board, else below the ENTIRE page content
+  (`SELECTORS.variationContent` = `#bodyContainer` — unlike the trainer, real
+  content sits under the board: FEN row, Review box, Comments). A
+  `hashchange` listener (navigation rewrites `#/<move>/<side>`) supplements
+  the 500 ms tick. Move rows stay non-clickable — free-play injection on this
+  board is UNVERIFIED.
 - A `/learn/…` session booting in a hidden document (= background overstudy
   tab) auto-pauses its timer by clicking Chessable's pause control
   (`SELECTORS.trainerIconBtn` + `trainerPauseIcon`); backs off if the tab is

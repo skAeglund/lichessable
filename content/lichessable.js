@@ -107,6 +107,13 @@
     // subvariations), hence the > span > child scoping.
     variationMoves:    '#theOpeningMoves > span > .whiteMove, #theOpeningMoves > span > .blackMove',
     variationEditLink: 'a[href*="/explore/edit/"]', // "Edit Variation" — rendered only with edit rights
+    // The variation page ALSO has a #inputFEN (readonly, kept current by the
+    // page on every move navigation — verified live), so the panel there reads
+    // SELECTORS.fenInput like explore does; no DOM board reconstruction needed.
+    // This is the fallback anchor when the gutter left of the board is too
+    // narrow: the panel drops below ALL the page's content (FEN row, Review
+    // box, Comments) rather than overlaying any of it.
+    variationContent:  '#bodyContainer',
 
     // Auto-play (section 13). trainerMoveNote is only ever a VETO on recording
     // a move — if the testid or wording changes, the worst case is
@@ -428,7 +435,11 @@
 
   /** Always read the FEN fresh from the DOM — the input element itself may be replaced. */
   function readFen() {
-    if (IS_REVIEW) return readReviewFen(); // no #inputFEN in the trainer — section 11
+    // The trainer has no #inputFEN, so review derives the FEN from the DOM
+    // (section 11) — but the standalone variation page, though also a top
+    // document, DOES have one (readonly, updated on every move navigation),
+    // so it falls through to the normal input read (section 11b).
+    if (IS_REVIEW && !IS_VARIATION_PAGE) return readReviewFen();
     const input = document.querySelector(SELECTORS.fenInput);
     const value = input ? input.value.trim() : '';
     return value || null;
@@ -2100,6 +2111,107 @@
       return { side: ply % 2 ? 'b' : 'w', fullmove: Math.floor(ply / 2) + 1 };
     }
     return null; // no numbered move found — cannot trust a side-to-move guess
+  }
+
+  // ==========================================================================
+  // 11b) Lichess panel on the standalone variation page (/variation/<oid>/)
+  //
+  // Same panel, third host. The page is a React app (fibers verified on the
+  // board), so the panel body-mounts absolutely in document coordinates
+  // exactly like review mode — mountPanel() already does both for any top
+  // document. Two things make this host SIMPLER than review: the page has a
+  // real #inputFEN (readonly, rewritten on every move navigation — verified
+  // live), so readFen() takes the ordinary input path instead of the DOM
+  // board reconstruction; and there is no browse-state gate — the panel shows
+  // whenever the board and the FEN input exist. Placement mirrors
+  // positionReviewPanel's gutter-left-of-the-board spot, but the narrow
+  // fallback anchors below ALL the page's content (SELECTORS.variationContent)
+  // instead of below the board: unlike the trainer, this page has real
+  // content under the board (FEN row, Review box, Comments) that an overlay
+  // must not cover. No anti-bounce hold is needed — nothing here collapses
+  // transiently the way the trainer row does at a variation transition.
+  // Move rows are non-clickable (the IS_REVIEW branches already do that);
+  // whether this board accepts injected free-play clicks is unverified.
+  // ==========================================================================
+
+  async function initVariationPanel() {
+    state.hidden = await loadHiddenPref();
+    state.engineEnabled = await loadEnginePref();
+    state.engineBuild = await loadEngineBuildPref();
+    chrome.storage.onChanged.addListener(onStorageChanged);
+    chrome.runtime.onMessage.addListener(onEngineMessage);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    setInterval(variationPanelTick, CONFIG.review.pollMs);
+    window.addEventListener('resize', positionVariationPanel);
+    window.addEventListener('scroll', positionVariationPanel, true);
+    // Move navigation rewrites the location hash (#/<move>/<side>) — a free
+    // instant signal on top of the 500 ms poll.
+    window.addEventListener('hashchange', scheduleRefresh);
+    variationPanelTick();
+    log('variation-page Lichess panel active (top document)');
+  }
+
+  function variationPanelReady() {
+    return Boolean(document.querySelector(SELECTORS.fenInput) &&
+                   document.querySelector(SELECTORS.board));
+  }
+
+  function variationPanelTick() {
+    if (!variationPanelReady()) {
+      if (state.panel) state.panel.hidden = true;
+      state.fen = null;  // a re-rendered page starts with a fresh fetch
+      syncEngine();      // no board — stop any running search
+      return;
+    }
+    if (!state.panel || !state.panel.isConnected) mountPanel(); // idempotent self-heal
+    if (!state.panel) return;
+    state.panel.hidden = false;
+    positionVariationPanel();
+    const fen = readFen();
+    if (fen && fen !== state.fen) scheduleRefresh();
+  }
+
+  /**
+   * Gutter left of the board when it is wide enough (same thresholds as
+   * review), otherwise centered on the board BELOW the whole content block —
+   * document coordinates, absolute, height capped near the viewport with the
+   * body scrolling internally (see .clo-panel--review in lichessable.css).
+   */
+  function positionVariationPanel() {
+    if (!IS_VARIATION_PAGE || !state.panel || state.panel.hidden) return;
+    const board = document.querySelector(SELECTORS.board);
+    if (!board) return;
+    const rect = board.getBoundingClientRect();
+    if (!rect.width) return;
+    const gap = CONFIG.review.panelGap;
+    const sx = window.scrollX, sy = window.scrollY;
+    const gutter = rect.left - gap * 2; // usable width left of the board
+    if (gutter >= CONFIG.review.panelMinWidth) {
+      const width = Math.min(gutter, CONFIG.review.panelMaxWidth);
+      const docTop = Math.max(gap, rect.top + sy); // board's document top — scroll-independent
+      setInlinePx(state.panel, {
+        left: rect.left + sx - gap - width,
+        top: docTop,
+        width,
+        maxHeight: Math.max(240, window.innerHeight - docTop - gap),
+      });
+      return;
+    }
+    // Narrow window: below everything (FEN row, Review box, Comments) — this
+    // page has real content under the board that the panel must not cover.
+    let anchorBottom = rect.bottom;
+    const content = document.querySelector(SELECTORS.variationContent);
+    const contentRect = content ? content.getBoundingClientRect() : null;
+    if (contentRect && contentRect.height) anchorBottom = Math.max(anchorBottom, contentRect.bottom);
+    const width = Math.min(Math.max(rect.width, 320), window.innerWidth - gap * 2);
+    const left = Math.min(Math.max(rect.left + (rect.width - width) / 2, gap),
+                          window.innerWidth - width - gap);
+    setInlinePx(state.panel, {
+      left: left + sx,
+      top: anchorBottom + 10 + sy,
+      width,
+      maxHeight: Math.max(240, window.innerHeight - gap * 2),
+    });
   }
 
   // ==========================================================================
@@ -4372,10 +4484,12 @@
       boot();
       return;
     }
-    // The standalone variation page hosts only the quick-edit UI. Every other
-    // top-document feature is MoveTrainer2 machinery whose gates never match
-    // there, so don't start their pollers.
+    // The standalone variation page hosts the quick-edit UI plus its own
+    // Lichess panel (section 11b — the page has a real #inputFEN). Every
+    // other top-document feature is MoveTrainer2 machinery whose gates never
+    // match there, so don't start their pollers.
     if (IS_VARIATION_PAGE) {
+      initVariationPanel();
       initQuickEditUi();
       return;
     }
