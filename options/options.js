@@ -5,6 +5,7 @@
 'use strict';
 
 const TOKEN_KEY = 'lichessToken'; // must match background.js and content/lichessable.js
+const BUILD_KEY = 'cloEngineBuild'; // must match CONFIG.engine.buildKey in content/lichessable.js
 const $ = (id) => document.getElementById(id);
 
 function setStatus(text, isError) {
@@ -14,9 +15,18 @@ function setStatus(text, isError) {
 }
 
 async function init() {
-  const stored = await chrome.storage.local.get(TOKEN_KEY);
+  const stored = await chrome.storage.local.get([TOKEN_KEY, BUILD_KEY]);
   if (stored[TOKEN_KEY]) $('token').value = stored[TOKEN_KEY];
+  const build = stored[BUILD_KEY];
+  $('engineBuild').value = build === 'full' || build === 'lite' ? build : 'auto';
 }
+
+$('engineBuild').addEventListener('change', async () => {
+  // Saved immediately; the content script's storage listener restarts any
+  // running search on the newly selected build.
+  await chrome.storage.local.set({ [BUILD_KEY]: $('engineBuild').value });
+  setStatus('Engine build saved.');
+});
 
 $('show').addEventListener('change', () => {
   $('token').type = $('show').checked ? 'text' : 'password';

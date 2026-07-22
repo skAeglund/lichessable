@@ -1,8 +1,10 @@
 /**
  * LiChessable — offscreen Stockfish controller
  *
- * Runs in the offscreen document (engine/offscreen.html). Hosts the vendored
- * multi-threaded Stockfish WASM build in a Web Worker and speaks UCI to it.
+ * Runs in the offscreen document (engine/offscreen.html). Hosts one of the
+ * two vendored multi-threaded Stockfish WASM builds (full/lite; see PROFILES)
+ * in a Web Worker and speaks UCI to it. Each analyze request names a profile;
+ * a mismatch with the running worker's reboots it on the other build.
  * The service worker is the message hub: analyze/stop requests arrive here
  * with target 'offscreen'; updates go back with target 'sw' and are relayed
  * to the requesting tab (offscreen sendMessage can never reach content
@@ -19,12 +21,19 @@ const LOG_PREFIX = '[CLO]';
 const log = (...a) => console.log(LOG_PREFIX, ...a);
 const warn = (...a) => console.warn(LOG_PREFIX, ...a);
 
-// Engine sizing for a mid-range 4-core laptop; bump THREADS if yours differs.
-const ENGINE_SCRIPT = 'vendor/stockfish-18.js';
-const THREADS = 4;
-const HASH_MB = 64;
+// Sizing profiles. The content script picks one per analyze request (the
+// offscreen document cannot see what device the tab is on); an analyze whose
+// profile differs from the running worker's tears it down and reboots on the
+// other build. `movetime` 0 = no cap; non-zero bounds the search alongside
+// depth ("go depth D movetime M" — whichever hits first ends it) so a sharp
+// position can't run away on a weak device. Both builds are multi-threaded
+// and need SharedArrayBuffer; engine/vendor/ files are downloaded manually
+// per README.
+const PROFILES = {
+  desktop: { worker: 'vendor/stockfish-18.js',      threads: 4, hash: 64, depth: 25, movetime: 0 },
+  mobile:  { worker: 'vendor/stockfish-18-lite.js', threads: 2, hash: 16, depth: 25, movetime: 0 },
+};
 const MULTIPV = 3;
-const DEPTH = 24;            // "go depth N": self-terminating, CPUs idle after
 const SAN_PLIES = 12;        // PV plies converted to SAN for display
 const THROTTLE_MS = 400;     // coalesce info bursts into one update per window
 const HANDSHAKE_TIMEOUT_MS = 10000;
@@ -34,6 +43,8 @@ const IDLE_CLOSE_MS = 5 * 60 * 1000;  // self-close to free NNUE memory
 
 let worker = null;
 let bootPromise = null;      // resolves when the UCI handshake completes
+let requestedProfile = 'desktop'; // profile of the latest analyze request
+let bootedProfile = null;    // profile the current worker was booted with
 let expecting = null;        // { token, resolve, reject, timer } during handshake
 let phase = 'idle';          // 'idle' | 'searching' | 'stopping'
 let currentFen = null;       // FEN of the running search
@@ -59,8 +70,8 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (!msg || msg.target !== 'offscreen') return;
   touchIdleTimer();
   if (msg.type === 'clo-engine-analyze' && typeof msg.fen === 'string') {
-    sendDebug('analyze received (phase ' + phase + '): ' + msg.fen);
-    handleAnalyze(msg.fen);
+    sendDebug('analyze received (phase ' + phase + ', profile ' + msg.profile + '): ' + msg.fen);
+    handleAnalyze(msg.fen, msg.profile);
   } else if (msg.type === 'clo-engine-stop') {
     sendDebug('stop received (phase ' + phase + ')');
     handleStop();
@@ -96,15 +107,41 @@ function ensureEngine() {
   return bootPromise;
 }
 
+/** Rejects with a clear "missing-build" error when a vendored file is absent —
+ *  a fresh clone has neither pair, and many users download only one. The
+ *  loader derives the .wasm path from the worker script's own name. */
+async function assertBuildPresent(profileName, prof) {
+  const files = [prof.worker, prof.worker.replace(/\.js$/, '.wasm')];
+  for (const file of files) {
+    let ok = false;
+    // Plain GET with the body cancelled straight away: HEAD support on the
+    // chrome-extension:// scheme is not guaranteed, and cancelling keeps the
+    // 108 MB wasm from ever being buffered.
+    try {
+      const res = await fetch(file);
+      ok = res.ok;
+      if (res.body) res.body.cancel().catch(() => {});
+    } catch (err) { /* missing */ }
+    if (!ok) {
+      throw new Error('missing-build (' + profileName + '): engine/' + file
+        + ' — download it to engine/vendor/, see README');
+    }
+  }
+}
+
 async function bootEngine() {
+  const profileName = requestedProfile;
+  const prof = PROFILES[profileName];
+  bootedProfile = profileName;
   log('offscreen boot: crossOriginIsolated =', self.crossOriginIsolated);
   if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
     throw new Error('SharedArrayBuffer unavailable — multi-threaded build cannot run '
       + '(swap engine/vendor for the -single build as a fallback)');
   }
+  await assertBuildPresent(profileName, prof);
   sendStatus('loading');
-  sendDebug('boot: spawning worker ' + ENGINE_SCRIPT);
-  worker = new Worker(ENGINE_SCRIPT);
+  sendDebug('boot: spawning worker ' + prof.worker + ' (profile ' + profileName + ')');
+  worker = new Worker(prof.worker);
   worker.onmessage = (e) => onEngineLine(String(e.data));
   worker.onerror = (e) => {
     const where = (e.filename || '?') + ':' + (e.lineno || '?');
@@ -124,12 +161,12 @@ async function bootEngine() {
   uciSend('uci');
   await waitFor('uciok');
   sendDebug('boot: uciok received');
-  uciSend(`setoption name Threads value ${THREADS}`);
-  uciSend(`setoption name Hash value ${HASH_MB}`);
+  uciSend(`setoption name Threads value ${prof.threads}`);
+  uciSend(`setoption name Hash value ${prof.hash}`);
   uciSend(`setoption name MultiPV value ${MULTIPV}`);
   uciSend('isready');
   await waitFor('readyok');
-  log(`engine ready (Threads=${THREADS} Hash=${HASH_MB} MultiPV=${MULTIPV})`);
+  log(`engine ready (profile=${profileName} Threads=${prof.threads} Hash=${prof.hash} MultiPV=${MULTIPV})`);
   sendStatus('ready');
 }
 
@@ -153,6 +190,7 @@ function waitFor(token) {
 function killWorker() {
   if (worker) { worker.terminate(); worker = null; }
   bootPromise = null;
+  bootedProfile = null;
   phase = 'idle';
   currentFen = null;
   clearTimeout(flushTimer); flushTimer = 0;
@@ -171,7 +209,9 @@ function respawnAndResume(reason, resumeFen) {
 
 // --- search state machine ---------------------------------------------------
 
-function handleAnalyze(fen) {
+function handleAnalyze(fen, profile) {
+  // Unknown/absent profile falls back to desktop — today's behaviour.
+  requestedProfile = PROFILES[profile] ? profile : 'desktop';
   pendingFen = fen;
   if (phase === 'searching') {
     // Fence: discard everything until bestmove, then start the pending FEN.
@@ -195,13 +235,23 @@ function handleStop() {
 
 function startPending() {
   if (!pendingFen) return;
+  // Profile switch: an idle worker on the wrong build is torn down here, so
+  // ensureEngine below boots the requested one (same lifecycle path as a
+  // crash respawn). A switch mid-search needs nothing extra — handleAnalyze
+  // already stops it and the bestmove fence lands back here with phase idle.
+  if (bootedProfile && bootedProfile !== requestedProfile && phase === 'idle') {
+    sendDebug('profile switch: ' + bootedProfile + ' -> ' + requestedProfile);
+    killWorker();
+  }
   ensureEngine().then(() => {
     // Re-check everything: newer analyze/stop calls may have landed while the
     // engine booted, and concurrent startPending calls all run this block.
     if (!pendingFen) return;
+    if (bootedProfile !== requestedProfile) { killWorker(); startPending(); return; } // profile changed mid-boot
     if (phase === 'searching') { phase = 'stopping'; uciSend('stop'); armFence(); return; }
     if (phase !== 'idle') return; // 'stopping': the bestmove fence will restart us
     const fen = pendingFen;
+    const prof = PROFILES[bootedProfile];
     pendingFen = null;
     currentFen = fen;
     latest = { depth: 0, pvs: {} };
@@ -209,7 +259,9 @@ function startPending() {
     lastLineAt = Date.now();
     sendDebug('search start: ' + fen);
     uciSend(`position fen ${fen}`);
-    uciSend(`go depth ${DEPTH}`);
+    uciSend(prof.movetime > 0
+      ? `go depth ${prof.depth} movetime ${prof.movetime}`
+      : `go depth ${prof.depth}`);
   }).catch(() => {}); // boot failure already reported via clo-engine-status
 }
 

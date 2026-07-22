@@ -45,10 +45,20 @@ Currently working (v0.18.x).
   `clo-fetch-explorer`, `clo-open-options`, `clo-open-overstudy`, and the
   `clo-engine-*` family (all engine messages carry `target: 'sw'|'offscreen'`).
 - `engine/` — optional local Stockfish (panel-header "Engine" toggle, off by
-  default). `offscreen.html` + `engine.js` (UCI controller, sizing constants
-  at top) + `san.js` (pure UCI→SAN converter, node-testable, no `chrome.*`).
-  `engine/vendor/` holds the Stockfish 18 multi-threaded WASM build
-  (`stockfish-18.js` + `.wasm`) — gitignored (108 MB), downloaded manually
+  default). `offscreen.html` + `engine.js` (UCI controller; `PROFILES` table
+  at top: desktop = full build 4 threads/64 MB, mobile = lite build
+  2 threads/16 MB, both depth 25, MultiPV 3, no movetime cap) + `san.js`
+  (pure UCI→SAN converter, node-testable, no `chrome.*`). The profile is
+  computed in the CONTENT script (`engineProfile()`; the offscreen doc can't
+  see the tab's device) and rides on every `clo-engine-analyze`; Auto
+  detection (userAgentData.mobile / deviceMemory ≤ 4 / hardwareConcurrency
+  ≤ 4) is overridable via the options page's `cloEngineBuild` (auto/full/
+  lite). A profile mismatch reboots the worker on the other build through the
+  normal lifecycle (`startPending`); a missing vendored pair fails with a
+  `missing-build (...)` status error naming the file — deliberately NO
+  fallback to the other build. `engine/vendor/` holds both Stockfish 18
+  multi-threaded WASM pairs (`stockfish-18.js` + `.wasm`, 108 MB;
+  `stockfish-18-lite.js` + `.wasm`, ~7 MB) — gitignored, downloaded manually
   per README.
 - `options/` — Lichess API token entry + Test button.
 - `README.md` — living documentation; update it alongside functional changes.

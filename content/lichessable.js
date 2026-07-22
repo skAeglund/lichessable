@@ -176,6 +176,7 @@
     // --- Optional local Stockfish (offscreen document, section 5b) ----------
     engine: {
       enabledKey: 'cloEngineEnabled', // chrome.storage.local; off by default
+      buildKey:   'cloEngineBuild',   // chrome.storage.local; 'auto'|'full'|'lite' (options page)
       pvCount: 3,                     // rendered rows; matches MULTIPV in engine/engine.js
     },
 
@@ -315,6 +316,7 @@
     panel: null,          // our injected root element
     ui: null,             // cached refs to elements inside the panel
     engineEnabled: false, // optional Stockfish analysis on? (persisted; section 5b)
+    engineBuild: 'auto',  // 'auto' | 'full' | 'lite' (persisted; options page)
     engineFen: null,      // FEN last sent to the engine (dedup / stop bookkeeping)
     lastEngineMsgAt: 0,   // last engine update/status received (silence diagnostics)
     enginePingTimer: 0,   // pending silence check after an analyze
@@ -333,6 +335,7 @@
     }
     state.hidden = await loadHiddenPref();
     state.engineEnabled = await loadEnginePref();
+    state.engineBuild = await loadEngineBuildPref();
     mountPanel();
     bindFenInput();
     observeMovesTable();
@@ -361,6 +364,16 @@
     if (changes[CONFIG.engine.enabledKey]) {
       state.engineEnabled = Boolean(changes[CONFIG.engine.enabledKey].newValue);
       applyEngineEnabled();
+      syncEngine();
+    }
+    // Build choice saved on the options page: restart any running search on
+    // the newly selected build, no reload needed.
+    if (changes[CONFIG.engine.buildKey]) {
+      state.engineBuild = normalizeEngineBuild(changes[CONFIG.engine.buildKey].newValue);
+      if (state.engineFen) {
+        log('engine build changed to', state.engineBuild, '— restarting analysis');
+        state.engineFen = null; // force a fresh analyze carrying the new profile
+      }
       syncEngine();
     }
   }
@@ -1310,6 +1323,21 @@
   }
 
   /**
+   * Engine sizing profile for this device, sent with every analyze (the
+   * offscreen document cannot see what device the tab is on — detection has
+   * to happen here). 'auto' guesses from device signals; the options page's
+   * Full/Lite choice overrides the guess.
+   */
+  function engineProfile() {
+    if (state.engineBuild === 'full') return 'desktop';
+    if (state.engineBuild === 'lite') return 'mobile';
+    const lowPower = (navigator.userAgentData && navigator.userAgentData.mobile === true) ||
+      (typeof navigator.deviceMemory === 'number' && navigator.deviceMemory <= 4) ||
+      (typeof navigator.hardwareConcurrency === 'number' && navigator.hardwareConcurrency <= 4);
+    return lowPower ? 'mobile' : 'desktop';
+  }
+
+  /**
    * Single decision point, called from every relevant event (position change,
    * toggles, tab visibility, review browse state): analyze when the engine
    * should be running for the current position, stop when it should not.
@@ -1321,7 +1349,7 @@
       state.engineFen = state.fen;
       if (state.ui) state.ui.engine.classList.add('clo-busy'); // dim until fresh lines land
       log('engine: sending analyze for', state.fen);
-      engineSend({ type: 'clo-engine-analyze', fen: state.fen });
+      engineSend({ type: 'clo-engine-analyze', fen: state.fen, profile: engineProfile() });
       pingEngineIfSilent();
     } else if (!active && state.engineFen) {
       state.engineFen = null;
@@ -1405,7 +1433,13 @@
       } else if (msg.status === 'error') {
         state.ui.engine.classList.remove('clo-busy');
         warn('engine error:', msg.detail);
-        state.ui.engineNote.textContent = 'Engine error — see the offscreen console.';
+        const detail = String(msg.detail || '');
+        // A missing vendored build gets an actionable note (the full detail
+        // with the exact filename is in the warn above); no silent fallback
+        // to the other build.
+        state.ui.engineNote.textContent = detail.startsWith('missing-build')
+          ? (detail.includes('lite') ? 'Lite' : 'Full') + ' engine files missing — see README'
+          : 'Engine error — see the offscreen console.';
       }
       return;
     }
@@ -1469,6 +1503,20 @@
     } catch (err) {
       warn('storage read failed:', err);
       return false;
+    }
+  }
+
+  function normalizeEngineBuild(value) {
+    return value === 'full' || value === 'lite' ? value : 'auto';
+  }
+
+  async function loadEngineBuildPref() {
+    try {
+      const res = await chrome.storage.local.get(CONFIG.engine.buildKey);
+      return normalizeEngineBuild(res[CONFIG.engine.buildKey]);
+    } catch (err) {
+      warn('storage read failed:', err);
+      return 'auto';
     }
   }
 
@@ -1748,6 +1796,7 @@
   async function initReviewPanel() {
     state.hidden = await loadHiddenPref();
     state.engineEnabled = await loadEnginePref();
+    state.engineBuild = await loadEngineBuildPref();
     chrome.storage.onChanged.addListener(onStorageChanged);
     chrome.runtime.onMessage.addListener(onEngineMessage);
     document.addEventListener('visibilitychange', onVisibilityChange);

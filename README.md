@@ -142,7 +142,7 @@ lichessable/
 │   ├── san.js               Self-contained UCI→SAN converter + move generator
 │   │                        (also loaded as a content script: review auto-play
 │   │                        uses it to track the board and verify moves)
-│   └── vendor/              Stockfish WASM build — NOT in git; see below
+│   └── vendor/              Stockfish WASM builds (full + lite) — NOT in git; see below
 ├── options/
 │   ├── options.html         Settings page: Lichess API token entry + test
 │   ├── options.js
@@ -453,16 +453,29 @@ review browse) toggles local Stockfish analysis of the current position:
 evaluation, search depth, and the top 3 lines (MultiPV 3) in SAN. Off by
 default; the choice persists across sessions and tabs.
 
-**Setup (one-time):** the engine binary is not in the repo (108 MB). From
-<https://github.com/nmrugg/stockfish.js/releases/tag/v18.0.0> download the two
-multi-threaded NNUE build files — the pair with **no** `lite`/`single`/`asm`
-suffix:
+**Setup (one-time):** the engine binaries are not in the repo. From
+<https://github.com/nmrugg/stockfish.js/releases/tag/v18.0.0> download the
+multi-threaded NNUE build pair(s) you want into `engine/vendor/` (keep the
+filenames — the loader derives each `.wasm` path from its `.js` name), then
+reload the extension:
 
-- `stockfish-18.js`
-- `stockfish-18.wasm`
+- **Full** (108 MB, the pair with **no** `lite`/`single`/`asm` suffix) —
+  used on desktop-class machines:
+  - <https://github.com/nmrugg/stockfish.js/releases/download/v18.0.0/stockfish-18.js>
+  - <https://github.com/nmrugg/stockfish.js/releases/download/v18.0.0/stockfish-18.wasm>
+- **Lite** (~7 MB, smaller NNUE net) — used on low-power devices:
+  - <https://github.com/nmrugg/stockfish.js/releases/download/v18.0.0/stockfish-18-lite.js>
+  - <https://github.com/nmrugg/stockfish.js/releases/download/v18.0.0/stockfish-18-lite.wasm>
 
-and put both in `engine/vendor/` (keep the filenames — the loader derives the
-`.wasm` path from its own name). Reload the extension.
+**Which build runs:** each analyze request carries a profile computed in the
+content script. By default (**Auto** on the options page) a low-power device —
+`navigator.userAgentData.mobile`, ≤ 4 GB `deviceMemory`, or ≤ 4
+`hardwareConcurrency` — gets the lite profile, everything else the full one;
+the options page's **Engine build** setting (Auto / Full / Lite) overrides the
+detection, taking effect immediately, mid-search included. If the selected
+build's files are missing from `engine/vendor/` the panel says so ("… engine
+files missing — see README") and the status error names the exact file — there
+is deliberately **no silent fallback** to the other build.
 
 **How it runs:** the engine loads in an MV3 *offscreen document*
 (`engine/offscreen.html`) — the only extension context that can both run WASM
@@ -471,12 +484,17 @@ pthread build (via the manifest's COOP/COEP keys). The service worker is the
 message hub: content scripts request analysis (`clo-engine-analyze`), the
 offscreen engine streams throttled updates back, and the worker relays them to
 the requesting tab/frame (offscreen documents cannot message content scripts
-directly). Searches run `go depth 24` with 4 threads / 64 MB hash (constants
-at the top of `engine/engine.js`), so the CPUs go idle once a position is
-fully searched. Scores are always shown from White's perspective.
+directly). Search sizing comes from the `PROFILES` table at the top of
+`engine/engine.js`: both profiles run `go depth 25` (self-terminating, CPUs
+idle after) — the desktop profile with the full build at 4 threads / 64 MB
+hash, the mobile profile with the lite build at 2 threads / 16 MB hash
+(MultiPV 3 in both; a profile's `movetime` can additionally cap the search
+wall-clock, currently unused). Scores are always shown from White's
+perspective.
 
-**Resource notes:** expect roughly 250–400 MB of memory while the engine is
-enabled (check Chrome's task manager, Shift+Esc). Turning the toggle off
+**Resource notes:** expect roughly 250–400 MB of memory while the full engine
+is enabled, roughly 60–120 MB for the lite profile (check Chrome's task
+manager, Shift+Esc). Turning the toggle off
 closes the offscreen document and frees it immediately; an idle engine also
 self-closes after 5 minutes. The search stops automatically when the tab is
 hidden, the panel is collapsed, or a review session leaves its browse state.

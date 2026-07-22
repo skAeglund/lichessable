@@ -28,6 +28,20 @@
 
   <p id="status" aria-live="polite"></p>
 
+  <label for="engineBuild">Engine build</label>
+  <select id="engineBuild">
+    <option value="auto">Auto (recommended)</option>
+    <option value="full">Full</option>
+    <option value="lite">Lite</option>
+  </select>
+
+  <p class="fineprint">
+    Auto runs the lite Stockfish build on low-power devices (phones, ≤4 cores
+    or ≤4&nbsp;GB memory) and the full build elsewhere; Full/Lite forces one.
+    Each build must be downloaded to <code>engine/vendor/</code> first — see
+    the README's "Local engine" section.
+  </p>
+
   <p class="fineprint">
     <strong>Review auto-play</strong> (the toggle on the in-session Overstudy
     widget): auto-played moves count as normal correct answers — the move was
