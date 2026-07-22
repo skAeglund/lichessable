@@ -169,6 +169,8 @@
       panelGap: 12,             // breathing room from the board / viewport edge
       panelMinWidth: 300,       // narrower gutter than this → fall back below the board
       panelMaxWidth: 420,
+      stackedMinSide: 250,      // less free width than this beside the board ⇒ the comment column must have wrapped under it
+      holdUpMs: 1200,           // an UPWARD move of the below-the-board panel must persist this long before it is applied (anti-bounce)
     },
 
     // --- Optional local Stockfish (offscreen document, section 5b) ----------
@@ -740,7 +742,8 @@
     // their stats; in side mode the CSS pulls it out to the right, but this
     // stays its DOM home either way. Analysis: insert after the container
     // itself (see the comment above). Review: on document.body — never inside
-    // Chessable's React tree — fixed-positioned under the board (section 11).
+    // Chessable's React tree — absolutely positioned next to / under the
+    // board in document coordinates (section 11).
     if (IS_REVIEW) {
       document.body.appendChild(panel);
     } else if (IS_ANALYSIS) {
@@ -959,7 +962,10 @@
 
   for (const type of ['pointerdown', 'pointermove']) {
     document.addEventListener(type, (e) => {
-      if (e.isTrusted && e.pointerType) observedPointerType = e.pointerType;
+      if (e.isTrusted && e.pointerType && e.pointerType !== observedPointerType) {
+        observedPointerType = e.pointerType;
+        applyTouchUiClass(); // the human's first real input can flip the opening guess
+      }
     }, { capture: true, passive: true });
   }
 
@@ -971,6 +977,48 @@
     // a phone/tablet; anything with a mouse available keeps the desktop path.
     return Boolean(navigator.maxTouchPoints) && !matchMedia('(any-pointer: fine)').matches;
   }
+
+  // --- touch-sized UI --------------------------------------------------------
+  // Phones and tablets get a slightly larger type/tap-target scale for every
+  // widget this extension owns; the rules live behind `html.clo-touch` at the
+  // end of lichessable.css. This is a SEPARATE question from useTouchInput()
+  // above — that one decides which event flavour the board's handlers are
+  // listening for and is load-bearing for move injection, so it stays exactly
+  // as it is; guessing wrong here only means type is the wrong size for a
+  // moment, so this one may guess early and cheaply.
+  //
+  // Chrome's "Desktop site" setting is designed to be invisible to the page:
+  // it rewrites navigator.userAgent, reports the UA-CH `mobile` hint as false,
+  // and widens the layout viewport to ~980 CSS px. So the user agent, the UA
+  // hints and window.innerWidth can ALL be lying, and any check built on them
+  // reads a desktop-mode phone as a desktop. Input capability is not spoofed,
+  // which leaves two signals worth trusting:
+  //   * `(pointer: coarse)` — the PRIMARY pointer, so a touchscreen laptop
+  //     driven with a mouse still reads as fine (`any-pointer: coarse` would
+  //     not). This is only the opening guess: some Android builds have been
+  //     reported to claim a fine pointer as well, and a phone with a Bluetooth
+  //     mouse keeps reporting coarse.
+  //   * the human's own trusted pointerType, which settles it for good on
+  //     their first tap or click anywhere in this frame — the same ground
+  //     truth the injection path relies on, verified on Android in Desktop
+  //     site mode (v0.18.9).
+  // Both frames matter: the panel lives in the mt1 iframe, the review widgets
+  // in the top document, and each runs its own copy of this script — so each
+  // sets the class on its OWN <html>.
+  function wantsTouchUi() {
+    if (observedPointerType) return observedPointerType === 'touch';
+    return matchMedia('(pointer: coarse)').matches;
+  }
+
+  function applyTouchUiClass() {
+    const root = document.documentElement;
+    if (root) root.classList.toggle('clo-touch', wantsTouchUi());
+  }
+
+  applyTouchUiClass();
+  // A mouse plugged into a tablet (or unplugged from one) changes the primary
+  // pointer without any input from the user; re-evaluate rather than wait.
+  matchMedia('(pointer: coarse)').addEventListener('change', applyTouchUiClass);
 
   function pressSquare(el) {
     const rect = el.getBoundingClientRect();
@@ -1553,10 +1601,16 @@
 
     /**
      * Centers the widget beneath the board (below Chessable's Exit/nav footer
-     * row). position:fixed + getBoundingClientRect are both viewport-relative,
-     * so the coordinates line up directly; the 500 ms tick (plus resize/scroll
-     * listeners) keeps them fresh. If the board isn't in the DOM the inline
-     * styles are never set and the stylesheet's bottom-right fallback applies.
+     * row) in DOCUMENT coordinates (viewport rect + scroll offset) — the
+     * widget is position:absolute, same reasoning as the review panel: fixed
+     * anchoring to scrolling content pops on mobile, absolute scrolls natively
+     * and the tick/resize/scroll listeners only correct real layout changes
+     * (setInlinePx skips unchanged values). When the comment column is
+     * STACKED under the board (portrait/mobile) the spot below the footer is
+     * occupied by Chessable's own comment header, so the widget drops below
+     * the entire trainer row instead — and the review panel, which anchors
+     * below the widget, follows. If the board isn't in the DOM the inline
+     * styles are never set and the stylesheet's fallback applies.
      */
     function positionWidget() {
       if (!rs.widget || rs.widget.hidden) return;
@@ -1566,12 +1620,19 @@
       if (!rect.width) return;
       const footer = document.querySelector(SELECTORS.trainerFooter);
       const footerRect = footer ? footer.getBoundingClientRect() : null;
-      const top = (footerRect && footerRect.height ? footerRect.bottom : rect.bottom) + 10;
-      rs.widget.style.left = rect.left + rect.width / 2 + 'px';
-      rs.widget.style.top = top + 'px';
+      let top = (footerRect && footerRect.height ? footerRect.bottom : rect.bottom) + 10;
+      if (stackedTrainerLayout(rect)) {
+        const row = document.querySelector(SELECTORS.trainerRow);
+        const rowRect = row ? row.getBoundingClientRect() : null;
+        if (rowRect && rowRect.height) top = Math.max(top, rowRect.bottom + 10);
+      }
       rs.widget.style.right = 'auto';
       rs.widget.style.bottom = 'auto';
       rs.widget.style.transform = 'translateX(-50%)';
+      setInlinePx(rs.widget, {
+        left: rect.left + rect.width / 2 + window.scrollX,
+        top: top + window.scrollY,
+      });
     }
 
     function syncButton(btn, entry, which) {
@@ -1679,7 +1740,8 @@
   // Everything else — debounce, fetch, cache, 429/401 handling, rendering —
   // is the shared machinery of sections 2–8 running with IS_REVIEW branches.
   // The 500 ms tick below is this mode's watchdog: it mounts/hides the panel,
-  // re-positions it under the board (fixed, like the overstudy widget), and
+  // re-positions it next to / under the board (absolute, in document
+  // coordinates, like the overstudy widget — see positionReviewPanel), and
   // detects position changes by comparing the derived FEN.
   // ==========================================================================
 
@@ -1703,6 +1765,7 @@
     centerReviewBoard();
     if (!reviewBrowseReady()) {
       if (state.panel) state.panel.hidden = true;
+      resetReviewAnchorHold(); // a fresh show must never fight a stale hold
       state.fen = null; // the next completed variation starts with a fresh fetch
       syncEngine();     // leaving the browse state stops any running search
       return;
@@ -1728,6 +1791,62 @@
   }
 
   /**
+   * Writes rounded px values as inline styles, skipping properties whose value
+   * is already what it should be. The skip is what keeps the fixed→absolute
+   * positioning scheme calm: when the DOCUMENT scrolls, document coordinates
+   * do not change, so the scroll listeners (kept as a safety net for inner
+   * scroll containers) become measure-only no-ops instead of style thrash.
+   */
+  function setInlinePx(el, styles) {
+    for (const prop of Object.keys(styles)) {
+      const want = Math.round(styles[prop]) + 'px';
+      if (el.style[prop] !== want) el.style[prop] = want;
+    }
+  }
+
+  /**
+   * True when Chessable's comment column is STACKED under the board
+   * (portrait/mobile) rather than beside it. Preferred signal: the progress
+   * block's left edge sitting under the board — but that block only exists in
+   * the browse state, so outside it (quiz, study intro) the fallback is room:
+   * a side column needs at least CONFIG.review.stackedMinSide px beside the
+   * board, and less free width than that means it must have wrapped.
+   */
+  function stackedTrainerLayout(boardRect) {
+    const progress = document.querySelector(SELECTORS.reviewProgress);
+    if (progress) {
+      const progRect = progress.getBoundingClientRect();
+      if (progRect.width) return progRect.left < boardRect.left + boardRect.width / 2;
+    }
+    return window.innerWidth - boardRect.width < CONFIG.review.stackedMinSide;
+  }
+
+  // Anti-bounce for the below-the-board panel spot: at a variation transition
+  // the trainer row collapses for a couple of renders (move list resets, the
+  // progress block unmounts) BEFORE the browse gates flip false, so the shown
+  // panel got yanked up for a tick and then hidden — visible as popping on
+  // every new variation. An UPWARD move must therefore persist holdUpMs before
+  // it is applied; downward moves apply immediately. Reset whenever the panel
+  // hides or sits in the gutter, so a fresh show never fights a stale hold.
+  const reviewAnchorHold = { top: null, upSince: 0 };
+
+  function resetReviewAnchorHold() {
+    reviewAnchorHold.top = null;
+    reviewAnchorHold.upSince = 0;
+  }
+
+  function holdReviewPanelTop(top) {
+    const hold = reviewAnchorHold;
+    if (hold.top !== null && top < hold.top) {
+      if (!hold.upSince) hold.upSince = Date.now();
+      if (Date.now() - hold.upSince < CONFIG.review.holdUpMs) return hold.top;
+    }
+    hold.upSince = 0;
+    hold.top = top;
+    return top;
+  }
+
+  /**
    * Anchors the panel in the empty gutter LEFT of the board, top-aligned with
    * it, whenever that gutter is wide enough (CONFIG.review.panelMinWidth plus
    * margins); otherwise falls back to the original spot beneath the board,
@@ -1736,10 +1855,18 @@
    * stacked under the board (portrait/mobile), so the panel never covers
    * Chessable's own UI. The gutter also holds Chessable's collapsible variation drawer —
    * when that is open the panel simply overlays it (z-index 99999).
-   * position:fixed + getBoundingClientRect are both viewport-relative, so the
-   * coordinates line up directly; the 500 ms tick plus resize/scroll listeners
-   * keep them fresh. Remaining viewport height caps the panel; the body
-   * scrolls internally (see .clo-panel--review in lichessable.css).
+   *
+   * The panel is position:absolute in DOCUMENT coordinates (viewport rect +
+   * scroll offset), NOT fixed: a fixed element anchored to scrolling content
+   * has to chase the page from scroll events, which lag the compositor on
+   * mobile and made the panel visibly pop up and down. Absolute placement
+   * scrolls natively with the trainer; the 500 ms tick plus resize/scroll
+   * listeners only correct real layout changes (and cost nothing otherwise —
+   * see setInlinePx). The height cap is likewise scroll-independent: gutter
+   * mode fits the viewport below the board's DOCUMENT top, the stacked
+   * fallback simply caps near one viewport height — the page scrolls down to
+   * the panel, and the body scrolls internally (see .clo-panel--review in
+   * lichessable.css).
    */
   function positionReviewPanel() {
     if (!IS_REVIEW || !state.panel || state.panel.hidden) return;
@@ -1749,14 +1876,18 @@
     const rect = board.getBoundingClientRect();
     if (!rect.width) return;
     const gap = CONFIG.review.panelGap;
+    const sx = window.scrollX, sy = window.scrollY;
     const gutter = rect.left - gap * 2; // usable width left of the board
     if (gutter >= CONFIG.review.panelMinWidth) {
-      const width = Math.round(Math.min(gutter, CONFIG.review.panelMaxWidth));
-      const top = Math.round(Math.max(gap, rect.top));
-      state.panel.style.left = Math.round(rect.left - gap - width) + 'px';
-      state.panel.style.top = top + 'px';
-      state.panel.style.width = width + 'px';
-      state.panel.style.maxHeight = Math.max(120, window.innerHeight - top - 12) + 'px';
+      resetReviewAnchorHold(); // gutter placement is stable; never hold stale fallback state
+      const width = Math.min(gutter, CONFIG.review.panelMaxWidth);
+      const docTop = Math.max(gap, rect.top + sy); // board's document top — scroll-independent
+      setInlinePx(state.panel, {
+        left: rect.left + sx - gap - width,
+        top: docTop,
+        width,
+        maxHeight: Math.max(240, window.innerHeight - docTop - gap),
+      });
       return;
     }
     let anchorBottom = rect.bottom;
@@ -1768,24 +1899,26 @@
     if (widgetRect && widgetRect.height) anchorBottom = Math.max(anchorBottom, widgetRect.bottom);
     // Portrait/mobile: the comment column WRAPS BELOW the board, so anchoring
     // under the board would overlay the comments/progress block — anchor under
-    // the whole trainer row instead. Stacking is detected by the progress
-    // block sitting under the board rather than beside it, so a desktop side
-    // column that happens to run taller than the board keeps the old anchor.
-    const progress = document.querySelector(SELECTORS.reviewProgress);
+    // the whole trainer row instead (the overstudy widget already sits below
+    // it in this layout, and the widgetRect line above then puts the panel
+    // below the widget). A desktop side column that happens to run taller
+    // than the board keeps the old anchor — see stackedTrainerLayout.
     const row = document.querySelector(SELECTORS.trainerRow);
-    if (progress && row) {
-      const progRect = progress.getBoundingClientRect();
-      const rowRect = row.getBoundingClientRect();
-      if (progRect.width && rowRect.height && progRect.left < rect.left + rect.width / 2) {
-        anchorBottom = Math.max(anchorBottom, rowRect.bottom);
-      }
+    const rowRect = row ? row.getBoundingClientRect() : null;
+    if (rowRect && rowRect.height && stackedTrainerLayout(rect)) {
+      anchorBottom = Math.max(anchorBottom, rowRect.bottom);
     }
-    const top = Math.round(anchorBottom + 10);
-    const width = Math.round(Math.max(rect.width, 320));
-    state.panel.style.left = Math.round(rect.left + (rect.width - width) / 2) + 'px';
-    state.panel.style.top = top + 'px';
-    state.panel.style.width = width + 'px';
-    state.panel.style.maxHeight = Math.max(120, window.innerHeight - top - 12) + 'px';
+    // Centered on the board, but never wider than the viewport and never off
+    // its edges — on a phone the board IS the viewport width, minus margins.
+    const width = Math.min(Math.max(rect.width, 320), window.innerWidth - gap * 2);
+    const left = Math.min(Math.max(rect.left + (rect.width - width) / 2, gap),
+                          window.innerWidth - width - gap);
+    setInlinePx(state.panel, {
+      left: left + sx,
+      top: holdReviewPanelTop(anchorBottom + 10 + sy),
+      width,
+      maxHeight: Math.max(240, window.innerHeight - gap * 2),
+    });
   }
 
   /**

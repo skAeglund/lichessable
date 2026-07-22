@@ -439,14 +439,17 @@
 
 /* --- review-mode panel ------------------------------------------------------
    In the trainer's post-completion browse state the panel mounts on
-   document.body and is fixed-positioned in the gutter left of the board (or
-   beneath it when that gutter is too narrow); left/top/width/max-height are
-   inline styles recomputed every tick (positionReviewPanel).
+   document.body and is absolutely positioned in DOCUMENT coordinates — in the
+   gutter left of the board, or beneath it when that gutter is too narrow;
+   left/top/width/max-height are inline styles recomputed every tick
+   (positionReviewPanel). Absolute (not fixed!) so the panel scrolls natively
+   with the page: a fixed element anchored to scrolling content lags the
+   compositor on mobile and visibly pops on every scroll / URL-bar resize.
    The doubled class selector outranks the wide-window media query above,
-   which would otherwise turn this into an absolutely-positioned sidebar. */
+   which would otherwise turn this into a differently-anchored sidebar. */
 
 .clo-panel.clo-panel--review {
-  position: fixed;
+  position: absolute;
   z-index: 99999;
   margin-top: 0;
   display: flex;
@@ -474,19 +477,23 @@
 
 /* --- review-mode overstudy widget ------------------------------------------ */
 /* Floating card shown during review sessions (/practice/…). The content
-   script anchors it centered beneath the board (inline left/top/transform,
-   recomputed on every tick — see positionWidget); the right/bottom values
-   here are only the fallback if the board element can't be found. It mounts
-   on document.body — never inside Chessable's React-managed DOM — so it
-   carries its own chrome. */
+   script anchors it centered beneath the board in DOCUMENT coordinates
+   (inline left/top/transform, recomputed on every tick — see positionWidget);
+   absolute for the same reason as the review panel above: fixed anchoring to
+   scrolling content pops on mobile. The right/top values here are only the
+   fallback if the board element can't be found. It mounts on document.body —
+   never inside Chessable's React-managed DOM — so it carries its own chrome. */
 
 .clo-review {
-  position: fixed;
+  position: absolute;
   right: 16px;
-  bottom: 96px;
+  top: 96px;
   z-index: 99999;
   display: flex;
   flex-direction: row;
+  flex-wrap: wrap;           /* portrait phones: the auto-play cluster wraps under the buttons */
+  justify-content: center;
+  max-width: calc(100vw - 16px);
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
@@ -823,4 +830,143 @@ html.clo-injecting .legal-square-capture-mt2 {
   border-color: #a33;
   background: transparent;
   color: #e08a8a;
+}
+
+/* --- touch-sized UI (html.clo-touch) ----------------------------------------
+   Set by applyTouchUiClass() in lichessable.js on the <html> of whichever
+   document this script runs in (the mt1 iframe for the panel, the top document
+   for the review/chapter widgets), whenever the PRIMARY pointer is a finger.
+   Chrome's "Desktop site" mode hides a phone from the user agent, the UA-CH
+   `mobile` hint and the viewport width alike, but not from `(pointer: coarse)`
+   or from a trusted pointerType — see the comment on wantsTouchUi().
+
+   Everything here is deliberately modest: one or two steps of type size and
+   enough padding to make the interactive bits reachable with a fingertip.
+   Nothing changes layout, positioning or any dimension the JS measures
+   (positionAnalysisPanel, sizeAnalysisMovesHost and positionReviewPanel all
+   measure live, so the panel simply re-flows around the larger type). The
+   `html.clo-touch` prefix also outranks the ≥1700px side-mode media query
+   earlier in this file, which would otherwise reset .clo-panel's font-size. */
+
+html.clo-touch .clo-panel {
+  font-size: 17px;
+}
+
+html.clo-touch .clo-header {
+  padding: 10px 12px;
+}
+
+html.clo-touch .clo-stub-badge {
+  font-size: 12px;
+}
+
+/* Header controls are the smallest tap targets in the panel — the padding
+   matters more than the type size here. */
+html.clo-touch .clo-toggle,
+html.clo-touch .clo-engine-toggle {
+  font-size: 16px;
+  padding: 8px 12px;
+}
+
+html.clo-touch .clo-body {
+  padding: 12px;
+}
+
+html.clo-touch .clo-table th {
+  font-size: 13px;
+  padding: 6px 8px 8px;
+}
+
+/* On Explore/Analysis a row is a click-to-play target, so give it a
+   finger-sized height rather than a mouse-sized one. */
+html.clo-touch .clo-table td {
+  padding: 10px 8px;
+}
+
+html.clo-touch .clo-bar {
+  height: 26px;
+}
+
+html.clo-touch .clo-seg {
+  font-size: 12px;
+}
+
+html.clo-touch .clo-engine-eval {
+  font-size: 20px;
+}
+
+html.clo-touch .clo-engine-depth,
+html.clo-touch .clo-engine-note {
+  font-size: 13px;
+}
+
+/* Buttons: same green accents, just reachable. */
+html.clo-touch .clo-settings-btn,
+html.clo-touch .clo-review-btn,
+html.clo-touch .clo-ap-toggle,
+html.clo-touch .clo-chapter-btn,
+html.clo-touch .clo-qe-save {
+  font-size: 16px;
+  padding: 10px 16px;
+}
+
+html.clo-touch .clo-qe-cancel {
+  font-size: 16px;
+  padding: 10px 12px;
+}
+
+/* --- body-mounted widgets (top document) ---------------------------------- */
+
+html.clo-touch .clo-review {
+  font-size: 16px;
+  gap: 12px;
+  padding: 10px 14px;
+}
+
+html.clo-touch .clo-review-title,
+html.clo-touch .clo-chapter-title {
+  font-size: 12px;
+}
+
+html.clo-touch .clo-ap-speed {
+  font-size: 16px;
+  padding: 8px 8px;
+}
+
+html.clo-touch .clo-ap-status {
+  font-size: 16px;
+  padding: 6px 8px;
+}
+
+html.clo-touch .clo-chapter {
+  width: 230px;
+  font-size: 15px;
+}
+
+/* --- quick edit ------------------------------------------------------------
+   The pencil is the one control that is genuinely unusable with a fingertip at
+   its desktop size. It is anchored by its TOP-LEFT corner at the hovered move's
+   right edge (initQuickEditUi), so growing it only pushes down and right.
+   The popup keeps its 280px width — openPopup clamps `left` against a
+   hardcoded 300, so the width is not ours to change from here. */
+
+html.clo-touch .clo-qe-pencil {
+  width: 32px;
+  height: 32px;
+  line-height: 30px;
+  font-size: 18px;
+}
+
+html.clo-touch .clo-qe-popup {
+  font-size: 16px;
+}
+
+html.clo-touch .clo-qe-text {
+  font-size: 16px;
+  padding: 8px 10px;
+}
+
+html.clo-touch .clo-qe-scope,
+html.clo-touch .clo-qe-status {
+  font-size: 15px;
 }

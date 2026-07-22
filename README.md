@@ -24,11 +24,17 @@ moves, reading comments). It follows whatever position is on the board —
 mainline moves, clickable subvariation moves, the initial-position dot, and
 the prev/next buttons all included. It never shows during an active quiz, so
 it cannot spoil an answer. Because the trainer has no FEN field, the position
-is reconstructed from the DOM (see Architecture notes); the panel is
-fixed-positioned in the empty gutter to the left of the board (falling back to
-below the board, under the Overstudy widget, on narrow windows — and below the
-whole board+comments block in portrait/mobile, where the comments stack under
-the board). Throughout a
+is reconstructed from the DOM (see Architecture notes); the panel sits in the
+empty gutter to the left of the board (falling back to below the board, under
+the Overstudy widget, on narrow windows — and in portrait/mobile, where the
+comments stack under the board, both the Overstudy widget and the panel drop
+below the whole board+comments block, so nothing covers Chessable's own UI).
+Panel and widget are placed in document coordinates, so they scroll naturally
+with the page instead of chasing it — on mobile a viewport-fixed panel visibly
+popped up and down on every scroll and URL-bar resize — and an upward move of
+the below-the-board spot must persist ~1.2 s before it is applied, so the
+trainer row collapsing for a couple of renders at a variation transition no
+longer bounces the panel. Throughout a
 review/learn session — quiz included, not just the browse state — the trainer
 row is nudged sideways so the **board** rather than Chessable's board+comments
 block sits horizontally centered, so the board never shifts as a variation
@@ -190,6 +196,22 @@ lichessable/
   below, because chessable.com navigates SPA-style (`pushState`) — a review
   session can be reached from any page without a load, so the script must
   already be resident.
+- **Touch-sized UI** — on a device whose *primary* pointer is a finger, every
+  widget this extension owns steps up one size: larger type in the panel,
+  taller move rows (they are click-to-play targets), roomier buttons, and a
+  quick-edit pencil big enough to hit. Nothing about the layout changes, so
+  desktop is untouched. The switch is a single `clo-touch` class that
+  `applyTouchUiClass()` puts on `<html>` in each document the script runs in;
+  all the rules live in one block at the end of `lichessable.css`.
+  Chrome's **Desktop site** setting deliberately hides a phone from
+  `navigator.userAgent`, from the UA-CH `mobile` hint and from the viewport
+  width (it forces a ~980 CSS px layout), so none of those can be used.
+  Input capability is *not* spoofed, so the opening guess is
+  `(pointer: coarse)` — the primary pointer, so a touchscreen laptop being
+  driven with a mouse still counts as fine — and the human's own trusted
+  `pointerType` corrects it for good on their first tap or click. That is the
+  same ground truth `useTouchInput()` uses to pick the event flavour for
+  injected moves, and it was verified on Android in Desktop site mode.
 - **Review overstudy widget** — review sessions (`/practice/…`) render in the
   top document (MoveTrainer2 — no mt1 iframe, no `#inputFEN`). The review URL
   stays **constant** for the whole session (`/practice/<course>/0/<listId>`);
@@ -208,11 +230,20 @@ lichessable/
 - **Review-mode panel** — in the trainer's post-completion browse state
   (detected by the `practiceProgress` "Completed" block plus the
   `commentMove` move list) the panel mounts on `document.body`,
-  fixed-positioned in the gutter left of the board — or beneath it (below the
-  overstudy widget) when that gutter is narrower than
-  `CONFIG.review.panelMinWidth`, dropping below the entire trainer row when
-  the comment column is stacked under the board (portrait/mobile; detected by
-  the progress block sitting under, not beside, the board) — while
+  absolutely positioned in **document coordinates** (viewport rect + scroll
+  offset; never `fixed` — a fixed element anchored to scrolling content lags
+  the compositor on mobile and pops on every scroll, and `setInlinePx` writes
+  a style only when its value changed, so the safety-net scroll listeners are
+  no-ops while the document scrolls) in the gutter left of the board — or
+  beneath it (below the overstudy widget) when that gutter is narrower than
+  `CONFIG.review.panelMinWidth`. When the comment column is stacked under the
+  board (portrait/mobile; `stackedTrainerLayout` — the progress block sitting
+  under, not beside, the board, or too little free width beside it outside
+  the browse state) the overstudy widget drops below the entire trainer row
+  and the panel below the widget, with width and left clamped into the
+  viewport; an upward move of that anchor must persist `holdUpMs` before it
+  is applied (`holdReviewPanelTop`), so the trainer row collapsing at a
+  variation transition doesn't bounce the panel — while
   `centerReviewBoard()` (independent of
   the panel: it runs for the whole session) translates `.row-practice` so the
   board itself is viewport-centered, and the

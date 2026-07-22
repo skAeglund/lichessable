@@ -139,12 +139,29 @@ Currently working (v0.18.x).
   initial position). Castling is a home-square heuristic and en passant is
   always "-" — accepted approximations. Mid-animation frames are skipped by
   requiring exactly one king per side. The panel mounts on `document.body`
-  (fixed; preferred spot is the gutter LEFT of the board, top-aligned, falling
-  back to under the board/overstudy widget when that gutter is narrower than
-  `CONFIG.review.panelMinWidth`; when the comment column is STACKED under the
-  board — portrait/mobile, detected by the progress block sitting under, not
-  beside, the board — the anchor drops below the entire trainer row so the
-  panel never covers Chessable's UI). Chessable centers the whole trainer row
+  (`position: absolute` in DOCUMENT coordinates — viewport rect + scroll
+  offset — NEVER fixed: a fixed element anchored to scrolling content chases
+  the page from scroll events, which lag the compositor on mobile and made
+  the panel visibly pop up and down; the overstudy widget is absolute for the
+  same reason. `setInlinePx` writes a style only when its value actually
+  changed, so the scroll listeners — kept as a safety net for inner scroll
+  containers — are no-ops while the document itself scrolls, and the height
+  cap is scroll-independent. Preferred spot is the gutter LEFT of the board,
+  top-aligned, falling back to under the board/overstudy widget when that
+  gutter is narrower than `CONFIG.review.panelMinWidth`; when the comment
+  column is STACKED under the board — portrait/mobile, `stackedTrainerLayout`:
+  the progress block sitting under, not beside, the board, or, outside the
+  browse state where that block doesn't exist, less than
+  `CONFIG.review.stackedMinSide` free width beside the board — the OVERSTUDY
+  WIDGET drops below the entire trainer row (its usual below-the-footer spot
+  is occupied by Chessable's comment header there) and the panel below the
+  widget, so neither covers Chessable's UI, with width and left clamped into
+  the viewport. Anti-bounce (`holdReviewPanelTop`): at a variation transition
+  the trainer row collapses a couple of renders BEFORE the browse gates flip
+  false, which yanked the still-shown panel up for a tick — an UPWARD move of
+  the fallback anchor is applied only after persisting `holdUpMs`; downward
+  moves apply immediately, and the hold resets on hide/gutter so a fresh show
+  never fights it). Chessable centers the whole trainer row
   (board + comment column), so `centerReviewBoard()` puts a `translateX` on
   `SELECTORS.trainerRow` to center the BOARD instead — transform only (never a
   layout property), clamped so the comment column stays on screen. It runs on
@@ -158,6 +175,21 @@ Currently working (v0.18.x).
   tab) auto-pauses its timer by clicking Chessable's pause control
   (`SELECTORS.trainerIconBtn` + `trainerPauseIcon`); backs off if the tab is
   focused first. Resume = Chessable's own play overlay.
+- Touch-sized UI: `applyTouchUiClass()` (next to `useTouchInput`) toggles
+  `clo-touch` on `<html>` in EVERY document the script runs in (mt1 iframe for
+  the panel, top document for the widgets); one block at the END of
+  lichessable.css hangs all the larger type/tap-target rules off
+  `html.clo-touch ...`, whose specificity is what beats the ≥1700px
+  side-mode media query. The detection is deliberately NOT `useTouchInput()`:
+  that one picks the event flavour for injected moves and is load-bearing, so
+  it stays as it is. Chrome's "Desktop site" rewrites `navigator.userAgent`,
+  reports the UA-CH `mobile` hint as false and forces a ~980 CSS px layout
+  viewport, so UA sniffing and width checks all read a phone as a desktop —
+  the only usable signals are `(pointer: coarse)` (the PRIMARY pointer, so a
+  touchscreen laptop with a mouse still reads fine) as the opening guess, and
+  the human's own trusted `pointerType`, which settles it on their first tap.
+  Only type sizes and padding change; nothing here touches a dimension the JS
+  measures.
 - Engine (section 5b in lichessable.js): Stockfish runs in the offscreen
   document; the SERVICE WORKER is the mandatory hub — an offscreen document's
   `runtime.sendMessage` never reaches content scripts, so replies are relayed
