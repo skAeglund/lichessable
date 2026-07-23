@@ -502,21 +502,39 @@ Currently working (v0.18.x).
     dumps a summary (record/cache key counts, no move data) onto
     `documentElement[data-clo-session]` — storage areas aren't otherwise
     visible from the page.
-- Wrong-guess alt check (section 15; /practice/ AND /learn/): capture is a
-  hook in `rollbackTo` — a pending user answer (`vs.pendingRecord`) rolled
-  back exactly ONE ply (`posKeyOf(entry.pos) === pending.posKey`) while the
-  Incorrect note is live or was stamped within `noteGraceMs`
-  (`vs.incorrectNoteAt`, refreshed on every frame/tick while an answer is
-  pending — the note and the snap-back race in both orders; "Time's up" is
-  deliberately NOT captured, there is no move worth checking). Promotion
-  guesses are refused with one console line. `captureWrongGuess` drives the
-  oracle itself if needed (with the auto-play toggle off nothing else
-  requests it), locates the
-  pre-guess position in `vs.oracleSim` by placement+side, and hands section 15
-  an offer built ENTIRELY from the plan: the exact `sourceFen` (kept verbatim
-  on the sim entries as `.fen` — the tracker's own position has approximate
-  castling and must NOT be serialized for the engine), the lesson-plan index
-  as the edit driver's `plyIndex`, and the mainline SAN/colour at that ply.
+- Wrong-guess alt check (section 15; /practice/ AND /learn/): capture is
+  TWO paths, and the POINTER path is the primary one — ground-truthed live
+  2026-07-23: a refused move usually NEVER commits to the board DOM (review
+  mode, and every non-final learn attempt, animates the piece straight back),
+  so the board observer sees nothing and no rollback ever fires for it.
+  `maybeCaptureRefusedGuess` (every frame AND every 500 ms tick — needs no
+  rAF, so hidden tabs work too) therefore reconstructs the guess from the
+  user's own trusted input: `ap.recentSquares` keeps the last few board
+  squares under trusted pointerdown/pointerup (geometric hit test via
+  `elementsFromPoint` — during a drag the event target is the floating
+  piece), consecutive same-square events collapsed; while the Incorrect note
+  is live (or within `noteGraceMs` of `vs.incorrectNoteAt`, stamped
+  unconditionally now) and the tracked position still has the USER to move,
+  the last two distinct squares are the refused from→to. Legality on the
+  oracle position is the garbage filter (a deselection click never forms a
+  legal user-colour move — that bail is deliberately silent). The rollback
+  path in `rollbackTo` still covers a COMMITTED-then-retracted move (learn
+  final attempt): pending answer + Incorrect note, with the pre-guess
+  position looked up by `pending.posKey` in `vs.history` — NOT by requiring
+  the rollback to land exactly one ply back (the trainer sometimes rewinds
+  further and replays the opponent move). Both paths dedupe through
+  `vs.lastOfferKey` (placement+side+uci; cleared on transient oracle
+  failures so a retry can still offer). "Time's up" is deliberately NOT
+  captured; promotion guesses are refused with one console line.
+  `captureWrongGuess` drives the oracle itself if needed, locates the
+  pre-guess position in `vs.oracleSim` by placement+side, and hands section
+  15 an offer built ENTIRELY from the plan: the exact `sourceFen` (kept
+  verbatim on sim entries as `.fen` — the tracker's own position has
+  approximate castling and must NOT be serialized for the engine), the
+  lesson-plan index as the edit driver's `plyIndex`, the mainline SAN/colour,
+  and `coursePostFen` — the position AFTER the mainline ply (the next sim
+  entry's fen; for the variation's final ply derived via `sanToUci` +
+  `fenAfterUci`, both top-level helpers shared with the popup).
   The chip is body-mounted, absolute in document coords under the
   board/footer/widget; it hides on dismiss (×), oid change, path leave, or an
   opponent reply that confirms a PENDING USER answer (`altCheckOnAdvance` —
@@ -527,13 +545,25 @@ Currently working (v0.18.x).
   content script (extension reloaded, page not) can still capture and show
   the chip but no chrome.* flow can run — `extensionAlive()` gates openPopup
   and doAdd with a "reload this page" status instead of hanging on
-  "Analyzing…". The popup runs pre-FEN (engine best) then post-FEN (the
-  guess, built via `CloSan.uciToMove`+`makeMove`+`fenFromPos`; halfmove reset
-  on pawn move/capture) to `CONFIG.altCheck.targetDepth`, matching updates by
-  `reqId` prefix (`ac<ts>-<n>:pre|:post`) — accepted only in the matching
-  phase, so a late stray pre update cannot corrupt the guess eval. Verdict =
-  mover-perspective pawn loss (mates mapped to ±mateCp∓distance): green
-  < 0.2, yellow ≤ 0.4, red above — red needs a second "Add anyway" click.
+  "Analyzing…". The popup compares the guess against the COURSE MOVE, not
+  the engine best: it searches `coursePostFen` then the guess's post-FEN
+  (both built by `fenAfterUci`; halfmove reset on pawn move/capture) to
+  `CONFIG.altCheck.targetDepth`, matching updates by `reqId` prefix
+  (`ac<ts>-<n>:pre|:post` — pre = course move) — accepted only in the
+  matching phase, so a late stray pre update cannot corrupt the guess eval.
+  Verdict = mover-perspective pawn loss vs the course move, clamped at 0 (a
+  guess that evals better reads "as good as the course move"; mates mapped
+  to ±mateCp∓distance): green < 0.2, yellow ≤ 0.4, red above — red needs a
+  second "Add anyway" click. Each row also shows the move's Lichess score
+  ("54% · 1.2k", mover-perspective, from ONE explorer fetch of `preFen` with
+  the deeper `dbMovesLimit` — a refused move is often too rare for the
+  panel's move limit; cached in `acDbCache`, failures just leave the cells
+  empty). Rights via `quickEditApi`, but a probe is launched at most ONCE
+  per popup-open (`ac.probeStarted`) and a FAILED probe sets
+  `ac.probeFailed` → status "Could not check edit rights — close and reopen
+  to retry" — applyAcRights must NEVER silently re-probe in a loop (each
+  probe opens a focused driver window, and the old loop left the popup stuck
+  on "Checking edit rights…" forever when a probe timed out).
   Add = the UNCHANGED quick-edit alt job (`mode:'alt'`), rights via
   `quickEditApi`; the qe module's own result handler ignores it (its popup is
   hidden) and vice versa (`ac.phase === 'saving'` + oid guard). The popup

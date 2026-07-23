@@ -118,21 +118,26 @@ alternatives yet. On touch screens, where there is no hover, tapping a move
 keeps the pencil on screen for a few seconds so it can be tapped.
 
 When the trainer refuses a quiz answer (**"Incorrect"** — in a `/practice/`
-review session or a `/learn/` overstudy tab alike), a small chip appears under
-the board: **"Check Nf3 as alternative?"**. Clicking it opens a popup that runs
-two local Stockfish searches to depth 20 — the quiz position (the engine's
-best) and the position after your move — and shows the **pawn loss versus the
-engine best**, from the mover's point of view. An **Add alternative** button
-then appears, coloured by that loss: **green** below 0.2 pawns, **yellow**
-between 0.2 and 0.4, **red** above 0.4 — a red move can still be added, but
-needs a second **"Add anyway"** click. Adding uses the same edit-page driver
-as the quick-edit Alt-move tab (so the same edit-rights rules apply, probed
-lazily and cached per course), with the familiar "For this variation only"
-checkbox. The engine is booted on demand — the panel's Engine toggle does not
-need to be on — and released again as soon as both searches finish (it frees
-its memory after 5 idle minutes). Timed-out answers and promotion guesses are
-not offered; the chip disappears once the line moves on past the failed move,
-or via its ×.
+review session or a `/learn/` overstudy tab alike, and on the **first** wrong
+attempt, not just the one that reveals the solution), a small chip appears
+under the board: **"Check Nf3 as alternative?"**. Clicking it opens a popup
+that runs two local Stockfish searches to depth 20 — the position after the
+**course's own move** and the position after yours — and shows the **pawn
+loss versus the course move**, from the mover's point of view (a guess that
+evaluates at least as well reads "As good as the course move"). Each move
+also gets its **Lichess database line** — score and game count for the
+current rating/speed filters, e.g. "45% · 822k" — from one cached explorer
+request. An **Add alternative** button appears, coloured by the loss:
+**green** below 0.2 pawns, **yellow** between 0.2 and 0.4, **red** above
+0.4 — a red move can still be added, but needs a second **"Add anyway"**
+click. Adding uses the same edit-page driver as the quick-edit Alt-move tab
+(so the same edit-rights rules apply, probed lazily and cached per course),
+with the familiar "For this variation only" checkbox; if a rights check
+fails, the popup says so — close and reopen it to retry. The engine is
+booted on demand — the panel's Engine toggle does not need to be on — and
+released again as soon as both searches finish (it frees its memory after 5
+idle minutes). Timed-out answers and promotion guesses are not offered; the
+chip disappears once the line moves on past the failed move, or via its ×.
 
 On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
 extension adds a **Sort by popularity** button, which reorders the whole chapter to
@@ -408,16 +413,28 @@ lichessable/
   for the move to animate onto the board and 480 ms for its reply — so a
   replayed move takes about a second end to end even on *Fast*.
 - **Wrong-guess alt check** — section 15 in `content/lichessable.js`, built
-  almost entirely from parts that already existed. The *capture* is a hook in
-  the auto-play tracker's snap-back handler: a pending user answer rolled back
-  exactly one ply while the "Incorrect" notification is (or was just) showing
-  is the trainer refusing that move. The tracker (like every trainer feature)
+  almost entirely from parts that already existed. The *capture* has two
+  paths. The primary one is pointer-based: a refused move usually never
+  reaches the board DOM at all (review mode — and every learn attempt before
+  the final one — animates the piece straight back without committing it), so
+  there is nothing for the board observer to see. Instead, the tracker keeps
+  the last few board squares touched by trusted pointer input, and while the
+  "Incorrect" notification is showing with the user still to move, the last
+  two distinct squares are the refused move — validated for legality against
+  the line oracle, which filters out deselection clicks. The second path is
+  the original snap-back hook, for a move that *was* committed and then
+  retracted (a learn session's final attempt); it finds the pre-guess
+  position by the pending record's own key, so it survives the trainer
+  rewinding more than one ply. Both paths land in the same capture routine
+  and dedupe per position + move. The tracker (like every trainer feature)
   runs on `/practice/` and `/learn/` alike — both routes render the identical
   MoveTrainer2 markup. The
   refused move is located in the line oracle by placement + side, which yields
   the plan's exact pre-move FEN (real castling/en-passant — the tracker's own
-  reconstruction is approximate), the ply index the edit driver needs, and the
-  mainline move at that ply. The *check* runs two engine searches through the
+  reconstruction is approximate), the ply index the edit driver needs, the
+  mainline move at that ply, and the position *after* the mainline move — the
+  comparison target. The *check* runs two engine searches (course move's
+  position, then the guess's) through the
   normal offscreen hub, tagged with a `reqId` that `engine.js` echoes on that
   search's updates (UCI info lines carry no request id, so the tag is the only
   per-request correlation; panel updates stay untagged and unchanged) and
@@ -428,10 +445,15 @@ lichessable/
   both evals are in. Both scores arrive White-normalized; the verdict converts
   them to the mover's perspective and maps mates near ±100 pawns minus the
   mate distance, so missing a mate reads red while a slower mate stays green.
-  The *add* is the quick-edit alt-move job, byte-compatible — the alt-check
+  The win-rate line comes from a single explorer request for the quiz
+  position with a deeper move limit than the panel's (a refused move is often
+  too rare for the top 20), cached separately. The *add* is the quick-edit
+  alt-move job, byte-compatible — the alt-check
   popup only fills in what the quick-edit popup would have (mainline
   SAN/colour/ply index, the guess's SAN, the scope checkbox), and shares its
-  per-course edit-rights cache and lazy probe through `quickEditApi`.
+  per-course edit-rights cache and lazy probe through `quickEditApi` — though
+  the popup starts at most one probe per open, and a failed probe shows a
+  "close and reopen to retry" error instead of silently probing again.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.

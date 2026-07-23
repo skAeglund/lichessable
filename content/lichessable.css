@@ -868,7 +868,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-ac-popup {
   position: fixed;
   z-index: 100001;
-  width: 300px;
+  width: 340px; /* fits label + win rate + eval + depth on one line */
   box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid #1b1a17;
@@ -897,6 +897,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-ac-row-label { color: #949494; flex: 1; }
+.clo-ac-row-db { color: #8a8478; font-size: 11px; white-space: nowrap; } /* Lichess "54% · 1.2k" */
 .clo-ac-row-eval { color: #dcdcdc; font-weight: 600; }
 .clo-ac-row-depth { color: #6e6a63; font-size: 11px; }
 
@@ -1219,6 +1220,11 @@ html.clo-touch .clo-ac-verdict,
 html.clo-touch .clo-ac-scope,
 html.clo-touch .clo-ac-status {
   font-size: 15px;
+}
+
+html.clo-touch .clo-ac-row-db,
+html.clo-touch .clo-ac-row-depth {
+  font-size: 13px;
 }
 
 html.clo-touch .clo-ac-add,

@@ -271,11 +271,19 @@
     // the quick-edit alt-move driver.
     altCheck: {
       targetDepth: 20,           // both searches end here (profile depth is the ceiling)
-      thresholds: { green: 0.2, yellow: 0.4 }, // pawn loss vs the engine best
+      thresholds: { green: 0.2, yellow: 0.4 }, // pawn loss vs the course move
       mateCp: 10000,             // centipawn stand-in for mate scores (minus mate distance)
-      noteGraceMs: 2500,         // Incorrect note seen this recently still counts at snap-back time
+      noteGraceMs: 2500,         // Incorrect note seen this recently still counts at capture time
       searchTimeoutMs: 120000,   // whole-check watchdog (boot + two searches)
       oracleWaitMs: 300,         // poll while the line oracle is still 'pending' at capture time
+      // A refused move is often NEVER committed to the board DOM (review mode
+      // animates it straight back), so the primary capture is pointer-based:
+      // the last two distinct board squares the user touched, taken while the
+      // Incorrect note is up, are the refused move — if this recent.
+      guessPairWindowMs: 5000,
+      dbMovesLimit: 50,          // explorer moves for the popup's win-rate lookup — deep
+                                 // enough that a rare refused move still has an entry
+      dbCacheMax: 30,            // popup win-rate responses kept (keyed like the panel LRU)
     },
 
     // --- Sort variations in a chapter (section 14) -------------------------
@@ -323,7 +331,43 @@
   // (section 14) — keep one copy.
   const SQ_FILES = 'abcdefgh';
   const squareName = (i) => SQ_FILES[i & 7] + ((i >> 3) + 1);
+  const squareIndexOf = (name) => (name.charCodeAt(1) - 49) * 8 + (name.charCodeAt(0) - 97);
   const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+  /**
+   * Full FEN after playing `uci` on `preFen`, with the halfmove clock reset on
+   * a pawn move or capture (CloSan's position model drops the clock, so it is
+   * recomputed from the pre-FEN here). Null when the move is illegal or the
+   * FEN unparseable. Used by the alt check for both the guessed move and the
+   * course move, so the two engine searches are built the same way.
+   */
+  function fenAfterUci(preFen, uci) {
+    if (typeof CloSan === 'undefined') return null;
+    const pos = CloSan.parseFen(preFen);
+    const mv = pos && CloSan.uciToMove(pos, uci);
+    if (!mv) return null;
+    const isPawn = (pos.board[mv.from] || '').toUpperCase() === 'P';
+    const isCapture = Boolean(pos.board[mv.to]) || (isPawn && mv.to === pos.ep);
+    const preHalf = Number(preFen.trim().split(/\s+/)[4]);
+    const postHalf = (isPawn || isCapture) ? 0 : (Number.isInteger(preHalf) ? preHalf : 0) + 1;
+    return CloSan.fenFromPos(CloSan.makeMove(pos, mv), postHalf);
+  }
+
+  /**
+   * UCI string for the legal move whose SAN matches `san` on `pos` (check/mate
+   * glyphs ignored on both sides), or null. The reverse of CloSan.moveToSan —
+   * used to turn the lesson plan's mainline SAN into a playable move.
+   */
+  function sanToUci(pos, san) {
+    if (typeof CloSan === 'undefined' || !pos) return null;
+    const want = String(san).replace(/[+#]+$/, '');
+    for (const mv of CloSan.generateMoves(pos)) {
+      const uci = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
+      const got = CloSan.moveToSan(pos, uci);
+      if (got && got.replace(/[+#]+$/, '') === want) return uci;
+    }
+    return null;
+  }
 
   // Frame targeting. Explore/Analysis render inside mt1 iframes: any OTHER
   // iframe exits immediately. The TOP document never exits: review sessions
@@ -684,13 +728,13 @@
     return USE_STUB_DATA ? fetchStubData(fen) : fetchExplorerData(fen);
   }
 
-  async function fetchExplorerData(fen) {
+  async function fetchExplorerData(fen, movesLimit) {
     const params = new URLSearchParams({
       variant: CONFIG.lichess.variant,
       fen, // full FEN from #inputFEN; URLSearchParams handles the encoding
       speeds: CONFIG.lichess.speeds.join(','),
       ratings: CONFIG.lichess.ratings.join(','),
-      moves: String(CONFIG.lichess.movesLimit),
+      moves: String(movesLimit || CONFIG.lichess.movesLimit),
       topGames: '0',    // stats only — no sample games,
       recentGames: '0', // keeps the payload small
     });
@@ -3419,6 +3463,9 @@
       statusTimer: 0,
       lastPointerAt: 0,        // last TRUSTED pointer down (grab) or drop
       pointerDownOnBoard: false, // a trusted drag started on the board and is in flight
+      recentSquares: [],       // [{sq, t}] board squares under recent trusted pointer
+                               // events — the alt check reconstructs a refused move
+                               // from the last two (the board DOM often never commits it)
       injectClassTimer: 0,     // pending removal of the html.clo-injecting gate
       contextDead: false,      // orphaned by an extension reload — see noteDeadContext
       pollTimer: 0,
@@ -3453,7 +3500,9 @@
         oracleNextTryAt: 0,  // back-off before re-reading a not-yet-ready plan
         oracleTries: 0,      // unusable reads so far this variation
         pendingRecord: null, // { posKey, uci, promo } — user answer awaiting confirmation
-        incorrectNoteAt: 0,  // last time the Incorrect note was seen with a pending answer
+        incorrectNoteAt: 0,  // last time the Incorrect note was seen this variation
+        lastOfferKey: null,  // placement+side+uci of the last alt-check offer (dedupe:
+                             // the pointer path and the rollback path see the same refusal)
         injected: null,      // { uci, at } — our drag in flight
         injectTimer: 0,      // pending speed-delay before a drag
         verifyTimer: 0,      // injected move must land before this fires
@@ -3901,17 +3950,28 @@
     function rollbackTo(key) {
       const vs = ap.vs;
       const entry = vs.history.get(key);
-      // Wrong-guess capture (section 15): a ONE-PLY snap-back of a pending
-      // user answer, with the Incorrect note live (or seen within the grace
-      // window — the note usually renders before the retraction, but the
-      // orderings race) is the trainer refusing that move. Time's-up is
-      // deliberately excluded: there is no guessed move worth checking.
+      // Wrong-guess capture (section 15), rollback path: a snap-back of a
+      // pending user answer with the Incorrect note live (or seen within the
+      // grace window — the note and the retraction race in both orders) is
+      // the trainer refusing that move. The rollback need not land exactly on
+      // the pre-guess position (the trainer sometimes rewinds further and
+      // replays the opponent move), so the pre-guess position is looked up by
+      // the pending record's own key. Time's-up is deliberately excluded:
+      // there is no guessed move worth checking. This path only fires when
+      // the refused move was actually COMMITTED to the board (learn mode's
+      // final attempt); the pointer path in maybeCaptureRefusedGuess covers
+      // the — more common — case where it never was.
       const pending = vs.pendingRecord;
-      if (pending && entry && posKeyOf(entry.pos) === pending.posKey &&
+      if (pending &&
           (/incorrect/i.test(readMoveNote()) ||
            Date.now() - vs.incorrectNoteAt < CONFIG.altCheck.noteGraceMs)) {
-        captureWrongGuess(entry.pos, pending)
-          .catch((err) => warn('alt-check: capture failed:', err));
+        const pre = (entry && posKeyOf(entry.pos) === pending.posKey)
+          ? entry.pos
+          : [...vs.history.values()].map((h) => h.pos).find((p) => posKeyOf(p) === pending.posKey);
+        if (pre) {
+          captureWrongGuess(pre, pending)
+            .catch((err) => warn('alt-check: capture failed:', err));
+        }
       }
       vs.pos = entry.pos;
       vs.ply = entry.ply;
@@ -3927,17 +3987,56 @@
     }
 
     /**
-     * A refused user answer, caught at snap-back time (see rollbackTo): turn
-     * it into an alt-check offer. The pre-guess FEN is NOT the tracker's own
-     * (approximate castling / no en passant) — the position is located in the
-     * line oracle by placement + side and the plan's exact sourceFen is used,
-     * which also yields the ply index the edit-page driver needs and the
-     * mainline move at that ply. Any uncertainty degrades to no offer, with
-     * one console line saying why (a silent no-op reads as a bug).
+     * Wrong-guess capture (section 15), pointer path — the PRIMARY one. A
+     * refused move is usually never committed to the board DOM at all (review
+     * mode, and every non-final learn attempt, animates the piece straight
+     * back), so no rollback ever fires for it. But the user's own trusted
+     * pointer input names the move: the last two distinct board squares
+     * touched, read while the Incorrect note is up and the tracked position
+     * still has the user to move, are the refused from→to. Legality against
+     * the line oracle's exact position is the garbage filter — a deselection
+     * click or a re-tap never forms a legal user-colour move. Runs on every
+     * frame AND every 500 ms tick, so it needs neither rAF (hidden tabs) nor
+     * a board mutation.
+     */
+    function maybeCaptureRefusedGuess() {
+      const vs = ap.vs;
+      if (!altCheckOffer || ap.contextDead) return;
+      if (!vs.oid || vs.suspended) return;
+      if (!vs.pos || !vs.userColor || vs.pos.side !== vs.userColor) return;
+      if (!/incorrect/i.test(readMoveNote()) &&
+          Date.now() - vs.incorrectNoteAt >= CONFIG.altCheck.noteGraceMs) return;
+      const rs = ap.recentSquares;
+      const last = rs[rs.length - 1], prev = rs[rs.length - 2];
+      if (!last || !prev || Date.now() - last.t > CONFIG.altCheck.guessPairWindowMs) return;
+      const uci = prev.sq + last.sq;
+      // Promotion guesses are refused downstream; flag them so the message is
+      // the same as the rollback path's.
+      const piece = vs.pos.board[squareIndexOf(prev.sq)] || '';
+      const promo = piece.toUpperCase() === 'P' && /[18]$/.test(last.sq) ? 'q' : null;
+      captureWrongGuess(vs.pos, { uci, promo })
+        .catch((err) => warn('alt-check: capture failed:', err));
+    }
+
+    /**
+     * A refused user answer — from the pointer path above or from a rollback
+     * of a committed move (rollbackTo): turn it into an alt-check offer. The
+     * pre-guess FEN is NOT the tracker's own (approximate castling / no en
+     * passant) — the position is located in the line oracle by placement +
+     * side and the plan's exact sourceFen is used, which also yields the ply
+     * index the edit-page driver needs, the mainline move at that ply, and
+     * the position AFTER the mainline move (the popup's comparison target).
+     * Any uncertainty degrades to no offer, with one console line saying why
+     * (a silent no-op reads as a bug).
      */
     async function captureWrongGuess(prePos, pending) {
       const vs = ap.vs;
       if (!altCheckOffer || ap.contextDead) return;
+      // Both capture paths see the same refusal (and the pointer path runs
+      // every tick) — offer each (position, move) pair once per variation.
+      const offerKey = placementKey(prePos.board) + ' ' + prePos.side + ' ' + pending.uci;
+      if (vs.lastOfferKey === offerKey) return;
+      vs.lastOfferKey = offerKey;
       if (pending.promo) {
         log('alt-check: promotion guess — not offering (promotion alternatives unsupported)');
         return;
@@ -3950,12 +4049,14 @@
         else await requestOracle();
       }
       if (ap.vs !== vs || !Array.isArray(vs.oracle)) {
+        vs.lastOfferKey = null; // transient — let a later pass retry this guess
         log('alt-check: line oracle unavailable — not offering');
         return;
       }
       const here = placementKey(prePos.board) + ' ' + prePos.side;
       const idx = vs.oracleSim.findIndex((step) => step.key === here);
       if (idx < 0) {
+        vs.lastOfferKey = null; // transient (tracker mid-re-anchor) — allow a retry
         log('alt-check: guessed-from position not found in the line — not offering');
         return;
       }
@@ -3963,17 +4064,30 @@
       const uci = pending.uci; // promo guesses were refused above, so from+to is complete
       const sanGuess = CloSan.moveToSan(oraclePos, uci);
       if (!sanGuess) {
-        log('alt-check: guess', uci, 'is not legal on the plan position — not offering');
+        // Pointer-path pairs can be a deselection or stray click — this is
+        // the expected filter for those, so no log (a rollback-path guess is
+        // always legal by construction).
         return;
       }
       const mainline = vs.oracle[idx];
       if (quickEditBareSan(sanGuess) === quickEditBareSan(mainline.san)) return; // not an alternative
+      // The popup compares the guess against the COURSE move, so it needs the
+      // position after the mainline ply: the next sim entry's own exact FEN,
+      // or — for the variation's final ply — one derived move ourselves.
+      const coursePostFen = idx + 1 < vs.oracleSim.length
+        ? vs.oracleSim[idx + 1].fen
+        : fenAfterUci(vs.oracleSim[idx].fen, sanToUci(oraclePos, mainline.san) || '');
+      if (!coursePostFen) {
+        log('alt-check: could not build the position after', mainline.san, '— not offering');
+        return;
+      }
       log('alt-check: wrong guess', sanGuess, 'captured at line index', idx,
         '(mainline ' + mainline.san + ')');
       altCheckOffer({
         uci,
         sanGuess,
         preFen: vs.oracleSim[idx].fen,
+        coursePostFen,
         plyIndex: idx,
         mainlineSan: mainline.san,
         mainlineColor: mainline.color,
@@ -4011,10 +4125,11 @@
       const vs = ap.vs;
       if (!vs.oid || vs.suspended) return;
       if (reviewBrowseReady()) return; // completion is handled by tick()
-      // Alt-check: remember having seen the Incorrect note while an answer is
-      // pending — the snap-back that consumes it may arrive a beat after the
-      // note is gone again (see rollbackTo).
-      if (vs.pendingRecord && /incorrect/i.test(readMoveNote())) vs.incorrectNoteAt = Date.now();
+      // Alt-check: remember having seen the Incorrect note — the snap-back
+      // (or the pointer-path check) that consumes it may run a beat after the
+      // note is gone again (see rollbackTo / maybeCaptureRefusedGuess).
+      if (/incorrect/i.test(readMoveNote())) vs.incorrectNoteAt = Date.now();
+      maybeCaptureRefusedGuess();
       const snap = readBoardSnapshot();
       if (!snap) return;
       const key = placementKey(snap);
@@ -4445,6 +4560,32 @@
       });
     }
 
+    /** Board square under a pointer event, by geometry — during a drag the
+     *  event's target is the floating piece, so a hit test is what works for
+     *  clicks and drops alike. Null off the board. */
+    function pointSquare(e) {
+      for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+        const cls = typeof el.className === 'string' ? el.className
+          : (el.className && el.className.baseVal) || '';
+        const m = /(?:^|\s)square-([a-h][1-8])(?:\s|$)/.exec(cls);
+        if (m) return m[1];
+      }
+      return null;
+    }
+
+    /** Feeds ap.recentSquares (alt-check pointer capture). Consecutive events
+     *  on the same square collapse — a click is a down+up pair on one square,
+     *  and only distinct squares can form a move. */
+    function recordPointerSquare(e) {
+      const sq = pointSquare(e);
+      if (!sq) return;
+      const rs = ap.recentSquares;
+      const lastEntry = rs[rs.length - 1];
+      if (lastEntry && lastEntry.sq === sq) { lastEntry.t = Date.now(); return; }
+      rs.push({ sq, t: Date.now() });
+      if (rs.length > 4) rs.shift();
+    }
+
     function onTrustedPointer(e) {
       if (!e.isTrusted) return; // our own synthetic drags never count
       if (e.type === 'pointerdown') {
@@ -4452,6 +4593,7 @@
         if (!wrap || !wrap.contains(e.target)) return;
         ap.pointerDownOnBoard = true;
         ap.lastPointerAt = Date.now();
+        recordPointerSquare(e);
         // A real pointer on the board while we're replaying = "stop": hand
         // control back for the rest of this variation.
         if (ap.vs.injectTimer || ap.vs.injected) cancelForVariation();
@@ -4464,6 +4606,7 @@
       if (e.type === 'pointerup' && ap.pointerDownOnBoard) {
         ap.pointerDownOnBoard = false;
         ap.lastPointerAt = Date.now();
+        recordPointerSquare(e);
       }
     }
 
@@ -5116,22 +5259,30 @@
   // 15) Wrong-guess alternative check (top document — /practice/ and /learn/)
   //
   // When the trainer refuses an answer ("Incorrect"), the auto-play tracker
-  // captures the refused move at snap-back time (rollbackTo →
-  // captureWrongGuess) and hands an OFFER to this module: a body-mounted chip
-  // appears under the board ("Check Nf3 as alternative?"). Clicking it opens
-  // a popup that runs TWO tagged engine searches to CONFIG.altCheck
-  // .targetDepth — the quiz position (engine best) and the position after the
-  // guess — regardless of the panel's engine toggle. state.altCheckBusy makes
-  // syncEngine stand down while they run; the searches carry a reqId that
-  // engine.js echoes on their updates, so the panel's fen-matched listener
-  // and this module's id-matched one never confuse each other's streams.
-  // Both evals are White-perspective; the verdict is the MOVER's pawn loss vs
-  // the engine best (mate scores mapped near ±mateCp so "misses a mate" reads
-  // as a big loss while mate-in-3 vs mate-in-5 stays green). The Add button
-  // colours green/yellow/red by CONFIG.altCheck.thresholds; red requires a
-  // second "Add anyway" click. Adding reuses the quick-edit alt-move job
-  // unchanged (mode 'alt' — background.js drives the edit page), with rights
-  // shared through quickEditApi (lazy per-course probe, cached per session).
+  // captures the refused move — primarily from the user's own pointer squares
+  // (maybeCaptureRefusedGuess; a refused move usually never commits to the
+  // board DOM, so there is nothing to observe), with the rollback hook
+  // (rollbackTo) covering committed-then-retracted moves — and hands an OFFER
+  // to this module: a body-mounted chip appears under the board ("Check Nf3
+  // as alternative?"). Clicking it opens a popup that runs TWO tagged engine
+  // searches to CONFIG.altCheck.targetDepth — the position after the COURSE
+  // move (offer.coursePostFen) and the position after the guess — regardless
+  // of the panel's engine toggle. state.altCheckBusy makes syncEngine stand
+  // down while they run; the searches carry a reqId that engine.js echoes on
+  // their updates, so the panel's fen-matched listener and this module's
+  // id-matched one never confuse each other's streams. Both evals are
+  // White-perspective; the verdict is the MOVER's pawn loss vs the course
+  // move (mate scores mapped near ±mateCp so "misses a mate" reads as a big
+  // loss while mate-in-3 vs mate-in-5 stays green). The Add button colours
+  // green/yellow/red by CONFIG.altCheck.thresholds; red requires a second
+  // "Add anyway" click. Each row also shows the move's Lichess-explorer
+  // score/games for the quiz position (one cached fetch of the panel's
+  // explorer with a deeper move limit — a refused move is often rare).
+  // Adding reuses the quick-edit alt-move job unchanged (mode 'alt' —
+  // background.js drives the edit page), with rights shared through
+  // quickEditApi (lazy per-course probe, cached per session). A probe is
+  // started at most once per popup-open and a FAILED probe surfaces as a
+  // "close and reopen to retry" error — never a silent re-probe loop.
   // ==========================================================================
 
   function initAltCheck() {
@@ -5146,16 +5297,22 @@
       chipLabel: null,
       popup: null,
       els: null,          // cached popup child refs
-      phase: 'idle',      // idle|best|guess|ready|saving|error
+      phase: 'idle',      // idle|best|guess|ready|saving|error ('best' = the course-move search)
       reqId: null,        // tag prefix of the running check's searches
       postFen: null,      // FEN after the guess (built from the oracle position)
-      bestEval: null,     // { cp, mate, san } at target depth (multipv 1)
+      courseEval: null,   // { cp, mate } after the course move, at target depth (multipv 1)
       guessEval: null,
-      loss: null,         // mover-perspective pawn loss vs the engine best
+      loss: null,         // mover-perspective pawn loss vs the course move
       band: null,         // 'green' | 'yellow' | 'red'
       confirmArmed: false, // red verdict: first Add click arms, second sends
+      probeStarted: false, // a rights probe was launched for THIS popup-open
+      probeFailed: false,  // …and it failed — show the retry hint, don't re-probe
       watchdog: 0,
     };
+    // Explorer responses for the popup's win-rate line, keyed like the panel
+    // LRU (first four FEN fields). Separate from the panel cache: these are
+    // fetched with the deeper C.dbMovesLimit.
+    const acDbCache = new Map();
 
     // --- chip ----------------------------------------------------------------
 
@@ -5241,18 +5398,20 @@
         const labelEl = document.createElement('span');
         labelEl.className = 'clo-ac-row-label';
         labelEl.textContent = label;
+        const dbEl = document.createElement('span');
+        dbEl.className = 'clo-ac-row-db'; // Lichess win rate ("54% · 1.2k"), filled async
         const evalEl = document.createElement('span');
         evalEl.className = 'clo-ac-row-eval';
         evalEl.textContent = '—';
         const depthEl = document.createElement('span');
         depthEl.className = 'clo-ac-row-depth';
-        row.append(labelEl, evalEl, depthEl);
+        row.append(labelEl, dbEl, evalEl, depthEl);
         popup.appendChild(row);
-        return { row, labelEl, evalEl, depthEl };
+        return { row, labelEl, dbEl, evalEl, depthEl };
       };
 
       popup.appendChild(title);
-      const bestRow = makeRow('Engine best');
+      const courseRow = makeRow('Course move');
       const guessRow = makeRow('Your move');
 
       const verdict = document.createElement('div');
@@ -5296,7 +5455,7 @@
       }
       document.body.appendChild(popup);
       ac.popup = popup;
-      ac.els = { title, bestRow, guessRow, verdict, scopeBox, status, add, cancel };
+      ac.els = { title, courseRow, guessRow, verdict, scopeBox, status, add, cancel };
     }
 
     function setAcStatus(text, isError) {
@@ -5320,18 +5479,22 @@
       const offer = ac.offer;
       ac.job = offer;
       ac.confirmArmed = false;
-      ac.bestEval = null;
+      ac.courseEval = null;
       ac.guessEval = null;
       ac.loss = null;
       ac.band = null;
+      ac.probeStarted = false;
+      ac.probeFailed = false;
 
       ac.els.title.textContent = offer.sanGuess + ' instead of ' + offer.mainlineSan + '?';
-      ac.els.bestRow.labelEl.textContent = 'Engine best';
-      ac.els.bestRow.evalEl.textContent = '—';
-      ac.els.bestRow.depthEl.textContent = '';
+      ac.els.courseRow.labelEl.textContent = 'Course move (' + offer.mainlineSan + ')';
+      ac.els.courseRow.evalEl.textContent = '—';
+      ac.els.courseRow.depthEl.textContent = '';
+      ac.els.courseRow.dbEl.textContent = '';
       ac.els.guessRow.labelEl.textContent = 'Your move (' + offer.sanGuess + ')';
       ac.els.guessRow.evalEl.textContent = '—';
       ac.els.guessRow.depthEl.textContent = '';
+      ac.els.guessRow.dbEl.textContent = '';
       ac.els.verdict.hidden = true;
       ac.els.verdict.className = 'clo-ac-verdict';
       ac.els.scopeBox.checked = false; // matches the quick-edit default
@@ -5343,29 +5506,19 @@
       // Beside the chip; clamped into the viewport (position:fixed, like the
       // quick-edit popup — placed once at open time).
       const anchor = ac.chip && !ac.chip.hidden ? ac.chip.getBoundingClientRect() : null;
-      const left = anchor ? anchor.left : (window.innerWidth - 320) / 2;
+      const popupW = 348; // CSS width (340) + shadow margin, for the viewport clamp
+      const left = anchor ? anchor.left : (window.innerWidth - popupW) / 2;
       const top = anchor ? anchor.bottom + 6 : window.innerHeight / 3;
-      ac.popup.style.left = Math.round(Math.min(Math.max(8, left), window.innerWidth - 320)) + 'px';
+      ac.popup.style.left = Math.round(Math.min(Math.max(8, left), window.innerWidth - popupW)) + 'px';
       ac.popup.style.top = Math.round(Math.min(Math.max(8, top), window.innerHeight - 260)) + 'px';
       ac.popup.hidden = false;
 
       // The guess is applied to the plan's own exact position; a failure to
       // resolve it means the offer is stale/garbled — no engine run.
-      const prePos = CloSan.parseFen(offer.preFen);
-      const mv = prePos && CloSan.uciToMove(prePos, offer.uci);
-      if (!mv) {
-        ac.phase = 'error';
-        setAcStatus('Could not reconstruct the position for this guess.', true);
-        return;
-      }
-      const isPawn = (prePos.board[mv.from] || '').toUpperCase() === 'P';
-      const isCapture = Boolean(prePos.board[mv.to]) || (isPawn && mv.to === prePos.ep);
-      const preHalf = Number(offer.preFen.trim().split(/\s+/)[4]);
-      const postHalf = (isPawn || isCapture) ? 0 : (Number.isInteger(preHalf) ? preHalf : 0) + 1;
-      ac.postFen = CloSan.fenFromPos(CloSan.makeMove(prePos, mv), postHalf);
+      ac.postFen = fenAfterUci(offer.preFen, offer.uci);
       if (!ac.postFen) {
         ac.phase = 'error';
-        setAcStatus('Could not build the after-move position.', true);
+        setAcStatus('Could not reconstruct the position for this guess.', true);
         return;
       }
 
@@ -5380,6 +5533,7 @@
 
       applyAcRights();
       beginCheck(offer);
+      loadAcWinRates(offer);
     }
 
     function closePopup() {
@@ -5411,8 +5565,19 @@
       if (rights === false) {
         setAcStatus("You don't have edit rights for this course.", true);
       } else if (rights !== true) {
-        setAcStatus('Checking edit rights…', false);
-        if (quickEditApi) quickEditApi.probe(ac.job.bid, ac.job.oid, popupDriverBounds(ac.popup));
+        // One probe per popup-open; a failed probe becomes a visible,
+        // user-retryable error — never a silent endless re-probe (each probe
+        // opens a driver window, and a wedged probe used to leave the popup
+        // stuck on this status forever).
+        if (ac.probeFailed) {
+          setAcStatus('Could not check edit rights — close and reopen to retry.', true);
+        } else {
+          setAcStatus('Checking edit rights…', false);
+          if (!ac.probeStarted && quickEditApi) {
+            ac.probeStarted = true;
+            quickEditApi.probe(ac.job.bid, ac.job.oid, popupDriverBounds(ac.popup));
+          }
+        }
       } else if (ac.phase === 'best' || ac.phase === 'guess') {
         setAcStatus('Analyzing…', false);
       } else {
@@ -5436,7 +5601,7 @@
       setAcStatus('Analyzing…', false);
       log('alt-check: engine check started for', offer.sanGuess, '(req ' + ac.reqId + ')');
       engineSend({
-        type: 'clo-engine-analyze', fen: offer.preFen, profile: engineProfile(),
+        type: 'clo-engine-analyze', fen: offer.coursePostFen, profile: engineProfile(),
         reqId: ac.reqId + ':pre', depth: C.targetDepth,
       });
       pingEngineIfSilent();
@@ -5462,14 +5627,6 @@
       syncEngine(); // restart the panel's search where it should be running
     }
 
-    /** First SAN of a numbered PV line ("12... Nf6 13. Bg5" → "Nf6"). */
-    function firstSanOf(sanLine) {
-      for (const token of String(sanLine || '').split(/\s+/)) {
-        if (token && !/^\d+\.{1,3}$/.test(token)) return token;
-      }
-      return '';
-    }
-
     function renderAcRow(row, pv, depth, done) {
       row.evalEl.textContent = formatEval(pv);
       row.depthEl.textContent = 'depth ' + Math.min(depth, C.targetDepth) + '/' + C.targetDepth +
@@ -5482,11 +5639,9 @@
       if (!pv) return;
       const finished = msg.done || msg.depth >= C.targetDepth;
       if (which === 'pre' && ac.phase === 'best') {
-        ac.els.bestRow.labelEl.textContent = 'Engine best' +
-          (firstSanOf(pv.san) ? ' (' + firstSanOf(pv.san) + ')' : '');
-        renderAcRow(ac.els.bestRow, pv, msg.depth, finished);
+        renderAcRow(ac.els.courseRow, pv, msg.depth, finished);
         if (finished) {
-          ac.bestEval = { cp: pv.cp, mate: pv.mate, san: firstSanOf(pv.san) };
+          ac.courseEval = { cp: pv.cp, mate: pv.mate };
           ac.phase = 'guess';
           engineSend({
             type: 'clo-engine-analyze', fen: ac.postFen, profile: engineProfile(),
@@ -5533,19 +5688,64 @@
       // popup stays open on the recorded evals).
       releaseEngine();
 
-      const loss = Math.max(0, (moverCp(ac.bestEval) - moverCp(ac.guessEval)) / 100);
+      // Negative differences clamp to 0 — a guess that evaluates BETTER than
+      // the course move is simply "as good as" it for the verdict.
+      const loss = Math.max(0, (moverCp(ac.courseEval) - moverCp(ac.guessEval)) / 100);
       ac.loss = loss;
       ac.band = loss < C.thresholds.green ? 'green'
         : loss <= C.thresholds.yellow ? 'yellow' : 'red';
       ac.els.verdict.hidden = false;
       ac.els.verdict.className = 'clo-ac-verdict clo-ac-verdict--' + ac.band;
       ac.els.verdict.textContent = loss === 0
-        ? 'As good as the engine best.'
-        : 'Loses ' + loss.toFixed(2) + ' pawns vs the engine best.';
+        ? 'As good as the course move.'
+        : 'Loses ' + loss.toFixed(2) + ' pawns vs the course move.';
       ac.els.add.className = 'clo-ac-add clo-ac-add--' + ac.band;
       ac.els.add.textContent = 'Add alternative (−' + loss.toFixed(2) + ')';
-      log('alt-check: verdict for', ac.job.sanGuess, '— loss', loss.toFixed(2), '(' + ac.band + ')');
+      log('alt-check: verdict for', ac.job.sanGuess, '— loss', loss.toFixed(2),
+        'vs ' + ac.job.mainlineSan, '(' + ac.band + ')');
       applyAcRights();
+    }
+
+    // --- Lichess win rates for the two moves (one explorer fetch) ------------
+
+    /** "54% · 1.2k" (mover-perspective score · game count) for `san` in the
+     *  explorer response, or "no games". */
+    function renderAcDb(row, data, san, mover) {
+      const want = quickEditBareSan(san);
+      const mv = (Array.isArray(data.moves) ? data.moves : [])
+        .find((m) => quickEditBareSan(m.san || '') === want);
+      const total = mv ? (mv.white || 0) + (mv.draws || 0) + (mv.black || 0) : 0;
+      if (!total) {
+        row.dbEl.textContent = 'no games';
+        row.dbEl.title = 'No games with this move in the Lichess database (current filters)';
+        return;
+      }
+      const wins = mover === 'w' ? (mv.white || 0) : (mv.black || 0);
+      const score = Math.round(100 * (wins + (mv.draws || 0) / 2) / total);
+      row.dbEl.textContent = score + '% · ' + formatGames(total);
+      row.dbEl.title = total.toLocaleString('en-US') + ' Lichess games — ' + score +
+        '% score for ' + (mover === 'w' ? 'White' : 'Black');
+    }
+
+    /** Fetches (and caches) the quiz position's explorer stats and fills the
+     *  win-rate cell of both rows. Failures just leave the cells empty — the
+     *  engine verdict is the popup's job; the database line is a bonus. */
+    async function loadAcWinRates(offer) {
+      const key = offer.preFen.split(' ').slice(0, 4).join(' ');
+      let data = acDbCache.get(key);
+      if (!data) {
+        try {
+          data = await fetchExplorerData(offer.preFen, C.dbMovesLimit);
+        } catch (err) {
+          log('alt-check: explorer lookup failed:', String((err && err.message) || err));
+          return;
+        }
+        acDbCache.set(key, data);
+        if (acDbCache.size > C.dbCacheMax) acDbCache.delete(acDbCache.keys().next().value);
+      }
+      if (ac.job !== offer || !ac.els || !ac.popup || ac.popup.hidden) return; // popup moved on
+      renderAcDb(ac.els.courseRow, data, offer.mainlineSan, offer.moverColor);
+      renderAcDb(ac.els.guessRow, data, offer.sanGuess, offer.moverColor);
     }
 
     // --- adding the alternative (quick-edit alt job, unchanged) --------------
@@ -5555,7 +5755,7 @@
       if (ac.band === 'red' && !ac.confirmArmed) {
         ac.confirmArmed = true;
         ac.els.add.textContent = 'Add anyway';
-        setAcStatus('Loses ' + ac.loss.toFixed(2) + ' pawns vs best — add it anyway?', true);
+        setAcStatus('Loses ' + ac.loss.toFixed(2) + ' pawns vs the course move — add it anyway?', true);
         return;
       }
       const san = quickEditSan(ac.job.mainlineSan);
@@ -5593,8 +5793,14 @@
 
     function onAcQuickEditResult(msg) {
       if (msg.mode === 'probe') {
-        // The quick-edit listener (registered first) has already cached the
-        // result — just reflect it.
+        // The quick-edit listener (registered first) has already cached a
+        // successful result — reflect it. A FAILED probe for our course is
+        // remembered so applyAcRights shows the retry hint instead of
+        // spinning up probe after probe (the old silent loop read as the
+        // popup being stuck on "Checking edit rights…" forever).
+        if (!msg.ok && ac.job && String(msg.bid || '') === String(ac.job.bid || '')) {
+          ac.probeFailed = true;
+        }
         applyAcRights();
         return;
       }
