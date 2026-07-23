@@ -8,8 +8,10 @@ Explorer container — always visible, since Chessable's explorer toggle is
 sometimes disabled — the panel fills the whole column right of the board and
 ADOPTS Chessable's own move tree into its top section)
 so course statistics can be compared against real Lichess games for the
-current position. Also adds an "Overstudy" widget to review sessions
-(`https://www.chessable.com/practice/…`): two buttons (current / previous
+current position. Also adds an "Overstudy" widget to trainer sessions — review
+(`https://www.chessable.com/practice/…`) AND learn
+(`https://www.chessable.com/learn/…`, same MoveTrainer2 app, identical markup):
+two buttons (current / previous
 variation) that open the variation's overstudy in a background tab. In those
 trainer sessions the Lichess panel also appears once a variation is completed
 (browse state), following the board via a DOM-derived FEN. In that same browse
@@ -17,9 +19,11 @@ state, hovering a mainline move shows a pencil that appends a PGN comment to the
 variation (for courses you can edit) by driving Chessable's own edit page in a
 background tab; the same pencil works on standalone variation pages
 (`/variation/<id>/`), which also get the full Lichess panel (section 11b).
-Review sessions can also auto-play moves the user already
-answered correctly earlier the same session (section 13; opt-in toggle on the
-overstudy widget).
+Trainer sessions (/practice/ and /learn/ alike) can also auto-play moves the
+user already answered correctly earlier the same session (section 13; opt-in
+toggle on the overstudy widget). A wrong quiz answer offers an
+engine check of the refused move and one-click addition as an accepted
+alternative (section 15).
 Currently working (v0.18.x).
 
 ## Structure
@@ -127,8 +131,15 @@ Currently working (v0.18.x).
   inline styles again. Their context menus compute their
   own coordinates — if placement ever looks off, that math (not the adoption)
   is the suspect.
-- Review mode (`/practice/…`) is MoveTrainer2 in the TOP document — no mt1
-  iframe, no `#inputFEN`, none of the explore widgets. The review URL is
+- Trainer mode (`/practice/…` AND `/learn/…` — `isTrainerPath()`) is
+  MoveTrainer2 in the TOP document — no mt1
+  iframe, no `#inputFEN`, none of the explore widgets. Both routes render the
+  IDENTICAL markup (drawer + marker, `.row-practice`, header title link,
+  board, footer — ground-truthed live on a /learn/ session 2026-07-23), so
+  every trainer feature (widget, panel, quick-edit, auto-play, alt check)
+  treats them the same; a /learn/ session URL is `/learn/<course>/0/<listId>`
+  while a single-variation overstudy tab is `/learn/<course>/<oid>/<lid>`.
+  The review URL is
   CONSTANT for the whole session (`/practice/<course>/0/<listId>`) — the
   variation id is NEVER in it (ground-truthed by hooking `replaceState`
   through a live session; do not resurrect URL-swap approaches). The current
@@ -228,7 +239,14 @@ Currently working (v0.18.x).
   engine stops on hidden tab / collapsed panel / leaving review browse state,
   and toggling OFF closes the offscreen document (frees ~300 MB; it also
   self-closes after 5 idle minutes). Scores are normalized to White's
-  perspective in engine.js, not in the panel.
+  perspective in engine.js, not in the panel. An analyze may carry an optional
+  `reqId` (echoed verbatim on that search's updates — the ONLY per-request
+  correlation, since UCI info lines have none; panel analyzes stay tag-free
+  and their updates byte-identical) and an optional `depth` cap (never above
+  the profile depth) — both ride the pending→current lifecycle in engine.js
+  and survive a crash respawn. Used by the alt check (section 15), whose
+  `state.altCheckBusy` makes `syncEngine` stand down while it owns the engine
+  (it nulls `state.engineFen` first, so the stand-down sends no stop either).
 - Quick-edit (section 12 in lichessable.js): hovering a mainline move
   shows a body-mounted pencil (singleton, NOT inserted into Chessable's move
   list) whose popup has TWO TABS: append a PGN comment to the variation
@@ -338,6 +356,18 @@ Currently working (v0.18.x).
   While the popup's alt tab is open, clicking a Lichess panel move row
   prefills the SAN input (both hosts are review documents, where rows carry no
   `dataset.uci`, so nothing competes).
+  `readQuickEditBid`/`readQuickEditOid` also parse /learn/ URLs
+  (`/learn/<bid>/<oid>/…` — both ids are in the URL itself, constant for the
+  tab), so rights probing and the alt-check (section 15) work in overstudy
+  tabs. `initQuickEditUi` exports `quickEditApi = { rightsFor(bid),
+  probe(bid, oid, win) }` (module-level variable) — the alt check shares the
+  per-course rights cache and the lazy probe through it; the cache itself
+  stays in the qe closure, and probe results reach quick-edit's
+  `clo-quick-edit-result` listener FIRST (registration order: initQuickEditUi
+  runs before initAltCheck in start()), so the cache is warm when the
+  alt-check's own listener reads it. `driverWindowBounds` is now a thin
+  wrapper over the hoisted `popupDriverBounds(anchorEl)`, shared with the
+  alt-check popup.
 - Auto-play (section 13; design + live ground-truthing in DESIGN-autoplay.md):
   records every move the user answers correctly during a review session and
   replays it when a later variation (or transposition) reaches the same
@@ -400,7 +430,12 @@ Currently working (v0.18.x).
   was reported as jarring; only a variation's opening run ever replays. UI = a
   cluster appended to the overstudy widget (toggle `cloAutoPlayEnabled` off by
   default, speed `cloAutoPlaySpeed`, status chip).
-  Scope is `/practice/` only (not `/learn/` overstudy tabs). During the two
+  Scope is BOTH trainer routes (`isTrainerPath()`: /practice/ and /learn/) —
+  recording, injection and the widget cluster work identically in learn
+  sessions and overstudy tabs; proofs are shared per course through
+  `chrome.storage.session`, so a move proven in review auto-plays in an
+  overstudy of the same line and vice versa (toggle-gated, off by default;
+  `document.hidden` keeps a background overstudy tab inert). During the two
   presses `<html>` carries `clo-injecting`; its CSS is now only a BACKSTOP for
   the case where the trainer slips a render between them — the square tints
   (`highlight-legal-mt2`/`highlight-hover-mt2`, partly inline ⇒ `!important`)
@@ -467,6 +502,46 @@ Currently working (v0.18.x).
     dumps a summary (record/cache key counts, no move data) onto
     `documentElement[data-clo-session]` — storage areas aren't otherwise
     visible from the page.
+- Wrong-guess alt check (section 15; /practice/ AND /learn/): capture is a
+  hook in `rollbackTo` — a pending user answer (`vs.pendingRecord`) rolled
+  back exactly ONE ply (`posKeyOf(entry.pos) === pending.posKey`) while the
+  Incorrect note is live or was stamped within `noteGraceMs`
+  (`vs.incorrectNoteAt`, refreshed on every frame/tick while an answer is
+  pending — the note and the snap-back race in both orders; "Time's up" is
+  deliberately NOT captured, there is no move worth checking). Promotion
+  guesses are refused with one console line. `captureWrongGuess` drives the
+  oracle itself if needed (with the auto-play toggle off nothing else
+  requests it), locates the
+  pre-guess position in `vs.oracleSim` by placement+side, and hands section 15
+  an offer built ENTIRELY from the plan: the exact `sourceFen` (kept verbatim
+  on the sim entries as `.fen` — the tracker's own position has approximate
+  castling and must NOT be serialized for the engine), the lesson-plan index
+  as the edit driver's `plyIndex`, and the mainline SAN/colour at that ply.
+  The chip is body-mounted, absolute in document coords under the
+  board/footer/widget; it hides on dismiss (×), oid change, path leave, or an
+  opponent reply that confirms a PENDING USER answer (`altCheckOnAdvance` —
+  the user genuinely moved past the failed move; the pending gate matters
+  because learn mode DEMONSTRATES after a failure — solution replay plus
+  sometimes the opponent's reply, all trainer-driven with no pending record —
+  and those must not dismiss the chip the moment it shows). An orphaned
+  content script (extension reloaded, page not) can still capture and show
+  the chip but no chrome.* flow can run — `extensionAlive()` gates openPopup
+  and doAdd with a "reload this page" status instead of hanging on
+  "Analyzing…". The popup runs pre-FEN (engine best) then post-FEN (the
+  guess, built via `CloSan.uciToMove`+`makeMove`+`fenFromPos`; halfmove reset
+  on pawn move/capture) to `CONFIG.altCheck.targetDepth`, matching updates by
+  `reqId` prefix (`ac<ts>-<n>:pre|:post`) — accepted only in the matching
+  phase, so a late stray pre update cannot corrupt the guess eval. Verdict =
+  mover-perspective pawn loss (mates mapped to ±mateCp∓distance): green
+  < 0.2, yellow ≤ 0.4, red above — red needs a second "Add anyway" click.
+  Add = the UNCHANGED quick-edit alt job (`mode:'alt'`), rights via
+  `quickEditApi`; the qe module's own result handler ignores it (its popup is
+  hidden) and vice versa (`ac.phase === 'saving'` + oid guard). The popup
+  swallows keys bubble-phase like the qe popup. The engine is booted on
+  demand regardless of `cloEngineEnabled` and released the moment both evals
+  land (`releaseEngine`: stop + `state.engineFen = null` + `syncEngine()` so
+  a browse-state panel search resumes by itself); no shutdown is sent — the
+  offscreen document's own 5-minute idle close reclaims the memory.
 
 ## Verification (no automated tests)
 

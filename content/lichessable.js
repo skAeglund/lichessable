@@ -13,11 +13,13 @@
  * panel mounts as a sibling AFTER the container instead of inside it, and is
  * always visible.
  *
- * It also adds a small "Overstudy" widget to Chessable's REVIEW sessions
- * (https://www.chessable.com/practice/…). Those render in the TOP document
- * (MoveTrainer2 — no mt1 iframe, none of the explore widgets), so the widget
- * is a separate, self-contained module (section 9) that shares nothing with
- * the panel machinery except CONFIG and the log helpers.
+ * It also adds a small "Overstudy" widget to Chessable's trainer sessions —
+ * REVIEW (https://www.chessable.com/practice/…) and LEARN
+ * (https://www.chessable.com/learn/…), which run the same MoveTrainer2 app
+ * with identical markup. Those render in the TOP document (no mt1 iframe,
+ * none of the explore widgets), so the widget is a separate, self-contained
+ * module (section 9) that shares nothing with the panel machinery except
+ * CONFIG and the log helpers.
  *
  * The TOP document additionally gets the Lichess Database panel in the
  * trainer's post-completion browse state (section 11): once a variation is
@@ -260,6 +262,22 @@
       oracleMaxTries: 6,       // consecutive unusable reads before the variation goes manual
     },
 
+    // --- Wrong-guess alternative check (section 15) ------------------------
+    // After an Incorrect answer in a trainer quiz (/practice/ review sessions
+    // AND /learn/ overstudy tabs), a chip offers to engine-check the refused
+    // move as a candidate alternative: two tagged depth-capped searches (the
+    // quiz position for the engine best, the position after the guess for the
+    // guess itself), then a colour-coded "Add alternative" button that reuses
+    // the quick-edit alt-move driver.
+    altCheck: {
+      targetDepth: 20,           // both searches end here (profile depth is the ceiling)
+      thresholds: { green: 0.2, yellow: 0.4 }, // pawn loss vs the engine best
+      mateCp: 10000,             // centipawn stand-in for mate scores (minus mate distance)
+      noteGraceMs: 2500,         // Incorrect note seen this recently still counts at snap-back time
+      searchTimeoutMs: 120000,   // whole-check watchdog (boot + two searches)
+      oracleWaitMs: 300,         // poll while the line oracle is still 'pending' at capture time
+    },
+
     // --- Sort variations in a chapter (section 14) -------------------------
     // The ONLY feature that talks to Chessable's own JSON API. It is same-origin
     // with the page (so no host permission) and authenticated with the page's
@@ -294,6 +312,8 @@
   const QE_POPUP_ID  = 'lichessable-qe-popup';   // quick-edit comment popup (section 12)
   const QE_SHIELD_ID = 'lichessable-qe-shield';  // "Saving…" cover in the driver popup window (section 12)
   const CHAPTER_WIDGET_ID = 'lichessable-chapter'; // chapter sort button (section 14)
+  const AC_CHIP_ID  = 'lichessable-ac-chip';  // wrong-guess check chip (section 15)
+  const AC_POPUP_ID = 'lichessable-ac-popup'; // wrong-guess check popup (section 15)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
@@ -329,6 +349,32 @@
   const VARIATION_PATH_RE = /^\/variation\/(\d+)\/?/;
   const IS_VARIATION_PAGE = IS_REVIEW && VARIATION_PATH_RE.test(location.pathname);
 
+  // Trainer-session path test, evaluated per call (SPA navigation changes the
+  // path without a load). /practice/ review sessions and /learn/ sessions
+  // (first-time learning AND overstudy tabs) run the SAME MoveTrainer2 app
+  // with the same markup — drawer marker, .row-practice, header title, board,
+  // footer, all ground-truthed live 2026-07-23 — so every trainer feature
+  // (overstudy widget, auto-play, alt check) treats the two identically.
+  const isTrainerPath = () =>
+    location.pathname.startsWith(CONFIG.review.pathPrefix) ||
+    location.pathname.startsWith(CONFIG.review.learnPrefix);
+
+  /**
+   * False once this content script has been ORPHANED by an extension reload:
+   * chrome.runtime.id disappears and every chrome.* call throws "Extension
+   * context invalidated". The auto-play module stands down on its own via
+   * noteDeadContext (its chrome calls throw); anything that starts a NEW
+   * chrome-dependent flow from user input (the alt-check popup) must check
+   * this first, or it silently waits forever for replies that cannot come.
+   */
+  function extensionAlive() {
+    try {
+      return Boolean(chrome.runtime && chrome.runtime.id);
+    } catch (err) {
+      return false;
+    }
+  }
+
   // Guard against accidental double-injection into the same document.
   if (window.__lichessableLoaded) { warn('already initialised in this frame — skipping'); return; }
   window.__lichessableLoaded = true;
@@ -353,6 +399,7 @@
     engineFen: null,      // FEN last sent to the engine (dedup / stop bookkeeping)
     lastEngineMsgAt: 0,   // last engine update/status received (silence diagnostics)
     enginePingTimer: 0,   // pending silence check after an analyze
+    altCheckBusy: false,  // the alt check owns the engine (section 15) — syncEngine stands down
   };
 
   // ==========================================================================
@@ -1380,7 +1427,11 @@
    * should be running for the current position, stop when it should not.
    */
   function syncEngine() {
+    // altCheckBusy: the alt check (section 15) is running its own tagged
+    // searches — the panel must neither analyze over them nor stop them.
+    // Its beginCheck nulls engineFen, so the !active branch is a no-op too.
     const active = state.engineEnabled && !state.hidden && !document.hidden &&
+      !state.altCheckBusy &&
       Boolean(state.fen) && (!IS_REVIEW || (state.panel && !state.panel.hidden));
     if (active && state.fen !== state.engineFen) {
       state.engineFen = state.fen;
@@ -1582,7 +1633,7 @@
   }
 
   // ==========================================================================
-  // 9) Review-mode overstudy widget (top document, /practice/…)
+  // 9) Trainer overstudy widget (top document, /practice/… and /learn/…)
   //
   // The review URL is CONSTANT for the whole session —
   // /practice/<courseId>/0/<listId> — the variation id never appears in it
@@ -1620,11 +1671,13 @@
     };
 
     // Course id from the session URL; the trailing list id doubles as a
-    // fallback when the drawer row is unavailable.
-    const PRACTICE_URL_RE = /^\/practice\/(\d+)(?:\/(\d+))?(?:\/(\d+))?/;
+    // fallback when the drawer row is unavailable. /learn/ sessions use the
+    // same shape (/learn/<bid>/<oid|0>/<lid>) and the same drawer markup
+    // (ground-truthed live 2026-07-23), so one regex serves both.
+    const TRAINER_URL_RE = /^\/(?:practice|learn)\/(\d+)(?:\/(\d+))?(?:\/(\d+))?/;
 
     function readCurrentVariation() {
-      const m = PRACTICE_URL_RE.exec(location.pathname);
+      const m = TRAINER_URL_RE.exec(location.pathname);
       if (!m) return null;
       const bid = m[1];
       const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
@@ -1646,7 +1699,7 @@
     }
 
     function tick() {
-      const inReview = location.pathname.startsWith(CONFIG.review.pathPrefix);
+      const inReview = isTrainerPath(); // /practice/ review or /learn/ session
       const cur = inReview ? readCurrentVariation() : null;
       if (cur) {
         rs.warnedNoDetect = false;
@@ -2376,7 +2429,9 @@
     return { san, color: el.classList.contains('whiteMove') ? 'w' : 'b', plyIndex };
   }
 
-  /** Current variation id in the review browse state (marker row, then link). */
+  /** Current variation id in the review browse state (marker row, then link).
+   *  A /learn/ overstudy tab has the id in its URL itself
+   *  (/learn/<bid>/<oid>/<lid> — constant for the tab's whole session). */
   function readQuickEditOid() {
     const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
     const row = marker && marker.parentElement;
@@ -2384,13 +2439,18 @@
     if (oid && oid !== '0') return oid;
     const link = document.querySelector(SELECTORS.reviewTitleLink);
     const hm = link && /^\/variation\/(\d+)/.exec(link.getAttribute('href') || '');
-    return hm && hm[1] !== '0' ? hm[1] : null;
+    if (hm && hm[1] !== '0') return hm[1];
+    const lm = LEARN_IDS_RE.exec(location.pathname);
+    return lm && lm[2] !== '0' ? lm[2] : null;
   }
 
   const QUICK_EDIT_BID_RE = /^\/practice\/(\d+)/;
+  const LEARN_IDS_RE = /^\/learn\/(\d+)\/(\d+)/; // course id, variation id
   function readQuickEditBid() {
     const m = QUICK_EDIT_BID_RE.exec(location.pathname);
-    return m ? m[1] : null;
+    if (m) return m[1];
+    const lm = LEARN_IDS_RE.exec(location.pathname);
+    return lm ? lm[1] : null;
   }
 
   // --- driver (runs in the background edit tab's mt1 iframe) -----------------
@@ -2763,6 +2823,34 @@
 
   // --- review-side UI (hover pencil + popup) ---------------------------------
 
+  /**
+   * Screen bounds for the driver popup window: a small window right beside the
+   * given anchor popup, so the "Saving…" surface appears attached to the action
+   * that launched it. Screen coords ≈ window.screenX/Y plus the browser chrome
+   * height plus the popup's viewport rect (exact enough for placement); clamped
+   * to the current screen. Null when the anchor is not visible — the worker
+   * then falls back to its bottom-right parking spot. Shared by the quick-edit
+   * popup and the alt-check popup (section 15).
+   */
+  function popupDriverBounds(anchorEl) {
+    if (!anchorEl || anchorEl.hidden || !anchorEl.isConnected) return null;
+    const W = 260, H = 180;
+    const r = anchorEl.getBoundingClientRect();
+    const chromeH = Math.max(0, window.outerHeight - window.innerHeight);
+    let left = Math.round(window.screenX + r.right + 10);
+    let top = Math.round(window.screenY + chromeH + r.top);
+    const availLeft = screen.availLeft != null ? screen.availLeft : 0;
+    const availTop = screen.availTop != null ? screen.availTop : 0;
+    left = Math.min(Math.max(left, availLeft), availLeft + screen.availWidth - W);
+    top = Math.min(Math.max(top, availTop), availTop + screen.availHeight - H);
+    return { left, top, width: W, height: H };
+  }
+
+  // Minimal API the alt-check module (section 15) uses to share quick-edit's
+  // per-course rights cache and its lazy probe. Assigned by initQuickEditUi;
+  // null until it has run (start() calls it before initAltCheck).
+  let quickEditApi = null;
+
   function initQuickEditUi() {
     const qe = {
       rightsByBid: new Map(), // bid -> boolean (edit rights), cached per session
@@ -3050,27 +3138,9 @@
       qe.els.save.textContent = busy ? 'Saving…' : 'Save';
     }
 
-    /**
-     * Screen bounds for the driver popup window: a small window right beside
-     * the open quick-edit popup, so the "Saving…" surface appears attached to
-     * the action that launched it. Screen coords ≈ window.screenX/Y plus the
-     * browser chrome height plus the popup's viewport rect (exact enough for
-     * placement); clamped to the current screen. Null when the popup is not
-     * open — the worker then falls back to its bottom-right parking spot.
-     */
-    function driverWindowBounds() {
-      if (!qe.popup || qe.popup.hidden) return null;
-      const W = 260, H = 180;
-      const r = qe.popup.getBoundingClientRect();
-      const chromeH = Math.max(0, window.outerHeight - window.innerHeight);
-      let left = Math.round(window.screenX + r.right + 10);
-      let top = Math.round(window.screenY + chromeH + r.top);
-      const availLeft = screen.availLeft != null ? screen.availLeft : 0;
-      const availTop = screen.availTop != null ? screen.availTop : 0;
-      left = Math.min(Math.max(left, availLeft), availLeft + screen.availWidth - W);
-      top = Math.min(Math.max(top, availTop), availTop + screen.availHeight - H);
-      return { left, top, width: W, height: H };
-    }
+    /** Driver-window bounds beside the open quick-edit popup (see
+     *  popupDriverBounds — hoisted so the alt-check popup can share it). */
+    const driverWindowBounds = () => popupDriverBounds(qe.popup);
 
     function doSave() {
       if (qe.saving || !qe.popupTarget || host.rights() !== true) return;
@@ -3158,16 +3228,20 @@
 
     /** Starts the hidden-tab rights probe (review host only, once per course). */
     function maybeProbe() {
-      const bid = host.bid();
-      const oid = host.oid();
+      probeRights(host.bid(), host.oid(), driverWindowBounds());
+    }
+
+    /** The probe itself, host-independent — also called by the alt-check
+     *  module through quickEditApi. One probe per course per session; the
+     *  result lands in qe.rightsByBid via onResult. */
+    function probeRights(bid, oid, win) {
       if (!bid || !oid) return;
       if (qe.rightsByBid.has(bid) || qe.probing.has(bid)) return;
       qe.probing.add(bid);
       log('quick-edit: probing edit rights for course', bid);
       try {
         chrome.runtime.sendMessage({
-          type: 'clo-quick-edit-run', mode: 'probe', oid, bid,
-          win: driverWindowBounds(),
+          type: 'clo-quick-edit-run', mode: 'probe', oid, bid, win,
         }).catch(() => {});
       } catch (err) {
         qe.probing.delete(bid);
@@ -3227,13 +3301,22 @@
       if (msg && msg.type === 'clo-quick-edit-result') onResult(msg);
     });
 
+    // Shared surface for the alt-check module: the rights cache is read-only
+    // from outside and stays in this closure; probe results reach BOTH
+    // listeners (this one first — registration order — so the cache is
+    // already updated when the alt-check's fires).
+    quickEditApi = {
+      rightsFor: (bid) => (bid && qe.rightsByBid.has(bid) ? qe.rightsByBid.get(bid) : null),
+      probe: probeRights,
+    };
+
     setInterval(tick, CONFIG.review.pollMs);
     tick();
     log('quick-edit UI active (' + host.name + ')');
   }
 
   // ==========================================================================
-  // 13) Auto-play already-mastered moves in review (top document, /practice/…)
+  // 13) Auto-play already-mastered moves (top document, /practice/… and /learn/…)
   //
   // Within one review session, every move the user answers correctly is
   // recorded, keyed on the POSITION (placement + side + castling; en passant
@@ -3306,7 +3389,12 @@
     });
   }
 
-  // --- the auto-play module (review sessions only) ---------------------------
+  // --- the auto-play module (trainer sessions: /practice/ and /learn/) -------
+
+  // Bridges into the alt-check module (section 15), assigned by initAltCheck.
+  // The tracker calls them fire-and-forget; null until that module has run.
+  let altCheckOffer = null;     // (offer) => void — a captured wrong guess
+  let altCheckOnAdvance = null; // () => void — an opponent move was observed (line moved on)
 
   function initAutoPlay() {
     if (typeof CloSan === 'undefined') {
@@ -3365,6 +3453,7 @@
         oracleNextTryAt: 0,  // back-off before re-reading a not-yet-ready plan
         oracleTries: 0,      // unusable reads so far this variation
         pendingRecord: null, // { posKey, uci, promo } — user answer awaiting confirmation
+        incorrectNoteAt: 0,  // last time the Incorrect note was seen with a pending answer
         injected: null,      // { uci, at } — our drag in flight
         injectTimer: 0,      // pending speed-delay before a drag
         verifyTimer: 0,      // injected move must land before this fires
@@ -3761,7 +3850,15 @@
         // Opponent move: the trainer played it, and its arrival is the
         // primary confirmation of the user's preceding answer.
         kind = 'opponent';
+        // Alt-check chip lifecycle: an opponent reply that confirms a PENDING
+        // USER answer means the user genuinely moved past any wrong-guess
+        // offer — dismiss it. The pending gate matters in learn mode: after a
+        // failure the trainer DEMONSTRATES (solution replay, sometimes the
+        // reply too), and those trainer-driven opponent moves carry no
+        // pending record — they must not kill the chip the moment it shows.
+        const hadPendingAnswer = Boolean(vs.pendingRecord);
         confirmPendingRecord('opponent replied');
+        if (hadPendingAnswer && altCheckOnAdvance) altCheckOnAdvance();
       } else if (vs.injected && vs.injected.uci === uci) {
         // Our own auto-play landed: refresh the proof's timestamp only.
         kind = 'injected';
@@ -3804,6 +3901,18 @@
     function rollbackTo(key) {
       const vs = ap.vs;
       const entry = vs.history.get(key);
+      // Wrong-guess capture (section 15): a ONE-PLY snap-back of a pending
+      // user answer, with the Incorrect note live (or seen within the grace
+      // window — the note usually renders before the retraction, but the
+      // orderings race) is the trainer refusing that move. Time's-up is
+      // deliberately excluded: there is no guessed move worth checking.
+      const pending = vs.pendingRecord;
+      if (pending && entry && posKeyOf(entry.pos) === pending.posKey &&
+          (/incorrect/i.test(readMoveNote()) ||
+           Date.now() - vs.incorrectNoteAt < CONFIG.altCheck.noteGraceMs)) {
+        captureWrongGuess(entry.pos, pending)
+          .catch((err) => warn('alt-check: capture failed:', err));
+      }
       vs.pos = entry.pos;
       vs.ply = entry.ply;
       vs.pendingRecord = null; // never record a move the board took back
@@ -3815,6 +3924,64 @@
       // it — they have to touch the board again to get a move recorded.
       ap.lastPointerAt = 0;
       stopReplaying();
+    }
+
+    /**
+     * A refused user answer, caught at snap-back time (see rollbackTo): turn
+     * it into an alt-check offer. The pre-guess FEN is NOT the tracker's own
+     * (approximate castling / no en passant) — the position is located in the
+     * line oracle by placement + side and the plan's exact sourceFen is used,
+     * which also yields the ply index the edit-page driver needs and the
+     * mainline move at that ply. Any uncertainty degrades to no offer, with
+     * one console line saying why (a silent no-op reads as a bug).
+     */
+    async function captureWrongGuess(prePos, pending) {
+      const vs = ap.vs;
+      if (!altCheckOffer || ap.contextDead) return;
+      if (pending.promo) {
+        log('alt-check: promotion guess — not offering (promotion alternatives unsupported)');
+        return;
+      }
+      // The oracle may not have been requested yet (auto-play toggle off
+      // means evaluateAutoPlay never drives it) — drive it here.
+      for (let i = 0; i < 10 && ap.vs === vs &&
+           !Array.isArray(vs.oracle) && vs.oracle !== 'failed'; i++) {
+        if (vs.oracle === 'pending') await quickEditDelay(CONFIG.altCheck.oracleWaitMs);
+        else await requestOracle();
+      }
+      if (ap.vs !== vs || !Array.isArray(vs.oracle)) {
+        log('alt-check: line oracle unavailable — not offering');
+        return;
+      }
+      const here = placementKey(prePos.board) + ' ' + prePos.side;
+      const idx = vs.oracleSim.findIndex((step) => step.key === here);
+      if (idx < 0) {
+        log('alt-check: guessed-from position not found in the line — not offering');
+        return;
+      }
+      const oraclePos = vs.oracleSim[idx].pos; // exact castling/en-passant state
+      const uci = pending.uci; // promo guesses were refused above, so from+to is complete
+      const sanGuess = CloSan.moveToSan(oraclePos, uci);
+      if (!sanGuess) {
+        log('alt-check: guess', uci, 'is not legal on the plan position — not offering');
+        return;
+      }
+      const mainline = vs.oracle[idx];
+      if (quickEditBareSan(sanGuess) === quickEditBareSan(mainline.san)) return; // not an alternative
+      log('alt-check: wrong guess', sanGuess, 'captured at line index', idx,
+        '(mainline ' + mainline.san + ')');
+      altCheckOffer({
+        uci,
+        sanGuess,
+        preFen: vs.oracleSim[idx].fen,
+        plyIndex: idx,
+        mainlineSan: mainline.san,
+        mainlineColor: mainline.color,
+        moverColor: oraclePos.side,
+        oid: vs.oid,
+        bid: vs.bid,
+        capturedAt: Date.now(),
+      });
     }
 
     /**
@@ -3839,11 +4006,15 @@
 
     function processFrame() {
       if (ap.contextDead) return;
-      if (!location.pathname.startsWith(CONFIG.review.pathPrefix)) return;
+      if (!isTrainerPath()) return;
       syncVariation();
       const vs = ap.vs;
       if (!vs.oid || vs.suspended) return;
       if (reviewBrowseReady()) return; // completion is handled by tick()
+      // Alt-check: remember having seen the Incorrect note while an answer is
+      // pending — the snap-back that consumes it may arrive a beat after the
+      // note is gone again (see rollbackTo).
+      if (vs.pendingRecord && /incorrect/i.test(readMoveNote())) vs.incorrectNoteAt = Date.now();
       const snap = readBoardSnapshot();
       if (!snap) return;
       const key = placementKey(snap);
@@ -3946,7 +4117,9 @@
         const pos = CloSan.parseFen(ply.sourceFen);
         if (!pos || pos.side !== ply.color) return retry('unparseable plan position');
         line.push({ san: ply.san, color: ply.color });
-        sim.push({ pos, key: placementKey(pos.board) + ' ' + pos.side });
+        // fen: the plan's own exact pre-ply FEN, kept verbatim — the alt
+        // check (section 15) analyzes it instead of a reconstructed one.
+        sim.push({ pos, key: placementKey(pos.board) + ' ' + pos.side, fen: ply.sourceFen });
       }
       vs.oracle = line;
       vs.oracleSim = sim;
@@ -4296,7 +4469,7 @@
 
     function tick() {
       if (ap.contextDead) return;
-      if (!location.pathname.startsWith(CONFIG.review.pathPrefix)) {
+      if (!isTrainerPath()) {
         if (ap.vs.oid) resetVariation(null, null);
         return;
       }
@@ -4940,6 +5113,556 @@
   }
 
   // ==========================================================================
+  // 15) Wrong-guess alternative check (top document — /practice/ and /learn/)
+  //
+  // When the trainer refuses an answer ("Incorrect"), the auto-play tracker
+  // captures the refused move at snap-back time (rollbackTo →
+  // captureWrongGuess) and hands an OFFER to this module: a body-mounted chip
+  // appears under the board ("Check Nf3 as alternative?"). Clicking it opens
+  // a popup that runs TWO tagged engine searches to CONFIG.altCheck
+  // .targetDepth — the quiz position (engine best) and the position after the
+  // guess — regardless of the panel's engine toggle. state.altCheckBusy makes
+  // syncEngine stand down while they run; the searches carry a reqId that
+  // engine.js echoes on their updates, so the panel's fen-matched listener
+  // and this module's id-matched one never confuse each other's streams.
+  // Both evals are White-perspective; the verdict is the MOVER's pawn loss vs
+  // the engine best (mate scores mapped near ±mateCp so "misses a mate" reads
+  // as a big loss while mate-in-3 vs mate-in-5 stays green). The Add button
+  // colours green/yellow/red by CONFIG.altCheck.thresholds; red requires a
+  // second "Add anyway" click. Adding reuses the quick-edit alt-move job
+  // unchanged (mode 'alt' — background.js drives the edit page), with rights
+  // shared through quickEditApi (lazy per-course probe, cached per session).
+  // ==========================================================================
+
+  function initAltCheck() {
+    if (typeof CloSan === 'undefined') return;
+    const C = CONFIG.altCheck;
+    let seq = 0;
+
+    const ac = {
+      offer: null,        // latest captured wrong guess (what the chip shows)
+      job: null,          // the offer the OPEN popup is checking/saving
+      chip: null,
+      chipLabel: null,
+      popup: null,
+      els: null,          // cached popup child refs
+      phase: 'idle',      // idle|best|guess|ready|saving|error
+      reqId: null,        // tag prefix of the running check's searches
+      postFen: null,      // FEN after the guess (built from the oracle position)
+      bestEval: null,     // { cp, mate, san } at target depth (multipv 1)
+      guessEval: null,
+      loss: null,         // mover-perspective pawn loss vs the engine best
+      band: null,         // 'green' | 'yellow' | 'red'
+      confirmArmed: false, // red verdict: first Add click arms, second sends
+      watchdog: 0,
+    };
+
+    // --- chip ----------------------------------------------------------------
+
+    function buildChip() {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.id = AC_CHIP_ID;
+      chip.className = 'clo-ac-chip';
+      chip.hidden = true;
+      const label = document.createElement('span');
+      label.className = 'clo-ac-chip-label';
+      const x = document.createElement('span');
+      x.className = 'clo-ac-chip-x';
+      x.textContent = '×';
+      x.title = 'Dismiss';
+      x.addEventListener('click', (e) => {
+        e.stopPropagation();
+        dismissOffer();
+      });
+      chip.append(label, x);
+      chip.addEventListener('click', (e) => {
+        e.preventDefault();
+        openPopup();
+      });
+      document.body.appendChild(chip);
+      ac.chip = chip;
+      ac.chipLabel = label;
+    }
+
+    /** Below the board / footer / overstudy widget, left-aligned with the
+     *  board — absolute in DOCUMENT coordinates like every other widget. */
+    function positionChip() {
+      if (!ac.chip || ac.chip.hidden) return;
+      const board = getReviewBoard();
+      if (!board) return;
+      const rect = board.getBoundingClientRect();
+      if (!rect.width) return;
+      let anchorBottom = rect.bottom;
+      const footer = document.querySelector(SELECTORS.trainerFooter);
+      const fr = footer ? footer.getBoundingClientRect() : null;
+      if (fr && fr.height) anchorBottom = Math.max(anchorBottom, fr.bottom);
+      const widget = document.getElementById(REVIEW_WIDGET_ID);
+      const wr = widget && !widget.hidden ? widget.getBoundingClientRect() : null;
+      if (wr && wr.height) anchorBottom = Math.max(anchorBottom, wr.bottom);
+      setInlinePx(ac.chip, {
+        left: Math.max(8, rect.left) + window.scrollX,
+        top: anchorBottom + 8 + window.scrollY,
+      });
+    }
+
+    function showChip(offer) {
+      ac.offer = offer;
+      if (!ac.chip || !ac.chip.isConnected) buildChip();
+      ac.chipLabel.textContent = 'Check ' + offer.sanGuess + ' as alternative?';
+      ac.chip.hidden = false;
+      positionChip();
+    }
+
+    function hideChip() {
+      if (ac.chip) ac.chip.hidden = true;
+    }
+
+    /** Chip + offer gone; the open popup (if any) is left alone. */
+    function dismissOffer() {
+      ac.offer = null;
+      hideChip();
+    }
+
+    // --- popup ---------------------------------------------------------------
+
+    function buildPopup() {
+      const popup = document.createElement('div');
+      popup.id = AC_POPUP_ID;
+      popup.className = 'clo-ac-popup';
+      popup.hidden = true;
+
+      const title = document.createElement('div');
+      title.className = 'clo-ac-title';
+
+      const makeRow = (label) => {
+        const row = document.createElement('div');
+        row.className = 'clo-ac-row';
+        const labelEl = document.createElement('span');
+        labelEl.className = 'clo-ac-row-label';
+        labelEl.textContent = label;
+        const evalEl = document.createElement('span');
+        evalEl.className = 'clo-ac-row-eval';
+        evalEl.textContent = '—';
+        const depthEl = document.createElement('span');
+        depthEl.className = 'clo-ac-row-depth';
+        row.append(labelEl, evalEl, depthEl);
+        popup.appendChild(row);
+        return { row, labelEl, evalEl, depthEl };
+      };
+
+      popup.appendChild(title);
+      const bestRow = makeRow('Engine best');
+      const guessRow = makeRow('Your move');
+
+      const verdict = document.createElement('div');
+      verdict.className = 'clo-ac-verdict';
+      verdict.hidden = true;
+
+      const scopeLabel = document.createElement('label');
+      scopeLabel.className = 'clo-ac-scope';
+      const scopeBox = document.createElement('input');
+      scopeBox.type = 'checkbox';
+      scopeLabel.appendChild(scopeBox);
+      scopeLabel.appendChild(document.createTextNode(' For this variation only'));
+
+      const status = document.createElement('div');
+      status.className = 'clo-ac-status';
+      status.hidden = true;
+
+      const actions = document.createElement('div');
+      actions.className = 'clo-ac-actions';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'clo-ac-cancel';
+      cancel.textContent = 'Close';
+      cancel.addEventListener('click', closePopup);
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'clo-ac-add';
+      add.textContent = 'Add alternative';
+      add.disabled = true;
+      add.addEventListener('click', doAdd);
+      actions.append(cancel, add);
+
+      popup.append(verdict, scopeLabel, status, actions);
+      // Same key discipline as the quick-edit popup: MoveTrainer2 binds
+      // single-key shortcuts on document and does not care what has focus.
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        popup.addEventListener(type, (e) => {
+          e.stopPropagation();
+          if (type === 'keydown' && e.key === 'Escape' && ac.phase !== 'saving') closePopup();
+        });
+      }
+      document.body.appendChild(popup);
+      ac.popup = popup;
+      ac.els = { title, bestRow, guessRow, verdict, scopeBox, status, add, cancel };
+    }
+
+    function setAcStatus(text, isError) {
+      if (!ac.els) return;
+      ac.els.status.textContent = text || '';
+      ac.els.status.className = 'clo-ac-status' + (isError ? ' clo-error' : '');
+      ac.els.status.hidden = !text;
+    }
+
+    function openPopup() {
+      if (!ac.offer) return;
+      if (!ac.popup || !ac.popup.isConnected) buildPopup();
+      // A save in flight is never abandoned; a check already running for THIS
+      // offer just re-shows. A different offer starts a fresh check (its new
+      // reqId orphans the old search's updates; the analyze supersedes it).
+      if (ac.phase === 'saving' ||
+          (ac.job === ac.offer && ac.phase !== 'idle' && ac.phase !== 'error')) {
+        ac.popup.hidden = false;
+        return;
+      }
+      const offer = ac.offer;
+      ac.job = offer;
+      ac.confirmArmed = false;
+      ac.bestEval = null;
+      ac.guessEval = null;
+      ac.loss = null;
+      ac.band = null;
+
+      ac.els.title.textContent = offer.sanGuess + ' instead of ' + offer.mainlineSan + '?';
+      ac.els.bestRow.labelEl.textContent = 'Engine best';
+      ac.els.bestRow.evalEl.textContent = '—';
+      ac.els.bestRow.depthEl.textContent = '';
+      ac.els.guessRow.labelEl.textContent = 'Your move (' + offer.sanGuess + ')';
+      ac.els.guessRow.evalEl.textContent = '—';
+      ac.els.guessRow.depthEl.textContent = '';
+      ac.els.verdict.hidden = true;
+      ac.els.verdict.className = 'clo-ac-verdict';
+      ac.els.scopeBox.checked = false; // matches the quick-edit default
+      ac.els.add.textContent = 'Add alternative';
+      ac.els.add.className = 'clo-ac-add';
+      ac.els.add.disabled = true;
+      setAcStatus('', false);
+
+      // Beside the chip; clamped into the viewport (position:fixed, like the
+      // quick-edit popup — placed once at open time).
+      const anchor = ac.chip && !ac.chip.hidden ? ac.chip.getBoundingClientRect() : null;
+      const left = anchor ? anchor.left : (window.innerWidth - 320) / 2;
+      const top = anchor ? anchor.bottom + 6 : window.innerHeight / 3;
+      ac.popup.style.left = Math.round(Math.min(Math.max(8, left), window.innerWidth - 320)) + 'px';
+      ac.popup.style.top = Math.round(Math.min(Math.max(8, top), window.innerHeight - 260)) + 'px';
+      ac.popup.hidden = false;
+
+      // The guess is applied to the plan's own exact position; a failure to
+      // resolve it means the offer is stale/garbled — no engine run.
+      const prePos = CloSan.parseFen(offer.preFen);
+      const mv = prePos && CloSan.uciToMove(prePos, offer.uci);
+      if (!mv) {
+        ac.phase = 'error';
+        setAcStatus('Could not reconstruct the position for this guess.', true);
+        return;
+      }
+      const isPawn = (prePos.board[mv.from] || '').toUpperCase() === 'P';
+      const isCapture = Boolean(prePos.board[mv.to]) || (isPawn && mv.to === prePos.ep);
+      const preHalf = Number(offer.preFen.trim().split(/\s+/)[4]);
+      const postHalf = (isPawn || isCapture) ? 0 : (Number.isInteger(preHalf) ? preHalf : 0) + 1;
+      ac.postFen = CloSan.fenFromPos(CloSan.makeMove(prePos, mv), postHalf);
+      if (!ac.postFen) {
+        ac.phase = 'error';
+        setAcStatus('Could not build the after-move position.', true);
+        return;
+      }
+
+      // An orphaned script (extension reloaded, page not) can still show the
+      // chip and popup, but every chrome.* call throws — starting the engine
+      // flow would hang on "Analyzing…" forever. Say what to do instead.
+      if (!extensionAlive()) {
+        ac.phase = 'error';
+        setAcStatus('The extension was reloaded — reload this page to run the engine check.', true);
+        return;
+      }
+
+      applyAcRights();
+      beginCheck(offer);
+    }
+
+    function closePopup() {
+      if (ac.phase === 'saving') return; // the driver window is mid-flight
+      if (ac.popup) ac.popup.hidden = true;
+      releaseEngine();
+      ac.job = null;
+      ac.phase = 'idle';
+    }
+
+    /** Chip, popup and engine all torn down (path/variation change). */
+    function dismissAll() {
+      dismissOffer();
+      if (ac.popup) ac.popup.hidden = true;
+      releaseEngine();
+      ac.job = null;
+      ac.phase = 'idle';
+    }
+
+    // --- rights (shared with quick-edit through quickEditApi) ---------------
+
+    function acRights() {
+      return quickEditApi && ac.job ? quickEditApi.rightsFor(ac.job.bid) : null;
+    }
+
+    function applyAcRights() {
+      if (!ac.popup || ac.popup.hidden || !ac.job || ac.phase === 'saving') return;
+      const rights = acRights();
+      if (rights === false) {
+        setAcStatus("You don't have edit rights for this course.", true);
+      } else if (rights !== true) {
+        setAcStatus('Checking edit rights…', false);
+        if (quickEditApi) quickEditApi.probe(ac.job.bid, ac.job.oid, popupDriverBounds(ac.popup));
+      } else if (ac.phase === 'best' || ac.phase === 'guess') {
+        setAcStatus('Analyzing…', false);
+      } else {
+        setAcStatus('', false);
+      }
+      updateAddEnabled();
+    }
+
+    function updateAddEnabled() {
+      if (!ac.els) return;
+      ac.els.add.disabled = !(ac.phase === 'ready' && acRights() === true);
+    }
+
+    // --- the two searches ----------------------------------------------------
+
+    function beginCheck(offer) {
+      state.altCheckBusy = true;   // syncEngine stands down (see its comment)
+      state.engineFen = null;      // any panel search is superseded by ours
+      ac.reqId = 'ac' + Date.now() + '-' + (++seq);
+      ac.phase = 'best';
+      setAcStatus('Analyzing…', false);
+      log('alt-check: engine check started for', offer.sanGuess, '(req ' + ac.reqId + ')');
+      engineSend({
+        type: 'clo-engine-analyze', fen: offer.preFen, profile: engineProfile(),
+        reqId: ac.reqId + ':pre', depth: C.targetDepth,
+      });
+      pingEngineIfSilent();
+      clearTimeout(ac.watchdog);
+      ac.watchdog = setTimeout(() => {
+        if (ac.phase === 'best' || ac.phase === 'guess') {
+          ac.phase = 'error';
+          setAcStatus('Engine check timed out.', true);
+          releaseEngine();
+        }
+      }, C.searchTimeoutMs);
+    }
+
+    /** Ends this module's claim on the engine and lets the panel resume. */
+    function releaseEngine() {
+      clearTimeout(ac.watchdog);
+      ac.watchdog = 0;
+      ac.reqId = null;
+      if (!state.altCheckBusy) return;
+      state.altCheckBusy = false;
+      engineSend({ type: 'clo-engine-stop' });
+      state.engineFen = null;
+      syncEngine(); // restart the panel's search where it should be running
+    }
+
+    /** First SAN of a numbered PV line ("12... Nf6 13. Bg5" → "Nf6"). */
+    function firstSanOf(sanLine) {
+      for (const token of String(sanLine || '').split(/\s+/)) {
+        if (token && !/^\d+\.{1,3}$/.test(token)) return token;
+      }
+      return '';
+    }
+
+    function renderAcRow(row, pv, depth, done) {
+      row.evalEl.textContent = formatEval(pv);
+      row.depthEl.textContent = 'depth ' + Math.min(depth, C.targetDepth) + '/' + C.targetDepth +
+        (done ? '' : '…');
+    }
+
+    function onAcUpdate(msg) {
+      const which = msg.reqId.slice(ac.reqId.length + 1); // 'pre' | 'post'
+      const pv = (Array.isArray(msg.pvs) ? msg.pvs : []).find((p) => p.multipv === 1);
+      if (!pv) return;
+      const finished = msg.done || msg.depth >= C.targetDepth;
+      if (which === 'pre' && ac.phase === 'best') {
+        ac.els.bestRow.labelEl.textContent = 'Engine best' +
+          (firstSanOf(pv.san) ? ' (' + firstSanOf(pv.san) + ')' : '');
+        renderAcRow(ac.els.bestRow, pv, msg.depth, finished);
+        if (finished) {
+          ac.bestEval = { cp: pv.cp, mate: pv.mate, san: firstSanOf(pv.san) };
+          ac.phase = 'guess';
+          engineSend({
+            type: 'clo-engine-analyze', fen: ac.postFen, profile: engineProfile(),
+            reqId: ac.reqId + ':post', depth: C.targetDepth,
+          });
+        }
+      } else if (which === 'post' && ac.phase === 'guess') {
+        renderAcRow(ac.els.guessRow, pv, msg.depth, finished);
+        if (finished) {
+          ac.guessEval = { cp: pv.cp, mate: pv.mate };
+          finishCheck();
+        }
+      }
+    }
+
+    function onAcStatus(msg) {
+      if (msg.status === 'loading') setAcStatus('Loading engine…', false);
+      else if (msg.status === 'ready') setAcStatus('Analyzing…', false);
+      else if (msg.status === 'error') {
+        const detail = String(msg.detail || '');
+        ac.phase = 'error';
+        setAcStatus(detail.startsWith('missing-build')
+          ? (detail.includes('lite') ? 'Lite' : 'Full') + ' engine files missing — see README'
+          : 'Engine error — see the console.', true);
+        releaseEngine();
+      }
+    }
+
+    /** Mover-perspective centipawns; mates map near ±mateCp minus the mate
+     *  distance, so a missed mate reads as a huge loss while a slightly
+     *  slower mate stays negligible. */
+    function moverCp(ev) {
+      const sign = ac.job.moverColor === 'w' ? 1 : -1;
+      if (typeof ev.mate === 'number') {
+        const m = sign * ev.mate;
+        return m > 0 ? C.mateCp - m : -C.mateCp - m;
+      }
+      return sign * (typeof ev.cp === 'number' ? ev.cp : 0);
+    }
+
+    function finishCheck() {
+      ac.phase = 'ready';
+      // Our own searches are done; give the engine back right away (the
+      // popup stays open on the recorded evals).
+      releaseEngine();
+
+      const loss = Math.max(0, (moverCp(ac.bestEval) - moverCp(ac.guessEval)) / 100);
+      ac.loss = loss;
+      ac.band = loss < C.thresholds.green ? 'green'
+        : loss <= C.thresholds.yellow ? 'yellow' : 'red';
+      ac.els.verdict.hidden = false;
+      ac.els.verdict.className = 'clo-ac-verdict clo-ac-verdict--' + ac.band;
+      ac.els.verdict.textContent = loss === 0
+        ? 'As good as the engine best.'
+        : 'Loses ' + loss.toFixed(2) + ' pawns vs the engine best.';
+      ac.els.add.className = 'clo-ac-add clo-ac-add--' + ac.band;
+      ac.els.add.textContent = 'Add alternative (−' + loss.toFixed(2) + ')';
+      log('alt-check: verdict for', ac.job.sanGuess, '— loss', loss.toFixed(2), '(' + ac.band + ')');
+      applyAcRights();
+    }
+
+    // --- adding the alternative (quick-edit alt job, unchanged) --------------
+
+    function doAdd() {
+      if (ac.phase !== 'ready' || !ac.job || acRights() !== true) return;
+      if (ac.band === 'red' && !ac.confirmArmed) {
+        ac.confirmArmed = true;
+        ac.els.add.textContent = 'Add anyway';
+        setAcStatus('Loses ' + ac.loss.toFixed(2) + ' pawns vs best — add it anyway?', true);
+        return;
+      }
+      const san = quickEditSan(ac.job.mainlineSan);
+      const altSan = quickEditSan(ac.job.sanGuess);
+      if (!san || !altSan) {
+        setAcStatus('Could not normalise the move names.', true);
+        return;
+      }
+      if (!extensionAlive()) {
+        setAcStatus('The extension was reloaded — reload this page to save.', true);
+        return;
+      }
+      ac.phase = 'saving';
+      ac.els.add.disabled = true;
+      ac.els.cancel.disabled = true;
+      ac.els.scopeBox.disabled = true;
+      setAcStatus('Saving…', false);
+      try {
+        chrome.runtime.sendMessage({
+          type: 'clo-quick-edit-run', mode: 'alt',
+          oid: ac.job.oid, bid: ac.job.bid || '',
+          san, color: ac.job.mainlineColor, plyIndex: ac.job.plyIndex,
+          altSan,
+          forThisVariationOnly: ac.els.scopeBox.checked,
+          win: popupDriverBounds(ac.popup),
+        }).catch(() => {});
+      } catch (err) {
+        ac.phase = 'ready';
+        ac.els.cancel.disabled = false;
+        ac.els.scopeBox.disabled = false;
+        updateAddEnabled();
+        setAcStatus('Could not reach the extension worker.', true);
+      }
+    }
+
+    function onAcQuickEditResult(msg) {
+      if (msg.mode === 'probe') {
+        // The quick-edit listener (registered first) has already cached the
+        // result — just reflect it.
+        applyAcRights();
+        return;
+      }
+      if (ac.phase !== 'saving' || !ac.job || String(msg.oid) !== String(ac.job.oid)) return;
+      if (msg.timing) log('alt-check timing:', msg.timing);
+      ac.els.cancel.disabled = false;
+      ac.els.scopeBox.disabled = false;
+      if (msg.ok) {
+        ac.phase = 'ready';
+        setAcStatus('Saved — the trainer now accepts ' + ac.job.sanGuess + ' here.', false);
+        dismissOffer(); // the chip's job is done
+        setTimeout(() => { if (ac.phase !== 'saving') closePopup(); }, 1500);
+      } else {
+        ac.phase = 'ready';
+        ac.confirmArmed = false;
+        ac.els.add.textContent = 'Add alternative (−' + (ac.loss != null ? ac.loss.toFixed(2) : '?') + ')';
+        updateAddEnabled();
+        setAcStatus(msg.error === 'another quick-edit is in progress'
+          ? 'Another save is in progress — try again in a moment.'
+          : (msg.error && msg.error !== 'timeout' ? msg.error : 'Save failed or timed out — you can retry.'), true);
+      }
+    }
+
+    // --- lifecycle -----------------------------------------------------------
+
+    function tick() {
+      if (!isTrainerPath()) {
+        if (ac.offer || ac.job) dismissAll();
+        return;
+      }
+      const oid = readQuickEditOid();
+      if (oid) {
+        if (ac.offer && String(ac.offer.oid) !== String(oid)) dismissOffer();
+        if (ac.job && String(ac.job.oid) !== String(oid) && ac.phase !== 'saving') closePopup();
+      }
+      positionChip();
+    }
+
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (!msg) return;
+      if (msg.type === 'clo-engine-update' || msg.type === 'clo-engine-status') {
+        state.lastEngineMsgAt = Date.now(); // keeps pingEngineIfSilent quiet mid-quiz
+      }
+      if (msg.type === 'clo-engine-update') {
+        if (ac.reqId && typeof msg.reqId === 'string' && msg.reqId.startsWith(ac.reqId + ':')) {
+          onAcUpdate(msg);
+        }
+      } else if (msg.type === 'clo-engine-status') {
+        if (ac.phase === 'best' || ac.phase === 'guess') onAcStatus(msg);
+      } else if (msg.type === 'clo-quick-edit-result') {
+        onAcQuickEditResult(msg);
+      }
+    });
+
+    // The tracker's bridges (fire-and-forget from section 13).
+    altCheckOffer = (offer) => {
+      if (!isTrainerPath()) return;
+      showChip(offer);
+    };
+    altCheckOnAdvance = () => {
+      if (ac.offer) dismissOffer();
+    };
+
+    setInterval(tick, CONFIG.review.pollMs);
+    log('alt-check watcher active (top document)');
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -4965,14 +5688,19 @@
     // "Saving…" shield — none of the review machinery belongs there.
     if (await maybeMountQuickEditShield()) return;
     // Top document: overstudy widget, background-tab auto-pause, review panel,
-    // the quick-edit hover UI, review auto-play, and the chapter sort button.
-    // Each one gates itself on the URL from its own poll, so SPA navigation
-    // into a review session or a chapter page is picked up without a load.
+    // the quick-edit hover UI, review auto-play, the wrong-guess alt check,
+    // and the chapter sort button. Each one gates itself on the URL from its
+    // own poll, so SPA navigation into a review session or a chapter page is
+    // picked up without a load. Order matters twice: initQuickEditUi must run
+    // before initAltCheck (probe results hit quick-edit's listener first, so
+    // the rights cache is warm when the alt check reads it), and initAutoPlay
+    // before initAltCheck only by convention (the bridge vars are null-safe).
     initReviewOverstudy();
     initOverstudyAutoPause();
     initReviewPanel();
     initQuickEditUi();
     initAutoPlay();
+    initAltCheck();
     initChapterSort();
   }
 

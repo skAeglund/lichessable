@@ -45,11 +45,14 @@
  * the hub because offscreen sendMessage can never reach content scripts).
  * All engine messages carry a `target` field ('sw' | 'offscreen'); each
  * context ignores messages not addressed to it:
- *   { target:'sw', type:'clo-engine-analyze', fen, profile } -> forwarded to
- *       offscreen (profile 'desktop'|'mobile' picks the Stockfish build —
- *       computed by the content script, this worker just relays it); the
- *       sender's {tabId, frameId} is stored in chrome.storage.session so
- *       replies can be routed even after this worker idle-restarts
+ *   { target:'sw', type:'clo-engine-analyze', fen, profile, reqId?, depth? }
+ *       -> forwarded to offscreen (profile 'desktop'|'mobile' picks the
+ *       Stockfish build — computed by the content script, this worker just
+ *       relays it; reqId is an optional request tag the offscreen echoes on
+ *       that search's updates, depth an optional per-request cap — both used
+ *       by the alt-check feature, content section 15); the sender's
+ *       {tabId, frameId} is stored in chrome.storage.session so replies can
+ *       be routed even after this worker idle-restarts
  *   { target:'sw', type:'clo-engine-stop' }         -> forwarded (engine warm)
  *   { target:'sw', type:'clo-engine-shutdown' }     -> closes the offscreen
  *       document, freeing the engine's memory
@@ -183,8 +186,10 @@ async function handleEngineAnalyze(msg, sender) {
       [ENGINE_TARGET_KEY]: { tabId: sender.tab.id, frameId: sender.frameId || 0 },
     });
     await ensureOffscreen();
-    chrome.runtime.sendMessage({ target: 'offscreen', type: 'clo-engine-analyze', fen: msg.fen, profile: msg.profile })
-      .catch((err) => recordEngineError('analyze forward', err));
+    chrome.runtime.sendMessage({
+      target: 'offscreen', type: 'clo-engine-analyze', fen: msg.fen, profile: msg.profile,
+      reqId: msg.reqId, depth: msg.depth,
+    }).catch((err) => recordEngineError('analyze forward', err));
   } catch (err) {
     recordEngineError('analyze', err);
   }

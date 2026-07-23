@@ -49,6 +49,15 @@ let expecting = null;        // { token, resolve, reject, timer } during handsha
 let phase = 'idle';          // 'idle' | 'searching' | 'stopping'
 let currentFen = null;       // FEN of the running search
 let pendingFen = null;       // latest requested FEN, started when idle
+// Optional per-request extras (alt-check, content section 15): a request id
+// echoed on every update of that search (UCI info lines carry none, so this
+// is the only per-request correlation), and a depth cap below the profile's.
+// Both ride the same pending->current lifecycle as the FEN. Panel analyzes
+// carry neither, and their updates are byte-identical to before.
+let currentReqId = null;
+let pendingReqId = null;
+let currentDepth = 0;        // 0 = use the profile depth
+let pendingDepth = 0;
 let latest = null;           // { depth, pvs: { [multipv]: {depth, cp, mate, moves} } }
 let flushTimer = 0;
 let fenceTimer = 0;
@@ -60,7 +69,10 @@ let lastLineAt = 0;          // liveness: timestamp of the last worker output li
 setInterval(() => {
   if (phase === 'searching' && lastLineAt &&
       Date.now() - lastLineAt > SEARCH_SILENCE_MS) {
-    respawnAndResume('no engine output for ' + SEARCH_SILENCE_MS + ' ms', pendingFen || currentFen);
+    respawnAndResume('no engine output for ' + SEARCH_SILENCE_MS + ' ms',
+      pendingFen || currentFen,
+      pendingFen ? pendingReqId : currentReqId,
+      pendingFen ? pendingDepth : currentDepth);
   }
 }, 5000);
 
@@ -71,7 +83,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   touchIdleTimer();
   if (msg.type === 'clo-engine-analyze' && typeof msg.fen === 'string') {
     sendDebug('analyze received (phase ' + phase + ', profile ' + msg.profile + '): ' + msg.fen);
-    handleAnalyze(msg.fen, msg.profile);
+    handleAnalyze(msg.fen, msg.profile, msg.reqId, msg.depth);
   } else if (msg.type === 'clo-engine-stop') {
     sendDebug('stop received (phase ' + phase + ')');
     handleStop();
@@ -154,7 +166,9 @@ async function bootEngine() {
       // Crash outside the handshake: respawn and re-search the position the
       // dead worker was on (otherwise the search wedges until the NEXT
       // analyze happens to arm the stop-fence).
-      respawnAndResume('worker error', pendingFen || currentFen);
+      respawnAndResume('worker error', pendingFen || currentFen,
+        pendingFen ? pendingReqId : currentReqId,
+        pendingFen ? pendingDepth : currentDepth);
     }
   };
   worker.onmessageerror = () => sendStatus('error', 'worker messageerror (deserialization)');
@@ -193,26 +207,33 @@ function killWorker() {
   bootedProfile = null;
   phase = 'idle';
   currentFen = null;
+  currentReqId = null;
+  currentDepth = 0;
   clearTimeout(flushTimer); flushTimer = 0;
   clearTimeout(fenceTimer); fenceTimer = 0;
 }
 
 /** Tears the worker down and restarts a search. Crash recovery passes the
  *  position the dead worker was on; the stop-fence passes only pendingFen
- *  (null after a deliberate stop — a stop must never resurrect a search). */
-function respawnAndResume(reason, resumeFen) {
+ *  (null after a deliberate stop — a stop must never resurrect a search).
+ *  The resumed search keeps its request tag and depth cap. */
+function respawnAndResume(reason, resumeFen, resumeReqId, resumeDepth) {
   sendDebug('respawning worker (' + reason + '), phase was ' + phase);
   killWorker();
   pendingFen = resumeFen || null;
+  pendingReqId = resumeReqId || null;
+  pendingDepth = resumeDepth || 0;
   startPending();
 }
 
 // --- search state machine ---------------------------------------------------
 
-function handleAnalyze(fen, profile) {
+function handleAnalyze(fen, profile, reqId, depth) {
   // Unknown/absent profile falls back to desktop — today's behaviour.
   requestedProfile = PROFILES[profile] ? profile : 'desktop';
   pendingFen = fen;
+  pendingReqId = typeof reqId === 'string' && reqId ? reqId : null;
+  pendingDepth = Number.isInteger(depth) && depth > 0 ? depth : 0;
   if (phase === 'searching') {
     // Fence: discard everything until bestmove, then start the pending FEN.
     phase = 'stopping';
@@ -226,6 +247,8 @@ function handleAnalyze(fen, profile) {
 
 function handleStop() {
   pendingFen = null;
+  pendingReqId = null;
+  pendingDepth = 0;
   if (phase === 'searching') {
     phase = 'stopping';
     uciSend('stop');
@@ -254,21 +277,28 @@ function startPending() {
     const prof = PROFILES[bootedProfile];
     pendingFen = null;
     currentFen = fen;
+    currentReqId = pendingReqId;
+    pendingReqId = null;
+    // A per-request depth cap only ever lowers the profile depth.
+    currentDepth = pendingDepth > 0 ? Math.min(pendingDepth, prof.depth) : 0;
+    pendingDepth = 0;
+    const goDepth = currentDepth || prof.depth;
     latest = { depth: 0, pvs: {} };
     phase = 'searching';
     lastLineAt = Date.now();
-    sendDebug('search start: ' + fen);
+    sendDebug('search start: ' + fen + (currentReqId ? ' (req ' + currentReqId + ', depth ' + goDepth + ')' : ''));
     uciSend(`position fen ${fen}`);
     uciSend(prof.movetime > 0
-      ? `go depth ${prof.depth} movetime ${prof.movetime}`
-      : `go depth ${prof.depth}`);
+      ? `go depth ${goDepth} movetime ${prof.movetime}`
+      : `go depth ${goDepth}`);
   }).catch(() => {}); // boot failure already reported via clo-engine-status
 }
 
 function armFence() {
   clearTimeout(fenceTimer);
   fenceTimer = setTimeout(() => {
-    respawnAndResume('no bestmove within ' + STOP_FENCE_TIMEOUT_MS + ' ms after stop', pendingFen);
+    respawnAndResume('no bestmove within ' + STOP_FENCE_TIMEOUT_MS + ' ms after stop',
+      pendingFen, pendingReqId, pendingDepth);
   }, STOP_FENCE_TIMEOUT_MS);
 }
 
@@ -284,6 +314,8 @@ function onEngineLine(line) {
     if (phase === 'searching') flush(true); // natural completion
     phase = 'idle';
     currentFen = null;
+    currentReqId = null;
+    currentDepth = 0;
     startPending();
     return;
   }
@@ -339,7 +371,9 @@ function flush(done) {
     pvs.push(pv);
   }
   if (!pvs.length) return;
-  sendToSw({ type: 'clo-engine-update', fen: currentFen, depth: latest.depth, done, pvs });
+  const update = { type: 'clo-engine-update', fen: currentFen, depth: latest.depth, done, pvs };
+  if (currentReqId) update.reqId = currentReqId; // panel updates stay tag-free
+  sendToSw(update);
   touchIdleTimer();
 }
 

@@ -831,6 +831,146 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: #949494;
 }
 
+/* --- wrong-guess alternative check (section 15) ------------------------------
+   The chip is body-mounted and absolute in DOCUMENT coordinates (positionChip);
+   the popup is fixed from the chip's rect at open time, like the quick-edit
+   popup it visually matches. */
+
+.clo-ac-chip {
+  position: absolute;
+  z-index: 100000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid #629924;
+  border-radius: 14px;
+  background: #262421;
+  color: #a5c96a;
+  font-size: 12px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.clo-ac-chip:hover { background: #2f2c28; }
+.clo-ac-chip[hidden] { display: none; }
+
+.clo-ac-chip-x {
+  color: #949494;
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.clo-ac-chip-x:hover { color: #fff; }
+
+.clo-ac-popup {
+  position: fixed;
+  z-index: 100001;
+  width: 300px;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid #1b1a17;
+  border-radius: 4px;
+  background: #262421;
+  color: #bababa;
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+.clo-ac-popup[hidden] { display: none; }
+
+.clo-ac-title {
+  color: #dcdcdc;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.clo-ac-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.clo-ac-row-label { color: #949494; flex: 1; }
+.clo-ac-row-eval { color: #dcdcdc; font-weight: 600; }
+.clo-ac-row-depth { color: #6e6a63; font-size: 11px; }
+
+.clo-ac-verdict {
+  margin: 6px 0 2px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.clo-ac-verdict[hidden] { display: none; }
+.clo-ac-verdict--green { color: #7fb84c; }
+.clo-ac-verdict--yellow { color: #d0a53f; }
+.clo-ac-verdict--red { color: #d85c5c; }
+
+.clo-ac-scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  color: #949494;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.clo-ac-status {
+  color: #949494;
+  font-style: italic;
+  font-size: 12px;
+  padding: 2px 0 4px;
+}
+
+.clo-ac-status.clo-error { color: #d85c5c; }
+.clo-ac-status[hidden] { display: none; }
+
+.clo-ac-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The Add button's colour IS the verdict: green under 0.2 pawns, yellow to
+   0.4, red above (a red add needs a second "Add anyway" click). */
+.clo-ac-add {
+  border: 1px solid #629924;
+  background: #629924;
+  color: #fff;
+  padding: 3px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-ac-add:disabled { opacity: 0.6; cursor: default; }
+.clo-ac-add--green { background: #629924; border-color: #629924; }
+.clo-ac-add--green:hover:not(:disabled) { background: #71ad2a; border-color: #71ad2a; }
+.clo-ac-add--yellow { background: #b58900; border-color: #b58900; }
+.clo-ac-add--yellow:hover:not(:disabled) { background: #c79a12; border-color: #c79a12; }
+.clo-ac-add--red { background: #c0392b; border-color: #c0392b; }
+.clo-ac-add--red:hover:not(:disabled) { background: #d3493a; border-color: #d3493a; }
+
+.clo-ac-cancel {
+  border: none;
+  background: transparent;
+  color: #949494;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-ac-cancel:hover { color: #fff; }
+.clo-ac-cancel:disabled { opacity: 0.6; cursor: default; }
+
 /* --- chapter "Sort variations" widget (section 14) ---------------------------
    Body-mounted and merely anchored to Chessable's toolbar (never inside their
    React tree). initChapterSort/positionWidget parks it in the empty gutter left
@@ -1052,4 +1192,37 @@ html.clo-touch .clo-qe-tab {
 html.clo-touch .clo-qe-scope,
 html.clo-touch .clo-qe-status {
   font-size: 15px;
+}
+
+/* --- wrong-guess alternative check (section 15) ---------------------------
+   Same treatment as the quick-edit popup: bigger type and fingertip-sized
+   buttons; the popup keeps its width (openPopup clamps `left` against a
+   hardcoded 320). */
+
+html.clo-touch .clo-ac-chip {
+  font-size: 15px;
+  padding: 8px 14px;
+  border-radius: 18px;
+}
+
+html.clo-touch .clo-ac-chip-x {
+  font-size: 17px;
+  padding: 0 6px;
+}
+
+html.clo-touch .clo-ac-popup {
+  font-size: 16px;
+}
+
+html.clo-touch .clo-ac-row,
+html.clo-touch .clo-ac-verdict,
+html.clo-touch .clo-ac-scope,
+html.clo-touch .clo-ac-status {
+  font-size: 15px;
+}
+
+html.clo-touch .clo-ac-add,
+html.clo-touch .clo-ac-cancel {
+  font-size: 15px;
+  padding: 8px 14px;
 }

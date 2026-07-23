@@ -68,6 +68,31 @@ var CloSan = (() => {
     return { board, side, castling, ep, fullmove };
   }
 
+  /**
+   * Serializes a position object back to a full six-field FEN string. The
+   * halfmove clock is not part of the position model (parseFen drops it), so
+   * it is an explicit parameter; omitted/invalid values become 0.
+   */
+  function fenFromPos(pos, halfmove) {
+    if (!pos || !Array.isArray(pos.board) || pos.board.length !== 64) return null;
+    const rows = [];
+    for (let rank = 7; rank >= 0; rank--) {
+      let row = '', empty = 0;
+      for (let file = 0; file < 8; file++) {
+        const p = pos.board[rank * 8 + file];
+        if (p) {
+          if (empty) { row += empty; empty = 0; }
+          row += p;
+        } else empty++;
+      }
+      if (empty) row += empty;
+      rows.push(row);
+    }
+    const half = Number.isInteger(halfmove) && halfmove >= 0 ? halfmove : 0;
+    return rows.join('/') + ' ' + pos.side + ' ' + (pos.castling || '-') + ' ' +
+      (pos.ep >= 0 ? sqName(pos.ep) : '-') + ' ' + half + ' ' + (pos.fullmove || 1);
+  }
+
   // --- attacks --------------------------------------------------------------
 
   /** Is `sq` attacked by any piece of color `by`? */
@@ -345,7 +370,7 @@ var CloSan = (() => {
     return out.join(' ');
   }
 
-  return { parseFen, generateMoves, makeMove, moveToSan, pvToSan };
+  return { parseFen, fenFromPos, generateMoves, makeMove, uciToMove, moveToSan, pvToSan };
 })();
 
 // Node spot-check support (ignored in the browser).

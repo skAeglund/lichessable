@@ -51,8 +51,10 @@ narrow windows, so nothing gets covered. The quick-edit pencil (below) works
 on the same page, so variation pages are now a full study surface: Lichess
 stats, engine, and comment editing in one place.
 
-It also adds an **Overstudy widget** to review sessions
-(`https://www.chessable.com/practice/…`): a small floating card centered
+It also adds an **Overstudy widget** to trainer sessions — review
+(`https://www.chessable.com/practice/…`) and learn
+(`https://www.chessable.com/learn/…`), which run the same trainer app with
+identical markup: a small floating card centered
 beneath the board (below the Exit/nav row; bottom-right corner as fallback)
 with two buttons — overstudy **this variation** and overstudy
 the **previous variation** (i.e. the one you most recently completed, after
@@ -66,7 +68,8 @@ would otherwise start running unseen, a learn session that boots in a
 own pause control once it renders); switch to the tab and click the play
 overlay to start.
 
-Review sessions can also **auto-play moves you already proved this session**
+Trainer sessions — review and learn alike — can also **auto-play moves you
+already proved this session**
 (the *Auto-play* toggle on the overstudy widget, off by default, with a
 Fast/Normal/Relaxed pace select). Every move you answer correctly is recorded
 against its **position** for the rest of the browser session (12 h cap); when
@@ -113,6 +116,23 @@ focused — Chrome slows hidden or covered pages down to a crawl) — see
 "Quick-edit" under Architecture notes. Promotion moves aren't supported as
 alternatives yet. On touch screens, where there is no hover, tapping a move
 keeps the pencil on screen for a few seconds so it can be tapped.
+
+When the trainer refuses a quiz answer (**"Incorrect"** — in a `/practice/`
+review session or a `/learn/` overstudy tab alike), a small chip appears under
+the board: **"Check Nf3 as alternative?"**. Clicking it opens a popup that runs
+two local Stockfish searches to depth 20 — the quiz position (the engine's
+best) and the position after your move — and shows the **pawn loss versus the
+engine best**, from the mover's point of view. An **Add alternative** button
+then appears, coloured by that loss: **green** below 0.2 pawns, **yellow**
+between 0.2 and 0.4, **red** above 0.4 — a red move can still be added, but
+needs a second **"Add anyway"** click. Adding uses the same edit-page driver
+as the quick-edit Alt-move tab (so the same edit-rights rules apply, probed
+lazily and cached per course), with the familiar "For this variation only"
+checkbox. The engine is booted on demand — the panel's Engine toggle does not
+need to be on — and released again as soon as both searches finish (it frees
+its memory after 5 idle minutes). Timed-out answers and promotion guesses are
+not offered; the chip disappears once the line moves on past the failed move,
+or via its ×.
 
 On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
 extension adds a **Sort by popularity** button, which reorders the whole chapter to
@@ -232,9 +252,11 @@ lichessable/
   `pointerType` corrects it for good on their first tap or click. That is the
   same ground truth `useTouchInput()` uses to pick the event flavour for
   injected moves, and it was verified on Android in Desktop site mode.
-- **Review overstudy widget** — review sessions (`/practice/…`) render in the
-  top document (MoveTrainer2 — no mt1 iframe, no `#inputFEN`). The review URL
-  stays **constant** for the whole session (`/practice/<course>/0/<listId>`);
+- **Trainer overstudy widget** — trainer sessions (`/practice/…` and
+  `/learn/…`, which render the identical MoveTrainer2 markup) run in the
+  top document (no mt1 iframe, no `#inputFEN`). The session URL
+  stays **constant** for the whole session (`/practice/<course>/0/<listId>`,
+  `/learn/<course>/0/<listId>`);
   the variation id never appears in it. The watcher instead polls the DOM
   every 500 ms: the active drawer row (parent of the
   `#currentStudyingVariation` marker) exposes the variation id, list id, and
@@ -385,6 +407,31 @@ lichessable/
   the position up. The rest of the cycle belongs to Chessable — roughly 440 ms
   for the move to animate onto the board and 480 ms for its reply — so a
   replayed move takes about a second end to end even on *Fast*.
+- **Wrong-guess alt check** — section 15 in `content/lichessable.js`, built
+  almost entirely from parts that already existed. The *capture* is a hook in
+  the auto-play tracker's snap-back handler: a pending user answer rolled back
+  exactly one ply while the "Incorrect" notification is (or was just) showing
+  is the trainer refusing that move. The tracker (like every trainer feature)
+  runs on `/practice/` and `/learn/` alike — both routes render the identical
+  MoveTrainer2 markup. The
+  refused move is located in the line oracle by placement + side, which yields
+  the plan's exact pre-move FEN (real castling/en-passant — the tracker's own
+  reconstruction is approximate), the ply index the edit driver needs, and the
+  mainline move at that ply. The *check* runs two engine searches through the
+  normal offscreen hub, tagged with a `reqId` that `engine.js` echoes on that
+  search's updates (UCI info lines carry no request id, so the tag is the only
+  per-request correlation; panel updates stay untagged and unchanged) and
+  capped with a per-request `depth` — the search then ends itself at depth 20
+  and its `done` flag is the completion signal. `state.altCheckBusy` makes the
+  panel's `syncEngine` stand down while the check owns the engine; the engine
+  is booted on demand regardless of the panel toggle and given back the moment
+  both evals are in. Both scores arrive White-normalized; the verdict converts
+  them to the mover's perspective and maps mates near ±100 pawns minus the
+  mate distance, so missing a mate reads red while a slower mate stays green.
+  The *add* is the quick-edit alt-move job, byte-compatible — the alt-check
+  popup only fills in what the quick-edit popup would have (mainline
+  SAN/colour/ply index, the guess's SAN, the scope checkbox), and shares its
+  per-course edit-rights cache and lazy probe through `quickEditApi`.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.
