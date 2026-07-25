@@ -388,10 +388,15 @@
   // review mode (DOM-derived FEN, body-mounted panel — section 11).
   const IS_REVIEW = !IS_FRAME_APP;
   // The standalone variation page (top document, no mt1 iframe): the SECOND
-  // host of the quick-edit UI (section 12). Nothing else runs there — the
-  // review panel/overstudy gates below never match it.
+  // host of the quick-edit UI (section 12) and the THIRD host of the panel
+  // (section 11b). Evaluated PER CALL, exactly like isTrainerPath below:
+  // chessable.com navigates SPA-style, so the tab that loaded on the home page
+  // is the same document that later shows a variation page (and then a trainer
+  // session, and back) — a load-time constant here meant the panel and the
+  // pencil only ever appeared when the variation page was the page the tab
+  // had been LOADED on.
   const VARIATION_PATH_RE = /^\/variation\/(\d+)\/?/;
-  const IS_VARIATION_PAGE = IS_REVIEW && VARIATION_PATH_RE.test(location.pathname);
+  const isVariationPath = () => IS_REVIEW && VARIATION_PATH_RE.test(location.pathname);
 
   // Trainer-session path test, evaluated per call (SPA navigation changes the
   // path without a load). /practice/ review sessions and /learn/ sessions
@@ -556,7 +561,7 @@
     // (section 11) — but the standalone variation page, though also a top
     // document, DOES have one (readonly, updated on every move navigation),
     // so it falls through to the normal input read (section 11b).
-    if (IS_REVIEW && !IS_VARIATION_PAGE) return readReviewFen();
+    if (IS_REVIEW && !isVariationPath()) return readReviewFen();
     const input = document.querySelector(SELECTORS.fenInput);
     const value = input ? input.value.trim() : '';
     return value || null;
@@ -1927,19 +1932,53 @@
   // detects position changes by comparing the derived FEN.
   // ==========================================================================
 
-  async function initReviewPanel() {
+  /**
+   * The ONE top-document panel watcher. Both top-document hosts — the trainer
+   * browse state (section 11) and the standalone variation page (11b) — share
+   * the panel, its preferences and its engine plumbing, and a tab moves
+   * between them by SPA navigation with no load, so the choice is made per
+   * TICK (topPanelTick) rather than once at start-up.
+   */
+  async function initTopPanel() {
     state.hidden = await loadHiddenPref();
     state.engineEnabled = await loadEnginePref();
     state.engineBuild = await loadEngineBuildPref();
     chrome.storage.onChanged.addListener(onStorageChanged);
     chrome.runtime.onMessage.addListener(onEngineMessage);
     document.addEventListener('visibilitychange', onVisibilityChange);
-    setInterval(reviewPanelTick, CONFIG.review.pollMs);
+    setInterval(topPanelTick, CONFIG.review.pollMs);
     window.addEventListener('resize', centerReviewBoard); // also matters mid-quiz, panel hidden
-    window.addEventListener('resize', positionReviewPanel);
-    window.addEventListener('scroll', positionReviewPanel, true);
-    reviewPanelTick();
-    log('review Lichess panel watcher active (top document)');
+    window.addEventListener('resize', positionTopPanel);
+    window.addEventListener('scroll', positionTopPanel, true);
+    // Variation-page move navigation rewrites the location hash
+    // (#/<move>/<side>) — a free instant signal on top of the 500 ms poll.
+    // (Each position*Panel gates itself on the current path, so both the
+    // listeners above and this one are no-ops in the other mode.)
+    window.addEventListener('hashchange', scheduleRefresh);
+    topPanelTick();
+    log('Lichess panel watcher active (top document)');
+  }
+
+  // Which host the panel is currently serving, so a mode change can drop the
+  // stale position/placement instead of positioning the new page with it.
+  let topPanelVariationMode = null;
+
+  function topPanelTick() {
+    const variation = isVariationPath();
+    if (variation !== topPanelVariationMode) {
+      topPanelVariationMode = variation;
+      if (state.panel) state.panel.hidden = true;
+      state.fen = null;          // the new page starts with a fresh fetch
+      resetReviewAnchorHold();   // a fresh show must never fight a stale hold
+      syncEngine();              // and no search survives the switch
+    }
+    if (variation) variationPanelTick();
+    else reviewPanelTick();
+  }
+
+  function positionTopPanel() {
+    if (isVariationPath()) positionVariationPanel();
+    else positionReviewPanel();
   }
 
   function reviewPanelTick() {
@@ -2052,7 +2091,7 @@
    * lichessable.css).
    */
   function positionReviewPanel() {
-    if (!IS_REVIEW || !state.panel || state.panel.hidden) return;
+    if (!IS_REVIEW || isVariationPath() || !state.panel || state.panel.hidden) return;
     centerReviewBoard(); // keep the shift fresh on resize/scroll before measuring
     const board = getReviewBoard();
     if (!board) return;
@@ -2257,22 +2296,8 @@
   // whether this board accepts injected free-play clicks is unverified.
   // ==========================================================================
 
-  async function initVariationPanel() {
-    state.hidden = await loadHiddenPref();
-    state.engineEnabled = await loadEnginePref();
-    state.engineBuild = await loadEngineBuildPref();
-    chrome.storage.onChanged.addListener(onStorageChanged);
-    chrome.runtime.onMessage.addListener(onEngineMessage);
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    setInterval(variationPanelTick, CONFIG.review.pollMs);
-    window.addEventListener('resize', positionVariationPanel);
-    window.addEventListener('scroll', positionVariationPanel, true);
-    // Move navigation rewrites the location hash (#/<move>/<side>) — a free
-    // instant signal on top of the 500 ms poll.
-    window.addEventListener('hashchange', scheduleRefresh);
-    variationPanelTick();
-    log('variation-page Lichess panel active (top document)');
-  }
+  // No init of its own: initTopPanel owns the timer and the listeners, and
+  // dispatches here whenever the path is a variation page (topPanelTick).
 
   function variationPanelReady() {
     return Boolean(document.querySelector(SELECTORS.fenInput) &&
@@ -2301,7 +2326,7 @@
    * body scrolling internally (see .clo-panel--review in lichessable.css).
    */
   function positionVariationPanel() {
-    if (!IS_VARIATION_PAGE || !state.panel || state.panel.hidden) return;
+    if (!isVariationPath() || !state.panel || state.panel.hidden) return;
     const board = document.querySelector(SELECTORS.board);
     if (!board) return;
     const rect = board.getBoundingClientRect();
@@ -2959,7 +2984,24 @@
         userColor: () => boardBottomColor(findSquare('a1'), findSquare('h8')),
       },
     };
-    const host = IS_VARIATION_PAGE ? HOSTS.variation : HOSTS.review;
+    // Which host is live can CHANGE within one document: chessable.com
+    // navigates SPA-style, so the same tab goes review session → variation
+    // page → course page without a load. Re-picked on every tick and before
+    // every hover read; a switch drops any UI that belonged to the old host.
+    let host = pickHost();
+
+    function pickHost() {
+      return isVariationPath() ? HOSTS.variation : HOSTS.review;
+    }
+
+    function syncHost() {
+      const next = pickHost();
+      if (next === host) return;
+      host = next;
+      if (qe.pencil) qe.pencil.hidden = true;
+      if (qe.popup && !qe.popup.hidden) closePopup();
+      log('quick-edit host is now the ' + host.name);
+    }
 
     function buildPencil() {
       const btn = document.createElement('button');
@@ -3293,6 +3335,7 @@
     }
 
     function tick() {
+      syncHost();
       if (!host.ready()) {
         if (qe.pencil) qe.pencil.hidden = true;
         if (qe.popup && !qe.popup.hidden) closePopup();
@@ -3301,6 +3344,7 @@
 
     // Hover detection: read-only, never mutates Chessable's move list.
     document.addEventListener('pointerover', (e) => {
+      syncHost(); // an SPA navigation may have swapped hosts since the last tick
       const moveEl = e.target.closest && e.target.closest(host.moveSelector);
       if (!moveEl) return;
       // Unknown rights (null) still show the pencil — only a known-uneditable
@@ -3356,7 +3400,7 @@
 
     setInterval(tick, CONFIG.review.pollMs);
     tick();
-    log('quick-edit UI active (' + host.name + ')');
+    log('quick-edit UI active (top document)');
   }
 
   // ==========================================================================
@@ -5881,29 +5925,24 @@
       boot();
       return;
     }
-    // The standalone variation page hosts the quick-edit UI plus its own
-    // Lichess panel (section 11b — the page has a real #inputFEN). Every
-    // other top-document feature is MoveTrainer2 machinery whose gates never
-    // match there, so don't start their pollers.
-    if (IS_VARIATION_PAGE) {
-      initVariationPanel();
-      initQuickEditUi();
-      return;
-    }
     // Quick-edit driver popup window: its top document only shows the
     // "Saving…" shield — none of the review machinery belongs there.
     if (await maybeMountQuickEditShield()) return;
-    // Top document: overstudy widget, background-tab auto-pause, review panel,
-    // the quick-edit hover UI, review auto-play, the wrong-guess alt check,
-    // and the chapter sort button. Each one gates itself on the URL from its
-    // own poll, so SPA navigation into a review session or a chapter page is
-    // picked up without a load. Order matters twice: initQuickEditUi must run
+    // Top document: overstudy widget, background-tab auto-pause, the panel
+    // (trainer browse state AND standalone variation page), the quick-edit
+    // hover UI, review auto-play, the wrong-guess alt check, and the chapter
+    // sort button. EVERY module starts on EVERY top-document page and gates
+    // itself on the current URL from its own poll — chessable.com navigates
+    // SPA-style, so a tab loaded on the home page later becomes a course, a
+    // variation page and a trainer session without the content script ever
+    // running again, and anything decided here once would be wrong for the
+    // rest of that tab's life. Order matters twice: initQuickEditUi must run
     // before initAltCheck (probe results hit quick-edit's listener first, so
     // the rights cache is warm when the alt check reads it), and initAutoPlay
     // before initAltCheck only by convention (the bridge vars are null-safe).
     initReviewOverstudy();
     initOverstudyAutoPause();
-    initReviewPanel();
+    initTopPanel();
     initQuickEditUi();
     initAutoPlay();
     initAltCheck();

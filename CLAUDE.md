@@ -83,6 +83,21 @@ Currently working (v0.18.x).
 
 ## Key mechanics (don't accidentally break)
 
+- SPA activation (v0.27.1): chessable.com navigates by `pushState`, so ONE top
+  document is the home page, then a course, then `/variation/<id>/`, then a
+  trainer session — the content script runs once, at the tab's first load.
+  Therefore `start()` starts EVERY top-document module on EVERY page and each
+  one gates itself on the CURRENT url from its own 500 ms poll
+  (`isTrainerPath()`, `isVariationPath()`, the chapter regex). Never branch a
+  top-document feature on the load-time path: that is exactly what made the
+  variation page's panel and pencil need a manual reload. The panel has ONE
+  watcher (`initTopPanel` → `topPanelTick`) that dispatches to
+  `reviewPanelTick` or `variationPanelTick` per tick and drops the stale
+  fen/anchor/engine search when the mode flips; `positionTopPanel` dispatches
+  the same way, and quick-edit re-picks its `HOSTS` entry (`syncHost`) on every
+  tick and hover. Only the iframe-vs-top-document split (`IS_FRAME_APP`,
+  `IS_ANALYSIS`, `IS_EDIT_PAGE`, `IS_REVIEW`) is still load-time — an iframe
+  document really is created per app page.
 - `#inputFEN` (inside the iframe) is the single source of truth for the
   position. Its value changes programmatically WITHOUT events — hence the
   triple detection: input events + MutationObserver on `#nextMovesBit` +
@@ -199,7 +214,7 @@ Currently working (v0.18.x).
   document (mountPanel body-mounts it with the `--review` class), but the
   page has a real readonly `#inputFEN` that Chessable rewrites on every move
   navigation (verified live), so `readFen()` takes the ordinary input path
-  there (`IS_REVIEW && !IS_VARIATION_PAGE` gates the DOM reconstruction) and
+  there (`IS_REVIEW && !isVariationPath()` gates the DOM reconstruction) and
   NONE of the trainer machinery (browse gates, board centering, anchor hold)
   runs. `positionVariationPanel()` reuses the `CONFIG.review` thresholds:
   gutter left of the board, else below the ENTIRE page content

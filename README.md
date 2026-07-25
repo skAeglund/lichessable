@@ -241,6 +241,14 @@ lichessable/
   below, because chessable.com navigates SPA-style (`pushState`) — a review
   session can be reached from any page without a load, so the script must
   already be resident.
+- **Every top-document feature starts on every page** and decides whether it
+  applies from the *current* URL on its own 500 ms poll (`isTrainerPath()`,
+  `isVariationPath()`, the chapter-page regex). Nothing is branched on the
+  path the tab happened to load with: a single tab goes home → course →
+  variation page → trainer session with no load at all, so a start-up
+  decision would be wrong for the rest of that tab's life. (Until v0.27.1 the
+  variation page was chosen once at start-up, which is why its panel and
+  pencil only appeared after a manual reload.)
 - **Touch-sized UI** — on a device whose *primary* pointer is a finger, every
   widget this extension owns steps up one size: larger type in the panel,
   taller move rows (they are click-to-play targets), roomier buttons, and a
