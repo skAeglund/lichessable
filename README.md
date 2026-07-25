@@ -351,11 +351,15 @@ lichessable/
   (`clo-quick-edit-run`; visible and focused because Chrome clamps every timer
   on hidden or occluded pages — Chessable's own boot and dialogs included — to
   ~1 s, tripling the save time; the shield swallows keystrokes so nothing
-  reaches the edit page, and the worker falls back to a hidden tab if the
-  window can't be created), and the driver there clicks the
+  reaches the edit page. It is *always* that popup — never a background tab,
+  which would be throttled the same way; if the window can't be created the
+  worker retries once letting Chrome place it, then reports the failure). The
+  driver waits for the edit board to finish booting (`#inputFEN` parseable and
+  stable), then clicks the
   target move by its position in `#interactivePGN` (matched by ply index, since
   the edit page renumbers each variation from move 1 while review keeps the
-  source game's numbering), then either appends to the "Comments After"
+  source game's numbering) and verifies the board actually reached that move,
+  then either appends to the "Comments After"
   textarea and sets the "For This Variation Only" checkbox, or — for an
   alternative move — runs Chessable's own add-alternative flow: click "Add New
   Alternative Move", confirm the "next move you make on the board" dialog
@@ -370,12 +374,17 @@ lichessable/
   confirms Chessable's SweetAlert dialog — which is what actually submits the
   full-variation form. Success is detected when the POST lands the iframe on
   `/mt1/explore/?edit=<oid>`; the worker then relays the result to the review
-  tab and closes the background tab. Edit rights are a per-course property,
+  tab and closes the driver window. If Chessable neither navigates nor
+  complains, the driver reports the stall itself (with the text of any late
+  dialog) instead of letting the job die on the worker's blind timeout, and a
+  job already submitted is never handed out to a second driver — a failed POST
+  reloads the edit page, and re-driving it would append the same comment
+  twice. Edit rights are a per-course property,
   probed lazily: the pencil shows without knowing them, and only opening the
   popup while rights are still unknown runs the probe (one throwaway
-  background tab, result cached per course per session) — the popup's Save
+  driver window, result cached per course per session) — the popup's Save
   button stays disabled until the probe confirms edit rights, and a course
-  confirmed uneditable hides the pencil from then on. So no tab ever opens
+  confirmed uneditable hides the pencil from then on. So no window ever opens
   unless you actually try to edit. The move rows themselves are read only;
   nothing in Chessable's DOM is mutated.
 - **Review auto-play** — runs entirely in the top document alongside the

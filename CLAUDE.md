@@ -17,7 +17,7 @@ trainer sessions the Lichess panel also appears once a variation is completed
 (browse state), following the board via a DOM-derived FEN. In that same browse
 state, hovering a mainline move shows a pencil that appends a PGN comment to the
 variation (for courses you can edit) by driving Chessable's own edit page in a
-background tab; the same pencil works on standalone variation pages
+small focused popup window; the same pencil works on standalone variation pages
 (`/variation/<id>/`), which also get the full Lichess panel (section 11b).
 Trainer sessions (/practice/ and /learn/ alike) can also auto-play moves the
 user already answered correctly earlier the same session (section 13; opt-in
@@ -287,11 +287,13 @@ Currently working (v0.18.x).
   SMALL FOCUSED POPUP WINDOW (`chrome.windows.create focused:true`, ~260×180,
   placed right BESIDE the quick-edit popup — the requester computes screen
   bounds in `driverWindowBounds()` and sends them as `msg.win`; bottom-right
-  parking when absent, hidden-tab fallback — a hidden tab clamps every timer,
-  ours AND Chessable's boot/animations/dialogs, to ~1 s, which stretched a
-  save from ~4-5 s to ~13-20 s; focused:false was tried and saved NOTHING:
-  the window opens occluded behind a maximized browser and is throttled the
-  same).
+  parking when absent). ALWAYS that popup, NEVER a background tab (v0.28.0
+  removed the tab fallback: `openDriverWindow` just retries once without
+  bounds) — a hidden tab clamps every timer, ours AND Chessable's
+  boot/animations/dialogs, to ~1 s, which stretched a save from ~4-5 s to
+  ~13-20 s, i.e. right into the worker's job timeout; focused:false was tried
+  and saved NOTHING: the window opens occluded behind a maximized browser and
+  is throttled the same.
   The popup's TOP document covers itself with an opaque "Saving…" shield
   (`maybeMountQuickEditShield`, worker msg `clo-quick-edit-is-driver`) that
   also swallows all keystrokes in capture phase — the window has real focus,
@@ -302,7 +304,21 @@ Currently working (v0.18.x).
   `input` event, NOT a bare `.value =`), sets `#specificAltMove` ("For This
   Variation Only"), clicks `#submitButton`, and MUST also click the SweetAlert2
   confirm (`.swal2-confirm`) — `addVariation()` only serialises + POSTs the
-  whole variation after that dialog is confirmed. CRUCIAL: match the move by its
+  whole variation after that dialog is confirmed.
+  BOTH modes gate on `quickEditWaitBoardReady` FIRST (`#inputFEN` parseable and
+  unchanged for `boardStableMs`) and then VERIFY the move click landed (side to
+  move = opponent of the move's colour). The comment flow used to skip both and
+  submit ~150 ms after `#interactivePGN` merely existed — that was the
+  "popup spins until timeout" bug (v0.28.0): on a half-booted page
+  `addVariation()` throws inside Chessable's own confirm handler and POSTs
+  NOTHING, so there is no navigation, no dialog and nothing for the driver to
+  report; the same unlanded click also let a comment be appended to whatever
+  move happened to be selected. After the confirm click the driver keeps a
+  `postSubmitTimeoutMs` watch (a successful POST navigates it away mid-await,
+  so that code only ever runs on the stall path) and reports the stall — or a
+  late dialog's text — itself. The worker never re-hands a job in phase
+  'submitted': a failed POST reloads the edit page, and a second drive would
+  append the same comment TWICE. CRUCIAL: match the move by its
   0-based ply INDEX in the move list, NOT by absolute number — the edit page
   renumbers every variation from move 1 (a tactics puzzle shown as "25. Qc2!" in
   review is `Qc2_w_1` on the edit page), while review keeps the source game's
@@ -322,7 +338,18 @@ Currently working (v0.18.x).
   course — Save stays disabled until the probe confirms `canEdit` (result
   cached per `bid` per session; only an `ok:true` probe is cached, so a
   timeout retries on the next popup). A known-uneditable course hides the
-  pencil. Append convention
+  pencil. NOTHING about a probe may fail silently (v0.28.1): `probeRights`
+  RETURNS false when it cannot start one (unreadable bid/oid), and a probe
+  whose result never arrives is settled locally by a `probeTimeoutMs`
+  watchdog — otherwise the bid stays in `qe.probing` and BOTH popups (they
+  share this cache) sit on "Checking edit rights…" for the rest of the
+  session with no retry. The alt-check hears about a watchdog give-up through
+  the `altCheckProbeSettled` bridge, since its own knowledge of probes comes
+  only from `clo-quick-edit-result` messages. On the worker side
+  `getQuickEditJob` reaps a job older than twice the cap and re-arms the
+  timeout when it has none: `quickEditTimer` does not survive a worker
+  idle-restart, and an orphaned job refused every later quick-edit with
+  "another quick-edit is in progress" for the whole browser session. Append convention
   (`CONFIG.quickEdit.commentJoin`) and the exact stored wrapper (`( { … } )`)
   are the one thing to confirm in a manual save test.
   Touch has no hover, so after a TAP on a move (`pointerout` with
@@ -371,10 +398,14 @@ Currently working (v0.18.x).
   While the popup's alt tab is open, clicking a Lichess panel move row
   prefills the SAN input (both hosts are review documents, where rows carry no
   `dataset.uci`, so nothing competes).
-  `readQuickEditBid`/`readQuickEditOid` also parse /learn/ URLs
-  (`/learn/<bid>/<oid>/…` — both ids are in the URL itself, constant for the
-  tab), so rights probing and the alt-check (section 15) work in overstudy
-  tabs. `initQuickEditUi` exports `quickEditApi = { rightsFor(bid),
+  `readQuickEditBid`/`readQuickEditOid` parse trainer URLs through the ONE
+  module-level `TRAINER_URL_RE` (`/(practice|learn)/<bid>[/<oid>][/<lid>]` —
+  everything after the course id OPTIONAL), so rights probing and the
+  alt-check (section 15) work in learn sessions and overstudy tabs alike.
+  They used to carry a private, stricter pair of regexes whose /learn/ form
+  demanded a variation id the live session URL does not always have: the bid
+  read as null, `probeRights` refused to start, and both popups hung on
+  "Checking edit rights…" (v0.28.2). Never re-duplicate that regex. `initQuickEditUi` exports `quickEditApi = { rightsFor(bid),
   probe(bid, oid, win) }` (module-level variable) — the alt check shares the
   per-course rights cache and the lazy probe through it; the cache itself
   stays in the qe closure, and probe results reach quick-edit's

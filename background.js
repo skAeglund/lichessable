@@ -18,15 +18,16 @@
  *                                           permission)
  *
  * Quick-edit (content section 12): drives Chessable's own edit page in a
- * small unfocused popup window to append a PGN comment (mode 'save') or add
+ * small FOCUSED popup window to append a PGN comment (mode 'save') or add
  * an alternative move (mode 'alt'; altSan = the SAN the trainer should also
- * accept). A visible window rather than a hidden tab because Chrome clamps
- * every timer on hidden pages to ~1 s, tripling the save time. One job
- * at a time, kept in chrome.storage.session so it survives a worker
- * idle-restart:
+ * accept). ALWAYS that popup window, never a background tab — Chrome clamps
+ * every timer on a hidden page to ~1 s (Chessable's own boot, animations and
+ * dialogs included), which stretched a save from ~4-5 s to ~13-20 s, i.e.
+ * right up against this worker's job timeout. One job at a time, kept in
+ * chrome.storage.session so it survives a worker idle-restart:
  *   { type:'clo-quick-edit-run', mode:'probe'|'save'|'alt', oid, bid, san,
- *     color, plyIndex, commentText, altSan, forThisVariationOnly }
- *     (review tab -> worker) -> opens /explore/edit/<oid>/ focused:false
+ *     color, plyIndex, commentText, altSan, forThisVariationOnly, win }
+ *     (review tab -> worker) -> opens /explore/edit/<oid>/ in the popup
  *   { type:'clo-quick-edit-claim', oid }   (edit-tab driver -> worker)
  *       -> { claimed, mode, san, color, plyIndex, commentText, altSan,
  *            forThisVariationOnly }
@@ -35,7 +36,7 @@
  *       -> { isOurs }  (true = the job's submit succeeded)
  *   { type:'clo-quick-edit-result', oid, ok, canEdit?, error? } (driver -> worker)
  *   The worker relays a clo-quick-edit-result back to the review tab via
- *   chrome.tabs.sendMessage and closes the hidden tab.
+ *   chrome.tabs.sendMessage and closes the driver window.
  *
  * { type:'clo-ping' } -> { ok:true }. Exists so a content script can wake
  * this worker (and thereby run the setAccessLevel call below) before its
@@ -75,11 +76,15 @@ const OVERSTUDY_URL_RE = /^https:\/\/www\.chessable\.com\/learn\/\d+\/\d+(?:\/\d
 const ENGINE_TARGET_KEY = 'cloEngineTarget';
 
 // Quick-edit comment (content section 12): the worker opens Chessable's own
-// edit page in a background tab and the driver there submits the change. Only
-// the numeric variation id is ever interpolated into the URL.
+// edit page in the driver popup window and the driver there submits the
+// change. Only the numeric variation id is ever interpolated into the URL.
 const QUICK_EDIT_BASE = 'https://www.chessable.com/explore/edit/';
 const QUICK_EDIT_JOB_KEY = 'cloQuickEditJob'; // chrome.storage.session; one job at a time
-const QUICK_EDIT_TIMEOUT_MS = 25000;          // hard cap; force-fail + close the tab
+// Hard cap; force-fail + close the driver window. Deliberately longer than
+// every wait the driver itself owns (boot gate + drive + post-submit watch),
+// so a stall is reported by the driver with a real reason and this blind
+// timeout only ever catches a driver that never ran at all.
+const QUICK_EDIT_TIMEOUT_MS = 35000;
 let quickEditTimer = null;
 
 
@@ -133,7 +138,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // job, so it can cover the page with the "Saving…" shield.
     (async () => {
       const job = await getQuickEditJob();
-      const isDriver = Boolean(job && sender.tab && sender.tab.id === job.hiddenTabId
+      const isDriver = Boolean(job && sender.tab && sender.tab.id === job.driverTabId
         && String(job.oid) === String(msg.oid));
       sendResponse({ isDriver, mode: isDriver ? job.mode : undefined });
     })();
@@ -244,11 +249,36 @@ function openOverstudyTab(url) {
 // A single job at a time, stored in chrome.storage.session so routing/cleanup
 // survives a worker idle-restart (same rationale as ENGINE_TARGET_KEY).
 
+/**
+ * The stored job, or null. Two things happen here that cannot happen anywhere
+ * else, because the job outlives this worker but `quickEditTimer` does not:
+ *
+ *  - A job older than twice the cap is REAPED. Without this, a worker that
+ *    idle-restarted mid-job left the record in storage.session with no timer
+ *    to end it, and every later quick-edit was refused with "another
+ *    quick-edit is in progress" for the rest of the browser session.
+ *  - The timeout is RE-ARMED whenever we hold a job and have no timer, so a
+ *    job that survives a restart still finishes (and still closes its window).
+ */
 async function getQuickEditJob() {
+  let job = null;
   try {
     const stored = await chrome.storage.session.get(QUICK_EDIT_JOB_KEY);
-    return stored[QUICK_EDIT_JOB_KEY] || null;
+    job = stored[QUICK_EDIT_JOB_KEY] || null;
   } catch (err) { return null; }
+  if (!job) return null;
+  const age = job.t0 ? Date.now() - job.t0 : 0;
+  if (age > QUICK_EDIT_TIMEOUT_MS * 2) {
+    console.warn('[CLO] discarding a stale quick-edit job for variation', job.oid);
+    if (job.driverTabId != null) chrome.tabs.remove(job.driverTabId).catch(() => {});
+    await clearQuickEditJob();
+    return null;
+  }
+  if (!quickEditTimer) {
+    quickEditTimer = setTimeout(() => failQuickEditJob('timeout'),
+      Math.max(1000, QUICK_EDIT_TIMEOUT_MS - age));
+  }
+  return job;
 }
 async function setQuickEditJob(job) {
   try { await chrome.storage.session.set({ [QUICK_EDIT_JOB_KEY]: job }); } catch (err) { /* ignore */ }
@@ -264,6 +294,44 @@ function relayQuickEditResult(job, result) {
     ok: Boolean(result.ok), canEdit: result.canEdit, error: result.error,
     timing: quickEditTiming(job),
   }, { frameId: job.requesterFrameId }).catch(() => {});
+}
+
+/**
+ * Opens the quick-edit driver: a small FOCUSED popup window, ALWAYS — never a
+ * background tab. Chrome clamps every timer on a hidden page to ~1 s, and that
+ * includes Chessable's own boot, animations and dialogs, which stretched a
+ * save from ~4-5 s to ~13-20 s. Focused is equally load-bearing: an unfocused
+ * window opens BEHIND a maximized browser, where the occlusion tracker
+ * throttles it exactly like a hidden tab (verified — focused:false saved
+ * nothing). The content script covers the window with a "Saving…" shield that
+ * also swallows stray keystrokes, and closing the job's tab (finalize) closes
+ * the window, returning focus.
+ *
+ * Placement: `req` is the requester's screen bounds putting the window right
+ * BESIDE its quick-edit popup (sanity-checked here, sizes clamped; Chrome
+ * additionally enforces its own popup minimums). Without it, the window is
+ * parked bottom-right of the user's current window.
+ */
+async function openDriverWindow(url, req) {
+  if (!req || ![req.left, req.top, req.width, req.height].every(Number.isFinite)) req = null;
+  const width = req ? Math.min(Math.max(req.width, 200), 800) : 380;
+  const height = req ? Math.min(Math.max(req.height, 120), 800) : 320;
+  let left, top;
+  if (req) {
+    left = req.left;
+    top = req.top;
+  } else {
+    let bounds = null;
+    try { bounds = await chrome.windows.getLastFocused(); } catch (e) { /* fall through */ }
+    left = bounds ? Math.max(0, bounds.left + bounds.width - width - 8) : undefined;
+    top = bounds ? Math.max(0, bounds.top + bounds.height - height - 8) : undefined;
+  }
+  const win = await chrome.windows.create({
+    url, focused: true, type: 'popup', width, height, left, top,
+  });
+  const tab = win && win.tabs && win.tabs[0];
+  if (!tab) throw new Error('driver window has no tab');
+  return tab;
 }
 
 async function startQuickEditJob(msg, sender) {
@@ -283,46 +351,19 @@ async function startQuickEditJob(msg, sender) {
   const url = QUICK_EDIT_BASE + oid + '/';
   let tab;
   try {
-    // A small FOCUSED popup window, not a hidden tab: Chrome clamps every
-    // timer on a hidden page to ~1 s — Chessable's own boot, animations and
-    // dialogs included — which stretched a save from ~4-5 s to ~13-20 s. It
-    // must be focused: an unfocused window opens BEHIND a maximized browser,
-    // where the occlusion tracker throttles it exactly like a hidden tab
-    // (verified: focused:false saved nothing). The content script covers the
-    // window with a "Saving…" shield that also swallows stray keystrokes, and
-    // closing the job's tab (finalize) closes the window, returning focus.
-    // Placement: the requester sends screen bounds putting the window right
-    // BESIDE its quick-edit popup (msg.win — position sanity-checked here,
-    // sizes clamped; Chrome additionally enforces its own popup minimums);
-    // fallback is the bottom-right of the user's current window.
-    let req = msg.win;
-    if (!req || ![req.left, req.top, req.width, req.height].every(Number.isFinite)) req = null;
-    const width = req ? Math.min(Math.max(req.width, 200), 800) : 380;
-    const height = req ? Math.min(Math.max(req.height, 120), 800) : 320;
-    let left, top;
-    if (req) {
-      left = req.left;
-      top = req.top;
-    } else {
-      let bounds = null;
-      try { bounds = await chrome.windows.getLastFocused(); } catch (e) { /* fall through */ }
-      left = bounds ? Math.max(0, bounds.left + bounds.width - width - 8) : undefined;
-      top = bounds ? Math.max(0, bounds.top + bounds.height - height - 8) : undefined;
-    }
-    const win = await chrome.windows.create({
-      url, focused: true, type: 'popup', width, height, left, top,
-    });
-    tab = win && win.tabs && win.tabs[0];
-    if (!tab) throw new Error('popup window has no tab');
+    tab = await openDriverWindow(url, msg.win);
   } catch (err) {
-    // Popup creation can be refused (e.g. odd window managers) — fall back to
-    // the hidden tab: slower, but the job still completes.
+    // The only input the requester controls is the placement, and bad screen
+    // bounds (a monitor that went away between the two calls, say) are the one
+    // thing that can make windows.create refuse. Retry once letting Chrome
+    // place the window itself — but stay a POPUP either way: a background tab
+    // is throttled to ~1 s timers and is not an acceptable substitute.
     try {
-      tab = await chrome.tabs.create({ url, active: false });
+      tab = await openDriverWindow(url, null);
     } catch (err2) {
       chrome.tabs.sendMessage(sender.tab.id, {
         type: 'clo-quick-edit-result', oid, bid: msg.bid, mode: msg.mode,
-        ok: false, error: 'could not open the edit tab',
+        ok: false, error: 'could not open the Chessable edit window',
       }, { frameId: sender.frameId || 0 }).catch(() => {});
       return;
     }
@@ -335,7 +376,7 @@ async function startQuickEditJob(msg, sender) {
     commentText: msg.commentText, altSan: msg.altSan,
     forThisVariationOnly: Boolean(msg.forThisVariationOnly),
     requesterTabId: sender.tab.id, requesterFrameId: sender.frameId || 0,
-    hiddenTabId: tab.id, phase: 'loading',
+    driverTabId: tab.id, phase: 'loading',
     t0: Date.now(), // phase timestamps for the timing line in the result
   };
   await setQuickEditJob(job);
@@ -343,15 +384,24 @@ async function startQuickEditJob(msg, sender) {
   quickEditTimer = setTimeout(() => failQuickEditJob('timeout'), QUICK_EDIT_TIMEOUT_MS);
 }
 
-/** The driver (in the hidden tab's edit iframe) asks whether it has a job. */
+/**
+ * The driver popup window's edit iframe asks whether it has a job.
+ *
+ * A job already in the 'submitted' phase is NEVER handed out again: a POST
+ * that fails server-side reloads the edit page at its path form, whose driver
+ * would otherwise claim the same job and append the same comment a SECOND
+ * time. Let it time out instead — a duplicated comment in the user's course is
+ * far worse than a retryable failure.
+ */
 async function claimQuickEditJob(msg, sender) {
   const job = await getQuickEditJob();
   if (!job || String(job.oid) !== String(msg.oid)) return { claimed: false };
+  if (job.phase === 'submitted') return { claimed: false };
   if (!sender.tab || typeof sender.tab.id !== 'number') return { claimed: false };
-  // Bind the hidden tab id on first claim (tabs.create resolves before the
+  // Bind the driver tab id on first claim (windows.create resolves before the
   // page's content script runs, so this is normally already set).
-  if (job.hiddenTabId == null) job.hiddenTabId = sender.tab.id;
-  if (job.hiddenTabId !== sender.tab.id) return { claimed: false };
+  if (job.driverTabId == null) job.driverTabId = sender.tab.id;
+  if (job.driverTabId !== sender.tab.id) return { claimed: false };
   job.tClaim = Date.now();
   await setQuickEditJob(job);
   return {
@@ -380,11 +430,11 @@ function quickEditTiming(job) {
     + (job.tSubmit ? ', post ' + s(job.tSubmit, now) : '');
 }
 
-/** Post-submit landing (/mt1/explore/?edit=<oid>) from the hidden tab = success. */
+/** Post-submit landing (/mt1/explore/?edit=<oid>) from the driver window = success. */
 async function handleQuickEditLanding(msg, sender) {
   const job = await getQuickEditJob();
   if (!job || job.phase !== 'submitted' || String(job.oid) !== String(msg.oid)) return { isOurs: false };
-  if (!sender.tab || sender.tab.id !== job.hiddenTabId) return { isOurs: false };
+  if (!sender.tab || sender.tab.id !== job.driverTabId) return { isOurs: false };
   await finalizeQuickEditJob(job, { ok: true, mode: job.mode });
   return { isOurs: true };
 }
@@ -402,12 +452,12 @@ async function failQuickEditJob(reason) {
   await finalizeQuickEditJob(job, { ok: false, error: reason });
 }
 
-/** Relay the outcome to the review tab, close the hidden tab, clear the job. */
+/** Relay the outcome to the review tab, close the driver window, clear the job. */
 async function finalizeQuickEditJob(job, result) {
   clearTimeout(quickEditTimer);
   quickEditTimer = null;
   relayQuickEditResult(job, result);
-  if (job.hiddenTabId != null) chrome.tabs.remove(job.hiddenTabId).catch(() => {});
+  if (job.driverTabId != null) chrome.tabs.remove(job.driverTabId).catch(() => {});
   await clearQuickEditJob();
 }
 

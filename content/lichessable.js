@@ -207,13 +207,26 @@
     // --- Quick-edit comment (section 12) -----------------------------------
     // Adds a hover pencil to mainline moves in the review browse panel that
     // appends a PGN comment to the real Chessable variation by driving its own
-    // edit page in a background tab (opened by background.js).
+    // edit page in a focused driver popup window (opened by background.js).
     quickEdit: {
       editPathPrefix:   '/mt1/explore/edit/', // the edit page inside the mt1 iframe
       commentJoin:      '\n\n', // separator when appending to an existing comment
       settleMs:         150,    // wait after clicking a move for #moveComment to update
       bootTimeoutMs:    15000,  // wait for the edit form (absence ⇒ no edit rights)
       confirmTimeoutMs: 6000,   // wait for the SweetAlert confirm button after submit
+      // The edit board is booted when #inputFEN holds a parseable FEN that has
+      // stopped changing for this long (the boot navigates to move 1 itself).
+      boardStableMs:    450,
+      moveSelectTimeoutMs: 4000, // wait for the board to reach the clicked move
+      // After the update-confirm click Chessable serialises + POSTs, and the
+      // POST navigates the iframe away. If neither that navigation nor an
+      // error dialog happens within this long, the driver reports the stall
+      // itself — otherwise the job would die on the worker's blind timeout
+      // with nothing but "timed out" to show the user.
+      // Generous on purpose: Chrome keeps this document alive while the POST
+      // is in flight, so a short window could call a merely slow save a
+      // failure — and the worker would then close the window on it.
+      postSubmitTimeoutMs: 15000,
       // Alt-move driver: after the instruction dialog is confirmed the edit
       // board steps BACK one move (its #inputFEN changes) before the
       // alternative can be played; after the two square presses Chessable
@@ -224,6 +237,14 @@
       // finger lifting fires pointerout right after, whose 200 ms hide made
       // the pencil unhittable. After a TAP it stays up this long instead.
       touchPencilMs: 4000,
+      // Client-side watchdog for a rights probe. The worker's own job cap is
+      // shorter; this only catches a probe whose RESULT never arrives at all
+      // (worker idle-restart dropped the job, the driver window was closed by
+      // hand, the message was lost). Without it the bid stays in qe.probing
+      // for the rest of the session and every later popup — quick-edit's and
+      // the alt-check's, which share this cache — sits on "Checking edit
+      // rights…" with no way to retry.
+      probeTimeoutMs: 45000,
     },
 
     // --- Auto-play already-mastered moves in review (section 13) -----------
@@ -407,6 +428,18 @@
   const isTrainerPath = () =>
     location.pathname.startsWith(CONFIG.review.pathPrefix) ||
     location.pathname.startsWith(CONFIG.review.learnPrefix);
+
+  /**
+   * The ONE pattern for a trainer session URL — /practice/ and /learn/ alike:
+   * course id, then an OPTIONAL variation id (0 in a session, a real oid in a
+   * single-variation overstudy tab) and an OPTIONAL list id. Everything after
+   * the course id is optional on purpose: a live /learn/ session does not
+   * always carry the trailing segments, and a stricter copy of this regex in
+   * the quick-edit module is exactly why its rights probe could not read the
+   * course id there and both popups hung on "Checking edit rights…" (v0.28.2).
+   * Course id = m[1], variation id = m[2], list id = m[3]. Never duplicate it.
+   */
+  const TRAINER_URL_RE = /^\/(?:practice|learn)\/(\d+)(?:\/(\d+))?(?:\/(\d+))?/;
 
   /**
    * False once this content script has been ORPHANED by an extension reload:
@@ -1719,12 +1752,10 @@
       warnedNoDetect: false, // one warning per detection outage, not per tick
     };
 
-    // Course id from the session URL; the trailing list id doubles as a
-    // fallback when the drawer row is unavailable. /learn/ sessions use the
-    // same shape (/learn/<bid>/<oid|0>/<lid>) and the same drawer markup
-    // (ground-truthed live 2026-07-23), so one regex serves both.
-    const TRAINER_URL_RE = /^\/(?:practice|learn)\/(\d+)(?:\/(\d+))?(?:\/(\d+))?/;
-
+    // Course id from the session URL (module-level TRAINER_URL_RE); the
+    // trailing list id doubles as a fallback when the drawer row is
+    // unavailable. /learn/ sessions use the same shape and the same drawer
+    // markup (ground-truthed live 2026-07-23), so one regex serves both.
     function readCurrentVariation() {
       const m = TRAINER_URL_RE.exec(location.pathname);
       if (!m) return null;
@@ -2370,8 +2401,8 @@
   // or add an ALTERNATIVE MOVE the trainer should also accept. There is no
   // JSON API for either — the only safe path is to drive Chessable's own edit
   // page (verified: several of its POST fields are session/CSRF-bound and
-  // opaque). So background.js opens /explore/edit/<oid>/ in a background tab;
-  // the driver below (running in that tab's mt1 edit iframe) clicks the target
+  // opaque). So background.js opens /explore/edit/<oid>/ in a small focused
+  // popup window; the driver below (in that window's mt1 edit iframe) clicks the target
   // move, then either appends to the "Comments After" textarea (mode 'save')
   // or runs Chessable's add-alternative flow (mode 'alt' — see
   // driveQuickEditAltMove: the "Add New Alternative Move" link arms a
@@ -2393,7 +2424,7 @@
   // open, clicking a Lichess panel move row prefills the SAN input.
   //
   // Edit rights are a per-COURSE property. They are probed LAZILY: the pencil
-  // shows without knowing them, and the probe (one throwaway background tab)
+  // shows without knowing them, and the probe (one throwaway driver window)
   // only runs when a popup is opened while rights are still unknown — the
   // popup's Save button stays disabled until the probe confirms them. The
   // result is cached per course per session; a known-uneditable course hides
@@ -2509,17 +2540,18 @@
     const link = document.querySelector(SELECTORS.reviewTitleLink);
     const hm = link && /^\/variation\/(\d+)/.exec(link.getAttribute('href') || '');
     if (hm && hm[1] !== '0') return hm[1];
-    const lm = LEARN_IDS_RE.exec(location.pathname);
-    return lm && lm[2] !== '0' ? lm[2] : null;
+    const lm = TRAINER_URL_RE.exec(location.pathname);
+    return lm && lm[2] && lm[2] !== '0' ? lm[2] : null;
   }
 
-  const QUICK_EDIT_BID_RE = /^\/practice\/(\d+)/;
-  const LEARN_IDS_RE = /^\/learn\/(\d+)\/(\d+)/; // course id, variation id
+  /** Course id of the current trainer session, /practice/ and /learn/ alike.
+   *  Uses the shared TRAINER_URL_RE — this used to carry its OWN pair of
+   *  regexes, and the /learn/ one demanded a variation id the live session URL
+   *  did not always have, so this returned null and every rights probe on a
+   *  learn session silently refused to start (v0.28.2). */
   function readQuickEditBid() {
-    const m = QUICK_EDIT_BID_RE.exec(location.pathname);
-    if (m) return m[1];
-    const lm = LEARN_IDS_RE.exec(location.pathname);
-    return lm ? lm[1] : null;
+    const m = TRAINER_URL_RE.exec(location.pathname);
+    return m ? m[1] : null;
   }
 
   // --- driver (runs in the background edit tab's mt1 iframe) -----------------
@@ -2570,8 +2602,9 @@
    * for the alt driver it may just mean "check for an error dialog instead").
    *
    * DOM mutations re-run the predicate IMMEDIATELY: MutationObserver is not
-   * timer-throttled in a hidden tab, whereas setInterval is clamped to ~1 s
-   * there — and the hidden edit tab is exactly where this runs. Every state
+   * timer-throttled when a page is throttled, whereas setInterval is clamped
+   * to ~1 s there. The driver window is focused precisely to avoid that, but
+   * it can still be occluded by whatever the user does next. Every state
    * this driver waits for (board position, dialogs, the alt list) mutates the
    * DOM when it arrives, so chaining a dozen such waits stays fast without
    * the tab ever being focused; the interval is only a backstop for the
@@ -2608,7 +2641,7 @@
 
   /**
    * Called from start() only on the edit page. Asks the worker whether this
-   * background tab was opened for a quick-edit job; if so, drives it and
+   * window was opened for a quick-edit job; if so, drives it and
    * returns true (so the caller skips the normal explore panel). Returns false
    * for a manual visit, so the normal panel still mounts.
    */
@@ -2662,29 +2695,18 @@
       throw new Error(`move mismatch at #${job.plyIndex}: id "${moveEl.id}" vs expected ${job.san}/${job.color}`);
     }
     if (job.mode === 'alt') {
-      // The alt flow does its own move click (after its board-ready gate) and
-      // its own settling — a fixed delay here would only add a ~1 s clamped
-      // timer in the hidden tab. 'already' = the alternative was saved on a
-      // previous visit (the form renders stored alternatives on selection):
-      // nothing to change, success without touching the variation at all.
+      // The alt flow does its own move click (after the shared board-ready
+      // gate) and its own settling — a fixed delay here would only add a ~1 s
+      // clamped timer. 'already' = the alternative was saved on a previous
+      // visit (the form renders stored alternatives on selection): nothing to
+      // change, success without touching the variation at all.
       const outcome = await driveQuickEditAltMove(job, moveEl);
       if (outcome === 'already') {
         chrome.runtime.sendMessage({ type: 'clo-quick-edit-result', oid, mode: 'alt', ok: true }).catch(() => {});
         return;
       }
     } else {
-      moveEl.click(); // selects the move; #moveComment updates synchronously
-      await quickEditDelay(CONFIG.quickEdit.settleMs);
-      const ta = document.querySelector(SELECTORS.editCommentAfter);
-      if (!ta) throw new Error('comment field not found');
-      const existing = ta.value || '';
-      const next = existing.trim()
-        ? existing + CONFIG.quickEdit.commentJoin + job.commentText
-        : job.commentText;
-      setReactTextareaValue(ta, next);
-
-      const box = document.querySelector(SELECTORS.editVariationOnly);
-      if (box && box.checked !== Boolean(job.forThisVariationOnly)) box.click();
+      await driveQuickEditComment(job, moveEl);
     }
 
     // Tell the worker we're about to submit, so the post-POST landing document
@@ -2704,6 +2726,77 @@
     const confirmBtn = await quickEditWaitUntil(quickEditOpenConfirm, CONFIG.quickEdit.confirmTimeoutMs);
     if (!confirmBtn) throw new Error('update-confirm dialog did not appear');
     confirmBtn.click();
+
+    // Everything past here is the STALL path: a successful submit navigates
+    // this document away mid-await, so nothing below ever runs. If we are
+    // still alive after postSubmitTimeoutMs, addVariation() did not POST —
+    // and since it swallows its own exceptions, the only clue it may leave is
+    // a fresh dialog. Report either that text or the stall itself, so the
+    // popup shows a reason instead of the worker's blind "timed out".
+    await quickEditWaitUntil(() => !quickEditOpenConfirm(), CONFIG.quickEdit.confirmTimeoutMs);
+    const late = await quickEditWaitUntil(
+      () => document.querySelector(SELECTORS.editSwalShown), CONFIG.quickEdit.postSubmitTimeoutMs);
+    const reason = late ? late.textContent.trim().replace(/\s+/g, ' ').slice(0, 160) : '';
+    throw new Error(reason || 'Chessable did not save the variation (the edit page never submitted)');
+  }
+
+  /**
+   * Waits until the edit board has actually booted: #inputFEN holds a
+   * parseable FEN that has stopped changing (the boot navigates to move 1 on
+   * its own). BOTH drivers gate on this. The alt flow always did — a move
+   * click on a half-booted board does not navigate it. The comment flow used
+   * to submit ~150 ms after #interactivePGN merely EXISTED, and that is the
+   * "popup spins until the timeout" bug: addVariation() serialises the whole
+   * variation out of page state that is not populated yet, throws inside
+   * Chessable's own SweetAlert confirm handler, and POSTs nothing at all — no
+   * navigation, no error, nothing for the driver to report. Same reason a
+   * comment could land on the wrong move: the click that was meant to select
+   * it silently did nothing, so #moveComment still belonged to move 1.
+   */
+  async function quickEditWaitBoardReady(fenInput) {
+    let lastFen = null, stableSince = 0;
+    const ready = await quickEditWaitUntil(() => {
+      const v = fenInput.value;
+      if (!CloSan.parseFen(v)) { lastFen = null; return null; }
+      if (v !== lastFen) { lastFen = v; stableSince = Date.now(); return null; }
+      return Date.now() - stableSince >= CONFIG.quickEdit.boardStableMs ? v : null;
+    }, CONFIG.quickEdit.bootTimeoutMs);
+    if (!ready) throw new Error('edit board did not finish loading');
+    return ready;
+  }
+
+  /**
+   * Selects the target move and appends the comment to #moveComment. The
+   * selection is VERIFIED against the board (side to move = the opponent of
+   * the move's colour) rather than assumed: a click that did not take would
+   * otherwise append the text to whatever move was selected instead. Side-based
+   * checks stay valid on renumbered tactics lines, where the FEN's fullmove
+   * number matches the source game rather than the edit page's numbering.
+   */
+  async function driveQuickEditComment(job, moveEl) {
+    const fenInput = document.querySelector(SELECTORS.fenInput);
+    if (!fenInput) throw new Error('edit-page FEN input not found');
+    await quickEditWaitBoardReady(fenInput);
+
+    const afterSide = job.color === 'w' ? 'b' : 'w';
+    moveEl.click(); // selects the move; #moveComment follows
+    const reached = await quickEditWaitUntil(() => {
+      const pos = CloSan.parseFen(fenInput.value);
+      return pos && pos.side === afterSide ? fenInput.value : null;
+    }, CONFIG.quickEdit.moveSelectTimeoutMs);
+    if (!reached) throw new Error('edit board did not reach the selected move');
+    await quickEditDelay(CONFIG.quickEdit.settleMs);
+
+    const ta = document.querySelector(SELECTORS.editCommentAfter);
+    if (!ta) throw new Error('comment field not found');
+    const existing = ta.value || '';
+    const next = existing.trim()
+      ? existing + CONFIG.quickEdit.commentJoin + job.commentText
+      : job.commentText;
+    setReactTextareaValue(ta, next);
+
+    const box = document.querySelector(SELECTORS.editVariationOnly);
+    if (box && box.checked !== Boolean(job.forThisVariationOnly)) box.click();
   }
 
   /** True when the selected move's rendered alternatives include `san`. */
@@ -2729,29 +2822,19 @@
     if (!fenInput) throw new Error('edit-page FEN input not found');
 
     // The driver starts as soon as #interactivePGN exists — BEFORE the edit
-    // board has necessarily finished booting (the comment flow never noticed:
-    // it only touches the React comment field). A move click on a half-booted
-    // board does not navigate it, so first wait until the FEN input holds a
-    // parseable value that has stopped changing (the boot navigates to move 1
-    // on its own), THEN re-click the target move and require the position
-    // AFTER it: side to move = the opponent of the move's colour. Side-based
-    // checks stay valid on renumbered tactics lines, where the FEN's fullmove
-    // number matches the source game rather than the edit page's numbering.
+    // board has necessarily finished booting. Wait for the board (shared gate),
+    // THEN re-click the target move and require the position AFTER it: side to
+    // move = the opponent of the move's colour. Side-based checks stay valid on
+    // renumbered tactics lines, where the FEN's fullmove number matches the
+    // source game rather than the edit page's numbering.
     const afterSide = job.color === 'w' ? 'b' : 'w';
-    let lastFen = null, stableSince = 0;
-    const ready = await quickEditWaitUntil(() => {
-      const v = fenInput.value;
-      if (!CloSan.parseFen(v)) { lastFen = null; return null; }
-      if (v !== lastFen) { lastFen = v; stableSince = Date.now(); return null; }
-      return Date.now() - stableSince >= 450 ? v : null;
-    }, CONFIG.quickEdit.bootTimeoutMs);
-    if (!ready) throw new Error('edit board did not finish loading');
+    await quickEditWaitBoardReady(fenInput);
 
     moveEl.click(); // idempotent re-select, now that the board is live
     const fenBefore = await quickEditWaitUntil(() => {
       const pos = CloSan.parseFen(fenInput.value);
       return pos && pos.side === afterSide ? fenInput.value : null;
-    }, CONFIG.quickEdit.altStepBackTimeoutMs);
+    }, CONFIG.quickEdit.moveSelectTimeoutMs);
     if (!fenBefore) throw new Error('edit board did not reach the selected move');
 
     // Selecting the move rendered its stored alternatives — already listed
@@ -2766,7 +2849,7 @@
     if (!okBtn) throw new Error('add-alternative dialog did not appear');
     // Keep the dialog's text: if the step-back never happens, this was most
     // likely a REFUSAL dialog rather than the arming instruction, and its
-    // wording is the only diagnosis the closing hidden tab leaves behind.
+    // wording is the only diagnosis the closing driver window leaves behind.
     const armDialog = document.querySelector(SELECTORS.editSwalShown);
     const armText = armDialog ? armDialog.textContent.trim().replace(/\s+/g, ' ').slice(0, 160) : '';
     okBtn.click();
@@ -2822,8 +2905,8 @@
     if (doneBtn) doneBtn.click();
     await quickEditWaitUntil(() => !quickEditOpenConfirm(), CONFIG.quickEdit.confirmTimeoutMs);
     // No settle delay here: the submit-confirm wait that follows is scoped to
-    // the OPEN dialog, and a fixed timer would cost a full ~1 s clamp in the
-    // hidden tab.
+    // the OPEN dialog, and a fixed timer would cost a full ~1 s clamp if the
+    // driver window ever ends up throttled.
   }
 
   /**
@@ -2924,6 +3007,7 @@
     const qe = {
       rightsByBid: new Map(), // bid -> boolean (edit rights), cached per session
       probing: new Set(),     // bids with a probe in flight
+      probeTimers: new Map(), // bid -> watchdog timer for that probe
       pencil: null,
       popup: null,
       els: null,              // cached popup child refs
@@ -3182,9 +3266,10 @@
     /**
      * Reflects the host's tri-state edit rights in the open popup: Save is
      * only enabled once rights are KNOWN true. Unknown rights (review host,
-     * course not probed yet) trigger the hidden-tab probe now — this is the
-     * only place a probe starts, so no tab ever opens before the user asks
-     * to comment.
+     * course not probed yet) start the probe now — this is the only place a
+     * probe starts, so no window ever opens before the user asks to comment.
+     * "Checking…" is shown ONLY when a probe is genuinely running: a probe
+     * that could not be started at all used to leave this status up forever.
      */
     function applyRightsToPopup() {
       if (!qe.popup || qe.popup.hidden || qe.saving) return;
@@ -3194,9 +3279,10 @@
         setStatus('', false);
       } else if (rights === false) {
         setStatus("You don't have edit rights for this course.", true);
-      } else {
+      } else if (maybeProbe()) {
         setStatus('Checking edit rights…', false);
-        maybeProbe();
+      } else {
+        setStatus('Could not check edit rights — close and retry.', true);
       }
     }
 
@@ -3281,7 +3367,12 @@
 
     function onResult(msg) {
       if (msg.mode === 'probe') {
-        if (msg.bid) qe.probing.delete(msg.bid);
+        if (msg.bid) {
+          qe.probing.delete(msg.bid);
+          clearTimeout(qe.probeTimers.get(msg.bid));
+          qe.probeTimers.delete(msg.bid);
+        }
+        if (!msg.ok) warn('quick-edit: rights probe failed:', msg.error || '(no reason given)');
         if (msg.ok && msg.bid) {
           // Only a completed probe is cached — a timeout/error stays unknown
           // so the next popup open retries instead of locking the course out.
@@ -3312,26 +3403,50 @@
       }
     }
 
-    /** Starts the hidden-tab rights probe (review host only, once per course). */
+    /** Starts the rights probe (review host only, once per course). */
     function maybeProbe() {
-      probeRights(host.bid(), host.oid(), driverWindowBounds());
+      return probeRights(host.bid(), host.oid(), driverWindowBounds());
     }
 
     /** The probe itself, host-independent — also called by the alt-check
      *  module through quickEditApi. One probe per course per session; the
      *  result lands in qe.rightsByBid via onResult. */
+    /**
+     * Returns TRUE when rights are known or a probe is genuinely in flight,
+     * FALSE when no probe could be started — the callers turn that into a
+     * visible, retryable error. Every early return used to be silent, which is
+     * how a popup ended up on "Checking edit rights…" forever: an unreadable
+     * course/variation id (or a probe wedged from an earlier popup) simply did
+     * nothing, and nothing ever re-triggered the status.
+     */
     function probeRights(bid, oid, win) {
-      if (!bid || !oid) return;
-      if (qe.rightsByBid.has(bid) || qe.probing.has(bid)) return;
+      if (!bid || !oid) {
+        warn('quick-edit: cannot probe edit rights — course id', bid, 'variation id', oid);
+        return false;
+      }
+      if (qe.rightsByBid.has(bid) || qe.probing.has(bid)) return true;
       qe.probing.add(bid);
-      log('quick-edit: probing edit rights for course', bid);
+      log('quick-edit: probing edit rights for course', bid, 'via variation', oid);
       try {
         chrome.runtime.sendMessage({
           type: 'clo-quick-edit-run', mode: 'probe', oid, bid, win,
         }).catch(() => {});
       } catch (err) {
         qe.probing.delete(bid);
+        warn('quick-edit: rights probe could not be sent:', err);
+        return false;
       }
+      // Watchdog — see CONFIG.quickEdit.probeTimeoutMs. Settles the probe
+      // locally when no result ever comes back, so both popups can recover.
+      clearTimeout(qe.probeTimers.get(bid));
+      qe.probeTimers.set(bid, setTimeout(() => {
+        qe.probeTimers.delete(bid);
+        if (!qe.probing.delete(bid)) return; // a result landed after all
+        warn('quick-edit: rights probe for course', bid, 'never returned');
+        applyRightsToPopup();
+        if (altCheckProbeSettled) altCheckProbeSettled(bid, false);
+      }, CONFIG.quickEdit.probeTimeoutMs));
+      return true;
     }
 
     function tick() {
@@ -3483,6 +3598,11 @@
   // The tracker calls them fire-and-forget; null until that module has run.
   let altCheckOffer = null;     // (offer) => void — a captured wrong guess
   let altCheckOnAdvance = null; // () => void — an opponent move was observed (line moved on)
+  // (bid, ok) => void — a rights probe settled WITHOUT a worker result (the
+  // quick-edit watchdog gave up). The alt-check popup only ever hears about
+  // probes through the clo-quick-edit-result message, so this is the only way
+  // it learns that a probe it is waiting on will never answer.
+  let altCheckProbeSettled = null;
 
   function initAutoPlay() {
     if (typeof CloSan === 'undefined') {
@@ -5612,16 +5732,18 @@
         // One probe per popup-open; a failed probe becomes a visible,
         // user-retryable error — never a silent endless re-probe (each probe
         // opens a driver window, and a wedged probe used to leave the popup
-        // stuck on this status forever).
-        if (ac.probeFailed) {
-          setAcStatus('Could not check edit rights — close and reopen to retry.', true);
-        } else {
-          setAcStatus('Checking edit rights…', false);
-          if (!ac.probeStarted && quickEditApi) {
-            ac.probeStarted = true;
-            quickEditApi.probe(ac.job.bid, ac.job.oid, popupDriverBounds(ac.popup));
+        // stuck on this status forever). probe() returning false means it
+        // could not even start (unreadable ids) — that is a failure too, and
+        // treating it as "in flight" was the other way this status stuck.
+        if (!ac.probeFailed && !ac.probeStarted && quickEditApi) {
+          ac.probeStarted = true;
+          if (!quickEditApi.probe(ac.job.bid, ac.job.oid, popupDriverBounds(ac.popup))) {
+            ac.probeFailed = true;
           }
         }
+        setAcStatus(ac.probeFailed
+          ? 'Could not check edit rights — close and reopen to retry.'
+          : 'Checking edit rights…', ac.probeFailed);
       } else if (ac.phase === 'best' || ac.phase === 'guess') {
         setAcStatus('Analyzing…', false);
       } else {
@@ -5906,6 +6028,12 @@
     };
     altCheckOnAdvance = () => {
       if (ac.offer) dismissOffer();
+    };
+    // Quick-edit's probe watchdog gave up locally — no clo-quick-edit-result
+    // will ever arrive for this course, so unstick the popup ourselves.
+    altCheckProbeSettled = (bid, ok) => {
+      if (!ok && ac.job && String(bid) === String(ac.job.bid || '')) ac.probeFailed = true;
+      applyAcRights();
     };
 
     setInterval(tick, CONFIG.review.pollMs);
