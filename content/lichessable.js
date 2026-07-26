@@ -8947,6 +8947,10 @@
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
+    // Which BUILD is running. The content script is the one thing Chrome keeps
+    // cached across page reloads, so this line is how you tell an extension
+    // reload actually took effect (see README, "Reloading the extension").
+    log('v' + chrome.runtime.getManifest().version, IS_FRAME_APP ? '(frame)' : '(top)');
     if (IS_FRAME_APP) {
       // Recognise a quick-edit post-submit landing before anything else.
       if (await maybeReportQuickEditLanding()) return;
@@ -8985,6 +8989,20 @@
     initContinuationReview();
     initChapterSort();
   }
+
+  // Dev lever: dispatching a `clo-dev-reload` DOM event on any Chessable page
+  // reloads the whole extension from disk (relayed through the worker, which
+  // is the only context where chrome.runtime.reload() exists). This is the
+  // lever that actually works from automation — chrome://extensions cannot be
+  // scripted, and an options page opened programmatically lands in a
+  // background tab Chrome never loads, so a hook there never runs either.
+  // A Chessable tab, by contrast, is always live during testing.
+  document.addEventListener('clo-dev-reload', () => {
+    log('dev reload requested');
+    // The reload tears this context down mid-flight; a rejected promise here
+    // is the expected outcome, not a failure.
+    Promise.resolve(chrome.runtime.sendMessage({ type: 'clo-dev-reload' })).catch(() => {});
+  });
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start, { once: true });

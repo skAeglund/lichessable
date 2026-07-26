@@ -820,10 +820,42 @@ python3 -c "import json; json.load(open('manifest.json'))"
 (castling, disambiguation, promotion, en passant, mate `#`) directly when
 touching it.
 
-Manual test loop (user does this; end implementation turns by reminding them):
-reload the extension at `chrome://extensions` (↻ on the card), then reload the
-Chessable tab. Logs appear in the mt1 IFRAME's console context — filter the
-console for `[CLO]`.
+## Reloading the extension (READ THIS BEFORE TESTING)
+
+Chrome caches content scripts. A page reload alone runs the OLD code — the
+extension must be reloaded first. Full details and the two dead ends in
+README, "Reloading the extension".
+
+- **The lever that works from automation** (verified end to end 2026-07-26):
+  dispatch `clo-dev-reload` as a DOM event on any Chessable tab
+  (`document.dispatchEvent(new Event('clo-dev-reload'))`). The content script
+  relays it to the worker, which calls `chrome.runtime.reload()`. Then reload
+  the Chessable tab. Works through Claude in Chrome's `javascript_tool` — the
+  event crosses from the page world into the content script's isolated world.
+- **It only works if the LOADED build already has the relay.** If the loaded
+  build predates it, or lichessable.js is broken enough not to run, only the
+  user can fix it from `chrome://extensions`.
+- **Always verify, never assume.** The content script logs `[CLO] v<version>`
+  on startup and the options page shows the loaded version; both read the
+  loaded manifest, so an unchanged version means the reload did NOT happen.
+  Bump `manifest.json` first and that check is unambiguous.
+- **`chrome://extensions` is NOT scriptable** and an options-page reload hook
+  never fires (background tabs are never loaded). Both verified 2026-07-26 —
+  do not retry them.
+
+**If a reload is needed and you cannot do it yourself, say so LOUDLY.** End the
+turn with a line of exactly this form, on its own, as the last thing in the
+message — never buried in a paragraph:
+
+> ⚠️ **EXTENSION RELOAD REQUIRED** — click ↻ on the LiChessable card in
+> `chrome://extensions`, then reload the Chessable tab.
+
+Do the same whenever a change cannot be verified without the user. Never report
+a change as working when it has only been syntax-checked.
+
+Manual test loop: reload the extension (see above), then reload the Chessable
+tab. Logs appear in the mt1 IFRAME's console context — filter the console for
+`[CLO]`.
 
 ## Never
 

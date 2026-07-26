@@ -314,6 +314,51 @@ lichessable/
 7. After editing any file: click the ↻ reload icon on the extension's card in
    `chrome://extensions`, then reload the Chessable tab.
 
+## Reloading the extension
+
+Content scripts are **cached by Chrome**: after editing any file, reloading the
+Chessable tab still runs the OLD code. The extension itself has to be reloaded
+first. Two ways:
+
+- **By hand** — the ↻ icon on the extension's card in `chrome://extensions`.
+- **From a page / from automation** — dispatch a `clo-dev-reload` DOM event on
+  any Chessable tab:
+
+  ```js
+  document.dispatchEvent(new Event('clo-dev-reload'))
+  ```
+
+  The content script relays it to the service worker, which calls
+  `chrome.runtime.reload()` (that API does not exist in content scripts, hence
+  the relay). Then reload the Chessable tab to pick up the new content script.
+
+**Confirm it took effect.** The content script logs its build on startup —
+`[CLO] v0.33.2 (top)` — and the options page shows the loaded version at the
+bottom. Both read `chrome.runtime.getManifest()`, which reflects the build
+Chrome has *in memory*, not the one on disk. If the version still shows the old
+number after a reload, the reload did not happen. Bumping the version in
+`manifest.json` (which every functional change does anyway) makes this an
+unambiguous check.
+
+Two things that do **not** work, both verified 2026-07-26 — don't rediscover
+them:
+
+- **`chrome://extensions` cannot be automated.** Neither CDP nor an extension
+  can script a `chrome://` page, and synthetic keyboard automation of the UI is
+  blocked too.
+- **A reload hook on the options page never fires.** Extension pages *are*
+  re-read from disk on every load, so a `location.hash` hook there looks like a
+  clean lever — but an options page opened programmatically lands in a
+  background tab, and Chrome defers loading those indefinitely (measured: still
+  unloaded after 4 minutes, hash untouched, `last_update_time` unchanged). It
+  also loops: `chrome.runtime.reload()` tears the page down, Chrome re-loads the
+  tab at the same URL, and the hook fires again — a perpetually reloading
+  extension injects no content scripts at all.
+
+A caveat on the relay: it only works if the *currently loaded* extension already
+contains it. If the loaded build predates it, or the content script is broken
+enough not to run, the ↻ button is the only way back.
+
 ## Debugging
 
 - All logs are prefixed `[CLO]`.

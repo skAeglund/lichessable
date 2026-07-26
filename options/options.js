@@ -8,6 +8,12 @@ const TOKEN_KEY = 'lichessToken'; // must match background.js and content/liches
 const BUILD_KEY = 'cloEngineBuild'; // must match CONFIG.engine.buildKey in content/lichessable.js
 const $ = (id) => document.getElementById(id);
 
+// NOTE: there is deliberately no reload hook on this page. An options page
+// opened programmatically lands in a background tab, and Chrome defers loading
+// those indefinitely (measured: still unloaded after 4 minutes), so the hook
+// would never run. The working lever is the `clo-dev-reload` DOM event on any
+// Chessable page — see README, "Reloading the extension".
+
 function setStatus(text, isError) {
   const el = $('status');
   el.textContent = text;
@@ -15,6 +21,7 @@ function setStatus(text, isError) {
 }
 
 async function init() {
+  $('loadedVersion').textContent = chrome.runtime.getManifest().version;
   const stored = await chrome.storage.local.get([TOKEN_KEY, BUILD_KEY]);
   if (stored[TOKEN_KEY]) $('token').value = stored[TOKEN_KEY];
   const build = stored[BUILD_KEY];

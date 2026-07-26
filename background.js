@@ -112,6 +112,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === 'clo-open-options') {
     chrome.runtime.openOptionsPage();
   }
+  // Dev lever (see README, "Reloading the extension"): reload the whole
+  // extension from disk. chrome.runtime.reload() is not exposed to content
+  // scripts, so the relay has to land here.
+  if (msg && msg.type === 'clo-dev-reload') {
+    console.log('[CLO] dev reload requested — reloading extension');
+    chrome.runtime.reload();
+  }
   if (msg && msg.type === 'clo-open-overstudy') {
     openOverstudyTab(msg.url);
   }
