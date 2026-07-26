@@ -62,8 +62,16 @@ The two lines above:
 ```
 
 So grouping on the id prefix up to the LAST dot yields exactly one group per
-line, in DOM order. `7` is the mainline ply the comment hangs off (ply 7 = `Qb6`,
-the last ply of an 8-ply variation).
+line, in DOM order.
+
+**The leading component is NOT the mainline attach ply.** It looks like one here
+— `7` alongside a comment on ply 7 of an 8-ply variation — but that is a
+coincidence of this example. Ground-truthed 2026-07-26 on a comment hanging off
+`10.Be2` (ply 18) whose sub-moves are `0.0.0`, `0.1.0`, `0.1.7.1.0`, …: the
+leading component numbers the comment BLOCK, not the ply. The attach ply is
+counted from the DOM instead (`attachPlyOf`: how many `SELECTORS.reviewMoves` are
+printed before the block). Anything derived from the id prefix is wrong for every
+comment that is not on the final move.
 
 Piece letters are SVG figurines (`span.commentMove__piece[data-piece="knight"]`),
 identical to the mainline's, so `quickEditSanFromEl` reads them correctly —
@@ -80,9 +88,11 @@ Chessable nests the second line inside the first line's last move as an artifact
 of how the comment was parsed. The id therefore gives us:
 
 * the grouping (reliable), and
-* the mainline attach ply (reliable),
+* the **branch index** — the parent move a nested line is written against
+  (`0.1.7.1` = an alternative to move 7 of line `0.1`), which is a strong
+  candidate but not a guarantee, per the above,
 
-but never the branch position.
+but never the branch position itself, and not the attach ply either (§2.2).
 
 ### 2.4 The lesson plan is still readable in the browse state
 
@@ -129,17 +139,64 @@ question, and no `innerHTML` (a `cloneNode(true)` of a live node, never a string
 Browse state only, re-run when the sub-move list's id signature changes.
 
 1. Group the spans by id prefix (DOM order preserved).
-2. SAN per span via `quickEditSanFromEl`; an unreadable one drops the line.
+2. SAN per span via `quickEditSanFromEl`. An unreadable one (Chessable writes
+   null moves as `18.--`) TRUNCATES the group at that point instead of dropping
+   it: the moves before it are still positions the lines written inside it need.
 3. Mainline positions from the plan: `fens[i]` = before ply *i*, `fens[n]` =
-   after the last ply.
-4. Candidate anchors per line, in order: **after** the attach ply, **instead of**
-   it, the parent line's positions, then the rest of the mainline. Lines are
-   resolved shallowest-first so a genuinely nested line can anchor inside its
-   parent.
-5. Accept on number match + full legality. Fallback when the number fits nothing:
-   the two attach positions, legality alone. Nothing else — a line that resolves
-   nowhere is **dropped** with one console line.
-6. Drop lines with no move of the user's colour (there is nothing to quiz).
+   after the last ply. Attach ply from the DOM (`attachPlyOf`), never from the id.
+4. Candidate anchors per line, in order: the parent line's position at the
+   **branch index**, then **after** that parent move, then **after** the attach
+   ply, **instead of** it, the parent's other positions, then the rest of the
+   mainline. Lines are resolved shallowest-first so a nested line can anchor
+   inside its parent.
+5. Accept on **every** move's number matching the position it is played from,
+   plus full legality (`walkLine`). Nothing looser — a line that resolves nowhere
+   is **dropped** with one console line. A legality-only fallback over the attach
+   positions existed until v0.34.1 and is exactly what quizzed a `12.Be3 Rb7`
+   sideline on the mainline position 8 plies away, where both moves happened to
+   be legal: with the parent line unresolvable, the fallback was all that was
+   left, and it answered confidently and wrongly.
+6. A group that needed a **rewind** to walk (`branched`) or that was
+   **truncated** is kept in `resolved` — its positions place the nested lines —
+   but is not quizzed. See §3.1.1.
+7. Drop lines with no move of the user's colour (there is nothing to quiz).
+7b. **Leave out lines already in the course** (`tagLinesInCourse`). A clickable
+   line can be added to the repertoire as a real variation, and then it is
+   reviewed there — quizzing it here too means drilling it twice in a session.
+   Ground truth (2026-07-26): Chessable's own "Find position in course" page is
+   an SPA shell (4.7 KB of HTML, no results in it — scraping it does not work);
+   the call it makes is
+   `GET /api/v1/getList?uid&bid&fen` with the session JWT as a Bearer token,
+   answering `{ list: { data: [ { id, name, moves, … } ], fens: [ … ] } }`,
+   where `data` holds every variation of that course containing the position.
+   A non-empty `data` is the answer; `data[0].name` is the title to name in the
+   log. `uid` is required (400 without it) and lives in localStorage next to the
+   JWT. The FEN goes in with `/` → `;`; the server ignores the move counters and
+   the en-passant square but matches the side to move, so the four-field
+   `cacheKey` is both the query and the cache key. The position checked is the
+   one AFTER the line's last move. A miss costs ~0 KB, a hit ~180 KB (the
+   payload inlines every matching variation), so answers are cached per
+   course+position in `chrome.storage.session` for 12 h. Every failure mode —
+   no credentials, HTTP error, timeout, unexpected shape — leaves the line
+   quizzable.
+   Verified against the test course: `5.Nb3 g6 6.Be3 Qb4+` → "Sicilian: 2...Nc6
+   3.d4" (39 variations pass through it), `5.c3 Nf6 6.Nxc6 bxc6` → "gonfreecss
+   vs. Quickstarter Guide - Odds & Ends || 5. c3 #2", while the two lines
+   nested inside variation 70689219's comment (`12.Be2 …`, `12.Be3 Rb7!`) are
+   correctly NOT in the course.
+   One request per uncached line, so this is also the only network the feature
+   does; it runs last in the scan, after everything else has resolved.
+8. **One position, one answer** (`dropAmbiguous`). Collect every USER ply of
+   every surviving line, keyed on the position it is played from (first four FEN
+   fields, so transpositions count), seeded with the mainline's own user plies.
+   A position holding two different answers drops **every** line that asks there
+   — both sides of the clash, since nothing here can know which move is the
+   repertoire; the author decides that by editing the comment. Opponent plies
+   are not collected: two lines with different replies to one position is the
+   normal "and if he plays this instead" case. Checked offline against the real
+   move generator (five cases: user clash, opponent-only difference, clash with
+   the mainline, agreement with the mainline, clash deeper in two lines), and
+   live: variation 70382641's two lines share a branch position and both stay.
 7. Drop lines whose **user-colour** move is annotated `?`, `??` or `?!` — authors
    use these lines to show what to avoid, so quizzing one would drill the blunder
    as repertoire. Read by `moveAnnotation()` as the trailing run of `!`/`?` on the
@@ -148,6 +205,29 @@ Browse state only, re-run when the sub-move list's id signature changes.
    `isBlunderAnnot` tests the **first** character, which is what separates `?!`
    (drop) from `!?` (keep) — a "contains a `?`" test would be wrong. An annotated
    **opponent** move is the premise of a line about punishing it and stays.
+
+#### 3.1.1 A comment line is often not a line
+
+Authors write several branches in one breath, and Chessable makes every move of
+that one clickable group. From the test course (variation 70689219), group `0.1`:
+
+```
+10.dxe6 10...fxe6 11.Bd3 d5 10...dxe6 11.Qxd8 Rxd8 12.Bb5 12...Bb7 13.Nd2 … 18.--
+                           ^^^^^^^^^^ back to move 10, a second branch
+```
+
+`walkLine` plays such a group by **rewinding**: a move whose printed number names
+an earlier position is played from the latest position in this group's own walk
+that both matches the number and makes the SAN legal. The group is then flagged
+`branched` and never quizzed — playing it straight through would ask for moves
+from positions the author never joined up — but its positions are recorded.
+
+That is not a nicety: the two lines written inside it (`0.1.7.0` = `12.Be2 Bb7
+13.Nd2 Nc6`, `0.1.7.1` = `12.Be3 Rb7!`) branch off `12.Bb5`, a position that
+exists **only inside this unquizzable group**. Verified live 2026-07-26: with the
+rewind both resolve onto the position after `10.dxe6 dxe6 11.Qxd8 Rxd8`, matching
+Chessable's own board square for square, where before the fix one was skipped and
+the other (in the course this was reported from) was quizzed on the mainline.
 
 ### 3.2 Scope picker
 
@@ -196,11 +276,28 @@ sits on top of the click path rather than replacing it: `pointerdown` only ever
 picks a piece up (which is the same selection a click would make), the pointer is
 captured on the grid so the drop square is resolved *geometrically* rather than
 from the event target, and `cr.swallowClick` keeps the trailing click from being
-acted on a second time. It is deliberately not set when the press landed on the
-already-selected square, so clicking a selected piece still deselects it. Under
+acted on a second time. Under
 `dragSlopPx` of travel a press is still a click, so nothing about click-to-move
 changes. `touch-action: none` on the board keeps a finger drag from scrolling the
 page instead.
+
+**Deselecting** — pressing the piece that is already selected — is done by
+`onDragEnd`, not by the click path, and that is not a detail: `setPointerCapture`
+retargets the whole compatibility sequence (mousedown/mouseup, and therefore the
+click) to the GRID, so after a pick-up the click never reaches a `[data-sq]`
+element and the delegated handler cannot see which square it was. Ground-truthed
+live 2026-07-26 — this is why clicking a selected piece did nothing at all before
+v0.34.0. `swallowClick` is now set on every pick-up, since that click is either
+ours already or lands somewhere it must not be acted on.
+
+**Right button draws**, as everywhere else in chess: drag = arrow, click = circle,
+the same shape again removes it. One `<svg>` over the piece layer, in board units
+(`viewBox 0 0 8 8`) like every other bit of geometry here, `pointer-events: none`
+so the grid keeps owning input, and `contextmenu` prevented on the board.
+Drawing is allowed while the opponent's reply is in flight — an annotation is
+never a quiz answer — and the shapes are scratch work: any ordinary press on the
+board and every move clears them. Single colour on purpose; there is no shape
+state to persist and nothing to legend.
 
 A refused move is simply **not applied** — there is nothing to roll back, since
 our position only ever advances on the correct move. Two misses on one ply and

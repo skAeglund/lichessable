@@ -1511,6 +1511,31 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: #222;
 }
 
+/* Right-button annotations: one <svg> in board units (viewBox 0 0 8 8) laid
+   over the piece layer, so the geometry is resolution-independent like
+   everything else on this board. One colour on purpose — these are scratch
+   marks, cleared by the next press or move, not a legend. */
+.clo-cr-shapes {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* the square grid underneath owns every pointer event */
+  overflow: visible;
+}
+
+.clo-cr-shape {
+  fill: none;
+  stroke: #15781b;
+  opacity: 0.72;
+  stroke-linecap: round;
+}
+
+.clo-cr-shape--head {
+  fill: #15781b;
+  stroke: none;
+}
+
 /* Every element below is shown/hidden through its `hidden` ATTRIBUTE, and an
    author `display` rule beats the UA stylesheet's `[hidden] { display: none }`
    — so each one that sets `display` needs this guard, or it stays visible while

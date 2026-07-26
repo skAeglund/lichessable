@@ -190,17 +190,23 @@ you to confirm); you can return to the review afterwards. The list lives in
 the browser session only (12 h cap), for the same reason the auto-play record
 does.
 
-When a completed variation ends with one or more **clickable continuation lines**
-in the comment column (`5.Nb3 g6 6.Be3 Qb4+`), the widget offers **Review
-continuation(s)**. Chessable prints those lines but never quizzes them — they are
+When a completed variation's comment holds one or more **clickable lines**
+(`5.Nb3 g6 6.Be3 Qb4+`), the widget offers **Review clickable(s)**. Chessable
+prints those lines but never quizzes them — they are
 comment text, not variations — so this plays them like a variation: the
 opponent's moves are made for you, yours are asked for, one line after another.
+(The name is deliberately not "continuations": a line branching off earlier in
+the variation continues nothing. What they have in common is being clickable.)
 
 It happens on **our own board**, laid over Chessable's: their browse board is
 navigation-only and accepts no moves at all. The board uses their piece art
 (cloned from the live board, so it looks like the same board), their legal-move
 dots and capture rings, and is oriented the same way; moves go in by **click-then-
-click or by dragging**, whichever you reach for. Only the square colour is
+click or by dragging**, whichever you reach for, and clicking a piece you have
+already picked up puts it down again. The **right button draws**, as on every
+chess site: drag for an arrow, click a square for a circle, draw the same one
+again to remove it. They are scratch marks — the next press on the board, or the
+next move, wipes them. Only the square colour is
 deliberately ours, so it is always obvious which board you are on.
 Our panel covers the comment column while the quiz runs, for the
 obvious reason that the lines are printed there — **Exit** gives Chessable its
@@ -221,12 +227,38 @@ blunder. A marked move by your *opponent* is fine — that is the premise of a l
 about how to punish it — and **!?** counts as interesting rather than bad, so it
 stays.
 
+**Lines you have already added are left out.** Chessable lets you add a clickable
+line to your repertoire as a real variation (right-click on the line), and once
+you have, that line gets reviewed like any other — quizzing it here as well would
+drill it twice in the same session. So each line's final position is checked
+against your course through Chessable's own "Find position in course" endpoint,
+and the ones that are already in there are skipped: the button counts only the
+rest, and its tooltip says how many were left out (the console names them, with
+the variation they were found in). If the check cannot be made — signed out, a
+network error — the line is kept rather than lost.
+
+**One position, one answer.** Where a comment offers you a choice — "10...fxe6 …
+or 10...dxe6 …" — neither line is quizzed: you would be shown the same board
+twice and marked wrong for a move the author also recommends. Which one is your
+repertoire is a decision only you can make, by editing the comment down to one
+line. The same applies to a line that answers a position differently from the
+variation you have just played. Lines that differ in your *opponent's* move are
+untouched — that is the ordinary "and if he plays this instead" case, and both
+still get quizzed.
+
 The positions are not read off the board: each line is anchored on the trainer's
 own lesson plan and replayed with the extension's move generator, so the FENs are
-exact (castling and en passant included) even for lines that start mid-game. A
-line that cannot be placed with certainty is skipped with a console note rather
-than guessed at. This is practice only — nothing is rescheduled, and nothing is
-recorded as proven for auto-play. See `DESIGN-continuation-review.md`.
+exact (castling and en passant included) even for lines that start mid-game.
+Every move number the author printed has to match the position it would be played
+from, so a line is only quizzed where it actually belongs — including a line
+written inside another one, which is placed on its parent's board rather than on
+the mainline. A line that cannot be placed with certainty is skipped with a
+console note rather than guessed at, and so is a comment that writes several
+branches as one run of moves ("10.dxe6 fxe6 11.Bd3 d5 10...dxe6 …"): it still
+supplies the positions for the lines written inside it, but it is not itself a
+line anyone can play through. This is practice only — nothing is rescheduled, and
+nothing is recorded as proven for auto-play. See
+`DESIGN-continuation-review.md`.
 
 On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
 extension adds a **Sort by popularity** button, which reorders the whole chapter to

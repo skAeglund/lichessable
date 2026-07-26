@@ -26,8 +26,10 @@ engine check of the refused move and one-click addition as an accepted
 alternative (section 15). Every move failed in a session is logged from the
 trainer's own per-move quiz record (section 16) and a "Retry" button walks
 those variations again as overstudy, with auto-play covering the moves already
-answered (section 17). A completed variation that ends with clickable
-subvariation lines offers "Review continuation(s)", which quizzes those lines on
+answered (section 17). A completed variation whose comment holds clickable
+subvariation lines offers "Review clickable(s)" — the button is deliberately not
+named after "continuations", since a line branching off earlier in the variation
+continues nothing — which quizzes those lines on
 OUR OWN board overlaid on Chessable's — theirs is navigation-only (section 18).
 Currently working (v0.18.x).
 
@@ -743,21 +745,78 @@ Currently working (v0.18.x).
   quizzed are printed there, so covering them IS the quiz. Nothing of ours ever
   enters Chessable's DOM.
   Lines come from `SELECTORS.reviewSubMoves` grouped by the id prefix up to the
-  last dot (`7.0.0`…`7.0.3` = one line). But THE ID NESTING IS NOT SEMANTIC:
-  ground-truthed live, `7.0.3.0.*` looked nested under the first line's last
-  move yet its board showed it branching from the MAINLINE like the first line.
-  The id therefore yields the grouping and the mainline attach ply, NEVER the
-  branch position. That comes from the LINE ORACLE (`readLessonLine()` still
-  answers in the browse state — verified): candidate anchors are the position
-  AFTER the attach ply, then instead of it, then the parent line's positions,
-  then the rest of the mainline; a candidate is accepted only when the first
-  move's printed number+colour (`parseMoveNumber`) matches its side/fullmove AND
-  every SAN resolves legally (`sanToUci` + `fenAfterUci`). Lines resolve
-  shallowest-first so a genuinely nested line can anchor inside its parent. The
-  ONLY looser path is a fallback over the two attach positions with legality
-  alone, for numbering we have not seen — and it logs when it fires. A line that
-  fits nowhere, or has no user-colour ply, is DROPPED with one console line;
-  never guessed at. Also dropped: a line whose USER-colour move is annotated
+  last dot (`0.1.7.1.0`…`0.1.7.1.1` = one line). Read the id for the GROUPING
+  and the BRANCH INDEX only — both other readings of it are wrong:
+  * the leading component is NOT the mainline attach ply (ground-truthed
+    2026-07-26: a comment hanging off 10.Be2, ply 18, gives every one of its
+    sub-moves an id starting `0.`). The attach ply is COUNTED FROM THE DOM
+    instead — `attachPlyOf`, the number of `SELECTORS.reviewMoves` printed
+    before the block.
+  * the nesting is not always semantic either — ground-truthed earlier,
+    `7.0.3.0.*` looked nested under the first line's last move yet its board
+    showed it branching from the MAINLINE. So the parent's branch position is
+    the FIRST candidate, never an assumption.
+  Positions come from the LINE ORACLE (`readLessonLine()` still
+  answers in the browse state — verified): candidate anchors are the parent
+  line's position at the branch index, then after it, then the position AFTER
+  the attach ply, then instead of it, then the parent's other positions and the
+  rest of the mainline. A candidate is accepted only when EVERY move's printed
+  number+colour (`parseMoveNumber`) matches the position it would be played from
+  AND every SAN resolves legally (`sanToUci` + `fenAfterUci`). Lines resolve
+  shallowest-first so a nested line can anchor inside its parent. There is
+  deliberately NO looser pass: v0.34.1 removed a legality-only fallback over the
+  attach positions that had quizzed a `12.Be3 Rb7` sideline on the MAINLINE
+  position 8 plies away (both moves happened to be legal there) — a line whose
+  numbers fit nothing we can reconstruct is DROPPED, like one that fits nowhere
+  or has no user-colour ply. Never guessed at.
+  ALREADY IN THE COURSE (`tagLinesInCourse`, v0.35.0): Chessable lets the user
+  add a clickable line to the repertoire as a real variation (their own
+  right-click on the line), which the user then reviews normally — so quizzing
+  it here too drills it TWICE in one session. Such lines are tagged
+  (`line.inCourse`) and left out: `freshLines()` is what the launcher counts,
+  what `openReview` runs and what the scope picker filters, while `cr.lines`
+  keeps everything so the tooltip can say how many were left out. The answer
+  comes from the endpoint behind Chessable's own "Find position in course":
+  `GET /api/v1/getList?uid&bid&fen` with the JWT Bearer header (`CONFIG.
+  chessableApi`, shared with the chapter sort; `uid` comes from localStorage and
+  is REQUIRED — 400 without it) → `{ list: { data: [ {id, name, moves, …} ] } }`,
+  where a non-empty `data` IS the answer and `name` is the variation's title.
+  The page behind that URL is an SPA shell whose HTML contains NOTHING (4.7 KB,
+  no cards — do not try to scrape it). Query FEN = the four-field `cacheKey`
+  with "/" → ";": the server ignores the move counters and even the en-passant
+  field but DOES match the side to move. The position checked is the one AFTER
+  the line's last move, i.e. reaching it means the whole line was played.
+  Answers are cached per course+position in `chrome.storage.session`
+  (`cloCourseFenCache`, 12 h) because a hit downloads ~180 KB (a miss ~0) and a
+  session completes the same variation repeatedly. EVERYTHING here fails OPEN —
+  no credentials, HTTP error, timeout, unexpected shape, unreadable bid — the
+  line simply stays quizzable, since losing a line to a network hiccup is worse
+  than drilling one twice.
+  ONE POSITION, ONE ANSWER (`dropAmbiguous`, v0.34.2): authors offer
+  alternatives for their own side all the time ("10...fxe6 … 10...dxe6 …"), and
+  a quiz cannot ask those — the user would see the same board twice and be
+  marked wrong for a move the author also recommends. So every USER ply of every
+  quizzable line is collected per position (`cacheKey`, i.e. the first four FEN
+  fields, so a transposition into a disputed position counts too) and a position
+  with two different answers drops EVERY line that asks there — both sides,
+  never a winner picked: which move is the repertoire is the author's call, made
+  by editing the comment. The MAINLINE's own user plies seed that map (from the
+  lesson plan), so a line contradicting the variation the user just played goes
+  as well, while a line repeating a mainline move is fine. OPPONENT plies are
+  deliberately NOT collected: two lines showing different replies to one
+  position is the ordinary "and if he plays this instead" case (verified live —
+  variation 70382641's two lines branch from the same position and both stay).
+  A comment line is often not a line: authors write several branches in one
+  breath ("10.dxe6 fxe6 11.Bd3 d5 10...dxe6 11.Qxd8 …") and Chessable makes
+  every move of that a clickable sub-move in the SAME group. `walkLine` handles
+  it by REWINDING to the latest earlier position a move's printed number names
+  (and where its SAN is legal); a group that needed a rewind is `branched` and a
+  group with a move we cannot read (Chessable writes null moves as `18.--`) is
+  `truncated`. NEITHER is quizzed — playing them straight through would ask for
+  moves from positions the author never joined up — but both are still stored in
+  `resolved`, because their positions are the ONLY way to place the lines
+  written inside them (that is what makes the `12.Be3` line above resolvable at
+  all: its anchor exists only inside its unquizzable parent). Also dropped: a line whose USER-colour move is annotated
   "?", "??" or "?!" — authors use these lines to show what NOT to play, and
   quizzing one would drill the blunder as repertoire. `quickEditSanFromEl`
   STRIPS eval glyphs (the edit page's ids carry none), so `moveAnnotation()`
@@ -786,10 +845,25 @@ Currently working (v0.18.x).
   not a square), and `cr.swallowClick` stops the trailing click being acted on
   twice. That flag is cleared on EVERY pointerdown before any bail-out — a
   sequence ending without the expected click would otherwise eat a later real
-  one — and is deliberately NOT set when the press landed on the
-  already-selected square, so clicking a selected piece still deselects it.
+  one — and is otherwise SET on every pick-up.
   Under `dragSlopPx` travel a press stays a click. `touch-action: none` on the
   board (not `manipulation`) keeps a finger drag from scrolling the page.
+  DESELECT (pressing the already-selected piece) is done by `onDragEnd` from
+  `drag.wasSel`, NOT by the click path: `setPointerCapture` retargets the whole
+  compatibility sequence — mousedown/mouseup, hence the CLICK — to the GRID, so
+  after a pick-up the click never reaches a `[data-sq]` element and `onSquare`
+  is never called. Ground-truthed live 2026-07-26; that is why clicking a
+  selected piece did nothing before v0.34.0. Never move that deselect back into
+  the click handler.
+  RIGHT BUTTON DRAWS: drag = arrow, click = circle, same shape again removes it
+  (`cr.shapes`, the in-flight one `cr.shape`). ONE `<svg>` over the piece layer,
+  geometry in BOARD UNITS (`viewBox 0 0 8 8` + `visualPos`) like the squares and
+  pieces, so a resize needs no JS; `pointer-events: none` keeps input on the
+  grid and `contextmenu` is prevented on the board element. Drawing is allowed
+  while `cr.busy` (an annotation is never a quiz answer); shapes are scratch
+  work, cleared by ANY ordinary press on the board (before the busy bail-out)
+  and by every move — nothing about them is persisted, and one colour is the
+  whole design.
   Legal-target markers are COPIED from Chessable's live rules rather than
   approximated (33% dot at effective alpha .21; their radial-gradient ring on a
   capture) — the square colour is ours on purpose, the affordances are theirs.

@@ -237,6 +237,32 @@
       lineDoneMs: 1100,     // pause on a finished line before the next one starts
       animMs: 180,          // our own piece glide; ~Chessable's own ~200 ms tween
       dragSlopPx: 4,        // pointer travel before a press counts as a drag rather than a click
+
+      // --- "already in your course" check ---------------------------------
+      // A clickable line can be added to the repertoire as a real variation
+      // (Chessable's own right-click on the line), and many are. Quizzing one
+      // here as well means drilling it twice in a session, so those lines are
+      // skipped. The answer comes from the endpoint behind Chessable's own
+      // "Find position in course" — that page is an SPA shell whose HTML holds
+      // NOTHING (verified: 4.7 KB, no cards), and this is the call it makes:
+      //   GET /api/v1/getList?uid&bid&fen  (JWT Bearer, like the chapter sort)
+      //   → { list: { data: [ { id, name, moves, … } ], fens: [ … ] } }
+      // `data` is the variations of that course containing the position, so a
+      // non-empty array IS the answer and `name` is the variation's title.
+      // Ground-truthed 2026-07-26: the FEN goes in with "/" replaced by ";",
+      // any encoding of it works, the move counters AND the en-passant field
+      // may be omitted or wrong without affecting the result, and the side to
+      // move IS matched — so the four-field `cacheKey` is exactly the right
+      // granularity for both the request and the cache. (CloSan's ep field
+      // agrees with theirs anyway — both write "e3" after 1.e4 — but the server
+      // not caring is what makes it a non-issue.) A MISS costs ~0 KB; a hit is
+      // ~180 KB (the payload carries every matching variation in full), which
+      // is why every answer is cached.
+      courseListPath: '/api/v1/getList',
+      courseGapMs:    250,   // politeness pause between uncached lookups
+      courseTimeoutMs: 9000, // then give up and leave the line quizzable
+      courseCacheKey: 'cloCourseFenCache', // chrome.storage.session: "bid|fenKey" → { t, title }
+      courseCacheTtlMs: 12 * 60 * 60 * 1000, // same 12 h as the auto-play record
     },
 
     // --- Optional local Stockfish (offscreen document, section 5b) ----------
@@ -417,14 +443,19 @@
       doneFlashMs:     8000, // how long the "retry finished" line stays up
     },
 
+    // --- Chessable's own JSON API (sections 14 and 18) ---------------------
+    // Both callers are same-origin with the page (so no host permission) and
+    // authenticate with the page's own session JWT as a Bearer token — no CSRF
+    // field is involved, unlike the variation edit form that section 12 has to
+    // drive through a real tab. These two localStorage keys are the page's own;
+    // keep them here rather than duplicating the strings per feature.
+    chessableApi: {
+      jwtKey: 'chessable.web.production.JWT', // the session JWT the page itself sends
+      uidKey: 'chessable.web.production.UID', // numeric user id; getList refuses without it (400)
+    },
+
     // --- Sort variations in a chapter (section 14) -------------------------
-    // The ONLY feature that talks to Chessable's own JSON API. It is same-origin
-    // with the page (so no host permission) and authenticated with the page's
-    // own session JWT as a Bearer token — no CSRF field is involved, unlike the
-    // variation edit form that section 12 has to drive through a real tab.
     chapterSort: {
-      // localStorage key holding the session JWT the page itself sends.
-      jwtKey:    'chessable.web.production.JWT',
       readPath:  '/api/v1/editVariations', // GET  ?bid&lid&includeDeleted&locale → { data: { variations[] } }
       writePath: '/api/v1/saveOrder',      // POST { bid, lid, order: [oid…] }    → { data: { status } }
       pollMs:         500, // mount/position watchdog (also catches SPA chapter switches)
@@ -455,7 +486,7 @@
   const AC_POPUP_ID = 'lichessable-ac-popup'; // wrong-guess check popup (section 15)
   const MX_CLUSTER_ID = 'lichessable-mx';       // "Mistakes (N)" / Retry cluster (section 17)
   const MX_POPUP_ID   = 'lichessable-mx-popup'; // the mistake list popup (section 17)
-  const CR_CLUSTER_ID = 'lichessable-cr';       // "Review continuations" cluster (section 18)
+  const CR_CLUSTER_ID = 'lichessable-cr';       // "Review clickables" cluster (section 18)
   const CR_BOARD_ID   = 'lichessable-cr-board'; // our quiz board, overlaid on Chessable's (section 18)
   const CR_PANEL_ID   = 'lichessable-cr-panel'; // prompt/controls, covering the comment column (section 18)
 
@@ -5786,7 +5817,7 @@
     // --- Chessable's API ----------------------------------------------------
 
     function apiHeaders() {
-      const jwt = localStorage.getItem(CONFIG.chapterSort.jwtKey);
+      const jwt = localStorage.getItem(CONFIG.chessableApi.jwtKey);
       if (!jwt) return null;
       return {
         'Authorization': 'Bearer ' + jwt,
@@ -7729,9 +7760,13 @@
   // A completed variation often ends with one or more CLICKABLE subvariation
   // lines in the comment column ("5.Nb3 g6 6.Be3 Qb4+"). The trainer never
   // quizzes them — they are comment text, not variations — so this section
-  // does: a "Review continuations" button on the overstudy widget walks the
+  // does: a "Review clickables" button on the overstudy widget walks the
   // lines one after another, auto-playing the opponent and asking the user for
-  // their own moves, exactly the way the trainer itself asks.
+  // their own moves, exactly the way the trainer itself asks. (The button says
+  // "clickable", not "continuation": a line branching off earlier in the
+  // variation continues nothing. The code's own vocabulary stays
+  // "continuation" — the module, the ids, the CONFIG key, this file's section
+  // name — so the rename is one label, not a sweep.)
   //
   // Why our OWN board (design + ground truth in DESIGN-continuation-review.md):
   // Chessable's browse board is NAVIGATION-ONLY. Verified live with the
@@ -7755,24 +7790,32 @@
   // orientation) and the comment spans.
   //
   // Where the positions come from: NOT from the DOM. Each sub-move span's id is
-  // "<attachPly>.<line>.<move>" (nested for a line written inside another), so
+  // "<block>.<line>.<move>", nested for a line written inside another
+  // ("0.1.7.1.0" = the second line branching off move 7 of line "0.1"), so
   // grouping on the id prefix up to the last dot yields one group per line, in
-  // DOM order. But the NESTING IS NOT SEMANTIC — ground-truthed live: the
-  // second line of a two-line comment came out as "7.0.3.0.*", i.e. nested
-  // under the first line's last move, while its board position showed it
-  // branching from the MAINLINE, same as the first. So the id gives us the
-  // grouping and the mainline attach ply, never the branch position.
+  // DOM order. Read the id for THAT and for the branch index only:
+  // * the leading component is NOT the mainline attach ply — ground-truthed
+  //   2026-07-26 on a comment hanging off 10.Be2 (ply 18) whose every sub-move
+  //   id starts "0.". The attach ply is COUNTED FROM THE DOM instead
+  //   (`attachPlyOf`: mainline moves printed before the block).
+  // * the nesting is not always semantic either — ground-truthed earlier: a
+  //   line that came out as "7.0.3.0.*" branched from the MAINLINE on
+  //   Chessable's own board, not from inside "7.0". So the parent's branch
+  //   position is only the FIRST candidate, never an assumption.
   //
-  // The branch position is derived instead, from the same line oracle auto-play
+  // The branch position is derived from the same line oracle auto-play
   // uses (content/pagestate.js — still readable in the browse state, verified):
   // the lesson plan's per-ply `sourceFen` is exact, castling and en passant
-  // included. Anchor a line by trying the position AFTER its attach ply, then
-  // BEFORE it, then its parent line's positions, then the rest of the mainline;
-  // a candidate is accepted only when the first move's printed number+colour
-  // matches its side/fullmove AND every SAN in the line resolves to a legal
-  // move from it (CloSan). Verified end to end on a live two-line comment: both
-  // simulations reproduced Chessable's own board square for square. A line that
-  // resolves nowhere is DROPPED with one console line — never guessed at.
+  // included. Anchor a line by trying its parent line's branch position, then
+  // the position AFTER its attach ply, then BEFORE it, then the parent's other
+  // positions and the rest of the mainline; a candidate is accepted only when
+  // EVERY move's printed number+colour matches the position it would be played
+  // from AND every SAN resolves to a legal move (CloSan). Verified end to end
+  // on a live two-line comment: both simulations reproduced Chessable's own
+  // board square for square. A line that resolves nowhere is DROPPED with one
+  // console line — never guessed at, because a wrong anchor quizzes a position
+  // the author never wrote (v0.34.1: a legality-only fallback did exactly
+  // that, replaying a 12.Be3 sideline on the mainline position 8 plies away).
   // ==========================================================================
 
   // () => boolean — true while a continuation quiz owns the screen. The review
@@ -7817,8 +7860,10 @@
       hint: false,        // the answer is being spelled out for this ply
       busy: false,        // an opponent move / feedback / line break is in flight
       promo: null,        // { from, to, moves } awaiting a promotion choice
-      drag: null,         // { idx, piece, startX, startY, moved } while a piece is held
+      drag: null,         // { idx, piece, startX, startY, moved, wasSel } while a piece is held
       swallowClick: false,// the click after a pointer sequence we already acted on
+      shapes: [],         // drawn { from, to } — from === to is a circle, else an arrow
+      shape: null,        // the one being drawn right now (right button held)
       lastMove: null,     // { from, to } for the last-move tint
       flash: null,        // { sq, kind } transient right/wrong tint
       timer: 0,
@@ -7908,25 +7953,50 @@
       return parts[1] === (printed.black ? 'b' : 'w') && Number(parts[5]) === printed.num;
     }
 
+    /** True when `mv` can be played from `fen`: its printed number (when it has
+     *  one) names that position, and its SAN is legal there. */
+    function moveFits(fen, mv) {
+      if (mv.printed && !fenMatchesNumber(fen, mv.printed)) return false;
+      const pos = CloSan.parseFen(fen);
+      return Boolean(pos && sanToUci(pos, mv.san));
+    }
+
     /**
-     * Plays `sans` from `fen` with CloSan, returning one entry per ply (SAN,
-     * UCI, mover colour, resulting FEN) or null the moment a SAN is not a legal
-     * move — which is exactly how a wrong anchor is rejected.
+     * Plays a line's moves from `fen`, returning null the moment one cannot be
+     * played anywhere — which is exactly how a wrong anchor is rejected.
+     *
+     * A comment line is not always a line: authors write several branches in
+     * one breath ("10.dxe6 fxe6 11.Bd3 d5 10...dxe6 11.Qxd8 …"), and Chessable
+     * makes every one of those a clickable move in the SAME group. A move whose
+     * printed number names an earlier position REWINDS to it (the latest one it
+     * fits), which is what makes such a group yield usable positions for the
+     * lines written inside it. The line itself is then marked `branched` and is
+     * NOT quizzed — playing it straight through would ask for moves from
+     * positions the author never joined up.
      */
-    function simulate(fen, sans) {
+    function walkLine(fen, moves) {
       let cur = fen;
+      const before = [];  // before[i] = the position move i was played FROM
       const plies = [];
-      for (const san of sans) {
-        const pos = CloSan.parseFen(cur);
-        if (!pos) return null;
-        const uci = sanToUci(pos, san);
-        if (!uci) return null;
-        const next = fenAfterUci(cur, uci);
+      let branched = false;
+      for (const mv of moves) {
+        let from = moveFits(cur, mv) ? cur : null;
+        if (!from) {
+          for (let i = before.length - 1; i >= 0; i--) {
+            if (moveFits(before[i], mv)) { from = before[i]; break; }
+          }
+          if (!from) return null;
+          branched = true;
+        }
+        const pos = CloSan.parseFen(from);
+        const uci = pos && sanToUci(pos, mv.san);
+        const next = uci ? fenAfterUci(from, uci) : null;
         if (!next) return null;
-        plies.push({ san, uci, color: pos.side, fen: next });
+        before.push(from);
+        plies.push({ san: mv.san, uci, color: pos.side, fen: next, annot: mv.annot });
         cur = next;
       }
-      return plies;
+      return { plies, before, branched };
     }
 
     /**
@@ -7962,80 +8032,291 @@
     const isBlunderAnnot = (annot) => Boolean(annot) && annot[0] === '?';
 
     /** The key of the LINE a nested line was written inside: drop the trailing
-     *  "<move>.<line>" pair ("7.0.3.0" → "7.0"); '' for a top-level line. */
+     *  "<move>.<line>" pair ("0.1.7.1" → "0.1"); '' for a top-level line. */
     function parentKey(key) {
       const parts = key.split('.');
       return parts.length > 2 ? parts.slice(0, -2).join('.') : '';
     }
 
+    /** The index, in the parent line, of the move a nested line branches off
+     *  ("0.1.7.1" → 7); NaN for a top-level line. */
+    function branchIndex(key) {
+      const parts = key.split('.');
+      return parts.length > 2 ? Number(parts[parts.length - 2]) : NaN;
+    }
+
     /**
-     * One line group → a playable continuation, or null. Candidate anchors are
-     * tried in confidence order and the first that both matches the printed
-     * move number and simulates cleanly wins. The fallback pass (attach
-     * positions only, legality alone) covers a comment whose numbering we
-     * cannot parse; anything beyond that is a guess, so it fails instead.
+     * The mainline ply a comment block hangs off: the number of mainline moves
+     * printed BEFORE it in the comment column, minus one. Counted from the DOM
+     * because the sub-move id does NOT carry it — a comment on 10.Be2 (ply 18)
+     * gives its moves ids starting "0." (ground-truthed live 2026-07-26). -1
+     * for a comment printed before the first move, where the position after the
+     * attach ply is the starting position.
      */
-    function resolveLine(group, fens, resolved) {
-      const sans = [], annots = [];
+    function attachPlyOf(el, moveEls) {
+      let count = 0;
+      for (const m of moveEls) {
+        if (m.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) count++;
+      }
+      return count - 1;
+    }
+
+    /** A line group's moves, in order. Stops at the first move we cannot read
+     *  (Chessable writes null moves as "18.--"): the moves before it are still
+     *  good positions for the lines written inside this one, so the group is
+     *  kept and marked `truncated` rather than thrown away. */
+    function readGroupMoves(group) {
+      const moves = [];
+      let truncated = false;
       for (const el of group.els) {
         const san = quickEditSanFromEl(el);
-        if (!san) {
-          log('continuation: unreadable move in line', group.key, '— line skipped');
-          return null;
-        }
-        sans.push(san);
-        annots.push(moveAnnotation(el));
+        if (!san) { truncated = true; break; }
+        moves.push({ san, annot: moveAnnotation(el), printed: parseMoveNumber(el.textContent) });
       }
-      const printed = parseMoveNumber(group.els[0].textContent);
-      const attach = Number(group.key.split('.')[0]);
+      return { moves, truncated };
+    }
+
+    /**
+     * One line group → an entry describing where it sits, or null when no
+     * position fits it. The entry is stored whether or not it is QUIZZABLE
+     * (`branched`/`truncated` lines are not): the lines written inside one are
+     * anchored on its positions, which is the only way a nested line can be
+     * placed at all.
+     *
+     * Candidates are tried in confidence order and the first that walks cleanly
+     * wins. There is deliberately NO looser pass: a line whose printed numbers
+     * fit nothing we can reconstruct is dropped, because anchoring it on a
+     * position that merely accepts its moves quizzes something the author never
+     * wrote.
+     */
+    function resolveLine(group, fens, attachPly, resolved) {
+      const { moves, truncated } = readGroupMoves(group);
+      if (!moves.length) {
+        log('continuation: no readable move in line', group.key, '— line skipped');
+        return null;
+      }
 
       const attachFens = [];
-      if (Number.isInteger(attach)) {
-        if (fens[attach + 1]) attachFens.push(fens[attach + 1]); // after the attach ply
-        if (fens[attach]) attachFens.push(fens[attach]);         // …or instead of it
+      if (Number.isInteger(attachPly)) {
+        if (fens[attachPly + 1]) attachFens.push(fens[attachPly + 1]); // after the attach ply
+        if (fens[attachPly]) attachFens.push(fens[attachPly]);         // …or instead of it
       }
+      // A line written INSIDE another is an alternative to the parent move its
+      // id points at, so the position that move was played from comes first —
+      // but only as the best candidate, since the nesting is not always
+      // semantic (see the section header).
       const parent = resolved.get(parentKey(group.key));
+      const at = branchIndex(group.key);
+      const branchFens = [];
+      if (parent && Number.isInteger(at)) {
+        if (parent.before[at]) branchFens.push(parent.before[at]);
+        if (parent.plies[at]) branchFens.push(parent.plies[at].fen);
+      }
       const parentFens = parent ? [parent.startFen, ...parent.plies.map((p) => p.fen)] : [];
-      const candidates = [...new Set([...attachFens, ...parentFens, ...fens])];
+      const printed = moves[0].printed;
+      // With a printed number every candidate may be tried — walkLine checks
+      // the number of EVERY move, so a wrong one cannot survive. Without one,
+      // only the positions Chessable's own markup points at are: legality alone
+      // over a whole game would happily accept a plausible transposition.
+      const anchors = printed
+        ? [...new Set([...branchFens, ...attachFens, ...parentFens, ...fens])]
+        : [...new Set([...branchFens, ...attachFens])];
 
-      // The annotations ride along per ply: whether a line is worth quizzing at
-      // all is decided in scanContinuations, which needs each move's COLOUR, and
-      // that only exists once a candidate anchor has simulated.
-      const make = (startFen, plies) => ({
-        key: group.key,
-        startFen,
-        plies: plies.map((p, i) => ({ ...p, annot: annots[i] })),
-        label: sans.map((s, i) => s + annots[i]).join(' '),
-        // Continuing where the variation ENDED is a different proposition from
-        // branching off somewhere in the middle of it, and the user may want
-        // only the former — hence the chooser in openReview. Comparing FEN
-        // strings is exact here: both sides come out of the same `fens` array.
-        fromFinal: startFen === fens[fens.length - 1],
-      });
-
-      // Primary pass: the printed move number is the strongest signal we have,
-      // so with one in hand every candidate may be tried. Without one, only the
-      // two positions Chessable's own id points at are — legality alone over
-      // the whole game would happily accept a plausible transposition.
-      for (const fen of (printed ? candidates : attachFens)) {
-        if (printed && !fenMatchesNumber(fen, printed)) continue;
-        const plies = simulate(fen, sans);
-        if (plies) return make(fen, plies);
+      for (const fen of anchors) {
+        const walk = walkLine(fen, moves);
+        if (!walk) continue;
+        return {
+          key: group.key,
+          startFen: fen,
+          plies: walk.plies,
+          before: walk.before,
+          branched: walk.branched,
+          truncated,
+          inCourse: null, // set by tagLinesInCourse: a title, true, or stays null
+          label: moves.map((m) => m.san + m.annot).join(' '),
+          // Continuing where the variation ENDED is a different proposition from
+          // branching off somewhere in the middle of it, and the user may want
+          // only the former — hence the chooser in openReview. Comparing FEN
+          // strings is exact here: both sides come out of the same `fens` array.
+          fromFinal: fen === fens[fens.length - 1],
+        };
       }
-      // Fallback: a number that fits no candidate (Chessable renumbering we
-      // have not seen). Attach positions only, legality alone.
-      if (printed) {
-        for (const fen of attachFens) {
-          const plies = simulate(fen, sans);
-          if (plies) {
-            log('continuation: line', group.key, 'anchored on its attach ply — printed number',
-              printed.num, 'fits no mainline position');
-            return make(fen, plies);
-          }
-        }
-      }
-      log('continuation: no position fits line', group.key, '(' + sans.join(' ') + ') — line skipped');
+      log('continuation: no position fits line', group.key,
+        '(' + moves.map((m) => m.san).join(' ') + ') — line skipped');
       return null;
+    }
+
+    /**
+     * Drops every line that would ask the user for a move from a position
+     * another line — or the variation itself — answers differently.
+     *
+     * Authors write alternatives for their own side all the time ("10...fxe6 …
+     * 10...dxe6 …"), and a quiz cannot ask them: the user is shown the same
+     * board twice and marked wrong for a move the author also recommends.
+     * Which one is the repertoire is a decision only the author can make, by
+     * editing the comment, so BOTH sides of a clash go — nothing here picks a
+     * winner. The variation the user has just played counts as one of the
+     * answers, since being asked to unlearn it a minute later is the same trap.
+     *
+     * Positions are compared on the first four FEN fields (the move counters
+     * differ between a mainline position and the same position reached inside a
+     * line), so a transposition into a disputed position is caught too. Only
+     * USER plies matter — two lines showing different OPPONENT replies to one
+     * position is the ordinary "and if he plays this instead" case.
+     */
+    function dropAmbiguous(lines, plan, fens, userColor) {
+      const answers = new Map(); // position key → Map(uci → san)
+      const note = (fen, uci, san) => {
+        const key = cacheKey(fen);
+        let byUci = answers.get(key);
+        if (!byUci) { byUci = new Map(); answers.set(key, byUci); }
+        if (!byUci.has(uci)) byUci.set(uci, san);
+      };
+
+      for (let i = 0; i < plan.plies.length; i++) {
+        const pos = CloSan.parseFen(fens[i]);
+        const san = plan.plies[i] && plan.plies[i].san;
+        if (!pos || !san || pos.side !== userColor) continue;
+        const uci = sanToUci(pos, san);
+        if (uci) note(fens[i], uci, san);
+      }
+      for (const line of lines) {
+        line.plies.forEach((p, i) => {
+          if (p.color === userColor && line.before[i]) note(line.before[i], p.uci, p.san);
+        });
+      }
+
+      const kept = [];
+      for (const line of lines) {
+        const at = line.plies.findIndex((p, i) => p.color === userColor && line.before[i] &&
+          (answers.get(cacheKey(line.before[i])) || new Map()).size > 1);
+        if (at < 0) { kept.push(line); continue; }
+        const others = [...answers.get(cacheKey(line.before[at]))]
+          .filter(([uci]) => uci !== line.plies[at].uci).map(([, san]) => san);
+        log('continuation: line', line.key, '(' + line.label + ') asks for',
+          line.plies[at].san + ', but the same position is also answered with',
+          others.join(' / '), '— skipped; one position cannot have two answers');
+      }
+      return kept;
+    }
+
+    // --- "already in your course" ---------------------------------------------
+    // Chessable lets the user add a clickable line to the repertoire as a real
+    // variation (right-click on the line), which the user then reviews normally.
+    // A line that has been added is therefore NOT something to quiz here — it
+    // would come up twice in one session. Answered by Chessable's own position
+    // search over the whole course, so no chapter enumeration is needed.
+    //
+    // Everything about this is fail-open: no session credentials, an HTTP error,
+    // a changed response shape, a timeout, an unreadable course id — all leave
+    // the line quizzable. Losing a line to a network hiccup would be worse than
+    // drilling one twice.
+
+    /** Chessable's position search for one FEN, or null when the page's own
+     *  session credentials are not where they live (never logged as an error —
+     *  a signed-out or changed page just means no check). */
+    function courseSearchUrl(bid, fen) {
+      const jwt = localStorage.getItem(CONFIG.chessableApi.jwtKey);
+      const uid = localStorage.getItem(CONFIG.chessableApi.uidKey);
+      if (!jwt || !uid) return null;
+      const url = new URL(location.origin + C.courseListPath);
+      url.searchParams.set('uid', uid);
+      url.searchParams.set('bid', String(bid));
+      // Board rows are separated by ";" here, not "/". The counters are dropped:
+      // the server ignores them, so this is the same string the cache is keyed
+      // on, and there is no way for the two to drift apart.
+      url.searchParams.set('fen', cacheKey(fen).replace(/\//g, ';'));
+      return { url: url.toString(), jwt };
+    }
+
+    async function readCourseFenCache() {
+      try {
+        await sessionStorageReady(); // the worker's startup is what opens that area
+        const got = await chrome.storage.session.get([C.courseCacheKey]);
+        const map = got && got[C.courseCacheKey];
+        return (map && typeof map === 'object') ? map : {};
+      } catch (err) {
+        return {}; // storage.session unavailable (orphaned script) — just don't cache
+      }
+    }
+
+    /**
+     * The title of a course variation that passes through `fen`, '' when one
+     * does but has no readable title, and null when none does. Throws when the
+     * question cannot be answered — every caller treats that as "not in the
+     * course", so a broken check never costs a line.
+     */
+    async function fetchCourseFen(bid, fen) {
+      const req = courseSearchUrl(bid, fen);
+      if (!req) throw new Error('no session credentials in localStorage');
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), C.courseTimeoutMs);
+      try {
+        const res = await fetch(req.url, {
+          headers: { 'Authorization': 'Bearer ' + req.jwt, 'platform': 'web' },
+          signal: ctl.signal,
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const body = await res.json();
+        const list = body && body.list && body.list.data;
+        if (!Array.isArray(list)) throw new Error('unexpected response');
+        if (!list.length) return null;
+        const name = list[0] && list[0].name;
+        return (typeof name === 'string' && name.trim()) || '';
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    /**
+     * Tags every line that is already a variation of this course, and returns
+     * how many were tagged. Cached per course and position in
+     * chrome.storage.session (12 h), because a session completes the same
+     * variation more than once — through overstudy, the retry runner, or plain
+     * repetition — and a lookup that HITS downloads ~180 KB (the payload inlines
+     * every matching variation).
+     */
+    async function tagLinesInCourse(lines) {
+      const bid = readQuickEditBid();
+      if (!bid || !lines.length) return 0;
+      const cache = await readCourseFenCache();
+      const now = Date.now();
+      let dirty = false, tagged = 0, first = true;
+
+      for (const line of lines) {
+        // The position AFTER the last move: reaching it means the whole line
+        // was played, so it is the one position that stands for the line.
+        const fen = line.plies[line.plies.length - 1].fen;
+        const key = bid + '|' + cacheKey(fen);
+        const hit = cache[key];
+        let title = (hit && now - hit.t < C.courseCacheTtlMs) ? hit.title : undefined;
+        if (title === undefined) {
+          // Politeness pause between uncached lookups.
+          if (!first) await new Promise((r) => setTimeout(r, C.courseGapMs));
+          first = false;
+          try {
+            title = await fetchCourseFen(bid, fen);
+          } catch (err) {
+            log('continuation: could not check whether line', line.key,
+              'is already in the course —', err && err.message ? err.message : err);
+            continue; // fail open: the line stays quizzable
+          }
+          cache[key] = { t: now, title };
+          dirty = true;
+        }
+        if (title === null) continue;
+        line.inCourse = title || true;
+        tagged++;
+        log('continuation: line', line.key, '(' + line.label + ') is already in this course' +
+          (title ? ' as “' + title + '”' : '') + ' — not quizzed');
+      }
+
+      if (dirty) {
+        try {
+          await chrome.storage.session.set({ [C.courseCacheKey]: cache });
+        } catch (err) { /* the lookups still worked; only the cache is lost */ }
+      }
+      return tagged;
     }
 
     function retryScan(why) {
@@ -8089,15 +8370,27 @@
       // Shallowest first, so a line genuinely written INSIDE another can anchor
       // on its parent's positions; the output stays in DOM order.
       const resolved = new Map();
+      const moveEls = [...document.querySelectorAll(SELECTORS.reviewMoves)];
       const byDepth = groups.slice().sort((a, b) => a.key.split('.').length - b.key.split('.').length);
       for (const group of byDepth) {
-        const line = resolveLine(group, fens, resolved);
+        const line = resolveLine(group, fens, attachPlyOf(group.els[0], moveEls), resolved);
         if (line) resolved.set(group.key, line);
       }
       const lines = [];
       for (const group of groups) {
         const line = resolved.get(group.key);
         if (!line) continue;
+        // Resolved, but only as a place to hang the lines written inside it.
+        if (line.truncated) {
+          log('continuation: line', line.key, '(' + line.label + ') has a move we cannot read —',
+            'not quizzed; its positions still place the lines written inside it');
+          continue;
+        }
+        if (line.branched) {
+          log('continuation: line', line.key, '(' + line.label + ') writes several branches in one',
+            'line — not quizzed; its positions still place the lines written inside it');
+          continue;
+        }
         // The user answers their own colour only; a line that never reaches
         // their move has nothing to quiz.
         if (!line.plies.some((p) => p.color === userColor)) {
@@ -8118,14 +8411,22 @@
         lines.push(line);
       }
 
+      const ready = dropAmbiguous(lines, plan, fens, userColor);
+      // Network, so last: the lines are otherwise complete, and a failed lookup
+      // must not cost us any of them.
+      const inCourse = await tagLinesInCourse(ready);
+      if (readQuickEditOid() !== oid) { retryScan('variation changed mid-scan'); return; }
+
       cr.scanning = false;
       cr.scanTries = 0;
       cr.signature = signature;
-      cr.lines = lines;
+      cr.lines = ready;
       cr.userColor = userColor;
-      if (lines.length) {
-        log('continuation: ' + lines.length + ' line(s) ready —',
-          lines.map((l) => l.label).join(' | '));
+      const fresh = freshLines();
+      if (fresh.length) {
+        log('continuation: ' + fresh.length + ' line(s) ready —',
+          fresh.map((l) => l.label).join(' | ') +
+          (inCourse ? ' (' + inCourse + ' more already in the course)' : ''));
       }
       syncButton();
     }
@@ -8260,6 +8561,124 @@
       }, C.feedbackMs);
     }
 
+    // --- drawn shapes (right button) -----------------------------------------
+    // Arrows and circles, the annotations every chess site draws with the right
+    // button. Ours live in ONE <svg> laid over the piece layer, in board units
+    // (viewBox 0 0 8 8), so — like the squares and the pieces — a resize needs
+    // no JS. Shapes are scratch work, not state: any left press on the board
+    // clears them, and so does every move.
+
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const SHAPE = {
+      lineW: 0.16,    // arrow shaft width, in squares
+      headW: 0.44,    // arrow head width and length
+      headL: 0.42,
+      tailGap: 0.26,  // shaft starts this far out of the source centre
+      tipGap: 0.08,   // …and stops this far short of the target centre
+      ringR: 0.44,    // circle radius
+      ringW: 0.09,
+    };
+
+    const svgEl = (name) => document.createElementNS(SVG_NS, name);
+
+    function squareCentre(idx) {
+      const { col, row } = visualPos(idx);
+      return { x: col + 0.5, y: row + 0.5 };
+    }
+
+    function shapeCircle(idx) {
+      const { x, y } = squareCentre(idx);
+      const el = svgEl('circle');
+      el.setAttribute('cx', String(x));
+      el.setAttribute('cy', String(y));
+      el.setAttribute('r', String(SHAPE.ringR - SHAPE.ringW / 2));
+      el.setAttribute('stroke-width', String(SHAPE.ringW));
+      el.setAttribute('class', 'clo-cr-shape clo-cr-shape--ring');
+      return el;
+    }
+
+    /** Straight shaft + triangular head; knight moves are drawn as one line
+     *  rather than an L, which is all a single-colour annotation layer needs. */
+    function shapeArrow(from, to) {
+      const a = squareCentre(from), b = squareCentre(to);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      const g = svgEl('g');
+      if (!len) return g;
+      const ux = dx / len, uy = dy / len;
+      const tipX = b.x - ux * SHAPE.tipGap, tipY = b.y - uy * SHAPE.tipGap;
+      const baseX = tipX - ux * SHAPE.headL, baseY = tipY - uy * SHAPE.headL;
+      const startX = a.x + ux * SHAPE.tailGap, startY = a.y + uy * SHAPE.tailGap;
+
+      const line = svgEl('line');
+      line.setAttribute('x1', String(startX));
+      line.setAttribute('y1', String(startY));
+      line.setAttribute('x2', String(baseX));
+      line.setAttribute('y2', String(baseY));
+      line.setAttribute('stroke-width', String(SHAPE.lineW));
+      line.setAttribute('class', 'clo-cr-shape clo-cr-shape--line');
+
+      // Perpendicular to the shaft, so the head sits square on the target.
+      const px = -uy * (SHAPE.headW / 2), py = ux * (SHAPE.headW / 2);
+      const head = svgEl('polygon');
+      head.setAttribute('points', [
+        tipX + ',' + tipY,
+        (baseX + px) + ',' + (baseY + py),
+        (baseX - px) + ',' + (baseY - py),
+      ].join(' '));
+      head.setAttribute('class', 'clo-cr-shape clo-cr-shape--head');
+
+      g.append(line, head);
+      return g;
+    }
+
+    function renderShapes() {
+      const svg = cr.ui && cr.ui.shapes;
+      if (!svg) return;
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      const all = cr.shape ? cr.shapes.concat([cr.shape]) : cr.shapes;
+      for (const s of all) {
+        svg.appendChild(s.from === s.to ? shapeCircle(s.from) : shapeArrow(s.from, s.to));
+      }
+    }
+
+    function clearShapes() {
+      cr.shape = null;
+      if (!cr.shapes.length) { renderShapes(); return; }
+      cr.shapes = [];
+      renderShapes();
+    }
+
+    /** Right button down: starts a shape. Allowed even while the opponent's
+     *  move is in flight — annotating is never a quiz answer. */
+    function startShape(e) {
+      const idx = dragSquareAt(e.clientX, e.clientY);
+      if (idx === null) return;
+      cr.shape = { from: idx, to: idx };
+      try { cr.ui.grid.setPointerCapture(e.pointerId); } catch (err) { /* not fatal */ }
+      e.preventDefault();
+      renderShapes();
+    }
+
+    function moveShape(e) {
+      const idx = dragSquareAt(e.clientX, e.clientY);
+      if (idx === null || idx === cr.shape.to) return; // off the board: keep the last square
+      cr.shape.to = idx;
+      renderShapes();
+    }
+
+    /** Drawing the same shape twice removes it, the usual toggle. */
+    function endShape(e) {
+      const shape = cr.shape;
+      cr.shape = null;
+      try { cr.ui.grid.releasePointerCapture(e.pointerId); } catch (err) { /* already gone */ }
+      if (!shape) return;
+      const at = cr.shapes.findIndex((s) => s.from === shape.from && s.to === shape.to);
+      if (at >= 0) cr.shapes.splice(at, 1);
+      else cr.shapes.push(shape);
+      renderShapes();
+    }
+
     // --- quiz ----------------------------------------------------------------
 
     /** The ply the user is being asked for (or the opponent's next), with its
@@ -8298,6 +8717,7 @@
       cr.pos = CloSan.makeMove(cr.pos, mv);
       cr.lastMove = { from: mv.from, to: mv.to };
       cr.sel = null;
+      clearShapes(); // annotations belong to the position they were drawn on
       setTimeout(() => { if (cr.active) { reconcilePieces(); paint(); } }, C.animMs);
       paint();
     }
@@ -8333,6 +8753,7 @@
       cr.promo = null;
       cr.drag = null;
       cr.swallowClick = false;
+      clearShapes();
       hidePromo();
       if (cr.orientation !== cr.userColor) buildGrid();
       reconcilePieces();
@@ -8452,8 +8873,17 @@
       // when a sequence ends without the click we expected (released far off
       // the board, cancelled by the browser, …) and eating a later real click.
       cr.swallowClick = false;
-      if (!cr.active || cr.busy || cr.promo || cr.drag) return;
+      if (!cr.active || cr.promo) return;
+      // Right button draws instead of moving; it also never produces a click,
+      // so none of the swallow bookkeeping below applies to it.
+      if (e.button === 2) { if (!cr.drag && !cr.shape) startShape(e); return; }
+      if (cr.drag || cr.shape) return;
       if (e.button !== 0 && e.pointerType === 'mouse') return;
+      // Any ordinary press on the board wipes the annotations, as everywhere
+      // else — including while the opponent's reply is in flight, which is
+      // exactly when a leftover arrow is most in the way.
+      clearShapes();
+      if (cr.busy) return;
       const ply = currentPly();
       if (!ply || ply.color !== cr.userColor) return;
       const sqEl = e.target.closest('[data-sq]');
@@ -8466,15 +8896,17 @@
       const piece = cr.pieces.get(idx);
       if (!piece) return;
 
-      cr.drag = { idx, piece, startX: e.clientX, startY: e.clientY, moved: false };
+      cr.drag = { idx, piece, startX: e.clientX, startY: e.clientY, moved: false, wasSel: cr.sel };
       // Picking the piece up IS the selection, so the click that follows this
-      // pointerdown has already been accounted for — UNLESS the square was
-      // already selected, where the press changed nothing and the click must
-      // still be allowed through to deselect it (the click path's own
-      // behaviour, which drag support must not quietly remove).
-      const wasSel = cr.sel;
+      // pointerdown has already been accounted for. Pressing an ALREADY selected
+      // piece drops the selection instead — but that cannot be left to the click
+      // path: setPointerCapture below retargets the whole compatibility sequence
+      // (mousedown/mouseup, hence the click) to the GRID, so the click never
+      // reaches a `[data-sq]` element and onSquare is never called. onDragEnd
+      // does the deselect itself; the flag stays set either way, for the case
+      // where capture was refused and the click does arrive at the square.
       cr.sel = idx;
-      cr.swallowClick = wasSel !== idx;
+      cr.swallowClick = true;
       paint();
       // Keeps the move/up events coming even when the pointer leaves the board.
       try { cr.ui.grid.setPointerCapture(e.pointerId); } catch (err) { /* not fatal */ }
@@ -8482,6 +8914,7 @@
     }
 
     function onDragMove(e) {
+      if (cr.shape) { moveShape(e); return; }
       if (!cr.drag) return;
       if (!cr.drag.moved) {
         const far = Math.abs(e.clientX - cr.drag.startX) > CONFIG.continuation.dragSlopPx ||
@@ -8494,6 +8927,7 @@
     }
 
     function onDragEnd(e) {
+      if (cr.shape) { endShape(e); return; }
       const drag = cr.drag;
       if (!drag) return;
       cr.drag = null;
@@ -8501,7 +8935,10 @@
       drag.piece.classList.remove('clo-cr-piece--drag');
       if (!drag.moved) {
         placeAt(drag.piece, drag.idx); // never left its square; nothing to undo
-        return;                        // a plain click: let the click path run
+        // A press on the piece that was already selected is a deselect (see
+        // onDragStart: the trailing click cannot do it, it goes to the grid).
+        if (drag.wasSel === drag.idx) { cr.sel = null; paint(); }
+        return;
       }
       cr.swallowClick = true; // a real drag; its trailing click is not a selection
       const target = dragSquareAt(e.clientX, e.clientY);
@@ -8529,6 +8966,7 @@
     }
 
     function onDragCancel(e) {
+      if (cr.shape) { cr.shape = null; renderShapes(); }
       const drag = cr.drag;
       if (!drag) return;
       cr.drag = null;
@@ -8599,10 +9037,18 @@
       grid.className = 'clo-cr-grid';
       const layer = document.createElement('div');
       layer.className = 'clo-cr-layer';
+      // Annotations go ABOVE the pieces (an arrow ending on a piece must still
+      // be readable) and take no pointer events — the grid owns those.
+      const shapes = document.createElementNS(SVG_NS, 'svg');
+      shapes.setAttribute('class', 'clo-cr-shapes');
+      shapes.setAttribute('viewBox', '0 0 8 8');
+      shapes.setAttribute('preserveAspectRatio', 'none');
       const promo = document.createElement('div');
       promo.className = 'clo-cr-promo';
       promo.hidden = true;
-      boardEl.append(grid, layer, promo);
+      boardEl.append(grid, layer, shapes, promo);
+      // The right button draws; without this the browser's menu opens on top.
+      boardEl.addEventListener('contextmenu', (e) => e.preventDefault());
       grid.addEventListener('click', (e) => { // delegated: our own squares only
         if (cr.swallowClick) { cr.swallowClick = false; return; }
         const sq = e.target.closest('[data-sq]');
@@ -8664,15 +9110,15 @@
       const chooseAll = document.createElement('button');
       chooseAll.type = 'button';
       chooseAll.className = 'clo-cr-btn clo-cr-btn--primary';
-      chooseAll.title = 'Every continuation this variation has, in the order they are written';
-      chooseAll.addEventListener('click', () => beginRun(cr.lines));
+      chooseAll.title = 'Every clickable line this variation has, in the order they are written';
+      chooseAll.addEventListener('click', () => beginRun(freshLines()));
 
       const chooseFinal = document.createElement('button');
       chooseFinal.type = 'button';
       chooseFinal.className = 'clo-cr-btn clo-cr-btn--primary';
       chooseFinal.title = 'Only the lines that carry on from where this variation ended, ' +
         'skipping the ones that branch off earlier';
-      chooseFinal.addEventListener('click', () => beginRun(cr.lines.filter((l) => l.fromFinal)));
+      chooseFinal.addEventListener('click', () => beginRun(freshLines().filter((l) => l.fromFinal)));
 
       const chooseCancel = document.createElement('button');
       chooseCancel.type = 'button';
@@ -8687,7 +9133,7 @@
       cr.boardEl = boardEl;
       cr.panel = panel;
       cr.ui = {
-        grid, layer, promo, title, prompt, progress, actions, hint, skip, exit,
+        grid, layer, shapes, promo, title, prompt, progress, actions, hint, skip, exit,
         chooser, chooseAll, chooseFinal,
       };
       cr.orientation = null; // the grid is built on the first startLine
@@ -8755,8 +9201,18 @@
       cr.ui.skip.hidden = total < 2; // with one line "skip" and "exit" are the same button
     }
 
+    /** The lines this feature offers: everything discovered MINUS the ones the
+     *  user has already added to the course as real variations (tagLinesInCourse
+     *  — they get reviewed there, and drilling them twice in a session is the
+     *  whole thing we are avoiding). `cr.lines` keeps them so the launcher can
+     *  still say how many there were. */
+    function freshLines() {
+      return cr.lines.filter((l) => !l.inCourse);
+    }
+
     function openReview() {
-      if (!cr.lines.length || cr.active) return;
+      const fresh = freshLines();
+      if (!fresh.length || cr.active) return;
       const userColor = trainerUserColor();
       if (userColor) cr.userColor = userColor;
       if (!cr.userColor) { warn('continuation: board orientation unreadable — not opening'); return; }
@@ -8768,33 +9224,33 @@
       cr.panel.hidden = false;
       syncButton();
 
-      // Two kinds of continuation, so the scope is the user's call: carrying on
+      // Two kinds of line, so the scope is the user's call: carrying on
       // from where the variation ENDED is the ordinary case, while a line
       // branching off earlier revisits a move already answered. With only one
       // kind there is nothing to ask, and the quiz starts straight away.
-      const finals = cr.lines.filter((l) => l.fromFinal);
-      if (finals.length && finals.length < cr.lines.length) {
-        showChooser(finals.length);
+      const finals = fresh.filter((l) => l.fromFinal);
+      if (finals.length && finals.length < fresh.length) {
+        showChooser(fresh, finals.length);
         return;
       }
-      beginRun(cr.lines);
+      beginRun(fresh);
     }
 
     /** The scope picker. The board stays HIDDEN behind it: there is no single
      *  position to preview yet, and Chessable's own board is no spoiler. */
-    function showChooser(finalCount) {
+    function showChooser(fresh, finalCount) {
       cr.choosing = true;
       cr.boardEl.hidden = true;
       cr.ui.actions.hidden = true;
       cr.ui.chooser.hidden = false;
-      cr.ui.title.textContent = 'Continuations';
+      cr.ui.title.textContent = 'Clickable lines';
       cr.ui.prompt.textContent = 'Review which lines?';
       cr.ui.prompt.className = 'clo-cr-prompt';
-      const earlier = cr.lines.length - finalCount;
+      const earlier = fresh.length - finalCount;
       cr.ui.progress.textContent = finalCount + ' from the final position, ' +
         earlier + ' from earlier in the variation';
-      cr.ui.chooseAll.textContent = 'All continuations (' + cr.lines.length + ')';
-      cr.ui.chooseFinal.textContent = 'Final continuations (' + finalCount + ')';
+      cr.ui.chooseAll.textContent = 'All lines (' + fresh.length + ')';
+      cr.ui.chooseFinal.textContent = 'Final lines (' + finalCount + ')';
     }
 
     function beginRun(queue) {
@@ -8805,7 +9261,7 @@
       cr.ui.actions.hidden = false;
       cr.boardEl.hidden = false;
       positionOverlays(); // the board was hidden while the picker was up
-      log('continuation review: started,', queue.length, 'of', cr.lines.length, 'line(s)');
+      log('continuation review: started,', queue.length, 'of', freshLines().length, 'line(s)');
       startLine(0);
     }
 
@@ -8827,6 +9283,7 @@
       cr.flash = null;
       cr.drag = null;
       cr.swallowClick = false;
+      clearShapes();
       hidePromo();
       if (cr.boardEl) cr.boardEl.hidden = true;
       if (cr.panel) cr.panel.hidden = true;
@@ -8861,14 +9318,21 @@
 
     function syncButton() {
       if (!ensureCluster()) return;
-      const show = !cr.active && cr.lines.length > 0;
+      const n = freshLines().length;
+      const show = !cr.active && n > 0;
       cr.cluster.hidden = !show;
       if (!show) return;
-      const n = cr.lines.length;
-      cr.button.textContent = n > 1 ? 'Review continuations (' + n + ')' : 'Review continuation';
-      cr.button.title = 'Play through the ' + (n > 1 ? n + ' continuation lines' : 'continuation line') +
-        ' this variation ends with: the opponent’s moves are played for you, ' +
-        'yours are asked for on our own board.';
+      // "Clickable", not "continuation": a line branching off earlier in the
+      // variation continues nothing — what all of these lines have in common is
+      // that Chessable printed them as clickable moves in the comment.
+      cr.button.textContent = n > 1 ? 'Review clickables (' + n + ')' : 'Review clickable';
+      const skipped = cr.lines.length - n;
+      cr.button.title = 'Play through the ' + (n > 1 ? n + ' clickable lines' : 'clickable line') +
+        ' in this variation’s comment: the opponent’s moves are played for you, ' +
+        'yours are asked for on our own board.' +
+        (skipped ? ' ' + skipped + ' further line' + (skipped > 1 ? 's are' : ' is') +
+          ' already in your course as a variation, so ' + (skipped > 1 ? 'they are' : 'it is') +
+          ' left out.' : '');
     }
 
     function hideButton() {
