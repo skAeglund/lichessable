@@ -159,6 +159,7 @@
     // Only activate in these mt1 iframe documents.
     framePathPrefixes: ['/mt1/explore/', '/mt1/analysis/'],
     debounceMs:      300,             // settle time after any detected change before refreshing
+    settingsNoteMs:  2500,            // lifetime of the settings menu's transient warning line
     fenPollMs:       500,             // safety-net poll: the FEN value can change with no event or mutation
     bootPollMs:      250,             // fallback poll while waiting for the async app to render
     bootTimeoutMs:   25000,           // give up waiting for the app after this long
@@ -172,11 +173,17 @@
       apiBase: 'https://explorer.lichess.org/lichess',
       tokenKey: 'lichessToken', // chrome.storage.local key; must match background.js / options.js
       variant: 'standard',
-      // Defaults: 1600+ opposition, blitz and slower time controls.
-      // Rating values are the lower bounds of Lichess's fixed buckets
-      // (0, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2500).
-      speeds:  ['blitz', 'rapid', 'classical', 'correspondence'],
-      ratings: [1600, 1800, 2000, 2200, 2500],
+      // Defaults: 1600+ opposition, blitz and slower time controls. The user
+      // can change both in the panel's settings menu (the header cogwheel,
+      // section 6b) — the LIVE values are `lichessFilters`, never these.
+      defaultSpeeds:  ['blitz', 'rapid', 'classical', 'correspondence'],
+      defaultRatings: [1600, 1800, 2000, 2200, 2500],
+      // Everything the explorer accepts, in its own order: the settings menu
+      // offers exactly these, and anything else read back from storage is
+      // dropped. Rating values are the lower bounds of Lichess's fixed buckets.
+      allSpeeds:  ['ultraBullet', 'bullet', 'blitz', 'rapid', 'classical', 'correspondence'],
+      allRatings: [0, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2500],
+      filtersKey: 'cloLichessFilters', // chrome.storage.local: { speeds, ratings }
       movesLimit: 20,             // max candidate moves to request (side panel has room)
       cacheMax: 200,              // positions kept in the in-memory LRU cache
       rateLimitCooldownMs: 61000, // Lichess asks for a full minute after a 429
@@ -567,6 +574,7 @@
     fen: null,            // last FEN we fetched/rendered
     requestSeq: 0,        // increases per fetch; responses for stale positions are dropped
     hidden: false,        // panel body collapsed? (persisted in chrome.storage.local)
+    filtersOpen: false,   // settings menu (header cogwheel) open? deliberately NOT persisted
     debounceTimer: 0,
     fenPollTimer: 0,
     tbodyObserver: null,  // MutationObserver on Chessable's move-table tbody
@@ -597,6 +605,7 @@
     state.hidden = await loadHiddenPref();
     state.engineEnabled = await loadEnginePref();
     state.engineBuild = await loadEngineBuildPref();
+    await loadFilters();
     mountPanel();
     bindFenInput();
     observeMovesTable();
@@ -618,6 +627,14 @@
     if (changes[CONFIG.lichess.tokenKey]) {
       log('Lichess token changed — retrying current position');
       state.fen = null; // forget the last position so the next tick refetches
+      scheduleRefresh();
+    }
+    // Database filters (settings cogwheel, section 6b) — changed here, in the
+    // other document of this tab, or in another tab. Re-applying is idempotent.
+    if (changes[CONFIG.lichess.filtersKey]) {
+      applyFilters(normalizeFilters(changes[CONFIG.lichess.filtersKey].newValue));
+      renderFilters();  // an open menu must show what is actually in force
+      state.fen = null; // the rendered data was fetched under the old filters
       scheduleRefresh();
     }
     // Keeps the toggle in sync across tabs/modes (idempotent in the tab that
@@ -856,10 +873,106 @@
    *     opening: { eco, name } | null
    *   }
    *
-   * Speed/rating filters live in CONFIG.lichess. Flip USE_STUB_DATA to true
-   * to develop the UI without touching the API (shows the "stub data" badge).
+   * Speed/rating filters live in `lichessFilters` (below). Flip USE_STUB_DATA
+   * to true to develop the UI without touching the API (shows the "stub data"
+   * badge).
    */
   const USE_STUB_DATA = false;
+
+  // --- explorer filters (the panel's settings cogwheel, section 6b) ---------
+  //
+  // The live speed/rating filters every explorer request carries. Defaults are
+  // CONFIG.lichess.defaultSpeeds/defaultRatings; the user edits them in the
+  // panel's settings menu and they persist in chrome.storage.local under
+  // CONFIG.lichess.filtersKey. EVERY caller that fetches — the panel, the
+  // alt-check popup's win-rate line, the chapter sort — reads this one object,
+  // and onStorageChanged keeps it in sync across frames, tabs and documents
+  // (the panel lives in the mt1 iframe on Explore/Analysis but in the top
+  // document in review, so a change has to travel through storage either way).
+  const lichessFilters = {
+    speeds:  CONFIG.lichess.defaultSpeeds.slice(),
+    ratings: CONFIG.lichess.defaultRatings.slice(),
+  };
+
+  /** Human labels for the API's speed ids (UI text only — never sent). */
+  const SPEED_LABELS = {
+    ultraBullet: 'UltraBullet',
+    bullet: 'Bullet',
+    blitz: 'Blitz',
+    rapid: 'Rapid',
+    classical: 'Classical',
+    correspondence: 'Corr.',
+  };
+
+  /**
+   * Keeps only values Lichess knows, in the API's own order, and never lets a
+   * dimension end up empty (the explorer would answer with nothing at all) —
+   * an unusable stored value falls back to the default set.
+   */
+  function normalizeFilters(raw) {
+    const src = (raw && typeof raw === 'object') ? raw : {};
+    const pick = (values, allowed, fallback) => {
+      const wanted = new Set(Array.isArray(values) ? values : []);
+      const kept = allowed.filter((v) => wanted.has(v));
+      return kept.length ? kept : fallback.slice();
+    };
+    return {
+      speeds:  pick(src.speeds,  CONFIG.lichess.allSpeeds,  CONFIG.lichess.defaultSpeeds),
+      ratings: pick(src.ratings, CONFIG.lichess.allRatings, CONFIG.lichess.defaultRatings),
+    };
+  }
+
+  const sameFilterSet = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+  const filtersAreDefault = () =>
+    sameFilterSet(lichessFilters.speeds, CONFIG.lichess.defaultSpeeds) &&
+    sameFilterSet(lichessFilters.ratings, CONFIG.lichess.defaultRatings);
+
+  /** e.g. "Blitz, Rapid, Classical, Corr. · 1600+" — tooltip / log text. */
+  function filtersSummary() {
+    const speeds = lichessFilters.speeds.map((s) => SPEED_LABELS[s] || s).join(', ');
+    const ratings = lichessFilters.ratings;
+    const contiguous = ratings.every((r, i) =>
+      CONFIG.lichess.allRatings.indexOf(r) === CONFIG.lichess.allRatings.indexOf(ratings[0]) + i);
+    const all = CONFIG.lichess.allRatings;
+    const band = ratings.length === all.length
+      ? 'all ratings'
+      : (contiguous && ratings[ratings.length - 1] === all[all.length - 1])
+        ? `${ratings[0]}+`
+        : ratings.join(', ');
+    return `${speeds} · ${band}`;
+  }
+
+  /**
+   * Adopts a filter set. Every cached response was fetched under the OLD
+   * filters, so both explorer caches are dropped here — the chapter sort's
+   * storage.local cache needs no clearing, it tags its entries with the
+   * filters (popCacheTag) and simply misses.
+   */
+  function applyFilters(next) {
+    lichessFilters.speeds = next.speeds;
+    lichessFilters.ratings = next.ratings;
+    fenCache.clear();
+    if (altCheckDropDbCache) altCheckDropDbCache();
+  }
+
+  async function loadFilters() {
+    try {
+      const res = await chrome.storage.local.get(CONFIG.lichess.filtersKey);
+      applyFilters(normalizeFilters(res[CONFIG.lichess.filtersKey]));
+    } catch (err) {
+      warn('storage read failed:', err);
+    }
+  }
+
+  function saveFilters(value) {
+    try {
+      chrome.storage.local.set({ [CONFIG.lichess.filtersKey]: value })
+        .catch((err) => warn('storage write failed:', err));
+    } catch (err) {
+      warn('storage unavailable:', err);
+    }
+  }
 
   function fetchLichessData(fen) {
     return USE_STUB_DATA ? fetchStubData(fen) : fetchExplorerData(fen);
@@ -869,8 +982,8 @@
     const params = new URLSearchParams({
       variant: CONFIG.lichess.variant,
       fen, // full FEN from #inputFEN; URLSearchParams handles the encoding
-      speeds: CONFIG.lichess.speeds.join(','),
-      ratings: CONFIG.lichess.ratings.join(','),
+      speeds: lichessFilters.speeds.join(','),
+      ratings: lichessFilters.ratings.join(','),
       moves: String(movesLimit || CONFIG.lichess.movesLimit),
       topGames: '0',    // stats only — no sample games,
       recentGames: '0', // keeps the payload small
@@ -982,10 +1095,25 @@
         <span class="clo-title">Lichess Database</span>
         <span class="clo-stub-badge" hidden>stub data</span>
         <button type="button" class="clo-engine-toggle" aria-pressed="false">Engine</button>
+        <button type="button" class="clo-cog" aria-expanded="false" aria-label="Database filters">⚙</button>
         <button type="button" class="clo-toggle" aria-expanded="true">Hide</button>
       </div>
       <div class="clo-moves" hidden></div>
       <div class="clo-body">
+        <div class="clo-filters" hidden>
+          <div class="clo-filters-row">
+            <span class="clo-filters-label">Time control</span>
+            <span class="clo-filters-chips clo-filters-speeds"></span>
+          </div>
+          <div class="clo-filters-row">
+            <span class="clo-filters-label">Rating</span>
+            <span class="clo-filters-chips clo-filters-ratings"></span>
+          </div>
+          <div class="clo-filters-foot">
+            <span class="clo-filters-note"></span>
+            <button type="button" class="clo-filters-reset">Reset</button>
+          </div>
+        </div>
         <div class="clo-engine" hidden>
           <div class="clo-engine-head">
             <span class="clo-engine-eval"></span>
@@ -1045,6 +1173,12 @@
       status:     panel.querySelector('.clo-status'),
       table:      panel.querySelector('.clo-table'),
       tbody:      panel.querySelector('.clo-table tbody'),
+      cog:          panel.querySelector('.clo-cog'),
+      filters:      panel.querySelector('.clo-filters'),
+      filterSpeeds: panel.querySelector('.clo-filters-speeds'),
+      filterRatings: panel.querySelector('.clo-filters-ratings'),
+      filtersNote:  panel.querySelector('.clo-filters-note'),
+      filtersReset: panel.querySelector('.clo-filters-reset'),
       engine:       panel.querySelector('.clo-engine'),
       engineToggle: panel.querySelector('.clo-engine-toggle'),
       engineEval:   panel.querySelector('.clo-engine-eval'),
@@ -1058,10 +1192,14 @@
 
     state.ui.toggle.addEventListener('click', onToggle); // no inline handlers
     state.ui.engineToggle.addEventListener('click', onEngineToggle);
+    state.ui.cog.addEventListener('click', onCogToggle);
+    state.ui.filtersReset.addEventListener('click', onFiltersReset);
+    buildFilterChips();
     // One delegated listener instead of per-row handlers: rows are rebuilt on
     // every render, the tbody lives as long as the panel.
     state.ui.tbody.addEventListener('click', onMoveRowClick);
     applyHidden();
+    applyFiltersOpen();   // …and the settings menu (closed unless it was open)
     applyEngineEnabled(); // restore the engine section state on (re)mount
     if (IS_ANALYSIS) {
       adoptAnalysisMoves();
@@ -1401,6 +1539,12 @@
 
   function onToggle() {
     state.hidden = !state.hidden;
+    // The settings menu is part of the body: collapsing the panel closes it,
+    // rather than leaving the cogwheel claiming to be open over nothing.
+    if (state.hidden && state.filtersOpen) {
+      state.filtersOpen = false;
+      applyFiltersOpen();
+    }
     applyHidden();
     saveHiddenPref(state.hidden);
     syncEngine(); // a collapsed panel stops the search (engine kept warm)
@@ -1423,6 +1567,141 @@
       }
       positionAnalysisPanel();
     }
+  }
+
+  // ==========================================================================
+  // 6b) Settings menu — the Lichess database filters
+  //
+  // The header cogwheel opens a small block at the TOP OF THE PANEL BODY, not
+  // a floating popover: .clo-panel is overflow:hidden, and in review/analysis
+  // the panel is a sized overlay whose body is the scroll container — a menu
+  // inside it can neither be clipped nor push the panel out of its box.
+  //
+  // Chips are plain buttons with aria-pressed, built once per mount and
+  // re-rendered from `lichessFilters` whenever it changes — here, in the other
+  // document (the panel lives in the mt1 iframe on Explore/Analysis but in the
+  // top document in review) or in another tab. A change writes storage, drops
+  // both explorer caches and refetches the current position.
+  // ==========================================================================
+
+  function onCogToggle() {
+    state.filtersOpen = !state.filtersOpen;
+    // The menu lives inside the body, so opening it on a collapsed panel has
+    // to un-collapse it — exactly as if "Show" had been pressed.
+    if (state.filtersOpen && state.hidden) {
+      state.hidden = false;
+      saveHiddenPref(false);
+      applyHidden();
+      syncEngine();
+    }
+    applyFiltersOpen();
+  }
+
+  function applyFiltersOpen() {
+    const ui = state.ui;
+    if (!ui) return;
+    ui.filters.hidden = !state.filtersOpen;
+    ui.cog.setAttribute('aria-expanded', String(state.filtersOpen));
+    renderFilters();
+  }
+
+  /** One chip per value the explorer offers; built once per panel mount. */
+  function buildFilterChips() {
+    const ui = state.ui;
+    if (!ui) return;
+    const chips = { speeds: [], ratings: [] };
+
+    const addChip = (host, kind, value, label, title) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'clo-chip';
+      btn.textContent = label;
+      btn.title = title;
+      btn.setAttribute('aria-pressed', 'false');
+      btn.addEventListener('click', () => toggleFilterValue(kind, value));
+      host.appendChild(btn);
+      chips[kind].push({ value, el: btn });
+    };
+
+    for (const speed of CONFIG.lichess.allSpeeds) {
+      addChip(ui.filterSpeeds, 'speeds', speed, SPEED_LABELS[speed] || speed,
+        `Include ${SPEED_LABELS[speed] || speed} games`);
+    }
+    const bands = CONFIG.lichess.allRatings;
+    bands.forEach((rating, i) => {
+      const next = bands[i + 1];
+      const title = 'Average rating ' +
+        (rating === 0 ? `below ${next}` : next ? `${rating}–${next}` : `${rating}+`);
+      addChip(ui.filterRatings, 'ratings', rating, String(rating), title);
+    });
+
+    ui.filterChips = chips;
+    renderFilters();
+  }
+
+  function renderFilters() {
+    const ui = state.ui;
+    if (!ui || !ui.filterChips) return;
+    for (const kind of ['speeds', 'ratings']) {
+      for (const chip of ui.filterChips[kind]) {
+        chip.el.setAttribute('aria-pressed', String(lichessFilters[kind].includes(chip.value)));
+      }
+    }
+    const custom = !filtersAreDefault();
+    ui.cog.classList.toggle('clo-cog--custom', custom);
+    ui.cog.title = 'Database filters — ' + filtersSummary();
+    ui.filtersReset.hidden = !custom; // nothing to reset while they are the defaults
+  }
+
+  function toggleFilterValue(kind, value) {
+    const all = kind === 'speeds' ? CONFIG.lichess.allSpeeds : CONFIG.lichess.allRatings;
+    const wanted = new Set(lichessFilters[kind]);
+    if (wanted.has(value)) wanted.delete(value); else wanted.add(value);
+    const next = all.filter((v) => wanted.has(v));
+    if (!next.length) {
+      // An empty dimension makes the explorer answer with nothing at all —
+      // refuse the click rather than silently emptying the panel.
+      showFiltersNote(kind === 'speeds'
+        ? 'Keep at least one time control.'
+        : 'Keep at least one rating band.');
+      return;
+    }
+    showFiltersNote('');
+    commitFilters(kind === 'speeds'
+      ? { speeds: next, ratings: lichessFilters.ratings }
+      : { speeds: lichessFilters.speeds, ratings: next });
+  }
+
+  function onFiltersReset() {
+    showFiltersNote('');
+    commitFilters({
+      speeds:  CONFIG.lichess.defaultSpeeds.slice(),
+      ratings: CONFIG.lichess.defaultRatings.slice(),
+    });
+  }
+
+  /** Adopt + persist + refetch. The storage change re-applies this in every
+   *  other document (and, idempotently, in this one). */
+  function commitFilters(next) {
+    applyFilters(normalizeFilters(next));
+    saveFilters({ speeds: lichessFilters.speeds, ratings: lichessFilters.ratings });
+    renderFilters();
+    log('Lichess filters:', filtersSummary());
+    state.fen = null; // what is on screen was fetched under the old filters
+    scheduleRefresh();
+  }
+
+  let filtersNoteTimer = 0;
+
+  function showFiltersNote(text) {
+    const ui = state.ui;
+    if (!ui) return;
+    ui.filtersNote.textContent = text;
+    clearTimeout(filtersNoteTimer);
+    if (!text) return;
+    filtersNoteTimer = setTimeout(() => {
+      if (state.ui) state.ui.filtersNote.textContent = '';
+    }, CONFIG.settingsNoteMs);
   }
 
   /** Loading: if data is already on screen, just dim it; otherwise show text. */
@@ -1805,6 +2084,7 @@
   function teardown() {
     clearTimeout(state.debounceTimer);
     clearTimeout(state.rateLimitTimer);
+    clearTimeout(filtersNoteTimer);
     clearInterval(state.fenPollTimer);
     chrome.storage.onChanged.removeListener(onStorageChanged);
     chrome.runtime.onMessage.removeListener(onEngineMessage);
@@ -2073,6 +2353,7 @@
     state.hidden = await loadHiddenPref();
     state.engineEnabled = await loadEnginePref();
     state.engineBuild = await loadEngineBuildPref();
+    await loadFilters(); // also serves the alt-check's win-rate lookup and the chapter sort
     chrome.storage.onChanged.addListener(onStorageChanged);
     chrome.runtime.onMessage.addListener(onEngineMessage);
     document.addEventListener('visibilitychange', onVisibilityChange);
@@ -3702,6 +3983,10 @@
   // probes through the clo-quick-edit-result message, so this is the only way
   // it learns that a probe it is waiting on will never answer.
   let altCheckProbeSettled = null;
+  // () => void — the database filters changed, so the popup's win-rate cache
+  // (fetched under the old ones) is stale. Called by applyFilters; null-safe,
+  // since the panel can exist in a document where initAltCheck never ran.
+  let altCheckDropDbCache = null;
   /**
    * (fens|null, resumeAfterHandover) => void — assigned by initAutoPlay, called
    * by the retry runner (section 17) every tick.
@@ -5328,9 +5613,10 @@
 
     // --- explorer results cache (chrome.storage.local) ----------------------
 
-    // Tagged with the filters, so changing CONFIG.lichess invalidates cleanly.
+    // Tagged with the filters, so changing them in the settings menu (or in
+    // CONFIG.lichess) invalidates cleanly.
     const popCacheTag = () =>
-      'r:' + CONFIG.lichess.ratings.join(',') + '|s:' + CONFIG.lichess.speeds.join(',');
+      'r:' + lichessFilters.ratings.join(',') + '|s:' + lichessFilters.speeds.join(',');
 
     async function loadPopCache() {
       try {
@@ -6315,6 +6601,10 @@
       if (!ok && ac.job && String(bid) === String(ac.job.bid || '')) ac.probeFailed = true;
       applyAcRights();
     };
+    // The database filters changed under us: every cached win-rate response
+    // was fetched with the old ones (a rendered popup keeps its line — the
+    // next open refetches).
+    altCheckDropDbCache = () => acDbCache.clear();
 
     setInterval(tick, CONFIG.review.pollMs);
     log('alt-check watcher active (top document)');

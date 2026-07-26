@@ -64,6 +64,122 @@
   color: #fff;
 }
 
+/* Cogwheel: same bare-text look as the other header buttons. It turns green
+   (the lichess accent) while the filters differ from the defaults, so a panel
+   showing a narrowed slice of the database says so at a glance. */
+.clo-cog {
+  border: none;
+  background: transparent;
+  color: #949494;
+  padding: 2px 4px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  font-family: inherit;
+}
+
+.clo-cog:hover {
+  color: #fff;
+}
+
+.clo-cog[aria-expanded="true"] {
+  color: #dcdcdc;
+}
+
+.clo-cog--custom {
+  color: #a5c96a;
+}
+
+/* --- settings menu: database filters (section 6b) --------------------------
+   Lives at the top of the body rather than floating over the panel — the panel
+   is overflow:hidden, and on Analysis/review its body is the scroll container,
+   so an in-flow block can never be clipped or overflow the panel's box. */
+
+.clo-filters {
+  border-bottom: 1px solid #3a3630;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+}
+
+/* Label above its chips rather than beside them: the panel is as narrow as
+   300px in review, where a label column would squeeze the chips into a ragged
+   two-line block. */
+.clo-filters-row {
+  margin-bottom: 8px;
+}
+
+.clo-filters-label {
+  display: block;
+  margin-bottom: 4px;
+  color: #949494;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.clo-filters-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.clo-chip {
+  border: 1px solid #3a3630;
+  border-radius: 3px;
+  background: transparent;
+  color: #949494;
+  padding: 2px 7px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.clo-chip:hover {
+  color: #fff;
+  border-color: #4d4842;
+}
+
+.clo-chip[aria-pressed="true"] {
+  color: #111;
+  background: #629924;
+  border-color: #629924;
+}
+
+.clo-chip[aria-pressed="true"]:hover {
+  background: #71ad2a;
+  border-color: #71ad2a;
+}
+
+.clo-filters-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 16px;
+}
+
+/* Only ever holds the "keep at least one …" warning, which clears itself. */
+.clo-filters-note {
+  color: #d3a836;
+  font-size: 11px;
+}
+
+.clo-filters-reset {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: #949494;
+  padding: 2px 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  text-decoration: underline;
+}
+
+.clo-filters-reset:hover {
+  color: #fff;
+}
+
 /* --- body ------------------------------------------------------------------ */
 
 .clo-body {
@@ -1300,6 +1416,32 @@ html.clo-touch .clo-toggle,
 html.clo-touch .clo-engine-toggle {
   font-size: 16px;
   padding: 8px 12px;
+}
+
+html.clo-touch .clo-cog {
+  font-size: 20px;
+  padding: 8px 10px;
+}
+
+/* Settings chips are the densest tap targets we have — they get the full
+   fingertip treatment. */
+html.clo-touch .clo-filters-label {
+  font-size: 12px;
+}
+
+html.clo-touch .clo-chip {
+  font-size: 15px;
+  padding: 8px 12px;
+  border-radius: 4px;
+}
+
+html.clo-touch .clo-filters-note,
+html.clo-touch .clo-filters-reset {
+  font-size: 14px;
+}
+
+html.clo-touch .clo-filters-reset {
+  padding: 8px 10px;
 }
 
 html.clo-touch .clo-body {

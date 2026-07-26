@@ -113,6 +113,22 @@ Currently working (v0.18.x).
 - Fetches carry a sequence number; stale responses are cached but not
   rendered. LRU cache: 200 positions, keyed on the first four FEN fields
   (so move-counter-only differences share entries).
+- Database filters (section 6b): ratings and speeds are USER settings, edited
+  in the panel header's cogwheel menu. `CONFIG.lichess.defaultSpeeds/
+  defaultRatings` are only defaults — the live values are the module-level
+  `lichessFilters`, which is what `fetchExplorerData` and the chapter sort's
+  `popCacheTag` read. Persisted in `chrome.storage.local` (`cloLichessFilters`)
+  and re-applied from `chrome.storage.onChanged` in EVERY document, because the
+  panel is in the mt1 iframe on Explore/Analysis and in the top document in
+  review. `normalizeFilters` drops unknown values and never yields an empty
+  dimension (the explorer would return nothing), the chip UI refuses the click
+  that would empty one, and `applyFilters` clears both in-memory explorer
+  caches (`fenCache`, and the alt-check's `acDbCache` via the
+  `altCheckDropDbCache` bridge) — the chapter sort's storage cache is
+  filter-tagged and just misses. The menu is an in-flow block at the top of
+  `.clo-body`, NOT a floating popover: `.clo-panel` is `overflow: hidden` and
+  the analysis/review panel is a sized overlay whose body is the scroll
+  container.
 - The Lichess opening explorer requires a Bearer token since early 2026 and
   lives at `explorer.lichess.org` (`explorer.lichess.ovh` now 401s). Token:
   `chrome.storage.local` key `lichessToken` — the string is duplicated in

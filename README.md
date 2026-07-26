@@ -18,6 +18,19 @@ card. The panel is always visible — deliberately
 independent of the **Toggle Opening Explorer** toolbar button, which Chessable
 disables in some entry states (e.g. opening the page via a `?fen=` link).
 
+The panel header's **⚙ cogwheel** opens its settings menu: the **database
+filters** the Lichess numbers are drawn from — which **time controls**
+(UltraBullet … Correspondence) and which **rating bands** (0, 1000 … 2500,
+the lower bounds of Lichess's own buckets) count. The defaults are
+blitz-and-slower at 1600+. A change applies immediately — cached positions are
+dropped and the current one refetched — and is remembered per browser, across
+every place the extension queries the explorer: the panel wherever it appears
+(Explore, Analysis, review, variation pages), the win-rate line in the
+wrong-answer check, and the chapter sort's popularity ranking. Each dimension
+keeps at least one value, since an empty one returns no games at all. The
+cogwheel turns green while the filters differ from the defaults (hover it for
+the current set), and a **Reset** link in the menu puts them back.
+
 The same panel also appears in **review and learn sessions** once a variation
 is **completed** and the trainer enters its browse state (stepping through the
 moves, reading comments). It follows whatever position is on the board —
@@ -664,8 +677,9 @@ Notes on the popularity ranking itself:
   531-node tree over 64 variations has only 29 branching points. Results are
   cached in `chrome.storage.local` keyed by FEN plus the rating/speed filters,
   so chapters of one repertoire share their early positions.
-- **Same filters as the panel** (`CONFIG.lichess` ratings and speeds), so the
-  ordering agrees with the numbers the Lichess Database panel shows you.
+- **Same filters as the panel** (whatever ratings and speeds are set in its
+  settings menu), so the ordering agrees with the numbers the Lichess Database
+  panel shows you.
 - **The scope assumption:** in a repertoire, every branching point is a position
   where the *opponent* chooses — you don't prepare two answers to one position —
   so no side detection is done. Where `course.color` makes it knowable, branches
@@ -757,6 +771,17 @@ Query defaults (all in `CONFIG.lichess` at the top of the content script):
 - **Speeds:** blitz, rapid, classical, correspondence ("blitz and slower")
 - **Moves:** up to 20 candidates; `topGames`/`recentGames` are 0 to keep
   payloads small.
+- Ratings and speeds are the two the **user can change**, in the panel's
+  settings menu (the header cogwheel). `CONFIG.lichess.defaultSpeeds` /
+  `defaultRatings` are only the starting point; the live values are the module
+  -level `lichessFilters` object, which every explorer request reads. They are
+  persisted in `chrome.storage.local` under `cloLichessFilters` and re-applied
+  from `chrome.storage.onChanged` in every document — the panel runs in the
+  mt1 iframe on Explore/Analysis but in the top document during review, so a
+  change made in one has to reach the other through storage anyway. Values the
+  explorer doesn't know are dropped on read, and a dimension can never end up
+  empty (it would return nothing at all): an unusable stored set falls back to
+  the defaults.
 - The response's `opening` field (ECO + name) is shown above the summary bar,
   and each move's `averageRating` appears as a tooltip on the move cell.
 
@@ -766,6 +791,10 @@ Network behavior:
   fields, so transpositions that differ only in move counters share an entry.
   Stepping back and forth through a line never re-hits the API. Responses that
   arrive after you've already moved on are still cached for their position.
+  Changing the filters empties it (and the alt-check's own win-rate cache) —
+  every entry in it was fetched under the old ones. The chapter sort's
+  persistent popularity cache needs no clearing: its entries are tagged with
+  the filters they were fetched with, so they simply miss.
 - **429 handling** — on a rate limit the panel shows a notice, requests pause
   for ~61 s (Lichess asks for a full minute after a 429), then the current
   position retries automatically. Cached positions keep rendering during the
@@ -779,8 +808,8 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
 
 ## Permissions rationale
 
-- `storage` — remembers the show/hide, engine and auto-play preferences and
-  holds the Lichess API token; `storage.session` carries the engine's reply
+- `storage` — remembers the show/hide, database-filter, engine and auto-play
+  preferences and holds the Lichess API token; `storage.session` carries the engine's reply
   routing and the tab-driver jobs across service-worker restarts, plus the
   auto-play session record (the worker calls
   `setAccessLevel('TRUSTED_AND_UNTRUSTED_CONTEXTS')` so the content script
