@@ -23,7 +23,10 @@ Trainer sessions (/practice/ and /learn/ alike) can also auto-play moves the
 user already answered correctly earlier the same session (section 13; opt-in
 toggle on the overstudy widget). A wrong quiz answer offers an
 engine check of the refused move and one-click addition as an accepted
-alternative (section 15).
+alternative (section 15). Every move failed in a session is logged from the
+trainer's own per-move quiz record (section 16) and a "Retry" button walks
+those variations again as overstudy, with auto-play covering the moves already
+answered (section 17).
 Currently working (v0.18.x).
 
 ## Structure
@@ -43,8 +46,10 @@ Currently working (v0.18.x).
   be reached from any page without a load).
 - `content/pagestate.js` — the ONLY MAIN-world script (`world: "MAIN"`, top
   frame only). Read-only fiber walk that hands auto-play the trainer's own
-  lesson plan; see section 13. Keep it free of `chrome.*` — a MAIN-world
-  content script has no extension APIs.
+  lesson plan (section 13) and the mistake log each user ply's live `progress`
+  (section 16) in ONE read; the mistake-log fields are all optional, so a plan
+  that stops carrying them must still yield a usable line. Keep it free of
+  `chrome.*` — a MAIN-world content script has no extension APIs.
 - `content/lichessable.css` — panel styles, all namespaced `.clo-`.
 - `background.js` — service worker; does the authenticated explorer fetch,
   opens overstudy tabs, and is the engine message hub. Message types:
@@ -618,6 +623,68 @@ Currently working (v0.18.x).
   land (`releaseEngine`: stop + `state.engineFen = null` + `syncEngine()` so
   a browse-state panel search resumes by itself); no shutdown is sent — the
   offscreen document's own 5-minute idle close reclaims the memory.
+- Mistake log (section 16) + retry runner (section 17); design and ground truth
+  in DESIGN-retry-mistakes.md. The log's source is MoveTrainer2's OWN per-ply
+  `progress` in the lesson plan (`quizIncorrectAttempts` = the refused SAN, or
+  the literal `"timeUp"`, once per failed attempt) — NOT the DOM, NOT a hooked
+  `fetch` (`saveProgressAndReturnNewProgressInfo` carries the same data, and
+  pagestate.js is read-only by design). Sampled ~1/s in trainer sessions,
+  keyed on the trainer's `mid` (= difficult-moves' `moveId`), stored in
+  `chrome.storage.session.cloMistakeLog` per course with the auto-play
+  record's 12 h TTL — session area only, or a stale list would drill another
+  day's moves. Counters are PER-LESSON, so growth is measured against what
+  THIS document already logged (`ml.seen`), and an entry keeps the `mode` it
+  was FIRST seen in: overstudy-mode entries are excluded from the count (else
+  the retry pass refills its own queue), while a move failed again during its
+  retry keeps mode 'review' and merely gets `retried: false` again. Writes
+  MERGE (`mergeEntry`) — every tab shares that storage area, and a background
+  overstudy tab used to be able to overwrite the review tab's log.
+  The runner's queue is one item per VARIATION (target = the LAST failed move
+  of the line; the earlier ones are met on the way) and lives in
+  `chrome.storage.session.cloRetryRun` because the FIRST switch is a real
+  navigation that destroys the document — the next one adopts the pass. Only
+  that one costs a load: in a `/learn/` session an untrusted `.click()` on
+  `SELECTORS.reviewDrawerRow` (carries `oid`/`lid`/`title`) switches variation
+  in-session, and the /learn/ drawer lists the WHOLE course. NEVER click a
+  drawer row in a `/practice/` session — that starts a real REVIEW and
+  reschedules the card, so the runner treats "right oid, wrong route" as not
+  yet arrived and navigates out. A browse state on the item's OWN variation is
+  normally the previous one still painted a beat after the switch (hence the
+  early return), but if it OUTLASTS `browseGraceMs` the pass is parked on a
+  variation the trainer has finished — where a pass that starts on the
+  variation the previous one ended on lands (fail the last one, press Retry
+  again): the oid already matches so nothing switches, and its drawer row is
+  the ACTIVE one so clicking it does nothing. Only reloading the overstudy URL
+  re-quizzes it, which is why `navigateToItem` falls back to
+  `location.reload()` when the target URL is the one already loaded (v0.29.1). `storage.session` is profile-wide, so a run
+  is OWNED by one document (random id + `beat` heartbeat): a navigating
+  document hands over by nulling `owner`, a quiet owner is takeable after
+  `ownerStaleMs`, and the owner ends its own pass on `pagehide` (unless
+  `rr.handingOver`), after `awayStopMs` off the trainer path inside the SPA,
+  or via the `runAbandonMs` sweep for a tab that died — always restoring
+  `cloAutoPlayEnabled` to `run.prevAutoPlay`. Advance = the target's
+  `quizCorrectTotal` growing past the value read ON ARRIVAL (a BASELINE, not
+  `> 0`: a seeded counter would race the whole queue through) or the variation
+  completing; `markRetried(oid, visit.at)` deliberately spares entries whose
+  ts is NEWER than the visit, which is what keeps a re-failed move in the
+  list. Auto-play is told to hold on ALL of the item's failed positions
+  (`autoPlaySetHold`, compared on placement+side only because the tracker's
+  castling can be the home-square heuristic) — a move failed early and
+  answered correctly later IS proven, and would otherwise be replayed past.
+  `cloRetryMode` (storage.local, default 'from') decides how much of a line the
+  user plays: 'whole' forces `cloAutoPlayEnabled` OFF for the pass and advances
+  only on completion; 'from' is the plain hold; 'only' ALSO passes
+  `resumeAfterHandover`, the second argument of the same bridge, which lifts
+  auto-play's `vs.handedOver` rule so control comes back after each retried
+  mistake (mistakes at moves 8 and 12 ⇒ auto-play 1-7, user 8, auto-play 9-11,
+  user 12). That rule exists because resuming mid-line was reported as jarring,
+  so the lift is scoped to the variation a pass is DRIVING (`applyHold`'s
+  `here`) and cleared on every other tick — never let it leak into ordinary
+  sessions.
+  Counters that live in the RECORD must be saved to survive the per-tick
+  reload (`loadRun`); `rr.waits` is deliberately document-local for that
+  reason. Layer 2 of the design (a drill on our own board, and the
+  `/difficult-moves` JSON endpoint) is NOT implemented.
 
 ## Verification (no automated tests)
 

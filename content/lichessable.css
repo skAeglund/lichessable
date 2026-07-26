@@ -972,6 +972,197 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-ac-cancel:hover { color: #fff; }
 .clo-ac-cancel:disabled { opacity: 0.6; cursor: default; }
 
+/* --- retry this session's mistakes (sections 16 + 17) ------------------------
+   A third cluster in the overstudy widget row: the mistake count, the Retry
+   button, and — while a pass runs — a progress line with Skip/Stop. The list
+   popup is fixed from the cluster's rect at open time, like the other popups. */
+
+.clo-mx {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px;
+  border-left: 1px solid #3d3a36;
+}
+
+.clo-mx[hidden] { display: none; }
+
+/* Amber, like the auto-play status chip: these are mistakes, not actions. */
+.clo-mx-btn {
+  border: 1px solid #7a6a2e;
+  background: transparent;
+  color: #d9a942;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-mx-btn:hover {
+  background: rgba(217, 169, 66, 0.2);
+  color: #fff;
+}
+
+/* Retry is the action — same lichess-green accent as the widget's own buttons. */
+.clo-mx-retry {
+  border: 1px solid #629924;
+  background: #629924;
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-mx-retry:hover { background: #71ad2a; border-color: #71ad2a; }
+
+.clo-mx-status {
+  color: #d9a942;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.clo-mx-mini {
+  border: none;
+  background: transparent;
+  color: #949494;
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-mx-mini:hover { color: #fff; }
+
+.clo-mx-btn[hidden],
+.clo-mx-retry[hidden],
+.clo-mx-status[hidden],
+.clo-mx-mini[hidden] {
+  display: none;
+}
+
+.clo-mx-popup {
+  position: fixed;
+  z-index: 100001;
+  width: 380px;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid #1b1a17;
+  border-radius: 4px;
+  background: #262421;
+  color: #bababa;
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+.clo-mx-popup[hidden] { display: none; }
+
+.clo-mx-title {
+  color: #dcdcdc;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+/* A long session can fail a lot of moves — the list scrolls, the popup doesn't. */
+.clo-mx-list {
+  max-height: 40vh;
+  overflow-y: auto;
+  margin-bottom: 6px;
+}
+
+.clo-mx-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.clo-mx-item-move { color: #dcdcdc; font-weight: 600; white-space: nowrap; }
+.clo-mx-item-title {
+  color: #949494;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clo-mx-item-wrong { color: #8a8478; font-size: 11px; white-space: nowrap; }
+
+.clo-mx-empty { color: #949494; font-style: italic; font-size: 12px; }
+
+.clo-mx-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  color: #949494;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Replay mode: whole variation / from the mistake / only the mistakes. Same
+   look as the auto-play speed select it sits conceptually next to. */
+.clo-mx-mode {
+  border: 1px solid #3d3a36;
+  border-radius: 3px;
+  background: #1b1a17;
+  color: #bababa;
+  padding: 3px 4px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-mx-note {
+  color: #6e6a63;
+  font-size: 11px;
+  line-height: 1.35;
+  margin-bottom: 6px;
+}
+
+.clo-mx-status-line {
+  color: #d85c5c;
+  font-style: italic;
+  font-size: 12px;
+  padding: 2px 0 4px;
+}
+
+.clo-mx-status-line[hidden] { display: none; }
+
+.clo-mx-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.clo-mx-start {
+  border: 1px solid #629924;
+  background: #629924;
+  color: #fff;
+  padding: 3px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-mx-start:hover { background: #71ad2a; border-color: #71ad2a; }
+
+.clo-mx-cancel {
+  border: none;
+  background: transparent;
+  color: #949494;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-mx-cancel:hover { color: #fff; }
+
 /* --- chapter "Sort variations" widget (section 14) ---------------------------
    Body-mounted and merely anchored to Chessable's toolbar (never inside their
    React tree). initChapterSort/positionWidget parks it in the empty gutter left
@@ -1229,6 +1420,58 @@ html.clo-touch .clo-ac-row-depth {
 
 html.clo-touch .clo-ac-add,
 html.clo-touch .clo-ac-cancel {
+  font-size: 15px;
+  padding: 8px 14px;
+}
+
+/* --- retry this session's mistakes (sections 16 + 17) ---------------------
+   The cluster's two buttons sit in the widget row, so they get the same
+   treatment as the auto-play toggle; the popup keeps its width (openPopup
+   clamps `left` against a hardcoded 380). Its list rows are the tap targets
+   that matter — a checkbox plus a whole label line. */
+
+html.clo-touch .clo-mx-btn,
+html.clo-touch .clo-mx-retry {
+  font-size: 16px;
+  padding: 10px 16px;
+}
+
+html.clo-touch .clo-mx-status {
+  font-size: 16px;
+}
+
+html.clo-touch .clo-mx-mini {
+  font-size: 16px;
+  padding: 6px 8px;
+}
+
+html.clo-touch .clo-mx-popup {
+  font-size: 16px;
+}
+
+html.clo-touch .clo-mx-item,
+html.clo-touch .clo-mx-opt,
+html.clo-touch .clo-mx-empty,
+html.clo-touch .clo-mx-status-line {
+  font-size: 15px;
+}
+
+html.clo-touch .clo-mx-item {
+  padding: 7px 0;
+}
+
+html.clo-touch .clo-mx-mode {
+  font-size: 16px;
+  padding: 8px 8px;
+}
+
+html.clo-touch .clo-mx-item-wrong,
+html.clo-touch .clo-mx-note {
+  font-size: 13px;
+}
+
+html.clo-touch .clo-mx-start,
+html.clo-touch .clo-mx-cancel {
   font-size: 15px;
   padding: 8px 14px;
 }

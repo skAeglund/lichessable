@@ -139,6 +139,40 @@ released again as soon as both searches finish (it frees its memory after 5
 idle minutes). Timed-out answers and promotion guesses are not offered; the
 chip disappears once the line moves on past the failed move, or via its ×.
 
+Every move you fail in a trainer session is logged, and the widget shows
+**Mistakes (N)** next to the Overstudy buttons — click it for the list
+(`5…Nc6 — Sicilian: Najdorf — played c5, timed out`, each with a checkbox).
+**Retry** then walks those variations again, one after another, so you get a
+second pass at exactly what went wrong. The retry runs as **Overstudy**, so
+nothing is rescheduled — it is a plain "do those again", not an SRS operation
+(Chessable's own in-session re-ask is separate; this is optional, after the
+fact, and repeatable).
+
+How much of each line you play yourself is a setting in the popup (**You
+play**), and auto-play does the rest — switched on (or, for the first mode,
+off) for the duration and put back the way you had it afterwards:
+
+- **Whole variation** — every line from move 1, by hand, no auto-play; the
+  runner moves on when the line is finished.
+- **From the mistake** (default) — auto-play replays what you already answered
+  correctly this session and hands the board over at the move you failed; the
+  rest of the line is yours, and the runner moves on once the last failed move
+  is answered.
+- **Only the mistakes** — as above, but auto-play takes over again after each
+  retried mistake, so in a line where you failed moves 8 and 12 you play those
+  two moves and nothing else.
+
+A failed move is always yours to play even if you happened to answer it
+correctly later in the session (which would otherwise count as proven and get
+replayed past). The progress line offers **Skip** and **Stop**; Stop restores
+your auto-play setting and leaves you where you are. A move you fail *again* during the pass stays in the
+list, so a second pass picks it up. Only the first variation costs a page load
+— from then on the runner switches variations inside the same learn session.
+Starting a pass from a **review** session leaves that session (Chrome may ask
+you to confirm); you can return to the review afterwards. The list lives in
+the browser session only (12 h cap), for the same reason the auto-play record
+does.
+
 On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
 extension adds a **Sort by popularity** button, which reorders the whole chapter to
 follow the shape of the move tree: lines that share an opening sequence end up
@@ -177,9 +211,11 @@ lichessable/
 │                            + engine message hub + quick-edit tab driver hub
 ├── content/
 │   ├── lichessable.js       Panel logic (mt1 iframe) + review overstudy widget,
-│   │                        quick-edit UI and review auto-play (top document)
-│   ├── pagestate.js         MAIN-world reader: the trainer's own lesson plan
-│   │                        (the auto-play line oracle), read-only
+│   │                        quick-edit UI, review auto-play and the mistake
+│   │                        log / retry runner (top document)
+│   ├── pagestate.js         MAIN-world reader: the trainer's own lesson plan —
+│   │                        the auto-play line oracle AND each move's live quiz
+│   │                        record (the mistake log's source), read-only
 │   └── lichessable.css      Panel styling (namespaced under .clo-)
 ├── engine/
 │   ├── offscreen.html       Offscreen document hosting the engine
@@ -471,6 +507,58 @@ lichessable/
   per-course edit-rights cache and lazy probe through `quickEditApi` — though
   the popup starts at most one probe per open, and a failed probe shows a
   "close and reopen to retry" error instead of silently probing again.
+- **Mistake log** — section 16. MoveTrainer2 keeps a live per-move quiz record
+  for the session it is running: every *user* ply of the lesson plan carries a
+  `progress` object whose `quizIncorrectAttempts` array holds the SAN actually
+  played, or the literal `"timeUp"`, once per failed attempt. That is the
+  mistake list itself — no DOM reconstruction, no engine, no request — and
+  `content/pagestate.js` already reads that plan for auto-play, so the log just
+  samples the same read (~1/s) and upserts an entry whenever a move's attempt
+  count grows. Entries are keyed on the trainer's own `mid` (the move's index
+  among the user's moves in the variation — the same id Chessable's
+  difficult-moves data calls `moveId`) and stored per course in
+  `chrome.storage.session` with the auto-play record's 12 h TTL. The counters
+  are per-lesson rather than lifetime, so a move failed again in a later
+  session reads as growth from zero and re-arms its entry while keeping the
+  mode it was first logged in. Mistakes made *during* an overstudy are logged
+  under a mode the count ignores, or a retry pass would keep refilling its own
+  queue. Writes merge rather than overwrite, since every tab shares that
+  storage area. One accepted race: a variation completed and skipped inside one
+  sampling interval can lose its last ply's record, because the plan swaps to
+  the next variation ~90 ms before its first move animates.
+- **Retry runner** — section 17. A pass is a queue of one item per *variation*
+  (targeting the last failed move of the line, so the earlier ones are met on
+  the way) held in `chrome.storage.session`, because the first switch is a real
+  navigation that destroys the document — the next one adopts the pass. Only
+  that first switch costs a load: inside a `/learn/` session an untrusted
+  `.click()` on a drawer row (`SELECTORS.reviewDrawerRow`, which carries
+  `oid`/`lid`/`title`) switches the trainer to any variation of the course
+  in-session. **Never in a `/practice/` session** — a drawer click there starts
+  a real review and would change scheduling, so from a review session the
+  runner navigates out to the `/learn/` URL instead. A variation the trainer
+  has already *completed* is the one case a click cannot solve (its drawer row
+  is the active one), so a pass that starts on the variation the previous one
+  ended on reloads that overstudy URL instead. Because that storage area
+  is profile-wide, a run is *owned* by one document at a time (random id +
+  heartbeat); a navigating document hands over by nulling the owner, a quiet
+  owner can be taken over by another trainer tab of the same course, and the
+  owner ends its own pass on `pagehide`, on leaving the trainer inside the SPA,
+  or — as a backstop for a tab that died — when nobody has beaten on the record
+  for ten minutes. Ending a pass always restores the auto-play setting it
+  borrowed. A variation is done when the failed move's `quizCorrectTotal` grows
+  past the value read on arrival (a baseline, not a zero test — a seeded
+  counter would otherwise race the whole queue through) or when the variation
+  completes, which is also how a move the user keeps failing releases the pass.
+  Auto-play is told to hold on the failed positions (`autoPlaySetHold`,
+  compared on placement + side): a move failed early and answered correctly
+  later in the session *is* proven, and replaying it would skip the very move
+  the retry exists for. The same bridge carries the replay mode: **Only the
+  mistakes** lifts auto-play's rule that a variation belongs to the user for
+  good once they have played one move in it (`vs.handedOver`) — that rule
+  exists because jumping back in mid-line is jarring, which is exactly what
+  this mode asks for — and **Whole variation** forces the toggle *off* instead
+  of on and waits for the line to complete. The lift is scoped to the
+  variation a pass is driving, so ordinary sessions behave as before.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.
@@ -739,4 +827,10 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
   back to manual, and after a wrong answer snaps back you retry that move
   yourself. Auto-play pauses while the tab is hidden. Records are per browser
   session (12 h cap) — never across days.
+- A retry pass is a queue of whole variations, not of bare moves: Chessable has
+  no arbitrary-FEN quiz and no multi-variation session URL, so each failed move
+  is met inside its own line (auto-play covers the moves before it). A pass
+  runs in the tab that started it, pauses while that tab is hidden, and ends if
+  you leave the trainer. Mistakes are listed for the course you are currently
+  in — a session across two courses gives you one list per course.
 - All class names Chessable-side are treated as fragile; see `SELECTORS`.

@@ -68,6 +68,12 @@
     reviewCurrentMarker: '#currentStudyingVariation',
     reviewRowVidAttr:    'oid', // attribute on the marker's parent row: variation id
     reviewRowListAttr:   'lid', // attribute on the marker's parent row: list id
+    // EVERY drawer row, not just the active one (they all carry oid/lid/title).
+    // The retry runner (section 17) clicks the row of the variation it wants
+    // next: a plain untrusted .click() switches the trainer to it in-session,
+    // with no page load — and in a /learn/ session the drawer lists the whole
+    // course, so any variation is one click away.
+    reviewDrawerRow:     '.mt-drawer-content__variations__link',
     // Fallback: the panel header's variation name links to /variation/<oid>/.
     reviewTitleLink: '.practice-header__title a[href^="/variation/"]',
 
@@ -307,6 +313,59 @@
       dbCacheMax: 30,            // popup win-rate responses kept (keyed like the panel LRU)
     },
 
+    // --- Retry this session's mistakes (sections 16 + 17) ------------------
+    // Every move failed in a trainer session is logged from MoveTrainer2's own
+    // per-ply `progress` (read by content/pagestate.js), and the runner then
+    // walks those variations again as OVERSTUDY (/learn/…), which changes no
+    // scheduling — auto-play replays what was already answered correctly and
+    // hands over at the failed move.
+    retry: {
+      logKey:     'cloMistakeLog',  // chrome.storage.session: { bid: { "oid:mid": entry } }
+      runKey:     'cloRetryRun',    // chrome.storage.session: the active run (survives the navigation)
+      modeKey:    'cloRetryMode',   // chrome.storage.local: how much of each line to replay
+      // How much of a variation the user plays themselves:
+      //   'whole' — all of it, by hand: auto-play is forced OFF for the pass and
+      //             the runner waits for the variation to complete.
+      //   'from'  — auto-play up to the failed move, the rest of the line is the
+      //             user's (auto-play's ordinary "handed over" rule).
+      //   'only'  — auto-play everything already answered, so ONLY the failed
+      //             moves are played by hand: the hand-over rule is lifted for
+      //             the pass, so control comes back after each retried mistake.
+      modes: ['whole', 'from', 'only'],
+      defaultMode: 'from',
+      // Same policy as the auto-play record: session area only, 12 h TTL. A
+      // stale mistake list must never outlive the browser session, or a retry
+      // would drill moves from another day.
+      logTtlMs:   12 * 3600 * 1000,
+      sampleMs:   900,   // lesson-plan sampling interval while in a trainer session
+      maxWrongKept: 6,   // refused attempts kept per entry (display only)
+      // Runner pacing. A variation switch is a drawer click (or, from a review
+      // session, one navigation); either way the trainer needs a moment before
+      // the new oid is readable, so retries are spaced.
+      switchRetryMs:   1800,
+      switchMaxTries:  4,   // clicks before falling back to a navigation
+      planWaitMs:      20000, // on the right variation but no readable plan ⇒ skip it
+      // A browse state on the item's OWN variation is normally the previous
+      // one's, still painted a beat after the switch. Lasting longer than this
+      // means the pass is parked on a variation the trainer has finished, which
+      // only a reload can re-quiz (see navigateToItem).
+      browseGraceMs:   2500,
+      // Ending a pass that nobody is driving. The owner ends its own run on
+      // pagehide (unless it is handing over across the one navigation) and
+      // when it has been off the trainer path this long; the stale-record
+      // sweep is the backstop for a tab that died without either.
+      awayStopMs:      5000,
+      runAbandonMs:    10 * 60 * 1000,
+      // Ownership: the run lives in storage.session, which the WHOLE profile
+      // shares, so any other trainer tab (a background overstudy, say) would
+      // otherwise pick it up and start clicking its own drawer. One document
+      // owns a run at a time and refreshes a heartbeat; only a run whose owner
+      // has gone quiet this long can be taken over.
+      ownerStaleMs:    6000,
+      beatMs:          2000, // heartbeat write interval (storage.session is cheap, not free)
+      doneFlashMs:     8000, // how long the "retry finished" line stays up
+    },
+
     // --- Sort variations in a chapter (section 14) -------------------------
     // The ONLY feature that talks to Chessable's own JSON API. It is same-origin
     // with the page (so no host permission) and authenticated with the page's
@@ -343,6 +402,8 @@
   const CHAPTER_WIDGET_ID = 'lichessable-chapter'; // chapter sort button (section 14)
   const AC_CHIP_ID  = 'lichessable-ac-chip';  // wrong-guess check chip (section 15)
   const AC_POPUP_ID = 'lichessable-ac-popup'; // wrong-guess check popup (section 15)
+  const MX_CLUSTER_ID = 'lichessable-mx';       // "Mistakes (N)" / Retry cluster (section 17)
+  const MX_POPUP_ID   = 'lichessable-mx-popup'; // the mistake list popup (section 17)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
@@ -455,6 +516,29 @@
     } catch (err) {
       return false;
     }
+  }
+
+  /** The error every chrome.* call throws in such an orphaned script. */
+  const isDeadContextError = (err) =>
+    /Extension context invalidated/i.test(String((err && err.message) || err));
+
+  /**
+   * Resolves once the service worker has run at least once in this browser
+   * session. Its startup is what applies the storage.session access level that
+   * lets a content script read that area at all, so every first read of it
+   * waits here (auto-play's loadRecord pings the same way). One ping per
+   * document — the answer never changes.
+   */
+  let sessionReadyPromise = null;
+  function sessionStorageReady() {
+    if (!sessionReadyPromise) {
+      try {
+        sessionReadyPromise = chrome.runtime.sendMessage({ type: 'clo-ping' }).catch(() => {});
+      } catch (err) {
+        sessionReadyPromise = Promise.resolve();
+      }
+    }
+    return sessionReadyPromise;
   }
 
   // Guard against accidental double-injection into the same document.
@@ -3603,6 +3687,23 @@
   // probes through the clo-quick-edit-result message, so this is the only way
   // it learns that a probe it is waiting on will never answer.
   let altCheckProbeSettled = null;
+  /**
+   * (fens|null, resumeAfterHandover) => void — assigned by initAutoPlay, called
+   * by the retry runner (section 17) every tick.
+   *
+   * `fens` are the positions BEFORE the moves this pass is asking the user to
+   * play again: auto-play stops there even when it holds a proof for them, since
+   * a move failed early in a session and answered correctly later IS proven and
+   * replaying it would silently skip the very move the retry exists for.
+   *
+   * `resumeAfterHandover` lifts auto-play's rule that a variation belongs to the
+   * user for good once they have played one move in it. That rule exists because
+   * jumping back in mid-line is jarring — but "Only the mistakes" mode is
+   * precisely a request for it: replay, hand over at a failed move, take back
+   * over, hand over at the next one. It applies only while a pass is driving the
+   * variation on screen; a call with a null hold clears it too.
+   */
+  let autoPlaySetHold = null;
 
   function initAutoPlay() {
     if (typeof CloSan === 'undefined') {
@@ -3631,6 +3732,8 @@
                                // events — the alt check reconstructs a refused move
                                // from the last two (the board DOM often never commits it)
       injectClassTimer: 0,     // pending removal of the html.clo-injecting gate
+      holdKeys: null,          // Set of "placement side" the retry runner wants played by hand
+      resumeAfterHandover: false, // …and may auto-play again after one of them (retry "Only the mistakes")
       contextDead: false,      // orphaned by an extension reload — see noteDeadContext
       pollTimer: 0,
       observer: null,
@@ -3903,7 +4006,7 @@
      * only this module retires.
      */
     function noteDeadContext(err) {
-      if (!/Extension context invalidated/i.test(String((err && err.message) || err))) return false;
+      if (!isDeadContextError(err)) return false;
       if (ap.contextDead) return true;
       ap.contextDead = true;
       ap.enabled = false;
@@ -4449,11 +4552,28 @@
       if (!ap.enabled || ap.contextDead || document.hidden) return;
       if (!vs.oid || !vs.bid || vs.suspended || vs.cancelled) return;
       if (vs.manualHold) { logHandback('manual hold on this position'); return; }
-      if (vs.handedOver) { logHandback('user has taken over this variation'); return; }
+      // A variation the user has played in is theirs for the rest of it —
+      // unless a retry pass in "Only the mistakes" mode is driving, which wants
+      // exactly this hand-over-and-take-back-over cycle (see autoPlaySetHold).
+      if (vs.handedOver && !ap.resumeAfterHandover) {
+        logHandback('user has taken over this variation');
+        return;
+      }
       if (!vs.pos) tryAdoptAnchorPosition();
       if (!vs.pos || !vs.userColor || vs.pos.side !== vs.userColor) return;
       if (vs.injected || vs.injectTimer) return;
       if (!ap.record) return;
+
+      // A retry pass (section 17) parks the positions it wants answered by
+      // hand here. Compared on placement + side only: the hold comes from
+      // Chessable's own FEN while vs.pos may carry the home-square castling
+      // heuristic, and a placement plus side to move already names the
+      // position uniquely enough for this.
+      if (ap.holdKeys && ap.holdKeys.has(placementFen(vs.pos.board) + ' ' + vs.pos.side)) {
+        logHandback('a retry pass wants this move played by hand');
+        maybeHandback();
+        return;
+      }
 
       const entry = ap.record[posKeyOf(vs.pos)];
       const now = Date.now();
@@ -4802,6 +4922,22 @@
       processFrame();       // safety net for missed mutations
       evaluateAutoPlay();   // safety net for aborted/paused injections
     }
+
+    // The retry runner's bridge (section 17). Positions are keyed on
+    // placement + side to move; a null/empty list clears the hold.
+    autoPlaySetHold = (fens, resumeAfterHandover) => {
+      ap.resumeAfterHandover = Boolean(resumeAfterHandover);
+      if (!Array.isArray(fens) || !fens.length) {
+        if (ap.holdKeys) ap.holdKeys = null;
+        return;
+      }
+      const keys = new Set();
+      for (const fen of fens) {
+        const pos = CloSan.parseFen(fen);
+        if (pos) keys.add(placementFen(pos.board) + ' ' + pos.side);
+      }
+      ap.holdKeys = keys.size ? keys : null;
+    };
 
     // Prefs (shared across tabs via storage; off by default).
     (async () => {
@@ -6041,6 +6177,1084 @@
   }
 
   // ==========================================================================
+  // 16) Mistake log (top document — /practice/ and /learn/)
+  //
+  // MoveTrainer2 keeps a live per-move quiz record for the session it is
+  // running: every USER ply of the lesson plan carries a `progress` object
+  // whose `quizIncorrectAttempts` array holds the SAN actually played, or the
+  // literal "timeUp", once per failed attempt (ground-truthed 2026-07-26).
+  // That IS the mistake list — no DOM reconstruction, no engine, no fetch —
+  // and content/pagestate.js already reads the plan for auto-play's line
+  // oracle, so this module only samples the same read on its own cadence.
+  //
+  // Entries are keyed on the trainer's own `mid` (its index among the user's
+  // moves in the variation — the same id Chessable's difficult-moves data
+  // calls `moveId`) and live in chrome.storage.session under one key per
+  // course, with the same 12 h TTL as the auto-play record: a mistake list
+  // that outlived the browser session would send the retry runner after moves
+  // from another day.
+  //
+  // What counts as new: the attempt COUNT for a (variation, move) growing
+  // beyond what this document has already logged. The counters are
+  // per-lesson, not lifetime, so a move failed again in a later session shows
+  // up as growth from zero and re-arms the entry (`retried: false`) while
+  // keeping the `mode` it was first seen in — a move failed in review and
+  // then failed again during its own retry belongs in the review list, not
+  // the overstudy one.
+  //
+  // Residual race, accepted: a variation completed and skipped within one
+  // sampling interval can lose its last ply's record, because the plan swaps
+  // to the next variation ~90 ms before its first move animates. The
+  // difficult-moves endpoint would close it (see DESIGN-retry-mistakes.md
+  // §3.1) at the cost of a second data source; the sampling interval is short
+  // enough that this has never been observed.
+  // ==========================================================================
+
+  // Assigned by initMistakeLog — the retry runner (section 17) reads the log
+  // and the latest plan sample through it. Null until that module has run.
+  let mistakeLogApi = null;
+
+  function initMistakeLog() {
+    const C = CONFIG.retry;
+
+    const ml = {
+      bid: null,        // course whose log is loaded
+      log: null,        // { "<oid>:<mkey>": entry } for that course
+      sample: null,     // last plan read: { oid, plies, studyMode, variationName, at }
+      seen: new Map(),  // "bid|oid|mkey" -> attempt count already logged
+      reading: false,   // one page-state request in flight at a time
+      loading: false,   // a course switch (flush + load) is in flight
+      saveTimer: 0,
+      dead: false,      // orphaned by an extension reload
+    };
+
+    /**
+     * Stable per-ply key: the trainer's own `mid` where there is one, else the
+     * ply index. A ply with neither is unkeyable and simply not logged.
+     */
+    const plyKey = (ply) =>
+      (ply.mid != null ? 'm' + ply.mid : (ply.ply != null ? 'p' + ply.ply : null));
+
+    /** Fullmove number straight out of the ply's own FEN (exact for tactics
+     *  lines starting mid-game, where a plan index says nothing). */
+    function fullmoveOf(fen) {
+      const n = Number(String(fen).trim().split(/\s+/)[5]);
+      return Number.isInteger(n) && n > 0 ? n : null;
+    }
+
+    /** List id and name of the variation on the board, from the drawer row
+     *  (per-variation, so it is the right chapter's lid) with the session URL
+     *  as fallback. */
+    function readCurrentMeta() {
+      const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
+      const row = marker && marker.parentElement;
+      const m = TRAINER_URL_RE.exec(location.pathname);
+      return {
+        lid: (row && row.getAttribute(SELECTORS.reviewRowListAttr)) || (m && m[3]) || '',
+        title: (row && row.getAttribute('title')) || '',
+      };
+    }
+
+    // --- storage (chrome.storage.session) -----------------------------------
+
+    /**
+     * Loads the log for `bid`, flushing the previous course's pending writes
+     * first. Re-entrant calls are dropped: ml.bid only changes once the flush
+     * has completed, so the tick would otherwise start a second load.
+     */
+    async function switchCourse(bid) {
+      if (ml.loading) return;
+      ml.loading = true;
+      try {
+        if (ml.bid && ml.log) { clearTimeout(ml.saveTimer); await saveLog(); }
+        ml.bid = bid;
+        ml.log = {};
+        ml.seen.clear();
+        await sessionStorageReady();
+        const stored = await chrome.storage.session.get(C.logKey);
+        const mine = (stored[C.logKey] || {})[bid] || {};
+        const now = Date.now();
+        for (const [key, entry] of Object.entries(mine)) {
+          if (entry && now - entry.ts < C.logTtlMs) ml.log[key] = entry;
+        }
+        log('mistake log: loaded', Object.keys(ml.log).length, 'entries for course', bid);
+      } catch (err) {
+        if (!noteDead(err)) warn('mistake log: could not read the session log:', err);
+      } finally {
+        ml.loading = false;
+      }
+    }
+
+    function scheduleSave() {
+      clearTimeout(ml.saveTimer);
+      ml.saveTimer = setTimeout(saveLog, CONFIG.autoPlay.saveDebounceMs);
+    }
+
+    /**
+     * Which of two versions of the same entry wins. The stored area is shared
+     * by every tab, so a plain overwrite would drop what another trainer tab of
+     * the same course logged (a background overstudy, typically): a newer
+     * failure always wins, and at equal timestamps a `retried` flag set
+     * elsewhere is kept — losing it would put a mistake back into the queue
+     * mid-pass.
+     */
+    function mergeEntry(mine, theirs) {
+      if (!theirs || !theirs.ts) return mine;
+      if (theirs.ts > mine.ts) return theirs;
+      if (theirs.ts === mine.ts && theirs.retried) return Object.assign({}, mine, { retried: true });
+      return mine;
+    }
+
+    async function saveLog() {
+      if (!ml.bid || !ml.log) return;
+      try {
+        const stored = await chrome.storage.session.get(C.logKey);
+        const all = stored[C.logKey] || {};
+        const theirs = all[ml.bid] || {};
+        const merged = Object.assign({}, theirs);
+        for (const [key, entry] of Object.entries(ml.log)) {
+          merged[key] = mergeEntry(entry, theirs[key]);
+        }
+        all[ml.bid] = merged;
+        const now = Date.now(); // prune every course's expired entries while here
+        for (const bid of Object.keys(all)) {
+          for (const [key, entry] of Object.entries(all[bid])) {
+            if (!entry || now - entry.ts >= C.logTtlMs) delete all[bid][key];
+          }
+          if (!Object.keys(all[bid]).length) delete all[bid];
+        }
+        await chrome.storage.session.set({ [C.logKey]: all });
+        ml.log = all[ml.bid] || {}; // converge on what was actually stored
+      } catch (err) {
+        if (noteDead(err)) return;
+        warn('mistake log: could not save the session log:', err);
+      }
+    }
+
+    function noteDead(err) {
+      if (!isDeadContextError(err)) return false;
+      if (ml.dead) return true;
+      ml.dead = true;
+      warn('mistake log: the extension was reloaded — this tab is running an orphaned ' +
+        'content script and has stopped logging. Reload the page to resume.');
+      return true;
+    }
+
+    // --- sampling ------------------------------------------------------------
+
+    /** Human label for an entry: "5…Nc6" (number from the ply's own FEN). */
+    function moveLabel(entry) {
+      const dots = entry.color === 'w' ? '.' : '…';
+      return entry.num ? entry.num + dots + entry.san : entry.san;
+    }
+
+    /** "played c5, timed out" — Chessable writes a timeout as "timeUp". */
+    function wrongLabel(entry) {
+      const parts = (entry.wrong || []).map((w) => (/^time/i.test(w) ? 'timed out' : 'played ' + w));
+      return parts.join(', ');
+    }
+
+    function ingest(sample) {
+      if (!ml.log || !ml.bid) return;
+      // The drawer's ids belong to the variation on the BOARD; if the trainer
+      // is mid-swap and the plan we just read is another one, take neither its
+      // lid nor its title (an existing entry's, or the plan's own name, then).
+      const onBoard = String(readQuickEditOid() || '') === String(sample.oid);
+      const meta = onBoard ? readCurrentMeta() : { lid: '', title: '' };
+      const now = Date.now();
+      let dirty = false;
+      for (const ply of sample.plies) {
+        if (!ply.isUserMove || !ply.progress) continue;
+        const attempts = ply.progress.quizIncorrectAttempts || [];
+        if (!attempts.length) continue;
+        const mkey = plyKey(ply);
+        if (!mkey) continue;
+        const seenKey = ml.bid + '|' + sample.oid + '|' + mkey;
+        const prev = ml.seen.get(seenKey);
+        if (prev != null && attempts.length <= prev) continue;
+        ml.seen.set(seenKey, attempts.length);
+        const key = sample.oid + ':' + mkey;
+        const existing = ml.log[key];
+        // An overstudy run is the retry pass itself (or a manual one): its own
+        // failures must not keep refilling the queue, so they are logged under
+        // a mode the count ignores — unless the move is ALREADY in the log
+        // from a review/learn session, in which case that entry simply goes
+        // back into the queue below.
+        const mode = ply.startedAsOverstudy ? 'overstudy'
+          : (sample.studyMode ||
+             (location.pathname.startsWith(CONFIG.review.learnPrefix) ? 'learn' : 'review'));
+        const entry = {
+          oid: sample.oid,
+          lid: meta.lid || (existing && existing.lid) || '',
+          mid: ply.mid, ply: ply.ply, mkey,
+          san: ply.san, color: ply.color, from: ply.from, to: ply.to,
+          sourceFen: ply.sourceFen,
+          num: fullmoveOf(ply.sourceFen),
+          title: meta.title || sample.variationName || (existing && existing.title) || '',
+          wrong: attempts.slice(-C.maxWrongKept),
+          fails: attempts.length,
+          mode: existing ? existing.mode : mode,
+          ts: now,
+          retried: false,
+        };
+        ml.log[key] = entry;
+        dirty = true;
+        log('mistake log:', moveLabel(entry), 'in', entry.title || '#' + entry.oid,
+          '—', wrongLabel(entry), '(' + entry.mode + ')');
+      }
+      if (dirty) scheduleSave();
+    }
+
+    async function readSample() {
+      if (ml.dead || ml.reading) return ml.sample;
+      ml.reading = true;
+      try {
+        const res = await readLessonLine();
+        if (!res || res.error || !res.oid || !Array.isArray(res.plies)) return ml.sample;
+        ml.sample = {
+          oid: String(res.oid),
+          plies: res.plies,
+          studyMode: res.studyMode || null,
+          variationName: res.variationName || null,
+          at: Date.now(),
+        };
+        ingest(ml.sample);
+        return ml.sample;
+      } finally {
+        ml.reading = false;
+      }
+    }
+
+    // --- the log, as the runner and the UI see it ---------------------------
+
+    /** Sorted by when they were failed — the queue's order is mistake order. */
+    function pendingEntries() {
+      if (!ml.log) return [];
+      const now = Date.now();
+      return Object.values(ml.log)
+        .filter((e) => e && !e.retried && e.mode !== 'overstudy' && now - e.ts < C.logTtlMs)
+        .sort((a, b) => a.ts - b.ts);
+    }
+
+    /**
+     * Marks a variation's pending mistakes as retried — except any whose entry
+     * is NEWER than `beforeTs`, i.e. moves that were failed AGAIN during the
+     * visit that just ended. Those stay in the list, which is what makes a
+     * second pass possible.
+     */
+    function markRetried(oid, beforeTs) {
+      if (!ml.log) return 0;
+      let n = 0;
+      for (const entry of Object.values(ml.log)) {
+        if (!entry || entry.retried || String(entry.oid) !== String(oid)) continue;
+        if (beforeTs && entry.ts > beforeTs) continue;
+        entry.retried = true;
+        n++;
+      }
+      if (n) scheduleSave();
+      return n;
+    }
+
+    function tick() {
+      if (ml.dead || !isTrainerPath()) return;
+      // A hidden tab cannot commit a board move at all (MoveTrainer2 commits
+      // through rAF), so no mistakes can be made there — nothing to sample.
+      if (document.hidden) return;
+      const bid = readQuickEditBid();
+      if (!bid) return;
+      if (bid !== ml.bid) { switchCourse(bid); return; } // sample once the log is in
+      if (!ml.log) return;
+      readSample();
+    }
+
+    mistakeLogApi = {
+      bid: () => ml.bid,
+      pending: pendingEntries,
+      markRetried,
+      moveLabel,
+      wrongLabel,
+      /** The current variation's live record for one logged move, or null when
+       *  the latest sample is for another variation (trainer mid-swap). */
+      progressFor(oid, mkey) {
+        const s = ml.sample;
+        if (!s || String(s.oid) !== String(oid)) return null;
+        const ply = s.plies.find((p) => plyKey(p) === mkey);
+        return (ply && ply.progress) || null;
+      },
+    };
+
+    const pollTimer = setInterval(tick, C.sampleMs);
+    window.addEventListener('pagehide', () => {
+      clearInterval(pollTimer);
+      clearTimeout(ml.saveTimer);
+      saveLog(); // best effort — flush an unsaved mistake
+    });
+    tick();
+    log('mistake log active (top document)');
+  }
+
+  // ==========================================================================
+  // 17) Retry this session's mistakes (top document — /practice/ and /learn/)
+  //
+  // The runner walks the variations that hold this session's failed moves and
+  // re-quizzes them as OVERSTUDY: /learn/<bid>/<oid>/<lid>, which is what
+  // Chessable's own Overstudy buttons open and changes no scheduling. There is
+  // no arbitrary-FEN quiz anywhere on Chessable and no multi-variation session
+  // URL, so a pass is one variation at a time — but only the FIRST one needs a
+  // page load: inside a /learn/ session a plain untrusted .click() on a drawer
+  // row (SELECTORS.reviewDrawerRow) switches the trainer to that variation
+  // in-session, and that drawer lists the whole course.
+  //
+  // CRUCIAL: never click a drawer row in a /practice/ session. That starts a
+  // real REVIEW of the variation and would change its scheduling — the exact
+  // opposite of what a retry pass is for. From a review session the runner
+  // navigates to the /learn/ URL instead.
+  //
+  // Auto-play (section 13) does the "only the failed move" part: it is forced
+  // on for the duration (the user's setting is restored afterwards) and
+  // replays the moves already answered correctly this session — the proofs are
+  // in chrome.storage.session and shared per course between /practice/ and
+  // /learn/ — handing over exactly at the unproven move. Where the earlier
+  // moves were failed too there is no proof and the user simply plays them.
+  //
+  // The run record lives in chrome.storage.session because the one navigation
+  // destroys this document: the next one adopts the pass. That area is shared
+  // by the whole profile, so a run is OWNED by one document at a time (random
+  // id + heartbeat) — otherwise a background overstudy tab would pick the pass
+  // up and start clicking through its own drawer. A navigating document hands
+  // over by nulling the owner; a run whose owner has gone quiet for
+  // ownerStaleMs can be taken over by any trainer tab of the same course.
+  // ==========================================================================
+  function initRetryRunner() {
+    const C = CONFIG.retry;
+    const MY_ID = 'r' + Math.random().toString(36).slice(2, 10);
+
+    const rr = {
+      run: null,          // the active run record, as stored (see startRun)
+      ui: null,           // { root, count, retry, status, skip, stop }
+      popup: null,
+      els: null,          // cached popup child refs
+      unselected: new Set(), // entry keys the user UNCHECKED (everything else is in)
+      listSig: '',        // signature of the rendered list (re-render only on change)
+      mode: C.defaultMode, // 'whole' | 'from' | 'only' (persisted)
+      lastBeatAt: 0,
+      waits: 0,           // ticks spent waiting for the plan on arrival …
+      waitOid: null,      // … at this variation
+      browseTicks: 0,     // ticks the item's variation has sat in the browse state …
+      browseOid: null,    // … at this variation
+      awayTicks: 0,       // consecutive ticks spent off the trainer path while owning a pass
+      handingOver: false, // navigating on purpose — pagehide must not end the pass
+      doneMsg: '',        // summary line after a finished pass
+      doneAt: 0,
+      ticking: false,     // the whole tick is async — never overlap two
+      dead: false,
+    };
+
+    // What each replay mode does, in the popup's own words.
+    const MODE_NOTES = {
+      whole: 'Each variation is played from the start by hand — auto-play stays off ' +
+        'for the pass — and the runner moves on when the line is finished.',
+      from: 'Auto-play replays up to the failed move; the rest of the line is yours, ' +
+        'and the runner moves on once the last failed move is answered.',
+      only: 'Auto-play replays everything you already answered this session, so you ' +
+        'play only the failed moves — it takes over again after each one.',
+    };
+
+    const entryKey = (entry) => entry.oid + ':' + entry.mkey;
+    const plyOf = (entry) =>
+      (typeof entry.ply === 'number' ? entry.ply
+        : (typeof entry.mid === 'number' ? entry.mid * 2 : 0));
+
+    function noteDead(err) {
+      if (!isDeadContextError(err)) return false;
+      if (rr.dead) return true;
+      rr.dead = true;
+      rr.run = null;
+      warn('retry: the extension was reloaded — this tab is running an orphaned content ' +
+        'script. Reload the page to run a retry pass.');
+      return true;
+    }
+
+    // --- the run record (chrome.storage.session) ----------------------------
+
+    async function loadRun() {
+      try {
+        await sessionStorageReady();
+        const stored = await chrome.storage.session.get(C.runKey);
+        const run = stored[C.runKey];
+        rr.run = (run && Array.isArray(run.items) && run.items.length && run.bid) ? run : null;
+      } catch (err) {
+        if (noteDead(err)) return;
+        rr.run = null;
+      }
+    }
+
+    async function saveRun() {
+      if (!rr.run) return;
+      try {
+        await chrome.storage.session.set({ [C.runKey]: rr.run });
+      } catch (err) {
+        if (noteDead(err)) return;
+        warn('retry: could not persist the run:', err);
+      }
+    }
+
+    async function clearRun() {
+      try {
+        await chrome.storage.session.remove(C.runKey);
+      } catch (err) {
+        if (!noteDead(err)) warn('retry: could not clear the run:', err);
+      }
+    }
+
+    // --- building and ending a pass -----------------------------------------
+
+    /**
+     * One item per VARIATION, in mistake order, targeting the LAST failed move
+     * of the line: the earlier ones are met on the way there, so a variation is
+     * never visited twice in one pass.
+     */
+    function buildItems(entries) {
+      const byOid = new Map();
+      for (const entry of entries) {
+        const oid = String(entry.oid);
+        if (!byOid.has(oid)) byOid.set(oid, []);
+        byOid.get(oid).push(entry);
+      }
+      const items = [];
+      for (const [oid, list] of byOid) {
+        list.sort((a, b) => plyOf(a) - plyOf(b));
+        const target = list[list.length - 1];
+        items.push({
+          oid,
+          lid: target.lid || '',
+          title: target.title || '#' + oid,
+          mkey: target.mkey,
+          label: list.map((e) => mistakeLogApi.moveLabel(e)).join(', '),
+          moves: list.length,
+          // Every failed move of the line, as the position before it: auto-play
+          // must hand over on ALL of them, not just the last, since one that
+          // was answered correctly later in the session is proven and would
+          // otherwise be replayed past (see autoPlaySetHold).
+          holds: list.map((e) => e.sourceFen).filter(Boolean),
+        });
+      }
+      return items;
+    }
+
+    async function startRun(entries) {
+      const bid = mistakeLogApi && mistakeLogApi.bid();
+      if (!bid || !entries.length || rr.run) return;
+      if (!extensionAlive()) {
+        setDone('The extension was reloaded — reload this page first.');
+        return;
+      }
+      const items = buildItems(entries);
+      const mode = rr.mode;
+      // "Whole variation" means by hand, so the pass forces auto-play OFF just
+      // as firmly as the other two force it on — either way the user's own
+      // setting is put back when the pass ends.
+      const want = mode !== 'whole';
+      let prevAutoPlay = false;
+      try {
+        const got = await chrome.storage.local.get(CONFIG.autoPlay.enabledKey);
+        prevAutoPlay = Boolean(got[CONFIG.autoPlay.enabledKey]);
+        await chrome.storage.local.set({ [CONFIG.autoPlay.enabledKey]: want });
+      } catch (err) {
+        if (noteDead(err)) return;
+        warn('retry: could not set the auto-play toggle:', err);
+      }
+      rr.run = {
+        bid, startedAt: Date.now(), owner: MY_ID, beat: Date.now(),
+        items, index: 0, total: items.length,
+        prevAutoPlay,
+        mode,
+        visit: null,      // { oid, at, baseCorrect } once the quiz is live
+        tries: 0,         // drawer clicks for the current item
+        navs: 0,          // navigations for the current item
+        lastSwitchAt: 0,
+        answered: 0, skipped: 0,
+      };
+      await saveRun();
+      log('retry: starting a pass over', items.length, 'variation(s) of course', bid,
+        '— replay mode:', mode);
+      closePopup();
+      syncUi();
+      await driveRun();
+    }
+
+    const summary = (run) =>
+      'Retry finished — ' + run.answered + '/' + run.total + ' variations' +
+      (run.skipped ? ', ' + run.skipped + ' skipped' : '');
+
+    function setDone(text) {
+      rr.doneMsg = text;
+      rr.doneAt = Date.now();
+    }
+
+    async function finishRun(text) {
+      const run = rr.run;
+      rr.run = null;
+      if (!run) return;
+      try {
+        await chrome.storage.local.set({ [CONFIG.autoPlay.enabledKey]: run.prevAutoPlay });
+      } catch (err) {
+        if (!noteDead(err)) warn('retry: could not restore the auto-play setting:', err);
+      }
+      await clearRun();
+      log('retry:', text);
+      setDone(text);
+      syncUi();
+    }
+
+    // --- driving the pass ----------------------------------------------------
+
+    function drawerRowFor(oid) {
+      const id = String(oid);
+      if (!/^\d+$/.test(id)) return null;
+      for (const row of document.querySelectorAll(SELECTORS.reviewDrawerRow)) {
+        if (String(row.getAttribute(SELECTORS.reviewRowVidAttr) || '') === id) return row;
+      }
+      // Fallback if the row class changes: the id attribute alone (its name is
+      // the same SELECTORS entry the active-row lookup uses).
+      return document.querySelector('[' + SELECTORS.reviewRowVidAttr + '="' + id + '"]');
+    }
+
+    async function maybeSwitch(item) {
+      const run = rr.run;
+      const now = Date.now();
+      if (now - (run.lastSwitchAt || 0) < C.switchRetryMs) return;
+      run.lastSwitchAt = now;
+      const inLearn = location.pathname.startsWith(CONFIG.review.learnPrefix);
+      const row = inLearn ? drawerRowFor(item.oid) : null;
+      if (row && run.tries < C.switchMaxTries) {
+        run.tries++;
+        log('retry: switching to variation', item.oid, 'via its drawer row');
+        await saveRun();
+        row.click(); // untrusted click is enough — verified in /learn/ and /practice/
+        return;
+      }
+      await navigateToItem(item);
+    }
+
+    /**
+     * Opens the item's overstudy URL — the fallback when no drawer row can be
+     * clicked, AND the only way to RESTART a variation the trainer has already
+     * completed. There is no in-session route back into a finished quiz: its
+     * drawer row is the active one, so clicking it changes nothing. Reloading
+     * the same URL is what re-quizzes it, which is the case when a pass starts
+     * on the very variation the previous pass ended on.
+     *
+     * Capped at two navigations per item (the counter lives in the record, so
+     * it survives the load) — a page that keeps landing back in a browse state
+     * must skip the item rather than reload forever.
+     */
+    async function navigateToItem(item) {
+      const run = rr.run;
+      if (run.navs >= 2) {
+        warn('retry: could not reach variation', item.oid, '— skipping it');
+        await skipItem('unreachable');
+        return;
+      }
+      run.navs++;
+      run.tries = 0;
+      run.owner = null; // hand the pass to the document this navigation loads
+      const url = location.origin + CONFIG.review.learnPrefix + run.bid + '/' + item.oid +
+        (item.lid ? '/' + item.lid : '');
+      log('retry: opening', url);
+      rr.handingOver = true; // …so pagehide does not read this as "give up"
+      await saveRun();
+      if (url === location.href) location.reload();
+      else location.href = url;
+    }
+
+    async function advanceItem(why, marked) {
+      const run = rr.run;
+      const item = run.items[run.index];
+      log('retry:', item.oid, 'done (' + why + ');', marked, 'mistake(s) cleared');
+      run.answered++;
+      await nextItem();
+      if (rr.run) await driveRun();
+    }
+
+    async function skipItem(why) {
+      const run = rr.run;
+      const item = run.items[run.index];
+      log('retry: skipping', item.oid, '(' + why + ')'); // its mistakes stay in the list
+      run.skipped++;
+      await nextItem();
+      if (rr.run) await driveRun();
+    }
+
+    /** Step the cursor and reset the per-item bookkeeping (or finish). */
+    async function nextItem() {
+      const run = rr.run;
+      run.index++;
+      run.visit = null;
+      run.tries = 0;
+      run.navs = 0;
+      // Not 0: the next variation is one switchRetryMs away, so the answer that
+      // just landed (or the trainer's reply to it) stays on screen for a beat
+      // instead of the board changing under the user's hand. Pressing Retry
+      // itself is not delayed — startRun sets this to 0.
+      run.lastSwitchAt = Date.now();
+      rr.waits = 0;
+      rr.waitOid = null;
+      rr.browseTicks = 0;
+      rr.browseOid = null;
+      if (run.index >= run.items.length) {
+        await finishRun(summary(run));
+        return;
+      }
+      await saveRun();
+      syncUi();
+    }
+
+    async function driveRun() {
+      const run = rr.run;
+      if (!run || rr.dead) return;
+      if (!isTrainerPath()) return;   // resumes as soon as a trainer session is up
+      if (document.hidden) return;    // a hidden board cannot commit a move (§2.4)
+      const item = run.items[run.index];
+      if (!item) { await finishRun(summary(run)); return; }
+
+      // The pass only ever runs in /learn/. Being on the right variation inside
+      // a /practice/ session is NOT arriving: that is a real review, and
+      // driving it would reschedule the very cards this feature promises not to
+      // touch — so it counts as "not there yet" and maybeSwitch navigates out.
+      const inLearn = location.pathname.startsWith(CONFIG.review.learnPrefix);
+      const oid = readQuickEditOid();
+      if (!inLearn || !oid || String(oid) !== String(item.oid)) {
+        await maybeSwitch(item);
+        return;
+      }
+
+      if (!run.visit || String(run.visit.oid) !== String(item.oid)) {
+        // Wait for the quiz to actually start before taking a baseline: right
+        // after a drawer click the previous variation's browse state can still
+        // be on screen, and treating that as "completed" would race the pass
+        // through the whole queue.
+        if (reviewBrowseReady()) {
+          // Unless it STAYS up: then this is not a leftover render, the pass is
+          // parked on a variation the trainer has already finished — which is
+          // where a pass starting on the variation the previous one ended on
+          // lands (fail the last one, press Retry again). The oid already
+          // matches, so nothing would ever switch and no quiz would ever start.
+          if (rr.browseOid !== String(item.oid)) {
+            rr.browseOid = String(item.oid);
+            rr.browseTicks = 0;
+          }
+          if (++rr.browseTicks * CONFIG.review.pollMs > C.browseGraceMs) {
+            log('retry: variation', item.oid, 'is already completed — restarting its overstudy');
+            await navigateToItem(item);
+          }
+          return;
+        }
+        rr.browseTicks = 0;
+        const prog = mistakeLogApi && mistakeLogApi.progressFor(item.oid, item.mkey);
+        if (!prog) {
+          // The plan is not readable for this variation yet (or at all). Give
+          // it a while, then move on rather than stalling the pass silently.
+          // Counted in THIS document, not in the record: the record is re-read
+          // every tick, so an unsaved counter there would never grow.
+          if (rr.waitOid !== String(item.oid)) { rr.waitOid = String(item.oid); rr.waits = 0; }
+          if (++rr.waits * CONFIG.review.pollMs > C.planWaitMs) {
+            warn('retry: no lesson plan for variation', item.oid, '— skipping it');
+            await skipItem('plan unreadable');
+          }
+          return;
+        }
+        run.visit = { oid: String(item.oid), at: Date.now(), baseCorrect: prog.quizCorrectTotal };
+        rr.waits = 0;
+        await saveRun();
+        log('retry: on variation', item.oid, '—', item.label);
+        syncUi();
+        return;
+      }
+
+      // Done with this variation when its LAST failed move has been answered
+      // CORRECTLY (the baseline is what guards against a seeded counter), or
+      // when the variation ends — which is also how a move the user keeps
+      // failing releases the pass: the trainer shows the solution and
+      // completes, and the re-failed move stays in the list for a next pass.
+      // "Whole variation" mode waits for the end either way.
+      const completed = reviewBrowseReady();
+      let answered = false;
+      if (run.mode !== 'whole' && !completed) {
+        const prog = mistakeLogApi.progressFor(item.oid, item.mkey);
+        answered = Boolean(prog && prog.quizCorrectTotal > run.visit.baseCorrect);
+      }
+      if (!completed && !answered) return;
+      const marked = mistakeLogApi
+        ? mistakeLogApi.markRetried(item.oid, run.visit.at) : 0;
+      await advanceItem(completed ? 'variation completed' : 'failed move answered', marked);
+    }
+
+    // --- UI: cluster on the overstudy widget --------------------------------
+
+    function ensureUi() {
+      const widget = document.getElementById(REVIEW_WIDGET_ID);
+      if (!widget) return;
+      if (rr.ui && rr.ui.root.isConnected && rr.ui.root.parentElement === widget) return;
+      const stale = document.getElementById(MX_CLUSTER_ID);
+      if (stale) stale.remove();
+
+      const root = document.createElement('span');
+      root.id = MX_CLUSTER_ID;
+      root.className = 'clo-mx';
+      root.hidden = true;
+
+      const count = document.createElement('button');
+      count.type = 'button';
+      count.className = 'clo-mx-btn';
+      count.title = 'The moves you failed in this session — click for the list';
+      count.addEventListener('click', () => { // no inline handlers
+        if (rr.popup && !rr.popup.hidden) closePopup();
+        else openPopup();
+      });
+
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'clo-mx-retry';
+      retry.textContent = 'Retry';
+      retry.title = 'Go through every failed move again as Overstudy — no scheduling change. ' +
+        'Auto-play replays what you already answered correctly this session and hands over ' +
+        'at the failed move.';
+      retry.addEventListener('click', () => {
+        const pending = (mistakeLogApi && mistakeLogApi.pending()) || [];
+        startRun(pending);
+      });
+
+      const status = document.createElement('span');
+      status.className = 'clo-mx-status';
+      status.hidden = true;
+
+      const skip = document.createElement('button');
+      skip.type = 'button';
+      skip.className = 'clo-mx-mini';
+      skip.textContent = 'Skip';
+      skip.title = 'Skip this variation (its mistakes stay in the list)';
+      skip.hidden = true;
+      skip.addEventListener('click', () => { if (rr.run) skipItem('skipped by hand'); });
+
+      const stop = document.createElement('button');
+      stop.type = 'button';
+      stop.className = 'clo-mx-mini';
+      stop.textContent = 'Stop';
+      stop.title = 'End the retry pass and restore your auto-play setting';
+      stop.hidden = true;
+      stop.addEventListener('click', () => {
+        if (rr.run) finishRun('Retry stopped — ' + rr.run.answered + '/' + rr.run.total + ' done');
+      });
+
+      root.append(count, retry, status, skip, stop);
+      widget.appendChild(root);
+      rr.ui = { root, count, retry, status, skip, stop };
+    }
+
+    const shortTitle = (t) => (t.length > 30 ? t.slice(0, 29) + '…' : t);
+
+    function syncUi() {
+      if (!rr.ui) return;
+      const run = rr.run;
+      const running = Boolean(run);
+      const pending = (mistakeLogApi && mistakeLogApi.pending()) || [];
+      const doneFresh = Boolean(rr.doneMsg) && Date.now() - rr.doneAt < C.doneFlashMs;
+      if (!doneFresh) rr.doneMsg = '';
+      rr.ui.root.hidden = !isTrainerPath() || (!running && !pending.length && !doneFresh);
+      rr.ui.count.hidden = running || !pending.length;
+      rr.ui.count.textContent = 'Mistakes (' + pending.length + ')';
+      rr.ui.retry.hidden = running || !pending.length;
+      rr.ui.skip.hidden = !running;
+      rr.ui.stop.hidden = !running;
+      if (running) {
+        const item = run.items[Math.min(run.index, run.items.length - 1)];
+        rr.ui.status.textContent = 'Retry ' + Math.min(run.index + 1, run.total) + '/' + run.total +
+          ' — ' + shortTitle(item.title);
+        rr.ui.status.hidden = false;
+      } else {
+        rr.ui.status.textContent = rr.doneMsg;
+        rr.ui.status.hidden = !doneFresh;
+      }
+      if (rr.popup && !rr.popup.hidden) renderList(pending);
+    }
+
+    // --- UI: the mistake list popup -----------------------------------------
+
+    function buildPopup() {
+      const popup = document.createElement('div');
+      popup.id = MX_POPUP_ID;
+      popup.className = 'clo-mx-popup';
+      popup.hidden = true;
+
+      const title = document.createElement('div');
+      title.className = 'clo-mx-title';
+
+      const list = document.createElement('div');
+      list.className = 'clo-mx-list';
+
+      const modeLabel = document.createElement('label');
+      modeLabel.className = 'clo-mx-opt';
+      modeLabel.appendChild(document.createTextNode('You play: '));
+      const modeSelect = document.createElement('select');
+      modeSelect.className = 'clo-mx-mode';
+      for (const [value, label] of [
+        ['whole', 'Whole variation'],
+        ['from', 'From the mistake'],
+        ['only', 'Only the mistakes'],
+      ]) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = label;
+        modeSelect.appendChild(opt);
+      }
+      modeSelect.addEventListener('change', () => {
+        rr.mode = C.modes.indexOf(modeSelect.value) >= 0 ? modeSelect.value : C.defaultMode;
+        syncModeUi();
+        try {
+          chrome.storage.local.set({ [C.modeKey]: rr.mode })
+            .catch((err) => warn('storage write failed:', err));
+        } catch (err) {
+          warn('storage unavailable:', err);
+        }
+      });
+      modeLabel.appendChild(modeSelect);
+
+      const note = document.createElement('div');
+      note.className = 'clo-mx-note';
+
+      const status = document.createElement('div');
+      status.className = 'clo-mx-status-line';
+      status.hidden = true;
+
+      const actions = document.createElement('div');
+      actions.className = 'clo-mx-actions';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'clo-mx-cancel';
+      cancel.textContent = 'Close';
+      cancel.addEventListener('click', closePopup);
+      const start = document.createElement('button');
+      start.type = 'button';
+      start.className = 'clo-mx-start';
+      start.textContent = 'Retry selected';
+      start.addEventListener('click', () => {
+        const pending = (mistakeLogApi && mistakeLogApi.pending()) || [];
+        const chosen = pending.filter((e) => !rr.unselected.has(entryKey(e)));
+        if (!chosen.length) {
+          status.textContent = 'Nothing selected.';
+          status.hidden = false;
+          return;
+        }
+        startRun(chosen);
+      });
+      actions.append(cancel, start);
+
+      popup.append(title, list, modeLabel, note, status, actions);
+      // Same key discipline as the other popups: MoveTrainer2 binds single-key
+      // shortcuts on document and does not care what has focus, so a space
+      // toggling a checkbox here would otherwise also drive the trainer.
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        popup.addEventListener(type, (e) => {
+          e.stopPropagation();
+          if (type === 'keydown' && e.key === 'Escape') closePopup();
+        });
+      }
+      document.body.appendChild(popup);
+      rr.popup = popup;
+      rr.els = { title, list, modeSelect, note, status };
+      syncModeUi();
+    }
+
+    /** The mode select and the sentence explaining what it will do. */
+    function syncModeUi() {
+      if (!rr.els) return;
+      rr.els.modeSelect.value = rr.mode;
+      rr.els.note.textContent = MODE_NOTES[rr.mode] +
+        ' Retried as Overstudy, so nothing is rescheduled.';
+    }
+
+    /** Rebuilt only when the pending set actually changes, so the checkboxes
+     *  survive the 500 ms tick. */
+    function renderList(pending) {
+      const sig = pending.map((e) => entryKey(e) + ':' + e.ts).join('|');
+      if (sig === rr.listSig) return;
+      rr.listSig = sig;
+      rr.els.list.textContent = '';
+      rr.els.title.textContent = 'Mistakes this session (' + pending.length + ')';
+      for (const entry of pending) {
+        const key = entryKey(entry);
+        const row = document.createElement('label');
+        row.className = 'clo-mx-item';
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        // Checked by default — the list is "everything still to retry", and
+        // only what the user takes out is remembered, so a mistake logged
+        // while the popup is open joins the pass rather than being dropped.
+        box.checked = !rr.unselected.has(key);
+        box.addEventListener('change', () => {
+          if (box.checked) rr.unselected.delete(key);
+          else rr.unselected.add(key);
+        });
+        const move = document.createElement('span');
+        move.className = 'clo-mx-item-move';
+        move.textContent = mistakeLogApi.moveLabel(entry);
+        const name = document.createElement('span');
+        name.className = 'clo-mx-item-title';
+        name.textContent = entry.title || '#' + entry.oid;
+        const wrong = document.createElement('span');
+        wrong.className = 'clo-mx-item-wrong';
+        wrong.textContent = mistakeLogApi.wrongLabel(entry);
+        row.append(box, move, name, wrong);
+        rr.els.list.appendChild(row);
+      }
+      if (!pending.length) {
+        const empty = document.createElement('div');
+        empty.className = 'clo-mx-empty';
+        empty.textContent = 'No failed moves logged in this session.';
+        rr.els.list.appendChild(empty);
+      }
+    }
+
+    function openPopup() {
+      if (!rr.popup || !rr.popup.isConnected) buildPopup();
+      rr.els.status.hidden = true;
+      syncModeUi();
+      rr.unselected.clear(); // every open starts from "retry all of them"
+      rr.listSig = '';       // force a rebuild
+      renderList((mistakeLogApi && mistakeLogApi.pending()) || []);
+      // Below the cluster, flipping ABOVE it when there is no room — the widget
+      // is anchored under the board, so "below" is often off-screen, and this
+      // popup's height depends on how many mistakes there are. position:fixed
+      // and placed once at open time, like the other popups.
+      const anchor = rr.ui ? rr.ui.root.getBoundingClientRect() : null;
+      const width = 380;
+      const left = anchor ? anchor.left : (window.innerWidth - width) / 2;
+      rr.popup.style.left =
+        Math.round(Math.min(Math.max(8, left), Math.max(8, window.innerWidth - width))) + 'px';
+      rr.popup.style.top = '8px';
+      rr.popup.hidden = false;
+      const height = rr.popup.offsetHeight || 240;
+      let top = anchor ? anchor.bottom + 6 : window.innerHeight / 3;
+      if (anchor && top + height > window.innerHeight - 8) top = anchor.top - height - 6;
+      rr.popup.style.top =
+        Math.round(Math.min(Math.max(8, top), Math.max(8, window.innerHeight - height - 8))) + 'px';
+    }
+
+    function closePopup() {
+      if (rr.popup) rr.popup.hidden = true;
+    }
+
+    // --- lifecycle -----------------------------------------------------------
+
+    /**
+     * Tells auto-play which positions this pass wants played by hand — the
+     * failed moves of the variation on screen right now. Idempotent, so it can
+     * simply run every tick (a takeover or the navigation lands in a document
+     * that never called it).
+     */
+    function applyHold() {
+      if (!autoPlaySetHold) return;
+      const run = rr.run;
+      const item = run && run.owner === MY_ID ? run.items[run.index] : null;
+      const oid = item && isTrainerPath() ? readQuickEditOid() : null;
+      const here = item && oid && String(oid) === String(item.oid);
+      autoPlaySetHold(here ? item.holds : null, here && run.mode === 'only');
+    }
+
+    async function tick() {
+      if (rr.dead || rr.ticking) return;
+      rr.ticking = true;
+      try {
+        ensureUi();
+        // Outside a trainer session there is nothing to drive and nothing to
+        // show — unless THIS document is the one driving a pass, which it then
+        // has to end (see the away-stop below). Reading storage twice a second
+        // from every chessable.com tab would be pure waste.
+        if (!isTrainerPath() && !rr.run) return;
+        // Always work from the stored record: the pass may have been advanced
+        // (or taken over) by another document, and after the one navigation
+        // this document is a different one.
+        await loadRun();
+        const run = rr.run;
+        if (run) {
+          // A record nobody has beaten on for this long belongs to a tab that
+          // died without ending its pass. Clean it up — including the auto-play
+          // setting it borrowed — instead of letting the next trainer session
+          // adopt a pass from another sitting.
+          if (Date.now() - (run.beat || 0) > C.runAbandonMs) {
+            await finishRun('Retry pass abandoned — cleaned up');
+            rr.doneMsg = ''; // nothing the user needs to read about
+            return;
+          }
+          if (run.owner !== MY_ID) {
+            const stale = !run.owner || Date.now() - (run.beat || 0) > C.ownerStaleMs;
+            const mine = isTrainerPath() && !document.hidden &&
+              String(readQuickEditBid() || '') === String(run.bid);
+            if (!stale || !mine) return; // another tab is driving
+            run.owner = MY_ID;
+            run.beat = Date.now();
+            rr.lastBeatAt = Date.now();
+            await saveRun();
+            log('retry: this tab has taken over the pass —',
+              Math.min(run.index + 1, run.total) + '/' + run.total);
+          } else if (Date.now() - rr.lastBeatAt > C.beatMs) {
+            run.beat = Date.now();
+            rr.lastBeatAt = Date.now();
+            await saveRun();
+          }
+          // Left the trainer inside the SPA (Chessable's own Exit, say): no
+          // pagehide fires there, so the pass ends here rather than springing
+          // back to life on the next session the tab happens to open.
+          if (isTrainerPath()) {
+            rr.awayTicks = 0;
+          } else if (++rr.awayTicks * CONFIG.review.pollMs > C.awayStopMs) {
+            await finishRun('Retry stopped — left the session');
+            return;
+          }
+          await driveRun();
+        }
+      } finally {
+        // Every exit above passes through here, so the hold auto-play is
+        // holding for us is released the moment a pass ends or moves to
+        // another tab — a hold left behind would stop auto-play on those
+        // positions for the rest of the page's life.
+        applyHold();
+        syncUi();
+        rr.ticking = false;
+      }
+    }
+
+    (async () => {
+      try {
+        const stored = await chrome.storage.local.get(C.modeKey);
+        const mode = stored[C.modeKey];
+        if (typeof mode === 'string' && C.modes.indexOf(mode) >= 0) rr.mode = mode;
+      } catch (err) {
+        warn('retry: pref read failed:', err);
+      }
+      syncModeUi();
+    })();
+
+    const pollTimer = setInterval(tick, CONFIG.review.pollMs);
+    window.addEventListener('pagehide', () => {
+      clearInterval(pollTimer);
+      // This document is going away. If it was driving a pass and is NOT
+      // handing it over across the runner's own navigation, the pass ends here
+      // — best effort, fire and forget: an unload cannot await storage, and a
+      // borrowed auto-play setting must not survive the tab that borrowed it.
+      const run = rr.run;
+      if (!run || run.owner !== MY_ID || rr.handingOver) return;
+      try {
+        chrome.storage.local.set({ [CONFIG.autoPlay.enabledKey]: run.prevAutoPlay }).catch(() => {});
+        chrome.storage.session.remove(C.runKey).catch(() => {});
+      } catch (err) { /* orphaned context — nothing to restore with */ }
+    });
+    tick();
+    log('retry runner active (top document)');
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -6068,12 +7282,17 @@
     // before initAltCheck (probe results hit quick-edit's listener first, so
     // the rights cache is warm when the alt check reads it), and initAutoPlay
     // before initAltCheck only by convention (the bridge vars are null-safe).
+    // initMistakeLog must likewise run before initRetryRunner, which reads the
+    // log through mistakeLogApi (also null-safe, but the first tick would
+    // otherwise show an empty count).
     initReviewOverstudy();
     initOverstudyAutoPause();
     initTopPanel();
     initQuickEditUi();
     initAutoPlay();
     initAltCheck();
+    initMistakeLog();
+    initRetryRunner();
     initChapterSort();
   }
 

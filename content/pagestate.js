@@ -1,6 +1,11 @@
 /**
  * LiChessable — trainer page-state reader (MAIN world, /practice/… only).
  *
+ * TWO consumers, ONE read (see readLine below):
+ *   * auto-play (content section 13) needs the variation's mainline;
+ *   * the mistake log (section 16) needs each user ply's live `progress`,
+ *     which is where MoveTrainer2 records the moves failed THIS session.
+ *
  * Auto-play (content section 13) must know the current variation's real
  * mainline before it may replay a remembered move. MoveTrainer2 already holds
  * exactly that, and more precisely than any rendered page does: its state
@@ -72,9 +77,35 @@
   }
 
   /**
-   * The current variation's line, or an { error } object. Only the fields
-   * auto-play needs are copied out — never the whole context, which holds the
-   * user's progress data and would be pointless to ship across the boundary.
+   * The per-ply quiz record, trimmed to the fields the mistake log needs.
+   * `quizIncorrectAttempts` is the mistake list itself: the SAN actually
+   * played ("c5") or the literal "timeUp", per failed attempt of THIS
+   * session's lesson (the counters are per-lesson, not lifetime).
+   *
+   * Everything here is optional by design: a plan entry without `progress`, or
+   * with a shape Chessable has since changed, must degrade to "no mistakes
+   * known" and MUST NOT fail the read that auto-play depends on.
+   */
+  function trimProgress(p) {
+    if (!p || typeof p !== 'object') return null;
+    const attempts = Array.isArray(p.quizIncorrectAttempts)
+      ? p.quizIncorrectAttempts.filter((a) => typeof a === 'string').slice(-20)
+      : [];
+    const num = (v) => (typeof v === 'number' && isFinite(v) ? v : 0);
+    return {
+      finished: p.finished === true,
+      quizTotal: num(p.quizTotal),
+      quizCorrectTotal: num(p.quizCorrectTotal),
+      quizIncorrectTotal: num(p.quizIncorrectTotal),
+      quizIncorrectAttempts: attempts,
+      softFail: p.softFail === true,
+    };
+  }
+
+  /**
+   * The current variation's line, or an { error } object. Only the fields the
+   * two consumers need are copied out — never the whole context, which holds
+   * far more of the user's progress data than either of them has any use for.
    */
   function readLine() {
     const root = fiberRoot();
@@ -99,6 +130,17 @@
         from: typeof move.from === 'string' ? move.from : null,
         to: typeof move.to === 'string' ? move.to : null,
         sourceFen: move.sourceFen,
+        // --- mistake-log extras (section 16). All OPTIONAL: auto-play ignores
+        // them, and a plan that stops carrying them must still yield a usable
+        // line. `mid` is the ply's index among the USER's moves in the
+        // variation and is the same id Chessable's own difficult-moves data
+        // calls `moveId` — it is the mistake log's key.
+        mid: Number.isInteger(move.mid) ? move.mid : null,
+        ply: Number.isInteger(move.ply) ? move.ply : null,
+        isUserMove: move.isUserMove === true,
+        isKey: move.isKey === true,
+        startedAsOverstudy: move.startedAsOverstudy === true,
+        progress: trimProgress(move.progress),
       });
     }
     // The plan belongs to whichever variation the trainer is currently on;
@@ -107,7 +149,15 @@
     const oid = plan[0].variationId != null ? String(plan[0].variationId)
       : (ctx.currentVariationId != null ? String(ctx.currentVariationId) : null);
     if (!oid) return { error: 'no variation id' };
-    return { oid, plies };
+    return {
+      oid,
+      plies,
+      // Context-level extras for the mistake log: "review" in /practice/,
+      // "learn" in /learn/ (an overstudy run is a learn session whose plies
+      // also carry startedAsOverstudy).
+      studyMode: typeof ctx.lessonStudyMode === 'string' ? ctx.lessonStudyMode : null,
+      variationName: typeof plan[0].variationName === 'string' ? plan[0].variationName : null,
+    };
   }
 
   document.addEventListener('clo-ps-req', () => {
