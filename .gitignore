@@ -1,5 +1,6 @@
 .DS_Store
 Thumbs.db
+lichessable.pem
 
 # Vendored Stockfish WASM build (108 MB — exceeds GitHub's push limit).
 # Download manually; see README "Local engine (optional)".
