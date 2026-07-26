@@ -87,7 +87,11 @@ by hand in a variation, auto-play stays out for the rest of that variation —
 even if a later transposition reaches a position you've already proven —
 because handing control back and forth mid-line is jarring; only a
 variation's opening run ever replays. A click on the board (or on the status
-chip) stops auto-play for the current variation. The proven-move record is
+chip) stops auto-play for the current variation. The **Clear** button beside
+the pace select (visible while auto-play is on) throws the recorded moves for
+the current course away — click it twice to confirm — so the rest of the
+session behaves like a fresh one and every move has to be answered by hand
+once again before it can be replayed. The proven-move record is
 kept per course, evaporates when the browser closes, and is deliberately
 **not** persisted across days — that would silently pass genuinely-due cards
 and defeat spaced repetition. Under the **Key Moves** study setting Chessable
@@ -831,7 +835,9 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
   unverified), a "stop for text" gate swallows the drag and the position falls
   back to manual, and after a wrong answer snaps back you retry that move
   yourself. Auto-play pauses while the tab is hidden. Records are per browser
-  session (12 h cap) — never across days.
+  session (12 h cap) — never across days, and **Clear** drops the current
+  course's on the spot (a pending record write is cancelled with it, so the
+  old record cannot come back).
 - A retry pass is a queue of whole variations, not of bare moves: Chessable has
   no arbitrary-FEN quiz and no multi-variation session URL, so each failed move
   is met inside its own line (auto-play covers the moves before it). A pass

@@ -480,7 +480,14 @@ Currently working (v0.18.x).
   if a transposition reaches a proven position again — jumping back in mid-line
   was reported as jarring; only a variation's opening run ever replays. UI = a
   cluster appended to the overstudy widget (toggle `cloAutoPlayEnabled` off by
-  default, speed `cloAutoPlaySpeed`, status chip).
+  default, speed `cloAutoPlaySpeed`, a "Clear" button, status chip).
+  `clearRecord()` drops the CURRENT course's proofs from `ap.record` and from
+  `storage.session` — it must cancel `ap.saveTimer` first, or the debounced
+  `saveRecord` would write the old in-memory record straight back — and calls
+  `stopReplaying()`, since a replay in flight was decided on what it just
+  dropped. The button arms on the first click and disarms after `clearArmMs`:
+  one misclick would otherwise cost a whole session's proofs. A re-mount of
+  the cluster resets that armed state.
   Scope is BOTH trainer routes (`isTrainerPath()`: /practice/ and /learn/) —
   recording, injection and the widget cluster work identically in learn
   sessions and overstudy tabs; proofs are shared per course through

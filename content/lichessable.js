@@ -298,6 +298,7 @@
       pointerWindowMs: 3000,   // trusted pointer input this recent ⇒ the user played the move
       saveDebounceMs: 800,     // record writes are debounced
       statusFlashMs: 2500,     // lifetime of the transient status chips
+      clearArmMs: 4000,        // how long the "Clear" button stays armed for its second click
       pageStateTimeoutMs: 1500, // wait for content/pagestate.js to answer a line request
       oracleRetryMs: 400,      // back-off before re-reading the plan (trainer mid-variation-swap)
       oracleMaxTries: 6,       // consecutive unusable reads before the variation goes manual
@@ -3738,8 +3739,10 @@
       record: null,            // { posKey: entry } for the current course
       recordBid: null,
       saveTimer: 0,
-      ui: null,                // { root, toggle, speed, status }
+      ui: null,                // { root, toggle, speed, clear, status }
       statusTimer: 0,
+      clearArmed: false,       // the "Clear" button is waiting for its confirming click
+      clearTimer: 0,           // …and disarms itself when this fires
       lastPointerAt: 0,        // last TRUSTED pointer down (grab) or drop
       pointerDownOnBoard: false, // a trusted drag started on the board and is in flight
       recentSquares: [],       // [{sq, t}] board squares under recent trusted pointer
@@ -4011,6 +4014,39 @@
       } catch (err) {
         if (noteDeadContext(err)) return;
         warn('auto-play: could not save the session record:', err);
+      }
+    }
+
+    /**
+     * Forget every position proven for the CURRENT course — the "Clear"
+     * button. The session then behaves like a fresh one: each move has to be
+     * answered by hand once more before it can be replayed. Only this course
+     * is dropped (the record is per course, and a session is one course), and
+     * the write goes out immediately with any pending debounced save
+     * cancelled — a queued saveRecord would otherwise put the old in-memory
+     * record straight back.
+     */
+    async function clearRecord() {
+      const bid = ap.recordBid;
+      const had = ap.record ? Object.keys(ap.record).length : 0;
+      clearTimeout(ap.saveTimer);
+      ap.saveTimer = 0;
+      if (ap.record) ap.record = {};
+      stopReplaying(); // a replay in flight was decided on the record we just dropped
+      setStatus(had
+        ? `🧹 cleared ${had} recorded ${had === 1 ? 'move' : 'moves'}`
+        : '🧹 nothing was recorded yet');
+      if (!bid) return;
+      try {
+        const stored = await chrome.storage.session.get(C.recordKey);
+        const all = stored[C.recordKey] || {};
+        delete all[bid];
+        await chrome.storage.session.set({ [C.recordKey]: all });
+        log('auto-play: cleared', had, 'proven positions for course', bid);
+      } catch (err) {
+        if (noteDeadContext(err)) return;
+        warn('auto-play: could not clear the session record:', err);
+        setStatus('⚠ could not clear the record');
       }
     }
 
@@ -4820,16 +4856,51 @@
         saveAutoPlayPref(C.speedKey, ap.speed);
       });
 
+      // Throwing away a session's proofs is cheap to undo only by playing
+      // every move again, so the button arms itself on the first click (the
+      // alt check's "Add anyway" pattern) and disarms after clearArmMs.
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'clo-ap-clear';
+      clear.textContent = 'Clear';
+      clear.title = 'Forget the moves auto-play has recorded as proven for this course, ' +
+        'so every move is answered by hand once again before it can be replayed.\n' +
+        'Click twice to confirm.';
+      clear.addEventListener('click', () => { // no inline handlers
+        if (!ap.clearArmed) { armClear(); return; }
+        disarmClear();
+        clearRecord();
+      });
+
       const status = document.createElement('button');
       status.type = 'button';
       status.className = 'clo-ap-status';
       status.hidden = true;
       status.addEventListener('click', cancelForVariation);
 
-      root.append(toggle, speed, status);
+      root.append(toggle, speed, clear, status);
       widget.appendChild(root);
-      ap.ui = { root, toggle, speed, status };
+      ap.ui = { root, toggle, speed, clear, status };
+      disarmClear(); // a re-mount (React re-render) must not inherit a pending confirm
       syncUi();
+    }
+
+    function armClear() {
+      if (!ap.ui) return;
+      ap.clearArmed = true;
+      ap.ui.clear.textContent = 'Clear?';
+      ap.ui.clear.classList.add('clo-ap-clear--armed');
+      clearTimeout(ap.clearTimer);
+      ap.clearTimer = setTimeout(disarmClear, C.clearArmMs);
+    }
+
+    function disarmClear() {
+      clearTimeout(ap.clearTimer);
+      ap.clearTimer = 0;
+      ap.clearArmed = false;
+      if (!ap.ui) return;
+      ap.ui.clear.textContent = 'Clear';
+      ap.ui.clear.classList.remove('clo-ap-clear--armed');
     }
 
     function syncUi() {
@@ -4838,7 +4909,8 @@
       ap.ui.toggle.classList.toggle('clo-ap-toggle--on', ap.enabled);
       ap.ui.speed.value = ap.speed;
       ap.ui.speed.hidden = !ap.enabled;
-      if (!ap.enabled) ap.ui.status.hidden = true;
+      ap.ui.clear.hidden = !ap.enabled;
+      if (!ap.enabled) { ap.ui.status.hidden = true; disarmClear(); }
     }
 
     /** Status chip; sticky text stays until replaced, flashes auto-hide. */
