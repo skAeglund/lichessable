@@ -280,6 +280,20 @@
         relaxed: { move: 900, settle: 900 },
       },
       defaultSpeed: 'normal',
+      // Both waits above are counted from the BOARD CHANGE, not from the
+      // moment the evaluation happens to run — see evaluateAutoPlay. The two
+      // constants below are what keeps that clock honest on a phone, where
+      // every step of the chain runs later than it does on a desktop:
+      //   `frameFallbackMs` — a mutation is normally processed on the next
+      //     animation frame, but rAF only runs while the document RENDERS, so
+      //     a frame dropped under Chessable's own move animation (or a hidden
+      //     tab) used to wait for the 500 ms poll instead. A short timer races
+      //     the rAF; whichever wins does the work.
+      //   `frameStampMaxAgeMs` — how old the mutation stamp may be before the
+      //     board change is timed from now instead (a poll-driven frame, or a
+      //     change that produced no mutation we saw).
+      frameFallbackMs: 32,
+      frameStampMaxAgeMs: 1000,
       injectVerifyMs: 2500,    // an injected move must land within this, else manual for the position
       pointerWindowMs: 3000,   // trusted pointer input this recent ⇒ the user played the move
       saveDebounceMs: 800,     // record writes are debounced
@@ -3738,7 +3752,10 @@
       pollTimer: 0,
       observer: null,
       observedBoard: null,
-      rafPending: false,
+      framePending: false,     // a board frame is scheduled (rAF or its timer backstop)
+      frameTimer: 0,           // …the backstop's id
+      mutationAt: 0,           // when the board DOM last changed (stamped in the observer
+                               // callback itself — see frameTime)
       vs: null,                // per-variation state, see freshVariationState
     };
     ap.vs = freshVariationState(null, null);
@@ -3765,6 +3782,7 @@
         oracle: null,        // null | 'pending' | 'failed' | [{san, color, key}, …]
         oracleSim: null,     // the plan's line: [{pos, key}] — positions BEFORE each oracle ply
         oracleNextTryAt: 0,  // back-off before re-reading a not-yet-ready plan
+        oracleTimer: 0,      // …and its own timer, so the re-read does not wait for the poll
         oracleTries: 0,      // unusable reads so far this variation
         pendingRecord: null, // { posKey, uci, promo } — user answer awaiting confirmation
         incorrectNoteAt: 0,  // last time the Incorrect note was seen this variation
@@ -4054,6 +4072,7 @@
       const vs = ap.vs;
       clearTimeout(vs.injectTimer);
       clearTimeout(vs.verifyTimer);
+      clearTimeout(vs.oracleTimer);
       ap.vs = freshVariationState(oid, bid);
       setStatus('');
       if (oid) log('auto-play: tracking variation', oid);
@@ -4075,7 +4094,7 @@
       vs.history.clear();
       vs.userColor = readBoardOrientation();
       vs.anchor = snap;
-      vs.lastMoveAt = Date.now();
+      vs.lastMoveAt = frameTime();
       if (boardsEqual(snap, STANDARD_START.board)) {
         vs.pos = { board: snap.slice(), side: 'w', castling: 'KQkq', ep: -1, fullmove: 1 };
         vs.history.set(key, { pos: vs.pos, ply: 0 });
@@ -4207,7 +4226,7 @@
       vs.pos = found.next;
       vs.ply++;
       vs.movesApplied++;
-      vs.lastMoveAt = Date.now();
+      vs.lastMoveAt = frameTime(); // when the board changed, not when we got to look
       vs.manualHold = false;
       vs.history.set(key, { pos: vs.pos, ply: vs.ply });
       log('auto-play: observed', uci, '(' + kind + ')');
@@ -4488,6 +4507,16 @@
         }
         vs.oracle = null; // evaluateAutoPlay re-requests once the back-off expires
         vs.oracleNextTryAt = Date.now() + C.oracleRetryMs;
+        // …and it is woken for that at the back-off's own time. Leaving it to
+        // the 500 ms poll meant a plan that was not ready on the first read
+        // (the trainer swaps it ~90 ms before the first move animates, so on a
+        // phone the first read regularly loses that race) cost up to half a
+        // second per retry before the variation's opening replay could start.
+        clearTimeout(vs.oracleTimer);
+        vs.oracleTimer = setTimeout(() => {
+          vs.oracleTimer = 0;
+          if (ap.vs === vs) evaluateAutoPlay();
+        }, C.oracleRetryMs);
       };
 
       if (res.error) return retry(res.error);
@@ -4607,6 +4636,17 @@
         return;
       }
 
+      // Both waits are counted from the BOARD CHANGE that made it our turn
+      // (vs.lastMoveAt), never from the moment this evaluation runs — the
+      // same clock the trainer answers on. Anything else double-counts our own
+      // lateness: an evaluation reaching this point 300 ms after the move
+      // landed (a starved animation frame on a phone, a re-entry from
+      // injectMove, the 500 ms poll picking up a frame the observer path
+      // missed) used to add a FULL `move` pause on top of the wait already
+      // served, which is exactly the "some moves take a second longer" feel.
+      // Where the whole pause has already elapsed the move goes out in this
+      // task (see below), so a late frame costs nothing extra.
+      //
       // Settle floor, for the two states where the trainer may still be
       // moving by itself: nothing observed yet this variation (it could be
       // mid-setup), or it drove the last user-colour move (Key-Moves prefix,
@@ -4617,13 +4657,14 @@
       // trainer no second move to race us with, and mid-line injection —
       // which has always run with no floor at all — is the same situation and
       // lands reliably. That default used to cost 700 ms on every variation.
-      let delay = currentSpeed().move;
+      let delay = vs.lastMoveAt + currentSpeed().move - now;
       if ((vs.movesApplied === 0 && !vs.adopted) || vs.trainerDrove) {
         delay = Math.max(delay, vs.lastMoveAt + currentSpeed().settle - now);
       }
       setStatus('▶ replaying known moves… (click to stop)', true);
       const expectKey = vs.lastKey;
-      // With no pause to serve (Fast's mid-line case, move:0) skip the timer
+      // With no pause left to serve (Fast's mid-line case, move:0 — or a frame
+      // that reached us after the pause had already elapsed) skip the timer
       // hop and play in THIS task. setTimeout(…,0) still yields to the event
       // loop, where the callback can sit behind Chessable's own post-move work
       // — exactly the main-thread contention that makes a phone feel laggier
@@ -4654,7 +4695,10 @@
       const fromEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', entry.uci.slice(0, 2)));
       const toEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', entry.uci.slice(2, 4)));
       if (!fromEl || !toEl) { vs.manualHold = true; return; }
-      log('auto-play: playing', entry.uci);
+      // The elapsed figure is the whole gap the user actually feels — board
+      // change to injection — so an inconsistent replay can be diagnosed from
+      // the log instead of by eye.
+      log('auto-play: playing', entry.uci, '(' + (Date.now() - vs.lastMoveAt) + ' ms after the board change)');
       // beforeKey is what the verify timer compares against: the placement the
       // injection is supposed to change. Observing our own move is the normal
       // way the injection gets closed out, but it is not the only evidence that
@@ -4835,13 +4879,41 @@
       ap.observedBoard = board;
     }
 
+    /**
+     * The observer callback is a microtask running immediately after the board
+     * DOM changed, which makes it the only ACCURATE stamp of when a move
+     * landed: processFrame runs an animation frame (or a whole poll interval)
+     * later, and on a phone that lag is easily 100-300 ms of Chessable's own
+     * animation work. Every wait auto-play owns is counted from this stamp, so
+     * a frame that reaches us late no longer pushes the replay out with it.
+     */
     function onBoardMutation() {
-      if (ap.rafPending) return;
-      ap.rafPending = true;
-      requestAnimationFrame(() => {
-        ap.rafPending = false;
+      ap.mutationAt = Date.now();
+      if (ap.framePending) return;
+      ap.framePending = true;
+      // rAF alone is not enough: it fires only while the document actually
+      // renders, so a starved frame (mid-animation on a phone) — or a hidden
+      // tab, where the callback never runs at all and the pending flag used to
+      // swallow every later mutation — left the 500 ms poll as the only path
+      // in. Race the frame against a short timer; first one through wins.
+      const run = () => {
+        if (!ap.framePending) return;
+        ap.framePending = false;
+        clearTimeout(ap.frameTimer);
         processFrame();
-      });
+      };
+      requestAnimationFrame(run);
+      ap.frameTimer = setTimeout(run, C.frameFallbackMs);
+    }
+
+    /**
+     * When the board change now being processed actually happened. The
+     * observer's own stamp when it is fresh enough to belong to this frame,
+     * otherwise now (a poll-driven frame, or a change we saw no mutation for).
+     */
+    function frameTime() {
+      const now = Date.now();
+      return ap.mutationAt && now - ap.mutationAt <= C.frameStampMaxAgeMs ? ap.mutationAt : now;
     }
 
     /** Board square under a pointer event, by geometry — during a drag the

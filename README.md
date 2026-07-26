@@ -464,7 +464,12 @@ lichessable/
   before the first move of a variation, while Chessable may still be setting
   the position up. The rest of the cycle belongs to Chessable — roughly 440 ms
   for the move to animate onto the board and 480 ms for its reply — so a
-  replayed move takes about a second end to end even on *Fast*.
+  replayed move takes about a second end to end even on *Fast*. Both waits are
+  measured from the moment the board actually changed, not from the moment the
+  extension gets round to looking at it: on a phone, where the board mutation,
+  the animation frame and the timer callback each land later than they do on a
+  desktop, timing them from the change is what keeps every replay the same
+  length instead of occasionally a second longer.
 - **Wrong-guess alt check** — section 15 in `content/lichessable.js`, built
   almost entirely from parts that already existed. The *capture* has two
   paths. The primary one is pointer-based: a refused move usually never

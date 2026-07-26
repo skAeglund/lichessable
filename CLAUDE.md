@@ -503,7 +503,21 @@ Currently working (v0.18.x).
   variation's START. Keep `settle` above ~450 ms — that is how long one
   animated trainer move occupies the board. The rest of a replay's cycle is
   Chessable's and cannot be tuned: ~440 ms for our move to land, ~480 ms for
-  the reply.
+  the reply. `vs.lastMoveAt` — the origin of both clocks — is stamped in the
+  MUTATION callback (`frameTime()`, from `ap.mutationAt`), not when
+  processFrame gets to run, and `evaluateAutoPlay` subtracts the already
+  elapsed time from BOTH waits (v0.30.1). Never re-anchor a wait on
+  `Date.now()` at evaluation time: on a phone the mutation→rAF→timer chain runs
+  100-300 ms late and every re-entry (injectMove's bail-out, the 500 ms poll
+  catching a frame the observer path missed) then charged a whole extra `move`
+  pause on top of the wait already served — that is what made some mobile
+  replays a second slower than the rest. For the same reason a board mutation
+  schedules a rAF AND a `frameFallbackMs` (32 ms) timer, first one through
+  wins: rAF runs only while the document RENDERS, and in a hidden tab it never
+  ran at all while the pending flag swallowed every later mutation. The oracle
+  back-off (`oracleRetryMs`) also owns a real timer now — waiting for the next
+  poll to notice it had expired cost up to 500 ms per retry, and a first read
+  losing the race against the trainer's ~90 ms plan swap is routine on mobile.
   - LINE ORACLE = `content/pagestate.js`, the extension's ONLY MAIN-world
     content script. React fibers are page-world expandos, invisible to an
     isolated content script, so the plan cannot be read any other way. It is
