@@ -190,6 +190,44 @@ you to confirm); you can return to the review afterwards. The list lives in
 the browser session only (12 h cap), for the same reason the auto-play record
 does.
 
+When a completed variation ends with one or more **clickable continuation lines**
+in the comment column (`5.Nb3 g6 6.Be3 Qb4+`), the widget offers **Review
+continuation(s)**. Chessable prints those lines but never quizzes them — they are
+comment text, not variations — so this plays them like a variation: the
+opponent's moves are made for you, yours are asked for, one line after another.
+
+It happens on **our own board**, laid over Chessable's: their browse board is
+navigation-only and accepts no moves at all. The board uses their piece art
+(cloned from the live board, so it looks like the same board), their legal-move
+dots and capture rings, and is oriented the same way; moves go in by **click-then-
+click or by dragging**, whichever you reach for. Only the square colour is
+deliberately ours, so it is always obvious which board you are on.
+Our panel covers the comment column while the quiz runs, for the
+obvious reason that the lines are printed there — **Exit** gives Chessable its
+screen back, as does Escape, finishing the last line, or the variation changing
+underneath. **Hint** shows the move; two wrong tries and it appears by itself.
+The pause before the opponent's replies follows the auto-play speed dropdown.
+
+A variation can carry continuations in two places: after its **final** position,
+and branching off somewhere earlier in the line. When both are present, pressing
+the button first asks which you want — **All continuations** or **Final
+continuations** — since an earlier branch revisits a move you have already
+answered. With only one kind there is nothing to ask and the quiz starts straight
+away.
+
+Lines that ask *you* to play a move the author marked **?**, **??** or **?!** are
+skipped: those are there to show what to avoid, and drilling them would teach the
+blunder. A marked move by your *opponent* is fine — that is the premise of a line
+about how to punish it — and **!?** counts as interesting rather than bad, so it
+stays.
+
+The positions are not read off the board: each line is anchored on the trainer's
+own lesson plan and replayed with the extension's move generator, so the FENs are
+exact (castling and en passant included) even for lines that start mid-game. A
+line that cannot be placed with certainty is skipped with a console note rather
+than guessed at. This is practice only — nothing is rescheduled, and nothing is
+recorded as proven for auto-play. See `DESIGN-continuation-review.md`.
+
 On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
 extension adds a **Sort by popularity** button, which reorders the whole chapter to
 follow the shape of the move tree: lines that share an opening sequence end up
@@ -228,8 +266,9 @@ lichessable/
 │                            + engine message hub + quick-edit tab driver hub
 ├── content/
 │   ├── lichessable.js       Panel logic (mt1 iframe) + review overstudy widget,
-│   │                        quick-edit UI, review auto-play and the mistake
-│   │                        log / retry runner (top document)
+│   │                        quick-edit UI, review auto-play, the mistake
+│   │                        log / retry runner and continuation review
+│   │                        (top document)
 │   ├── pagestate.js         MAIN-world reader: the trainer's own lesson plan —
 │   │                        the auto-play line oracle AND each move's live quiz
 │   │                        record (the mistake log's source), read-only
@@ -581,6 +620,32 @@ lichessable/
   this mode asks for — and **Whole variation** forces the toggle *off* instead
   of on and waits for the line to complete. The lift is scoped to the
   variation a pass is driving, so ordinary sessions behave as before.
+- **Continuation review** — section 18. Chessable's browse board is
+  **navigation-only**: verified live that the extension's own click-click move
+  recipe changes nothing on it, on any square pair, so the quiz cannot happen
+  there and moving their React-rendered pieces ourselves is out of the question.
+  Instead two body-mounted overlays, absolute in document coordinates like every
+  other widget here: our board pinned over theirs (64 of our square divs, pieces
+  cloned off their live `<svg>` nodes — no vendored art and no `innerHTML` — with
+  percentage geometry so a resize needs no JS) and our panel covering the comment
+  column, which is not decoration but the whole quiz: the lines are printed
+  there. The lines come from the `commentSubMove` spans, grouped by the id prefix
+  (`7.0.0` … `7.0.3`), but the **id nesting is not semantic** — ground-truthed
+  live, a second line came out nested under the first line's last move while
+  branching from the mainline like the first. So the id yields the grouping and
+  the mainline attach ply only; the branch position is derived by trying the
+  position after that ply, then instead of it, then the parent line's, then the
+  rest of the mainline, and accepting one only when the printed move number
+  matches its side/fullmove *and* every SAN in the line resolves legally
+  (CloSan). The mainline positions are the lesson plan's own exact `sourceFen`s —
+  the oracle still answers in the browse state — so this needed no board reading
+  and no FEN approximation; both lines of the test comment reproduced Chessable's
+  own board square for square. A line that fits nowhere is dropped with a console
+  line. While a quiz runs the review panel stands down (`continuationActive`),
+  since its FEN would describe the board we are covering, and keys are swallowed
+  on `document` in capture phase — MoveTrainer2's single-key shortcuts ("n" =
+  next variation) ignore focus and one keypress would end the quiz. A refused
+  move needs no rollback: our position only advances on the right one.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.

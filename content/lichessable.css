@@ -1382,6 +1382,307 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: #e08a8a;
 }
 
+/* --- continuation review (section 18) ----------------------------------------
+   Two body-mounted overlays: OUR quiz board pinned over Chessable's
+   navigation-only browse board, and OUR panel covering the comment column (the
+   lines being quizzed are printed there, so covering them IS the quiz). Both
+   are position:absolute in DOCUMENT coordinates — never fixed, same reasoning
+   as the review panel: a fixed element anchored to scrolling content chases the
+   page on mobile.
+
+   The board's geometry is entirely percentage-based (squares in an 8-column
+   grid, pieces 12.5% wide with a translate in multiples of 100% of their OWN
+   size = one square), so a window resize needs no JS beyond repositioning the
+   overlay itself.
+
+   Square colours are OUR constants, deliberately not sampled from Chessable's
+   stylesheet: reading their light/dark square classes would be one more piece
+   of third-party markup to keep working, for a shade of green. Piece art, on
+   the other hand, IS theirs — cloned <svg> nodes off the live board — so the
+   two boards read as the same board. */
+.clo-cr-board {
+  position: absolute;
+  z-index: 100000;
+  box-sizing: border-box;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #ebecd0;
+  box-shadow: 0 0 0 2px #629924;
+  user-select: none;
+  /* `none`, not `manipulation`: a finger dragging a piece must not scroll the
+     page out from under the board. */
+  touch-action: none;
+}
+
+.clo-cr-grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+}
+
+.clo-cr-sq {
+  position: relative;
+  cursor: pointer;
+}
+
+.clo-cr-sq--light { background: #ebecd0; }
+.clo-cr-sq--dark  { background: #779952; }
+
+/* Tints, weakest first: the later rules must win where they overlap, so the
+   selection and the feedback flashes come last. */
+.clo-cr-sq--last   { box-shadow: inset 0 0 0 100px rgba(255, 236, 128, 0.35); }
+.clo-cr-sq--hint   { box-shadow: inset 0 0 0 100px rgba(88, 160, 220, 0.45); }
+.clo-cr-sq--sel    { box-shadow: inset 0 0 0 100px rgba(255, 236, 128, 0.6); }
+.clo-cr-sq--ok     { box-shadow: inset 0 0 0 100px rgba(98, 153, 36, 0.65); }
+.clo-cr-sq--bad    { box-shadow: inset 0 0 0 100px rgba(190, 60, 50, 0.65); }
+
+/* Legal-target markers, drawn on our own squares but deliberately IDENTICAL to
+   the ones MoveTrainer2 draws on its own board — the board colour may differ,
+   the move affordances should not. Copied from their live rules
+   (.legal-square-dot-mt2 / .legal-square-capture-mt2): a 33% dot on an empty
+   square and a ring hugging the square's edge on an occupied one, both
+   rgba(0,0,0,.3) at opacity .7, i.e. an effective alpha of .21. */
+.clo-cr-sq--target::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 33%;
+  height: 33%;
+  transform: translate(-50%, -50%);
+  border-radius: 100%;
+  background: rgba(0, 0, 0, 0.21);
+  pointer-events: none;
+}
+
+/* Capture target: their ring, not a dot. Must follow the rule above — both
+   classes are set on the square, so this one wins only by coming later. */
+.clo-cr-sq--capture::after {
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  transform: none;
+  border-radius: 0;
+  background: radial-gradient(transparent 0, transparent 79%, rgba(0, 0, 0, 0.21) 80%);
+}
+
+.clo-cr-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none; /* clicks belong to the square grid underneath */
+}
+
+.clo-cr-piece {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 12.5%;
+  height: 12.5%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 180ms ease-out; /* ~CONFIG.continuation.animMs */
+  font-size: 0; /* collapses the glyph fallback's line box; sized below */
+}
+
+.clo-cr-piece > svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Held under the pointer: no transition (it must track the finger exactly, not
+   chase it) and above every other piece so it is never hidden behind one it is
+   passing over. The transform switches from square percentages to pixels while
+   this class is on; placeAt puts it back on drop. */
+.clo-cr-piece--drag {
+  transition: none;
+  z-index: 3;
+}
+
+/* Fallback when no <svg> could be cloned for a piece type yet (makePiece sets
+   the class, so this needs no :has() support). */
+.clo-cr-piece--glyph {
+  font-size: min(6vw, 44px);
+  line-height: 1;
+  color: #222;
+}
+
+/* Every element below is shown/hidden through its `hidden` ATTRIBUTE, and an
+   author `display` rule beats the UA stylesheet's `[hidden] { display: none }`
+   — so each one that sets `display` needs this guard, or it stays visible while
+   the JS believes it is hidden. (Caught live: the promotion picker showed as a
+   stray dot mid-board and the panel kept covering the comment column after the
+   quiz closed.) */
+.clo-cr-promo[hidden],
+.clo-cr-panel[hidden],
+.clo-cr-actions[hidden],
+.clo-cr-chooser[hidden],
+.clo-cr[hidden] {
+  display: none;
+}
+
+.clo-cr-promo {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid #1b1a17;
+  border-radius: 4px;
+  background: #262421;
+  z-index: 2;
+}
+
+.clo-cr-promo-btn {
+  width: 44px;
+  height: 44px;
+  padding: 2px;
+  border: 1px solid #3d3a36;
+  border-radius: 3px;
+  background: #ebecd0;
+  cursor: pointer;
+}
+
+.clo-cr-promo-btn:hover { border-color: #629924; }
+
+/* The promotion picker reuses .clo-cr-piece for its art, where the absolute
+   positioning and the move transition are both wrong. */
+.clo-cr-promo-btn .clo-cr-piece {
+  position: static;
+  width: 100%;
+  height: 100%;
+  transition: none;
+}
+
+.clo-cr-panel {
+  position: absolute;
+  z-index: 100000;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 200px;
+  padding: 14px 16px;
+  border: 1px solid #1b1a17;
+  border-radius: 4px;
+  background: #262421;
+  color: #bababa;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.clo-cr-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8a8a8a;
+}
+
+.clo-cr-prompt {
+  font-size: 17px;
+  color: #e8e8e8;
+}
+
+.clo-cr-prompt--ok  { color: #a5c96a; }
+.clo-cr-prompt--bad { color: #e08a8a; }
+
+.clo-cr-progress {
+  font-size: 12px;
+  color: #8a8a8a;
+}
+
+.clo-cr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto; /* sinks to the bottom when the panel is sized to the column */
+}
+
+/* Scope picker ("All continuations" / "Final continuations" / Cancel). Stacked,
+   because the two labels carry counts and read as a choice rather than as a
+   toolbar; sits in the same place the actions row otherwise occupies. */
+.clo-cr-chooser {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin-top: auto;
+  align-self: stretch;
+  max-width: 260px;
+}
+
+.clo-cr-btn {
+  border: 1px solid #3d3a36;
+  background: transparent;
+  color: #bababa;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cr-btn:hover:not(:disabled) {
+  border-color: #629924;
+  color: #fff;
+}
+
+.clo-cr-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The picker's two real choices, in the extension's usual green. */
+.clo-cr-btn--primary {
+  border-color: #629924;
+  color: #a5c96a;
+  padding: 7px 12px;
+}
+
+.clo-cr-btn--primary:hover:not(:disabled) {
+  background: rgba(98, 153, 36, 0.25);
+  color: #fff;
+}
+
+.clo-cr-btn--exit {
+  border-color: #a33;
+  color: #e08a8a;
+}
+
+.clo-cr-btn--exit:hover:not(:disabled) {
+  border-color: #c44;
+  color: #fff;
+}
+
+/* Launcher on the overstudy widget (section 9's cluster host). */
+.clo-cr {
+  display: inline-flex;
+  align-items: center;
+}
+
+.clo-cr-open {
+  border: 1px solid #629924;
+  background: transparent;
+  color: #a5c96a;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cr-open:hover {
+  background: rgba(98, 153, 36, 0.25);
+  color: #fff;
+}
+
 /* --- touch-sized UI (html.clo-touch) ----------------------------------------
    Set by applyTouchUiClass() in lichessable.js on the <html> of whichever
    document this script runs in (the mt1 iframe for the panel, the top document
@@ -1482,6 +1783,8 @@ html.clo-touch .clo-review-btn,
 html.clo-touch .clo-ap-toggle,
 html.clo-touch .clo-ap-clear,
 html.clo-touch .clo-chapter-btn,
+html.clo-touch .clo-cr-open,
+html.clo-touch .clo-cr-btn,
 html.clo-touch .clo-qe-save {
   font-size: 16px;
   padding: 10px 16px;
@@ -1490,6 +1793,22 @@ html.clo-touch .clo-qe-save {
 html.clo-touch .clo-qe-cancel {
   font-size: 16px;
   padding: 10px 12px;
+}
+
+/* Continuation review is played with a fingertip on a full-size board, so only
+   the panel's type needs scaling — the board's geometry is all percentages. */
+html.clo-touch .clo-cr-prompt {
+  font-size: 20px;
+}
+
+html.clo-touch .clo-cr-title,
+html.clo-touch .clo-cr-progress {
+  font-size: 14px;
+}
+
+html.clo-touch .clo-cr-promo-btn {
+  width: 56px;
+  height: 56px;
 }
 
 /* --- body-mounted widgets (top document) ---------------------------------- */

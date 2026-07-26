@@ -85,11 +85,20 @@
     reviewProgress:     '[data-testid="practiceProgress"]', // "Completed" stats block — only present in the browse state
     reviewMoves:        '[data-testid="commentMove"], [data-testid="commentMove_shownOnBoard"]',
     reviewMoveShown:    '[data-testid="commentMove_shownOnBoard"]',
+    // Continuation review (section 18) reads these too, and relies on the ID
+    // each one carries: "<attachPly>.<line>.<move>", nested for a line written
+    // inside another ("7.0.3.0.2"). The ply is the mainline ply the comment
+    // hangs off; the trailing component is the move's index in its own line.
     reviewSubMoves:     '[data-testid="commentSubMove"], [data-testid="commentSubMove_shownOnBoard"]',
     reviewSubMoveShown: '[data-testid="commentSubMove_shownOnBoard"]',
     reviewBoardWrap:    '[data-testid="boardContainer"]', // scopes the board lookup to the trainer's own board
     reviewSquare:       '.square-%s',   // square lookup by class; %s = algebraic name — orientation-independent
     reviewPiece:        '[data-piece]', // piece div inside a square; attribute value like "wK" / "bP"
+    // The comment column's scroll container. Continuation review COVERS it
+    // with its own panel while a quiz runs: the lines being quizzed are
+    // printed in it in plain sight, so leaving it visible would spoil every
+    // answer. Nothing of ours ever goes INSIDE it.
+    reviewCommentBox:   '[data-testid="commentScrollContainer"]',
 
     // Explore EDIT page (quick-edit-comment feature — section 12). The edit
     // page reuses the mt1 explore iframe (/mt1/explore/edit/<oid>/), so these
@@ -208,6 +217,26 @@
       panelMaxWidth: 420,
       stackedMinSide: 250,      // less free width than this beside the board ⇒ the comment column must have wrapped under it
       holdUpMs: 1200,           // an UPWARD move of the below-the-board panel must persist this long before it is applied (anti-bounce)
+    },
+
+    // --- Continuation review (top document, section 18) ---------------------
+    // Quizzes the clickable subvariation lines a completed variation ends with.
+    // Chessable's browse board is navigation-only (ground-truthed: the
+    // extension's own pressSquare recipe changes nothing on it), so the quiz
+    // runs on OUR board, overlaid on theirs.
+    continuation: {
+      pollMs: 500,          // same watchdog cadence as every other trainer module
+      minBoardPx: 200,      // below this the trainer board is mid-render; don't place the overlay
+      wrongHintAfter: 2,    // misses on one ply before the answer is spelled out (mirrors Chessable)
+      // The opponent's plies are auto-played. The pause reuses the auto-play
+      // speed preset's `move` value so both features feel the same, with a
+      // floor of its own: unlike auto-play we are not racing the trainer, but
+      // an instant reply reads as a glitch rather than as a move.
+      opponentMinMs: 350,
+      feedbackMs: 450,      // how long a right/wrong square flash stays lit
+      lineDoneMs: 1100,     // pause on a finished line before the next one starts
+      animMs: 180,          // our own piece glide; ~Chessable's own ~200 ms tween
+      dragSlopPx: 4,        // pointer travel before a press counts as a drag rather than a click
     },
 
     // --- Optional local Stockfish (offscreen document, section 5b) ----------
@@ -426,6 +455,9 @@
   const AC_POPUP_ID = 'lichessable-ac-popup'; // wrong-guess check popup (section 15)
   const MX_CLUSTER_ID = 'lichessable-mx';       // "Mistakes (N)" / Retry cluster (section 17)
   const MX_POPUP_ID   = 'lichessable-mx-popup'; // the mistake list popup (section 17)
+  const CR_CLUSTER_ID = 'lichessable-cr';       // "Review continuations" cluster (section 18)
+  const CR_BOARD_ID   = 'lichessable-cr-board'; // our quiz board, overlaid on Chessable's (section 18)
+  const CR_PANEL_ID   = 'lichessable-cr-panel'; // prompt/controls, covering the comment column (section 18)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
@@ -2396,7 +2428,10 @@
     // Independent of the panel: the board stays centered for the WHOLE trainer
     // session, so it never jumps when a variation completes.
     centerReviewBoard();
-    if (!reviewBrowseReady()) {
+    // A continuation quiz (section 18) covers Chessable's board with its own,
+    // so readReviewFen() would describe a position nobody can see any more.
+    // Stand down entirely rather than show a stale one.
+    if (!reviewBrowseReady() || (continuationActive && continuationActive())) {
       if (state.panel) state.panel.hidden = true;
       resetReviewAnchorHold(); // a fresh show must never fight a stale hold
       state.fen = null; // the next completed variation starts with a fresh fetch
@@ -7689,6 +7724,1226 @@
   }
 
   // ==========================================================================
+  // 18) Continuation review (top document, /practice/… and /learn/…)
+  //
+  // A completed variation often ends with one or more CLICKABLE subvariation
+  // lines in the comment column ("5.Nb3 g6 6.Be3 Qb4+"). The trainer never
+  // quizzes them — they are comment text, not variations — so this section
+  // does: a "Review continuations" button on the overstudy widget walks the
+  // lines one after another, auto-playing the opponent and asking the user for
+  // their own moves, exactly the way the trainer itself asks.
+  //
+  // Why our OWN board (design + ground truth in DESIGN-continuation-review.md):
+  // Chessable's browse board is NAVIGATION-ONLY. Verified live with the
+  // extension's own pressSquare recipe — a legal move on it changes no piece,
+  // no matter which square order or event flavour is used. Clicking a move
+  // SPAN navigates the board; the board itself accepts no input. So the quiz
+  // cannot happen on their board, and moving their piece divs ourselves is out
+  // of the question (foreign writes into MoveTrainer2's React tree). Instead
+  // two body-mounted overlays, absolute in DOCUMENT coordinates like every
+  // other widget here (never `fixed` — see section 11):
+  //
+  //   * OUR board, pinned over theirs: 64 of our own square divs, pieces
+  //     CLONED off their live [data-piece] SVGs (so it looks identical, with
+  //     no vendored assets and no innerHTML), oriented bottom = user colour.
+  //   * OUR panel, COVERING the comment column: the lines being quizzed are
+  //     printed there in plain sight, so hiding them is not decoration, it is
+  //     the whole quiz. It carries the prompt, Hint / Skip / Exit.
+  //
+  // Nothing of ours goes inside Chessable's DOM, and nothing of theirs is
+  // written to; we only read the board (to harvest piece SVGs and the
+  // orientation) and the comment spans.
+  //
+  // Where the positions come from: NOT from the DOM. Each sub-move span's id is
+  // "<attachPly>.<line>.<move>" (nested for a line written inside another), so
+  // grouping on the id prefix up to the last dot yields one group per line, in
+  // DOM order. But the NESTING IS NOT SEMANTIC — ground-truthed live: the
+  // second line of a two-line comment came out as "7.0.3.0.*", i.e. nested
+  // under the first line's last move, while its board position showed it
+  // branching from the MAINLINE, same as the first. So the id gives us the
+  // grouping and the mainline attach ply, never the branch position.
+  //
+  // The branch position is derived instead, from the same line oracle auto-play
+  // uses (content/pagestate.js — still readable in the browse state, verified):
+  // the lesson plan's per-ply `sourceFen` is exact, castling and en passant
+  // included. Anchor a line by trying the position AFTER its attach ply, then
+  // BEFORE it, then its parent line's positions, then the rest of the mainline;
+  // a candidate is accepted only when the first move's printed number+colour
+  // matches its side/fullmove AND every SAN in the line resolves to a legal
+  // move from it (CloSan). Verified end to end on a live two-line comment: both
+  // simulations reproduced Chessable's own board square for square. A line that
+  // resolves nowhere is DROPPED with one console line — never guessed at.
+  // ==========================================================================
+
+  // () => boolean — true while a continuation quiz owns the screen. The review
+  // panel (section 11) stands down then: its FEN is read off Chessable's board,
+  // which our overlay covers and which no longer shows the position being
+  // quizzed. Assigned by initContinuationReview; null-safe, since the panel
+  // also lives in documents where this module never ran.
+  let continuationActive = null;
+
+  function initContinuationReview() {
+    if (typeof CloSan === 'undefined') {
+      warn('continuation review disabled: CloSan (engine/san.js) not loaded');
+      return;
+    }
+    const C = CONFIG.continuation;
+
+    // Fallback glyphs for a piece type that was never on the board while we
+    // were watching, so no SVG could be cloned for it. Written with
+    // textContent, like all dynamic text here.
+    const CR_GLYPH = {
+      wK: '♔', wQ: '♕', wR: '♖', wB: '♗', wN: '♘', wP: '♙',
+      bK: '♚', bQ: '♛', bR: '♜', bB: '♝', bN: '♞', bP: '♟',
+    };
+
+    const cr = {
+      oid: null,          // variation the scanned lines belong to
+      signature: '',      // DOM signature of the sub-move list we last scanned SUCCESSFULLY
+      scanning: false,
+      tryingSig: '',      // …and the one currently being attempted, so its retries can be counted
+      scanTries: 0,       // transient-failure retries for tryingSig
+      lines: [],          // ALL usable continuations found, in DOM order
+      queue: [],          // the subset this run is playing (all, or final-position only)
+      choosing: false,    // the "All / Final" picker is up, no line started yet
+      active: false,
+      lineIdx: 0,
+      line: null,
+      pos: null,          // CloSan position on our board right now
+      plyIdx: 0,          // next ply of the line to play
+      userColor: null,    // 'w' | 'b' — board bottom, i.e. the course colour
+      sel: null,          // selected source square index, or null
+      attempts: 0,        // misses on the current ply
+      hint: false,        // the answer is being spelled out for this ply
+      busy: false,        // an opponent move / feedback / line break is in flight
+      promo: null,        // { from, to, moves } awaiting a promotion choice
+      drag: null,         // { idx, piece, startX, startY, moved } while a piece is held
+      swallowClick: false,// the click after a pointer sequence we already acted on
+      lastMove: null,     // { from, to } for the last-move tint
+      flash: null,        // { sq, kind } transient right/wrong tint
+      timer: 0,
+      flashTimer: 0,
+      orientation: null,  // orientation the current grid was built for
+      pieceSvg: new Map(),// 'wP' → template <svg> cloned off Chessable's board
+      pieces: new Map(),  // square index → our piece element
+      squares: new Map(), // square index → our square element
+      boardEl: null,
+      panel: null,
+      ui: null,
+      cluster: null,
+      button: null,
+      // The opponent's pause borrows auto-play's speed setting so the two
+      // features feel the same; the widget's dropdown is the one control.
+      speed: CONFIG.autoPlay.defaultSpeed,
+    };
+
+    continuationActive = () => cr.active;
+
+    (async () => {
+      try {
+        const stored = await chrome.storage.local.get([CONFIG.autoPlay.speedKey]);
+        const speed = stored[CONFIG.autoPlay.speedKey];
+        if (typeof speed === 'string' &&
+            Object.prototype.hasOwnProperty.call(CONFIG.autoPlay.speeds, speed)) cr.speed = speed;
+      } catch (err) {
+        warn('continuation: speed pref read failed:', err);
+      }
+    })();
+
+    try {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || !changes[CONFIG.autoPlay.speedKey]) return;
+        const v = changes[CONFIG.autoPlay.speedKey].newValue;
+        if (typeof v === 'string' &&
+            Object.prototype.hasOwnProperty.call(CONFIG.autoPlay.speeds, v)) cr.speed = v;
+      });
+    } catch (err) { /* orphaned context — the default pause is fine */ }
+
+    // --- discovery -----------------------------------------------------------
+
+    /** Cheap change detector: rescanning is only worth it when the sub-move
+     *  list itself changed (a new variation, or the comment re-rendered). */
+    function domSignature() {
+      const ids = [];
+      for (const el of document.querySelectorAll(SELECTORS.reviewSubMoves)) ids.push(el.id || '?');
+      return (cr.oid || '-') + '|' + ids.join(',');
+    }
+
+    /** The user's colour: the board's bottom side, exactly as the quick-edit
+     *  review host reads it (Chessable orients the board to the course colour).
+     *  Null while the board is mid-render. */
+    function trainerUserColor() {
+      const board = getReviewBoard();
+      if (!board) return null;
+      return boardBottomColor(
+        board.querySelector(SELECTORS.reviewSquare.replace('%s', 'a1')),
+        board.querySelector(SELECTORS.reviewSquare.replace('%s', 'h8')));
+    }
+
+    /**
+     * Every mainline position of the current variation, from the lesson plan:
+     * fens[i] is the position BEFORE ply i (the plan's own exact sourceFen) and
+     * fens[n] the position after the last ply. Null if the plan cannot carry
+     * us that far, which sends the whole scan into its retry.
+     */
+    function mainlineFens(plan) {
+      const fens = [];
+      for (const ply of plan.plies) {
+        if (!ply || typeof ply.sourceFen !== 'string') return null;
+        fens.push(ply.sourceFen);
+      }
+      const last = plan.plies[plan.plies.length - 1];
+      const pos = CloSan.parseFen(last.sourceFen);
+      const uci = pos && last.san ? sanToUci(pos, last.san) : null;
+      const final = uci ? fenAfterUci(last.sourceFen, uci) : null;
+      if (!final) return null;
+      fens.push(final);
+      return fens;
+    }
+
+    /** True when `fen`'s side to move and fullmove number are the ones a move
+     *  printed as "5." / "5..." would be played on. */
+    function fenMatchesNumber(fen, printed) {
+      const parts = String(fen).trim().split(/\s+/);
+      return parts[1] === (printed.black ? 'b' : 'w') && Number(parts[5]) === printed.num;
+    }
+
+    /**
+     * Plays `sans` from `fen` with CloSan, returning one entry per ply (SAN,
+     * UCI, mover colour, resulting FEN) or null the moment a SAN is not a legal
+     * move — which is exactly how a wrong anchor is rejected.
+     */
+    function simulate(fen, sans) {
+      let cur = fen;
+      const plies = [];
+      for (const san of sans) {
+        const pos = CloSan.parseFen(cur);
+        if (!pos) return null;
+        const uci = sanToUci(pos, san);
+        if (!uci) return null;
+        const next = fenAfterUci(cur, uci);
+        if (!next) return null;
+        plies.push({ san, uci, color: pos.side, fen: next });
+        cur = next;
+      }
+      return plies;
+    }
+
+    /**
+     * The move-quality annotation trailing a move element — "?", "??", "?!",
+     * "!", "!?", … — or ''. quickEditSanFromEl deliberately STRIPS these (the
+     * edit page's element ids carry no glyphs), so without reading them here a
+     * blunder an author wrote as "9.Be3??" would look exactly like a
+     * recommendation.
+     *
+     * Read as the trailing run of "!"/"?" characters, which is unambiguous:
+     * neither character ever appears inside SAN itself. Chessable normally
+     * renders the glyph inside the move span; the sibling check covers it being
+     * emitted just after the span instead, since missing one is the failure
+     * that matters (a blunder would get quizzed as a move to learn).
+     */
+    function moveAnnotation(el) {
+      const own = /([!?]+)\s*$/.exec(el.textContent || '');
+      if (own) return own[1];
+      const next = el.nextSibling;
+      if (!next) return '';
+      // Only loose text/markup right after the move, never the next move itself.
+      if (next.nodeType === 1 && next.matches(SELECTORS.reviewSubMoves)) return '';
+      const after = /^\s*([!?]+)/.exec(next.textContent || '');
+      return after ? after[1] : '';
+    }
+
+    /**
+     * True for an annotation that marks the move as a MISTAKE: "?", "??", "?!".
+     * Tested on the first character, which is what separates "?!" (dubious) from
+     * "!?" (interesting) — the latter is not a blunder and must stay quizzable,
+     * so a bare "contains a ?" test would be wrong.
+     */
+    const isBlunderAnnot = (annot) => Boolean(annot) && annot[0] === '?';
+
+    /** The key of the LINE a nested line was written inside: drop the trailing
+     *  "<move>.<line>" pair ("7.0.3.0" → "7.0"); '' for a top-level line. */
+    function parentKey(key) {
+      const parts = key.split('.');
+      return parts.length > 2 ? parts.slice(0, -2).join('.') : '';
+    }
+
+    /**
+     * One line group → a playable continuation, or null. Candidate anchors are
+     * tried in confidence order and the first that both matches the printed
+     * move number and simulates cleanly wins. The fallback pass (attach
+     * positions only, legality alone) covers a comment whose numbering we
+     * cannot parse; anything beyond that is a guess, so it fails instead.
+     */
+    function resolveLine(group, fens, resolved) {
+      const sans = [], annots = [];
+      for (const el of group.els) {
+        const san = quickEditSanFromEl(el);
+        if (!san) {
+          log('continuation: unreadable move in line', group.key, '— line skipped');
+          return null;
+        }
+        sans.push(san);
+        annots.push(moveAnnotation(el));
+      }
+      const printed = parseMoveNumber(group.els[0].textContent);
+      const attach = Number(group.key.split('.')[0]);
+
+      const attachFens = [];
+      if (Number.isInteger(attach)) {
+        if (fens[attach + 1]) attachFens.push(fens[attach + 1]); // after the attach ply
+        if (fens[attach]) attachFens.push(fens[attach]);         // …or instead of it
+      }
+      const parent = resolved.get(parentKey(group.key));
+      const parentFens = parent ? [parent.startFen, ...parent.plies.map((p) => p.fen)] : [];
+      const candidates = [...new Set([...attachFens, ...parentFens, ...fens])];
+
+      // The annotations ride along per ply: whether a line is worth quizzing at
+      // all is decided in scanContinuations, which needs each move's COLOUR, and
+      // that only exists once a candidate anchor has simulated.
+      const make = (startFen, plies) => ({
+        key: group.key,
+        startFen,
+        plies: plies.map((p, i) => ({ ...p, annot: annots[i] })),
+        label: sans.map((s, i) => s + annots[i]).join(' '),
+        // Continuing where the variation ENDED is a different proposition from
+        // branching off somewhere in the middle of it, and the user may want
+        // only the former — hence the chooser in openReview. Comparing FEN
+        // strings is exact here: both sides come out of the same `fens` array.
+        fromFinal: startFen === fens[fens.length - 1],
+      });
+
+      // Primary pass: the printed move number is the strongest signal we have,
+      // so with one in hand every candidate may be tried. Without one, only the
+      // two positions Chessable's own id points at are — legality alone over
+      // the whole game would happily accept a plausible transposition.
+      for (const fen of (printed ? candidates : attachFens)) {
+        if (printed && !fenMatchesNumber(fen, printed)) continue;
+        const plies = simulate(fen, sans);
+        if (plies) return make(fen, plies);
+      }
+      // Fallback: a number that fits no candidate (Chessable renumbering we
+      // have not seen). Attach positions only, legality alone.
+      if (printed) {
+        for (const fen of attachFens) {
+          const plies = simulate(fen, sans);
+          if (plies) {
+            log('continuation: line', group.key, 'anchored on its attach ply — printed number',
+              printed.num, 'fits no mainline position');
+            return make(fen, plies);
+          }
+        }
+      }
+      log('continuation: no position fits line', group.key, '(' + sans.join(' ') + ') — line skipped');
+      return null;
+    }
+
+    function retryScan(why) {
+      cr.scanning = false;
+      cr.scanTries++;
+      if (cr.scanTries <= 6) return; // the next tick tries again
+      log('continuation: giving up scanning this comment —', why || 'not ready');
+      cr.signature = domSignature(); // stop retrying until the DOM changes
+      cr.lines = [];
+      syncButton();
+    }
+
+    async function scanContinuations(signature) {
+      const oid = cr.oid;
+      const els = [...document.querySelectorAll(SELECTORS.reviewSubMoves)];
+      if (!els.length) {
+        cr.scanning = false;
+        cr.signature = signature;
+        cr.lines = [];
+        syncButton();
+        return;
+      }
+      const userColor = trainerUserColor();
+      if (!userColor) { retryScan('board orientation unreadable'); return; }
+
+      const plan = await readLessonLine();
+      if (!plan || plan.error || !Array.isArray(plan.plies) || !plan.plies.length) {
+        retryScan('lesson plan: ' + ((plan && plan.error) || 'empty'));
+        return;
+      }
+      // The trainer swaps the plan around a variation change; a plan for another
+      // variation would anchor every line on the wrong game.
+      if (plan.oid && oid && String(plan.oid) !== String(oid)) { retryScan('plan is for another variation'); return; }
+      if (readQuickEditOid() !== oid) { retryScan('variation changed mid-scan'); return; }
+
+      const fens = mainlineFens(plan);
+      if (!fens) { retryScan('mainline FENs unusable'); return; }
+
+      const groups = [];
+      const byKey = new Map();
+      for (const el of els) {
+        const id = el.id || '';
+        const cut = id.lastIndexOf('.');
+        if (cut <= 0) continue; // not the "<ply>.<line>.<move>" shape we know
+        const key = id.slice(0, cut);
+        let group = byKey.get(key);
+        if (!group) { group = { key, els: [] }; byKey.set(key, group); groups.push(group); }
+        group.els.push(el);
+      }
+
+      // Shallowest first, so a line genuinely written INSIDE another can anchor
+      // on its parent's positions; the output stays in DOM order.
+      const resolved = new Map();
+      const byDepth = groups.slice().sort((a, b) => a.key.split('.').length - b.key.split('.').length);
+      for (const group of byDepth) {
+        const line = resolveLine(group, fens, resolved);
+        if (line) resolved.set(group.key, line);
+      }
+      const lines = [];
+      for (const group of groups) {
+        const line = resolved.get(group.key);
+        if (!line) continue;
+        // The user answers their own colour only; a line that never reaches
+        // their move has nothing to quiz.
+        if (!line.plies.some((p) => p.color === userColor)) {
+          log('continuation: line', line.key, '(' + line.label + ') has no move for the user — skipped');
+          continue;
+        }
+        // Authors also use these lines to show what NOT to play, marking the
+        // move "?", "??" or "?!". Quizzing such a line would drill the blunder
+        // as if it were the repertoire, so the whole line is dropped. Only the
+        // USER's moves count: an annotated OPPONENT move is the premise of a
+        // line whose point is how to punish it, and stays quizzable.
+        const blunder = line.plies.find((p) => p.color === userColor && isBlunderAnnot(p.annot));
+        if (blunder) {
+          log('continuation: line', line.key, '(' + line.label + ') asks the user to play',
+            blunder.san + blunder.annot, '— skipped as a move to avoid');
+          continue;
+        }
+        lines.push(line);
+      }
+
+      cr.scanning = false;
+      cr.scanTries = 0;
+      cr.signature = signature;
+      cr.lines = lines;
+      cr.userColor = userColor;
+      if (lines.length) {
+        log('continuation: ' + lines.length + ' line(s) ready —',
+          lines.map((l) => l.label).join(' | '));
+      }
+      syncButton();
+    }
+
+    // --- piece SVGs cloned off Chessable's board ------------------------------
+
+    /**
+     * Caches one <svg> template per piece code from the live trainer board.
+     * Cloning their node (never innerHTML, never a vendored asset) is what
+     * makes our board look like theirs; the cache fills over the session, and
+     * a type that never appeared falls back to a Unicode glyph.
+     */
+    function harvestPieces() {
+      if (cr.pieceSvg.size >= 12) return; // every type seen; nothing left to learn
+      const board = getReviewBoard();
+      if (!board) return;
+      for (const el of board.querySelectorAll(SELECTORS.reviewPiece)) {
+        const code = el.getAttribute('data-piece');
+        if (!code || !/^[wb][PNBRQK]$/.test(code) || cr.pieceSvg.has(code)) continue;
+        const svg = el.querySelector('svg');
+        if (svg) cr.pieceSvg.set(code, svg.cloneNode(true));
+      }
+    }
+
+    const codeOf = (letter) => (letter === letter.toUpperCase() ? 'w' : 'b') + letter.toUpperCase();
+
+    function makePiece(letter) {
+      const el = document.createElement('div');
+      el.className = 'clo-cr-piece';
+      const code = codeOf(letter);
+      const tpl = cr.pieceSvg.get(code);
+      if (tpl) {
+        el.appendChild(tpl.cloneNode(true));
+      } else {
+        el.classList.add('clo-cr-piece--glyph'); // the CSS sizes text, not an svg
+        el.textContent = CR_GLYPH[code] || '?';
+      }
+      return el;
+    }
+
+    // --- our board -----------------------------------------------------------
+
+    /** Visual column/row of a board index for the current orientation. Piece
+     *  and square geometry are both percentage-based, so a resize needs no JS. */
+    function visualPos(idx) {
+      const file = idx & 7, rank = idx >> 3;
+      return cr.userColor === 'w'
+        ? { col: file, row: 7 - rank }
+        : { col: 7 - file, row: rank };
+    }
+
+    function placeAt(el, idx) {
+      const { col, row } = visualPos(idx);
+      el.style.transform = 'translate(' + col * 100 + '%, ' + row * 100 + '%)';
+    }
+
+    function buildGrid() {
+      const grid = cr.ui.grid;
+      while (grid.firstChild) grid.removeChild(grid.firstChild);
+      cr.squares.clear();
+      for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+          const file = cr.userColor === 'w' ? col : 7 - col;
+          const rank = cr.userColor === 'w' ? 7 - row : row;
+          const idx = rank * 8 + file;
+          const sq = document.createElement('div');
+          sq.className = 'clo-cr-sq' + ((file + rank) % 2 ? ' clo-cr-sq--light' : ' clo-cr-sq--dark');
+          sq.dataset.sq = String(idx);
+          grid.appendChild(sq);
+          cr.squares.set(idx, sq);
+        }
+      }
+      cr.orientation = cr.userColor;
+    }
+
+    /**
+     * Brings the piece layer in line with cr.pos. Called after every move, so
+     * the animation in applyMove only has to be right often enough to look
+     * good — this is what is actually authoritative.
+     */
+    function reconcilePieces() {
+      const board = cr.pos ? cr.pos.board : null;
+      if (!board) return;
+      for (const [idx, el] of [...cr.pieces]) {
+        const letter = board[idx];
+        if (!letter || el.dataset.code !== codeOf(letter)) {
+          el.remove();
+          cr.pieces.delete(idx);
+        }
+      }
+      for (let idx = 0; idx < 64; idx++) {
+        const letter = board[idx];
+        if (!letter) continue;
+        let el = cr.pieces.get(idx);
+        if (!el) {
+          el = makePiece(letter);
+          el.dataset.code = codeOf(letter);
+          cr.ui.layer.appendChild(el);
+          cr.pieces.set(idx, el);
+        }
+        placeAt(el, idx);
+      }
+    }
+
+    /** Square tints: last move, selection, legal targets, hint, right/wrong. */
+    function paint() {
+      const legal = cr.sel === null ? [] : legalFrom(cr.sel);
+      const targets = new Set(legal.map((m) => m.to));
+      const ply = currentPly();
+      for (const [idx, sq] of cr.squares) {
+        sq.classList.toggle('clo-cr-sq--last',
+          Boolean(cr.lastMove) && (idx === cr.lastMove.from || idx === cr.lastMove.to));
+        sq.classList.toggle('clo-cr-sq--sel', idx === cr.sel);
+        sq.classList.toggle('clo-cr-sq--target', targets.has(idx));
+        // Occupied target = capture, and gets their ring instead of their dot.
+        sq.classList.toggle('clo-cr-sq--capture',
+          targets.has(idx) && Boolean(cr.pos && cr.pos.board[idx]));
+        sq.classList.toggle('clo-cr-sq--hint',
+          Boolean(cr.hint && ply) && (idx === ply.mv.from || idx === ply.mv.to));
+        sq.classList.toggle('clo-cr-sq--ok', Boolean(cr.flash) && cr.flash.kind === 'ok' && idx === cr.flash.sq);
+        sq.classList.toggle('clo-cr-sq--bad', Boolean(cr.flash) && cr.flash.kind === 'bad' && idx === cr.flash.sq);
+      }
+    }
+
+    function flashSquare(idx, kind) {
+      clearTimeout(cr.flashTimer);
+      cr.flash = { sq: idx, kind };
+      paint();
+      cr.flashTimer = setTimeout(() => {
+        cr.flash = null;
+        if (cr.active) paint();
+      }, C.feedbackMs);
+    }
+
+    // --- quiz ----------------------------------------------------------------
+
+    /** The ply the user is being asked for (or the opponent's next), with its
+     *  resolved move — null once the line is done. */
+    function currentPly() {
+      if (!cr.line || !cr.pos) return null;
+      const ply = cr.line.plies[cr.plyIdx];
+      if (!ply) return null;
+      const mv = CloSan.uciToMove(cr.pos, ply.uci);
+      return mv ? { ...ply, mv } : null;
+    }
+
+    function legalFrom(from) {
+      if (!cr.pos) return [];
+      return CloSan.generateMoves(cr.pos).filter((m) => m.from === from);
+    }
+
+    function colorAt(idx) {
+      const letter = cr.pos && cr.pos.board[idx];
+      if (!letter) return null;
+      return letter === letter.toUpperCase() ? 'w' : 'b';
+    }
+
+    /** Applies a resolved ply to our position and animates it on our board. */
+    function applyMove(ply) {
+      const mv = ply.mv;
+      const moving = cr.pieces.get(mv.from);
+      const captured = cr.pieces.get(mv.to);
+      if (moving) {
+        // Best-effort glide; reconcilePieces below is what gets it right.
+        if (captured) { captured.remove(); cr.pieces.delete(mv.to); }
+        cr.pieces.delete(mv.from);
+        cr.pieces.set(mv.to, moving);
+        placeAt(moving, mv.to);
+      }
+      cr.pos = CloSan.makeMove(cr.pos, mv);
+      cr.lastMove = { from: mv.from, to: mv.to };
+      cr.sel = null;
+      setTimeout(() => { if (cr.active) { reconcilePieces(); paint(); } }, C.animMs);
+      paint();
+    }
+
+    function clearTimer() {
+      clearTimeout(cr.timer);
+      cr.timer = 0;
+    }
+
+    function opponentPauseMs() {
+      const preset = CONFIG.autoPlay.speeds[cr.speed] ||
+        CONFIG.autoPlay.speeds[CONFIG.autoPlay.defaultSpeed];
+      return Math.max(C.opponentMinMs, preset ? preset.move : C.opponentMinMs);
+    }
+
+    function startLine(idx) {
+      clearTimer();
+      cr.lineIdx = idx;
+      cr.line = cr.queue[idx];
+      if (!cr.line) { finish(); return; }
+      cr.pos = CloSan.parseFen(cr.line.startFen);
+      if (!cr.pos) {
+        warn('continuation: start position of line', cr.line.key, 'is unusable — skipping');
+        nextLine();
+        return;
+      }
+      cr.plyIdx = 0;
+      cr.attempts = 0;
+      cr.hint = false;
+      cr.sel = null;
+      cr.lastMove = null;
+      cr.flash = null;
+      cr.promo = null;
+      cr.drag = null;
+      cr.swallowClick = false;
+      hidePromo();
+      if (cr.orientation !== cr.userColor) buildGrid();
+      reconcilePieces();
+      paint();
+      syncUi();
+      step();
+    }
+
+    function nextLine() {
+      if (cr.lineIdx + 1 < cr.queue.length) startLine(cr.lineIdx + 1);
+      else finish();
+    }
+
+    /** Drives the line forward: auto-plays the opponent, stops on the user. */
+    function step() {
+      if (!cr.active || !cr.line) return;
+      if (cr.plyIdx >= cr.line.plies.length) {
+        cr.busy = true;
+        syncUi();
+        clearTimer();
+        cr.timer = setTimeout(() => {
+          cr.busy = false;
+          if (cr.active) nextLine();
+        }, C.lineDoneMs);
+        return;
+      }
+      const ply = currentPly();
+      if (!ply) {
+        warn('continuation: line', cr.line.key, 'went out of step at ply', cr.plyIdx, '— skipping');
+        nextLine();
+        return;
+      }
+      if (ply.color !== cr.userColor) {
+        cr.busy = true;
+        syncUi();
+        clearTimer();
+        cr.timer = setTimeout(() => {
+          cr.busy = false;
+          if (!cr.active) return;
+          const live = currentPly();
+          if (!live) { nextLine(); return; }
+          applyMove(live);
+          cr.plyIdx++;
+          step();
+        }, opponentPauseMs());
+        return;
+      }
+      cr.attempts = 0;
+      cr.hint = false;
+      syncUi();
+      paint();
+    }
+
+    function onSquare(idx) {
+      if (!cr.active || cr.busy || cr.promo) return;
+      const ply = currentPly();
+      if (!ply || ply.color !== cr.userColor) return;
+      const own = colorAt(idx) === cr.userColor;
+      if (cr.sel === null) {
+        if (own && legalFrom(idx).length) { cr.sel = idx; paint(); }
+        return;
+      }
+      if (idx === cr.sel) { cr.sel = null; paint(); return; }
+      const moves = legalFrom(cr.sel).filter((m) => m.to === idx);
+      if (!moves.length) {
+        cr.sel = own && legalFrom(idx).length ? idx : null;
+        paint();
+        return;
+      }
+      // A promotion reaches the same square four ways; ask which one.
+      if (moves.length > 1 && moves.every((m) => m.promo)) {
+        cr.promo = { from: cr.sel, to: idx, moves };
+        showPromo();
+        return;
+      }
+      tryMove(moves[0]);
+    }
+
+    // --- drag and drop -------------------------------------------------------
+    // Layered ON TOP of the click path, which is unchanged: pointerdown only
+    // ever picks a piece UP (which is also the selection a click would make),
+    // and everything else still goes through the delegated click handler. The
+    // one coupling is `cr.swallowClick`: a pointer sequence that did something
+    // itself — a completed drag, or the pick-up that doubles as a selection —
+    // must not have the click that follows it acted on a second time, or a
+    // click on the source square would immediately deselect it again.
+    //
+    // Squares under the pointer are resolved GEOMETRICALLY from the board rect,
+    // not from the event target: during a drag the pointer is captured by the
+    // grid, so every move/up event targets that one element.
+
+    function dragSquareAt(clientX, clientY) {
+      const rect = cr.ui.grid.getBoundingClientRect();
+      if (!rect.width) return null;
+      const cell = rect.width / 8;
+      const col = Math.floor((clientX - rect.left) / cell);
+      const row = Math.floor((clientY - rect.top) / cell);
+      if (col < 0 || col > 7 || row < 0 || row > 7) return null; // dropped off the board
+      const file = cr.userColor === 'w' ? col : 7 - col;
+      const rank = cr.userColor === 'w' ? 7 - row : row;
+      return rank * 8 + file;
+    }
+
+    /** Follows the pointer: px translate, so the piece sits under the cursor
+     *  rather than snapped to a square. Undone by placeAt on drop. */
+    function dragPieceTo(clientX, clientY) {
+      const rect = cr.ui.grid.getBoundingClientRect();
+      const cell = rect.width / 8;
+      const x = clientX - rect.left - cell / 2;
+      const y = clientY - rect.top - cell / 2;
+      cr.drag.piece.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
+    }
+
+    function onDragStart(e) {
+      // Cleared on EVERY pointerdown, before any bail-out: a click always
+      // follows one, so resetting here is what keeps the flag from going stale
+      // when a sequence ends without the click we expected (released far off
+      // the board, cancelled by the browser, …) and eating a later real click.
+      cr.swallowClick = false;
+      if (!cr.active || cr.busy || cr.promo || cr.drag) return;
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      const ply = currentPly();
+      if (!ply || ply.color !== cr.userColor) return;
+      const sqEl = e.target.closest('[data-sq]');
+      if (!sqEl) return;
+      const idx = Number(sqEl.dataset.sq);
+      // Only a piece of the user's colour that can actually move is draggable.
+      // Anything else is left to the click handler (it may be a drop target of
+      // an existing selection, which pointerdown must not disturb).
+      if (colorAt(idx) !== cr.userColor || !legalFrom(idx).length) return;
+      const piece = cr.pieces.get(idx);
+      if (!piece) return;
+
+      cr.drag = { idx, piece, startX: e.clientX, startY: e.clientY, moved: false };
+      // Picking the piece up IS the selection, so the click that follows this
+      // pointerdown has already been accounted for — UNLESS the square was
+      // already selected, where the press changed nothing and the click must
+      // still be allowed through to deselect it (the click path's own
+      // behaviour, which drag support must not quietly remove).
+      const wasSel = cr.sel;
+      cr.sel = idx;
+      cr.swallowClick = wasSel !== idx;
+      paint();
+      // Keeps the move/up events coming even when the pointer leaves the board.
+      try { cr.ui.grid.setPointerCapture(e.pointerId); } catch (err) { /* not fatal */ }
+      e.preventDefault(); // no text selection, no native image drag of the SVG
+    }
+
+    function onDragMove(e) {
+      if (!cr.drag) return;
+      if (!cr.drag.moved) {
+        const far = Math.abs(e.clientX - cr.drag.startX) > CONFIG.continuation.dragSlopPx ||
+          Math.abs(e.clientY - cr.drag.startY) > CONFIG.continuation.dragSlopPx;
+        if (!far) return; // still a click as far as anyone can tell
+        cr.drag.moved = true;
+        cr.drag.piece.classList.add('clo-cr-piece--drag');
+      }
+      dragPieceTo(e.clientX, e.clientY);
+    }
+
+    function onDragEnd(e) {
+      const drag = cr.drag;
+      if (!drag) return;
+      cr.drag = null;
+      try { cr.ui.grid.releasePointerCapture(e.pointerId); } catch (err) { /* already gone */ }
+      drag.piece.classList.remove('clo-cr-piece--drag');
+      if (!drag.moved) {
+        placeAt(drag.piece, drag.idx); // never left its square; nothing to undo
+        return;                        // a plain click: let the click path run
+      }
+      cr.swallowClick = true; // a real drag; its trailing click is not a selection
+      const target = dragSquareAt(e.clientX, e.clientY);
+      const moves = target === null ? [] : legalFrom(drag.idx).filter((m) => m.to === target);
+      if (!moves.length) {
+        // Illegal drop (or off the board): snap back and drop the selection,
+        // the same as clicking an empty square would.
+        cr.sel = null;
+        placeAt(drag.piece, drag.idx);
+        paint();
+        return;
+      }
+      if (moves.length > 1 && moves.every((m) => m.promo)) {
+        // The piece stays on the promotion square while the picker is open, so
+        // the choice is made where the move actually happened.
+        placeAt(drag.piece, drag.idx);
+        cr.promo = { from: drag.idx, to: target, moves };
+        showPromo();
+        return;
+      }
+      // A successful drop transitions from wherever the pointer left the piece
+      // to the target square, so applyMove's placeAt does the final travel.
+      tryMove(moves[0]);
+      if (cr.pieces.get(target) !== drag.piece) placeAt(drag.piece, drag.idx); // refused
+    }
+
+    function onDragCancel(e) {
+      const drag = cr.drag;
+      if (!drag) return;
+      cr.drag = null;
+      try { cr.ui.grid.releasePointerCapture(e.pointerId); } catch (err) { /* already gone */ }
+      drag.piece.classList.remove('clo-cr-piece--drag');
+      placeAt(drag.piece, drag.idx);
+    }
+
+    function tryMove(mv) {
+      const ply = currentPly();
+      if (!ply) return;
+      const uci = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
+      cr.sel = null;
+      if (uci === ply.uci) {
+        applyMove(ply);
+        cr.plyIdx++;
+        flashSquare(mv.to, 'ok');
+        step();
+        return;
+      }
+      // Nothing to undo: a refused move is never applied to our position.
+      cr.attempts++;
+      if (cr.attempts >= C.wrongHintAfter) cr.hint = true;
+      flashSquare(mv.to, 'bad');
+      syncUi();
+    }
+
+    // --- promotion picker ----------------------------------------------------
+
+    function showPromo() {
+      const picker = cr.ui.promo;
+      while (picker.firstChild) picker.removeChild(picker.firstChild);
+      for (const promo of ['q', 'r', 'b', 'n']) {
+        const mv = cr.promo.moves.find((m) => m.promo === promo);
+        if (!mv) continue;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'clo-cr-promo-btn';
+        btn.appendChild(makePiece(cr.userColor === 'w' ? promo.toUpperCase() : promo));
+        btn.title = 'Promote to ' + { q: 'queen', r: 'rook', b: 'bishop', n: 'knight' }[promo];
+        btn.addEventListener('click', () => { // no inline handlers
+          const chosen = cr.promo && cr.promo.moves.find((m) => m.promo === promo);
+          hidePromo();
+          if (chosen) tryMove(chosen);
+        });
+        picker.appendChild(btn);
+      }
+      picker.hidden = false;
+    }
+
+    function hidePromo() {
+      cr.promo = null;
+      if (cr.ui) cr.ui.promo.hidden = true;
+    }
+
+    // --- overlays ------------------------------------------------------------
+
+    function buildOverlays() {
+      for (const id of [CR_BOARD_ID, CR_PANEL_ID]) {
+        const stale = document.getElementById(id);
+        if (stale) stale.remove();
+      }
+
+      const boardEl = document.createElement('div');
+      boardEl.id = CR_BOARD_ID;
+      boardEl.className = 'clo-cr-board';
+      const grid = document.createElement('div');
+      grid.className = 'clo-cr-grid';
+      const layer = document.createElement('div');
+      layer.className = 'clo-cr-layer';
+      const promo = document.createElement('div');
+      promo.className = 'clo-cr-promo';
+      promo.hidden = true;
+      boardEl.append(grid, layer, promo);
+      grid.addEventListener('click', (e) => { // delegated: our own squares only
+        if (cr.swallowClick) { cr.swallowClick = false; return; }
+        const sq = e.target.closest('[data-sq]');
+        if (sq) onSquare(Number(sq.dataset.sq));
+      });
+      grid.addEventListener('pointerdown', onDragStart);
+      grid.addEventListener('pointermove', onDragMove);
+      grid.addEventListener('pointerup', onDragEnd);
+      grid.addEventListener('pointercancel', onDragCancel);
+
+      const panel = document.createElement('div');
+      panel.id = CR_PANEL_ID;
+      panel.className = 'clo-cr-panel';
+      const title = document.createElement('div');
+      title.className = 'clo-cr-title';
+      const prompt = document.createElement('div');
+      prompt.className = 'clo-cr-prompt';
+      const progress = document.createElement('div');
+      progress.className = 'clo-cr-progress';
+      const actions = document.createElement('div');
+      actions.className = 'clo-cr-actions';
+
+      const hint = document.createElement('button');
+      hint.type = 'button';
+      hint.className = 'clo-cr-btn';
+      hint.textContent = 'Hint';
+      hint.title = 'Show the move this line plays here';
+      hint.addEventListener('click', () => {
+        if (cr.busy) return;
+        cr.hint = true;
+        syncUi();
+        paint();
+      });
+
+      const skip = document.createElement('button');
+      skip.type = 'button';
+      skip.className = 'clo-cr-btn';
+      skip.textContent = 'Skip line';
+      skip.title = 'Give up on this continuation and go to the next one';
+      skip.addEventListener('click', () => { clearTimer(); cr.busy = false; nextLine(); });
+
+      const exit = document.createElement('button');
+      exit.type = 'button';
+      exit.className = 'clo-cr-btn clo-cr-btn--exit';
+      exit.textContent = 'Exit';
+      exit.title = 'Close the continuation review and give Chessable its board back';
+      exit.addEventListener('click', () => closeReview('exited'));
+
+      actions.append(hint, skip, exit);
+
+      // Scope picker, shown INSTEAD of the actions row when a variation has
+      // continuations both from its final position and from earlier in the line
+      // (openReview). With only one kind there is nothing to choose, and it
+      // never appears.
+      const chooser = document.createElement('div');
+      chooser.className = 'clo-cr-chooser';
+      chooser.hidden = true;
+
+      const chooseAll = document.createElement('button');
+      chooseAll.type = 'button';
+      chooseAll.className = 'clo-cr-btn clo-cr-btn--primary';
+      chooseAll.title = 'Every continuation this variation has, in the order they are written';
+      chooseAll.addEventListener('click', () => beginRun(cr.lines));
+
+      const chooseFinal = document.createElement('button');
+      chooseFinal.type = 'button';
+      chooseFinal.className = 'clo-cr-btn clo-cr-btn--primary';
+      chooseFinal.title = 'Only the lines that carry on from where this variation ended, ' +
+        'skipping the ones that branch off earlier';
+      chooseFinal.addEventListener('click', () => beginRun(cr.lines.filter((l) => l.fromFinal)));
+
+      const chooseCancel = document.createElement('button');
+      chooseCancel.type = 'button';
+      chooseCancel.className = 'clo-cr-btn clo-cr-btn--exit';
+      chooseCancel.textContent = 'Cancel';
+      chooseCancel.addEventListener('click', () => closeReview('cancelled at the picker'));
+
+      chooser.append(chooseAll, chooseFinal, chooseCancel);
+      panel.append(title, prompt, progress, chooser, actions);
+
+      document.body.append(boardEl, panel);
+      cr.boardEl = boardEl;
+      cr.panel = panel;
+      cr.ui = {
+        grid, layer, promo, title, prompt, progress, actions, hint, skip, exit,
+        chooser, chooseAll, chooseFinal,
+      };
+      cr.orientation = null; // the grid is built on the first startLine
+    }
+
+    /**
+     * Board overlay pinned on Chessable's board, panel over the comment column
+     * — absolute in DOCUMENT coordinates (viewport rect + scroll offset), the
+     * same scheme as every other widget here. With no comment column to cover
+     * (portrait layouts where it has not rendered) the panel parks below the
+     * board instead and sizes itself.
+     */
+    function positionOverlays() {
+      const board = getReviewBoard();
+      if (!board) return false;
+      const rect = board.getBoundingClientRect();
+      if (rect.width < C.minBoardPx) return false; // mid-render; keep the last good spot
+      const size = Math.min(rect.width, rect.height);
+      setInlinePx(cr.boardEl, {
+        left: rect.left + window.scrollX,
+        top: rect.top + window.scrollY,
+        width: size,
+        height: size,
+      });
+      const box = document.querySelector(SELECTORS.reviewCommentBox);
+      const br = box ? box.getBoundingClientRect() : null;
+      if (br && br.width > 120 && br.height > 120) {
+        setInlinePx(cr.panel, {
+          left: br.left + window.scrollX,
+          top: br.top + window.scrollY,
+          width: br.width,
+          height: br.height,
+        });
+      } else {
+        if (cr.panel.style.width) { cr.panel.style.width = ''; cr.panel.style.height = ''; }
+        setInlinePx(cr.panel, {
+          left: Math.max(8, rect.left) + window.scrollX,
+          top: rect.bottom + 8 + window.scrollY,
+        });
+      }
+      return true;
+    }
+
+    function syncUi() {
+      if (!cr.ui || !cr.line) return;
+      const total = cr.queue.length;
+      cr.ui.title.textContent = total > 1
+        ? 'Continuation ' + (cr.lineIdx + 1) + ' of ' + total
+        : 'Continuation';
+      const plies = cr.line.plies.length;
+      const done = Math.min(cr.plyIdx, plies);
+      cr.ui.progress.textContent = 'Move ' + Math.min(done + 1, plies) + ' of ' + plies;
+
+      const ply = currentPly();
+      let prompt;
+      if (cr.plyIdx >= plies) prompt = 'Line complete.';
+      else if (!ply || ply.color !== cr.userColor) prompt = '…';
+      else if (cr.hint) prompt = 'Play ' + ply.san;
+      else if (cr.attempts) prompt = 'Not that one — try again';
+      else prompt = (cr.userColor === 'w' ? 'White' : 'Black') + ' to play';
+      cr.ui.prompt.textContent = prompt;
+      cr.ui.prompt.className = 'clo-cr-prompt' +
+        (cr.plyIdx >= plies ? ' clo-cr-prompt--ok' : (cr.attempts && !cr.hint ? ' clo-cr-prompt--bad' : ''));
+      cr.ui.hint.disabled = cr.busy || !ply || ply.color !== cr.userColor || cr.hint;
+      cr.ui.skip.hidden = total < 2; // with one line "skip" and "exit" are the same button
+    }
+
+    function openReview() {
+      if (!cr.lines.length || cr.active) return;
+      const userColor = trainerUserColor();
+      if (userColor) cr.userColor = userColor;
+      if (!cr.userColor) { warn('continuation: board orientation unreadable — not opening'); return; }
+      if (!cr.boardEl || !cr.boardEl.isConnected) buildOverlays();
+      // Placed BEFORE it is shown: an overlay revealed at 0,0 because the board
+      // happened to be mid-render would flash in the page's top-left corner.
+      if (!positionOverlays()) { warn('continuation: board not measurable — not opening'); return; }
+      cr.active = true;
+      cr.panel.hidden = false;
+      syncButton();
+
+      // Two kinds of continuation, so the scope is the user's call: carrying on
+      // from where the variation ENDED is the ordinary case, while a line
+      // branching off earlier revisits a move already answered. With only one
+      // kind there is nothing to ask, and the quiz starts straight away.
+      const finals = cr.lines.filter((l) => l.fromFinal);
+      if (finals.length && finals.length < cr.lines.length) {
+        showChooser(finals.length);
+        return;
+      }
+      beginRun(cr.lines);
+    }
+
+    /** The scope picker. The board stays HIDDEN behind it: there is no single
+     *  position to preview yet, and Chessable's own board is no spoiler. */
+    function showChooser(finalCount) {
+      cr.choosing = true;
+      cr.boardEl.hidden = true;
+      cr.ui.actions.hidden = true;
+      cr.ui.chooser.hidden = false;
+      cr.ui.title.textContent = 'Continuations';
+      cr.ui.prompt.textContent = 'Review which lines?';
+      cr.ui.prompt.className = 'clo-cr-prompt';
+      const earlier = cr.lines.length - finalCount;
+      cr.ui.progress.textContent = finalCount + ' from the final position, ' +
+        earlier + ' from earlier in the variation';
+      cr.ui.chooseAll.textContent = 'All continuations (' + cr.lines.length + ')';
+      cr.ui.chooseFinal.textContent = 'Final continuations (' + finalCount + ')';
+    }
+
+    function beginRun(queue) {
+      if (!queue.length) { closeReview('nothing selected'); return; }
+      cr.choosing = false;
+      cr.queue = queue;
+      cr.ui.chooser.hidden = true;
+      cr.ui.actions.hidden = false;
+      cr.boardEl.hidden = false;
+      positionOverlays(); // the board was hidden while the picker was up
+      log('continuation review: started,', queue.length, 'of', cr.lines.length, 'line(s)');
+      startLine(0);
+    }
+
+    function finish() {
+      log('continuation review: all lines done');
+      closeReview(null);
+    }
+
+    function closeReview(why) {
+      clearTimer();
+      clearTimeout(cr.flashTimer);
+      const wasActive = cr.active;
+      cr.active = false;
+      cr.choosing = false;
+      cr.queue = [];
+      cr.line = null;
+      cr.pos = null;
+      cr.sel = null;
+      cr.flash = null;
+      cr.drag = null;
+      cr.swallowClick = false;
+      hidePromo();
+      if (cr.boardEl) cr.boardEl.hidden = true;
+      if (cr.panel) cr.panel.hidden = true;
+      if (wasActive && why) log('continuation review:', why);
+      syncButton();
+    }
+
+    // --- launcher on the overstudy widget ------------------------------------
+
+    function ensureCluster() {
+      const widget = document.getElementById(REVIEW_WIDGET_ID);
+      if (!widget) return false;
+      if (cr.cluster && cr.cluster.isConnected && cr.cluster.parentElement === widget) return true;
+      const stale = document.getElementById(CR_CLUSTER_ID);
+      if (stale) stale.remove();
+
+      const cluster = document.createElement('span');
+      cluster.id = CR_CLUSTER_ID;
+      cluster.className = 'clo-cr';
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'clo-cr-open';
+      button.addEventListener('click', openReview); // no inline handlers
+
+      cluster.appendChild(button);
+      widget.appendChild(cluster);
+      cr.cluster = cluster;
+      cr.button = button;
+      return true;
+    }
+
+    function syncButton() {
+      if (!ensureCluster()) return;
+      const show = !cr.active && cr.lines.length > 0;
+      cr.cluster.hidden = !show;
+      if (!show) return;
+      const n = cr.lines.length;
+      cr.button.textContent = n > 1 ? 'Review continuations (' + n + ')' : 'Review continuation';
+      cr.button.title = 'Play through the ' + (n > 1 ? n + ' continuation lines' : 'continuation line') +
+        ' this variation ends with: the opponent’s moves are played for you, ' +
+        'yours are asked for on our own board.';
+    }
+
+    function hideButton() {
+      if (cr.cluster) cr.cluster.hidden = true;
+    }
+
+    // --- watchdog ------------------------------------------------------------
+
+    function tick() {
+      if (!isTrainerPath()) {
+        if (cr.active) closeReview('left the trainer');
+        cr.lines = [];
+        cr.oid = null;
+        cr.signature = '';
+        hideButton();
+        return;
+      }
+      harvestPieces();
+      const oid = readQuickEditOid();
+      if (oid !== cr.oid) {
+        cr.oid = oid;
+        cr.lines = [];
+        cr.signature = '';
+        cr.scanTries = 0;
+        if (cr.active) closeReview('variation changed');
+      }
+      if (!reviewBrowseReady()) {
+        // An active quiz survives nothing here: the browse state going away
+        // means the trainer moved on underneath us.
+        if (cr.active) closeReview('left the browse state');
+        if (cr.lines.length) { cr.lines = []; cr.signature = ''; }
+        hideButton();
+        return;
+      }
+      if (cr.active) {
+        positionOverlays();
+        return;
+      }
+      const signature = domSignature();
+      if (!cr.scanning && signature !== cr.signature) {
+        // A DIFFERENT comment gets its own retry budget: the cap only exists to
+        // stop one unreadable state from being re-scanned every 500 ms forever.
+        if (signature !== cr.tryingSig) { cr.tryingSig = signature; cr.scanTries = 0; }
+        cr.scanning = true;
+        scanContinuations(signature);
+      }
+      syncButton();
+    }
+
+    // MoveTrainer2 binds single-key shortcuts ("n" = next variation, space, …)
+    // on document and does not care what has focus, so one stray keypress
+    // would tear the quiz down mid-line. Same discipline as the quick-edit
+    // popup, but these have to be DOCUMENT capture listeners: our overlays are
+    // rarely the focused element, so a bubble-phase listener on them would see
+    // nothing. Registered once, and inert unless a quiz is running.
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      document.addEventListener(type, (e) => {
+        if (!cr.active || e.ctrlKey || e.metaKey || e.altKey) return;
+        e.stopPropagation();
+        if (type === 'keydown' && e.key === 'Escape') closeReview('escaped');
+      }, true);
+    }
+
+    const pollTimer = setInterval(tick, C.pollMs);
+    window.addEventListener('pagehide', () => {
+      clearInterval(pollTimer);
+      closeReview(null);
+    });
+    window.addEventListener('resize', () => { if (cr.active) positionOverlays(); });
+    window.addEventListener('scroll', () => { if (cr.active) positionOverlays(); }, true);
+    tick();
+    log('continuation review active (top document)');
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -7727,6 +8982,7 @@
     initAltCheck();
     initMistakeLog();
     initRetryRunner();
+    initContinuationReview();
     initChapterSort();
   }
 

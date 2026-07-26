@@ -26,7 +26,9 @@ engine check of the refused move and one-click addition as an accepted
 alternative (section 15). Every move failed in a session is logged from the
 trainer's own per-move quiz record (section 16) and a "Retry" button walks
 those variations again as overstudy, with auto-play covering the moves already
-answered (section 17).
+answered (section 17). A completed variation that ends with clickable
+subvariation lines offers "Review continuation(s)", which quizzes those lines on
+OUR OWN board overlaid on Chessable's — theirs is navigation-only (section 18).
 Currently working (v0.18.x).
 
 ## Structure
@@ -723,6 +725,84 @@ Currently working (v0.18.x).
   reload (`loadRun`); `rr.waits` is deliberately document-local for that
   reason. Layer 2 of the design (a drill on our own board, and the
   `/difficult-moves` JSON endpoint) is NOT implemented.
+- Continuation review (section 18; design + ground truth in
+  DESIGN-continuation-review.md): quizzes the clickable subvariation lines a
+  completed variation ends with — opponent plies auto-played, the USER'S OWN
+  COLOUR asked for, lines run in sequence. THE fact everything else follows
+  from: Chessable's browse board is NAVIGATION-ONLY. Ground-truthed with the
+  extension's own `pressSquare` recipe — a legal move changes no piece, on any
+  square pair — so the quiz cannot run there, and moving their React-rendered
+  `[data-piece]` divs is out of the question. Two body-mounted overlays instead,
+  absolute in DOCUMENT coordinates (never `fixed`, same reasoning as section
+  11): OUR board pinned on theirs (64 of our square divs; pieces are their live
+  `<svg>` nodes CLONED — `cloneNode(true)`, never innerHTML, no vendored art —
+  cached per code in `cr.pieceSvg` with a Unicode glyph fallback; geometry is
+  ALL percentages, squares in an 8-col grid and pieces at 12.5% translated in
+  multiples of 100% of their own size, so a resize needs no JS), and OUR panel
+  COVERING `SELECTORS.reviewCommentBox` — not decoration: the lines being
+  quizzed are printed there, so covering them IS the quiz. Nothing of ours ever
+  enters Chessable's DOM.
+  Lines come from `SELECTORS.reviewSubMoves` grouped by the id prefix up to the
+  last dot (`7.0.0`…`7.0.3` = one line). But THE ID NESTING IS NOT SEMANTIC:
+  ground-truthed live, `7.0.3.0.*` looked nested under the first line's last
+  move yet its board showed it branching from the MAINLINE like the first line.
+  The id therefore yields the grouping and the mainline attach ply, NEVER the
+  branch position. That comes from the LINE ORACLE (`readLessonLine()` still
+  answers in the browse state — verified): candidate anchors are the position
+  AFTER the attach ply, then instead of it, then the parent line's positions,
+  then the rest of the mainline; a candidate is accepted only when the first
+  move's printed number+colour (`parseMoveNumber`) matches its side/fullmove AND
+  every SAN resolves legally (`sanToUci` + `fenAfterUci`). Lines resolve
+  shallowest-first so a genuinely nested line can anchor inside its parent. The
+  ONLY looser path is a fallback over the two attach positions with legality
+  alone, for numbering we have not seen — and it logs when it fires. A line that
+  fits nowhere, or has no user-colour ply, is DROPPED with one console line;
+  never guessed at. Also dropped: a line whose USER-colour move is annotated
+  "?", "??" or "?!" — authors use these lines to show what NOT to play, and
+  quizzing one would drill the blunder as repertoire. `quickEditSanFromEl`
+  STRIPS eval glyphs (the edit page's ids carry none), so `moveAnnotation()`
+  reads them separately as the trailing run of `!`/`?` on the span (never inside
+  SAN, so unambiguous), with the next sibling as a fallback in case Chessable
+  emits the glyph outside the span. `isBlunderAnnot` tests the FIRST character —
+  that is what separates "?!" (drop) from "!?" (keep), so never use a "contains
+  a ?" test. An annotated OPPONENT move is the PREMISE of a line about punishing
+  it and stays quizzable. Verified end to end: both lines of the test comment
+  reproduced Chessable's own board square for square.
+  SCOPE PICKER: a line's `fromFinal` flag is `startFen === fens[fens.length-1]`
+  (string compare is exact — both sides come from the same `fens` array). When a
+  variation has BOTH kinds, pressing the launcher shows "All continuations (n)" /
+  "Final continuations (m)" / Cancel instead of starting: continuing from where
+  the variation ended is the ordinary case, while an earlier branch revisits a
+  move already answered. Only ONE kind ⇒ no picker, straight into the quiz.
+  `cr.lines` is everything DISCOVERED (drives the launcher label and the picker
+  counts); `cr.queue` is what the current run plays — `startLine`/`nextLine`/
+  `syncUi` all index the queue, never `lines`. The board stays HIDDEN behind the
+  picker: there is no single position to preview, and `syncUi` early-returns on
+  `!cr.line` so the picker's text is not overwritten.
+  Input is click-then-click AND drag-and-drop. The drag layer sits ON TOP of the
+  click path, which is unchanged: `pointerdown` only ever picks a piece up (the
+  same selection a click makes), the pointer is CAPTURED on the grid so the drop
+  square is resolved GEOMETRICALLY (every captured move/up event targets the grid,
+  not a square), and `cr.swallowClick` stops the trailing click being acted on
+  twice. That flag is cleared on EVERY pointerdown before any bail-out — a
+  sequence ending without the expected click would otherwise eat a later real
+  one — and is deliberately NOT set when the press landed on the
+  already-selected square, so clicking a selected piece still deselects it.
+  Under `dragSlopPx` travel a press stays a click. `touch-action: none` on the
+  board (not `manipulation`) keeps a finger drag from scrolling the page.
+  Legal-target markers are COPIED from Chessable's live rules rather than
+  approximated (33% dot at effective alpha .21; their radial-gradient ring on a
+  capture) — the square colour is ours on purpose, the affordances are theirs.
+  A refused move needs NO rollback — our position only ever advances on the
+  correct move. Two misses spell the answer out (`wrongHintAfter`). Keys are
+  swallowed on `document` in CAPTURE phase while active (not bubble like the qe
+  popup): our overlays are rarely focused, and MoveTrainer2's single-key
+  shortcuts ("n" = next variation) ignore focus, so one keypress would end the
+  quiz. The review panel stands down through the `continuationActive` bridge —
+  its FEN is read off the board we are covering. Auto-play and the alt check are
+  inert by construction (they watch Chessable's board, which we never touch);
+  nothing is recorded as proven and nothing is rescheduled — this is practice,
+  not review.
 
 ## Verification (no automated tests)
 
