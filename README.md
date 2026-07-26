@@ -717,9 +717,10 @@ message hub: content scripts request analysis (`clo-engine-analyze`), the
 offscreen engine streams throttled updates back, and the worker relays them to
 the requesting tab/frame (offscreen documents cannot message content scripts
 directly). Search sizing comes from the `PROFILES` table at the top of
-`engine/engine.js`: both profiles run `go depth 25` (self-terminating, CPUs
-idle after) — the desktop profile with the full build at 4 threads / 64 MB
-hash, the mobile profile with the lite build at 2 threads / 16 MB hash
+`engine/engine.js`: both profiles self-terminate at a fixed depth (CPUs idle
+after) — the desktop profile runs `go depth 30` with the full build at
+4 threads / 64 MB hash, the mobile profile `go depth 25` with the lite build
+at 2 threads / 16 MB hash
 (MultiPV 3 in both; a profile's `movetime` can additionally cap the search
 wall-clock, currently unused). Scores are always shown from White's
 perspective.

@@ -30,7 +30,7 @@ const warn = (...a) => console.warn(LOG_PREFIX, ...a);
 // and need SharedArrayBuffer; engine/vendor/ files are downloaded manually
 // per README.
 const PROFILES = {
-  desktop: { worker: 'vendor/stockfish-18.js',      threads: 4, hash: 64, depth: 25, movetime: 0 },
+  desktop: { worker: 'vendor/stockfish-18.js',      threads: 4, hash: 64, depth: 30, movetime: 0 },
   mobile:  { worker: 'vendor/stockfish-18-lite.js', threads: 2, hash: 16, depth: 25, movetime: 0 },
 };
 const MULTIPV = 3;

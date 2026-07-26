@@ -58,7 +58,8 @@ Currently working (v0.18.x).
 - `engine/` — optional local Stockfish (panel-header "Engine" toggle, off by
   default). `offscreen.html` + `engine.js` (UCI controller; `PROFILES` table
   at top: desktop = full build 4 threads/64 MB, mobile = lite build
-  2 threads/16 MB, both depth 25, MultiPV 3, no movetime cap) + `san.js`
+  2 threads/16 MB, depth 30 desktop / 25 mobile, MultiPV 3, no movetime
+  cap) + `san.js`
   (pure UCI→SAN converter, node-testable, no `chrome.*`). The profile is
   computed in the CONTENT script (`engineProfile()`; the offscreen doc can't
   see the tab's device) and rides on every `clo-engine-analyze`; Auto
