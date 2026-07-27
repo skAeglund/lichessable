@@ -660,7 +660,10 @@ enough not to run, the ↻ button is the only way back.
   session reads as growth from zero and re-arms its entry while keeping the
   mode it was first logged in. Mistakes made *during* an overstudy are logged
   under a mode the count ignores, or a retry pass would keep refilling its own
-  queue. Writes merge rather than overwrite, since every tab shares that
+  queue — "during an overstudy" means a `/learn/` session, not Chessable's own
+  per-move `startedAsOverstudy` flag, which is also set for a not-yet-due card
+  inside an ordinary `/practice/` review and used to hide those failures from
+  the list. Writes merge rather than overwrite, since every tab shares that
   storage area. One accepted race: a variation completed and skipped inside one
   sampling interval can lose its last ply's record, because the plan swaps to
   the next variation ~90 ms before its first move animates.

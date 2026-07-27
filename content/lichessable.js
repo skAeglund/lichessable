@@ -6877,12 +6877,19 @@
         const existing = ml.log[key];
         // An overstudy run is the retry pass itself (or a manual one): its own
         // failures must not keep refilling the queue, so they are logged under
-        // a mode the count ignores — unless the move is ALREADY in the log
-        // from a review/learn session, in which case that entry simply goes
-        // back into the queue below.
-        const mode = ply.startedAsOverstudy ? 'overstudy'
-          : (sample.studyMode ||
-             (location.pathname.startsWith(CONFIG.review.learnPrefix) ? 'learn' : 'review'));
+        // a mode the count ignores. What marks such a run is the ROUTE, NOT
+        // Chessable's per-ply `startedAsOverstudy`: that flag is also true for
+        // a variation Chessable itself treats as overstudy INSIDE an ordinary
+        // /practice/ review session (a card that was not due, typically), and
+        // trusting it filed genuine review mistakes under 'overstudy' — which
+        // silently kept them out of the retry queue for the rest of the
+        // session. The runner only ever drives /learn/ (section 17 refuses to
+        // count being on the right variation inside a /practice/ session as
+        // arrival, since driving that would reschedule real cards), so a
+        // /practice/ failure is never one of its own.
+        const inLearn = location.pathname.startsWith(CONFIG.review.learnPrefix);
+        const mode = !inLearn ? 'review'
+          : (ply.startedAsOverstudy ? 'overstudy' : (sample.studyMode || 'learn'));
         const entry = {
           oid: sample.oid,
           lid: meta.lid || (existing && existing.lid) || '',
@@ -6893,7 +6900,14 @@
           title: meta.title || sample.variationName || (existing && existing.title) || '',
           wrong: attempts.slice(-C.maxWrongKept),
           fails: attempts.length,
-          mode: existing ? existing.mode : mode,
+          // An entry keeps the mode it was FIRST seen in — a move failed in
+          // review and then failed again during its own retry belongs in the
+          // review list, not the overstudy one. The one upgrade allowed is the
+          // other direction: a move failed during an overstudy and then failed
+          // again in a real session is a genuine mistake of that session (and
+          // this heals entries mislabelled by an earlier tab of the same
+          // browser session, since the log outlives a page load).
+          mode: existing ? (existing.mode === 'overstudy' ? mode : existing.mode) : mode,
           ts: now,
           retried: false,
         };

@@ -678,7 +678,17 @@ Currently working (v0.18.x).
   THIS document already logged (`ml.seen`), and an entry keeps the `mode` it
   was FIRST seen in: overstudy-mode entries are excluded from the count (else
   the retry pass refills its own queue), while a move failed again during its
-  retry keeps mode 'review' and merely gets `retried: false` again. Writes
+  retry keeps mode 'review' and merely gets `retried: false` again — the sole
+  upgrade is 'overstudy' → the current mode, which is also what heals an entry
+  another tab mislabelled. What makes a run "overstudy" is the ROUTE, NOT
+  Chessable's per-ply `startedAsOverstudy` (v0.35.1): that flag is true for a
+  variation Chessable itself counts as overstudy inside an ORDINARY /practice/
+  review session too — a card that was not due — so trusting it filed real
+  review mistakes under 'overstudy' and hid them from Retry for the session.
+  A /practice/ ply is therefore always 'review'; only in /learn/ does
+  `startedAsOverstudy` decide. Safe because the runner only ever drives
+  /learn/ (it refuses to work inside a /practice/ session — that would
+  reschedule real cards). Writes
   MERGE (`mergeEntry`) — every tab shares that storage area, and a background
   overstudy tab used to be able to overwrite the review tab's log.
   The runner's queue is one item per VARIATION (target = the LAST failed move
