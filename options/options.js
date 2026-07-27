@@ -6,6 +6,9 @@
 
 const TOKEN_KEY = 'lichessToken'; // must match background.js and content/lichessable.js
 const BUILD_KEY = 'cloEngineBuild'; // must match CONFIG.engine.buildKey in content/lichessable.js
+// must match CONFIG.continuation.headsUpKey in content/lichessable.js. Opt-OUT:
+// absent means ON, so only an explicit false is ever stored as "off".
+const HEADS_UP_KEY = 'cloLineHeadsUp';
 const $ = (id) => document.getElementById(id);
 
 // NOTE: there is deliberately no reload hook on this page. An options page
@@ -22,11 +25,21 @@ function setStatus(text, isError) {
 
 async function init() {
   $('loadedVersion').textContent = chrome.runtime.getManifest().version;
-  const stored = await chrome.storage.local.get([TOKEN_KEY, BUILD_KEY]);
+  const stored = await chrome.storage.local.get([TOKEN_KEY, BUILD_KEY, HEADS_UP_KEY]);
   if (stored[TOKEN_KEY]) $('token').value = stored[TOKEN_KEY];
   const build = stored[BUILD_KEY];
   $('engineBuild').value = build === 'full' || build === 'lite' ? build : 'auto';
+  $('headsUp').checked = stored[HEADS_UP_KEY] !== false;
 }
+
+$('headsUp').addEventListener('change', async () => {
+  // Saved immediately; the content script's storage listener picks it up in
+  // every open trainer tab, no reload needed.
+  await chrome.storage.local.set({ [HEADS_UP_KEY]: $('headsUp').checked });
+  setStatus($('headsUp').checked
+    ? 'Clickable-line heads-up on.'
+    : 'Clickable-line heads-up off.');
+});
 
 $('engineBuild').addEventListener('change', async () => {
   // Saved immediately; the content script's storage listener restarts any

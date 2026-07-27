@@ -141,6 +141,20 @@
         isKey: move.isKey === true,
         startedAsOverstudy: move.startedAsOverstudy === true,
         progress: trimProgress(move.progress),
+        // --- mid-quiz heads-up extras (section 18b). Also OPTIONAL. The
+        // comment is a JSON STRING of Chessable's own making, carrying the
+        // exact FENs it hangs between plus the clickable line structure:
+        //   { before, after, data: [ { key:'V', val:[ {key:'S', val:'5.Nb3'},
+        //     …, {key:'C', val:'<br/>'}, {key:'V', val:[…]} ] } ] }
+        // 'V' is a line, 'S' one of its clickable moves, 'C' prose. This is
+        // the ONLY source for those lines while a variation is being played:
+        // ground-truthed 2026-07-27 that a /practice/ quiz renders NO
+        // commentMove/commentSubMove/commentScrollContainer at all — the
+        // comment column shows "Quiz — Black to play!" and nothing else, so
+        // the DOM the browse-state scanner reads simply does not exist yet.
+        // Passed through verbatim; parsing belongs in the isolated world.
+        comment: typeof move.comment === 'string' ? move.comment : null,
+        commentBefore: typeof move.comment_before === 'string' ? move.comment_before : null,
       });
     }
     // The plan belongs to whichever variation the trainer is currently on;
@@ -157,6 +171,16 @@
       // also carry startedAsOverstudy).
       studyMode: typeof ctx.lessonStudyMode === 'string' ? ctx.lessonStudyMode : null,
       variationName: typeof plan[0].variationName === 'string' ? plan[0].variationName : null,
+      // The position the trainer itself considers current — the mid-quiz
+      // heads-up's ply clock (section 18b). Chessable's own value, so it is
+      // exact and, crucially, TRUSTWORTHY: reading the placement off the board
+      // DOM is not. Ground-truthed 2026-07-27 that the board can hold a stale
+      // duplicate piece (a knight on b8 AND c6 after a rolled-back wrong
+      // answer) for far longer than an animation, which no "one king per side"
+      // check catches — the derived placement then matches no plan position at
+      // all and a clock built on it simply stops. Optional, like everything
+      // else added for one consumer.
+      fen: typeof ctx.fen === 'string' ? ctx.fen : null,
     };
   }
 

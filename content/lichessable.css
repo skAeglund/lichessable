@@ -1546,6 +1546,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cr-panel[hidden],
 .clo-cr-actions[hidden],
 .clo-cr-chooser[hidden],
+.clo-cr-heads[hidden],
+.clo-cr-heads__note[hidden],
 .clo-cr[hidden] {
   display: none;
 }
@@ -1690,6 +1692,29 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cr {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
+}
+
+/* "Review queued lines" — the one call to action after a variation ends, so it
+   is filled rather than outlined and sits ahead of the plain launcher. Queued
+   lines are deliberately not started on their own (section 18b), which only
+   works if this is impossible to miss. */
+.clo-cr-queue {
+  border: 1px solid #629924;
+  background: #629924;
+  color: #fff;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clo-cr-queue:hover {
+  background: #6fae2a;
+  border-color: #6fae2a;
 }
 
 .clo-cr-open {
@@ -1707,6 +1732,132 @@ html.clo-injecting .legal-square-capture-mt2 {
   background: rgba(98, 153, 36, 0.25);
   color: #fff;
 }
+
+/* --- mid-quiz heads-up (section 18b) ----------------------------------------
+   "The opponent can also respond with…", raised while the user is still on the
+   position a clickable line branches from. Absolute in DOCUMENT coordinates
+   like every other widget here (positionHeadsUp), so it scrolls with the page
+   instead of chasing it. Same palette as the quiz panel — it is the same
+   feature, met earlier. */
+.clo-cr-heads {
+  position: absolute;
+  z-index: 100000;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid #1b1a17;
+  border-radius: 4px;
+  background: #262421;
+  color: #bababa;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.clo-cr-heads__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.clo-cr-heads__title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8a8a8a;
+  margin-right: auto; /* pushes the two buttons to the right edge */
+}
+
+/* Turns the whole feature off from inside the session. Quiet until armed —
+   it is a destructive-ish control (the options page is the only way back), so
+   it takes two clicks, like auto-play's "Clear". */
+.clo-cr-heads__off {
+  border: 1px solid #3d3a36;
+  background: transparent;
+  color: #8a8a8a;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clo-cr-heads__off:hover {
+  border-color: #5a5652;
+  color: #e8e8e8;
+}
+
+.clo-cr-heads__off--armed {
+  border-color: #a04a44;
+  color: #e08a8a;
+}
+
+.clo-cr-heads__x {
+  border: 0;
+  background: transparent;
+  color: #8a8a8a;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.clo-cr-heads__x:hover { color: #e8e8e8; }
+
+/* Wraps rather than overflowing: the mini board has a fixed pixel size, so on a
+   narrow phone the text column drops below it instead of pushing it off. */
+.clo-cr-heads__body {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.clo-cr-heads__lead {
+  color: #8a8a8a;
+  margin-top: -2px;
+}
+
+.clo-cr-heads__moves {
+  min-width: 0; /* a long SAN wraps instead of stretching the panel */
+  flex: 1;
+}
+
+/* Only the branching move is ever printed here — the rest of the line is what
+   the review asks for, so it stays unsaid. */
+.clo-cr-heads__move {
+  color: #a5c96a;
+  font-weight: 600;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.clo-cr-heads__arm { align-self: flex-start; }
+
+.clo-cr-heads__note {
+  color: #a5c96a;
+  font-size: 12px;
+}
+
+/* The static preview board. Reuses the quiz board's grid, pieces and arrows
+   wholesale — only the size (set inline from CONFIG.continuation.headsUpMiniPx)
+   and the fact that nothing on it is clickable are different. */
+.clo-cr-mini {
+  position: relative;
+  flex: none;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #ebecd0;
+}
+
+.clo-cr-mini .clo-cr-sq { cursor: default; }
+.clo-cr-mini .clo-cr-piece { transition: none; }
+/* The glyph fallback is sized for the full-size board; scale it to this one. */
+.clo-cr-mini .clo-cr-piece--glyph { font-size: 18px; }
 
 /* --- touch-sized UI (html.clo-touch) ----------------------------------------
    Set by applyTouchUiClass() in lichessable.js on the <html> of whichever
@@ -1809,6 +1960,7 @@ html.clo-touch .clo-ap-toggle,
 html.clo-touch .clo-ap-clear,
 html.clo-touch .clo-chapter-btn,
 html.clo-touch .clo-cr-open,
+html.clo-touch .clo-cr-queue,
 html.clo-touch .clo-cr-btn,
 html.clo-touch .clo-qe-save {
   font-size: 16px;
@@ -1827,8 +1979,26 @@ html.clo-touch .clo-cr-prompt {
 }
 
 html.clo-touch .clo-cr-title,
-html.clo-touch .clo-cr-progress {
+html.clo-touch .clo-cr-progress,
+html.clo-touch .clo-cr-heads__title,
+html.clo-touch .clo-cr-heads__note {
   font-size: 14px;
+}
+
+/* The heads-up is read, not played on — type and the close target only. */
+html.clo-touch .clo-cr-heads,
+html.clo-touch .clo-cr-heads__move {
+  font-size: 16px;
+}
+
+html.clo-touch .clo-cr-heads__x {
+  font-size: 24px;
+  padding: 4px 8px;
+}
+
+html.clo-touch .clo-cr-heads__off {
+  font-size: 14px;
+  padding: 6px 12px;
 }
 
 html.clo-touch .clo-cr-promo-btn {

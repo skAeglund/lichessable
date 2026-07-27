@@ -260,6 +260,50 @@ line anyone can play through. This is practice only — nothing is rescheduled, 
 nothing is recorded as proven for auto-play. See
 `DESIGN-continuation-review.md`.
 
+**Meeting a line where it starts.** The button above only appears once the
+variation is over, by which point you have long left the position each line
+branches off. So while you are still playing, the moment Chessable prints a
+comment offering the opponent an alternative, a small panel appears next to the
+board: **The opponent can also respond with:**, the branch position on a mini
+board with an arrow for that move, and **Review on variation end**. Press it and
+the line is queued. Ignore it and it goes away on its own the moment you play
+your next move; **×** dismisses it for that position, and the end-of-variation
+button still offers everything as before.
+
+The same panel appears once more when the variation **ends**, for the lines that
+carry on from the final position — those branch exactly where the variation
+stops, so there is no earlier moment at which to show them. There the button
+reads **Add to review queue**, and because the variation is already over, a
+continuation of your *own* colour is offered too (there is nothing left to give
+away).
+
+Nothing starts on its own. When anything is queued, a filled **Review queued
+lines (n)** button appears once the variation is over — being dropped into a quiz
+you did not ask for is jarring, and you need a moment to add the final
+continuations to the queue first. Press it when you are ready. While it is up it
+*replaces* **Review clickable(s)**: having picked lines by hand you have already
+said which ones you want, so the offer to play all of them is just noise. It
+comes back as soon as the queue is played out, or on the next variation.
+
+Only the **branching move** is printed — never the rest of the line. Half of it
+is your own moves, and that is precisely what the review is going to ask you
+for.
+
+Mid-variation only the opponent's alternatives are raised, never one of yours: a
+line starting with a move of *your* colour branches where the trainer is about to
+ask *you* for a move, so showing it would hand you the answer. (At the final
+position that no longer applies, hence the exception above.) Lines already in your course,
+lines marked as blunders and lines with two answers are left out here for the
+same reasons as above, and a line whose first move simply transposes back into
+the variation is not an alternative at all.
+
+This can get noisy if you never use it, so it is a setting: **Point out
+clickable lines while playing a variation** on the extension's options page, on
+by default. The panel also carries its own **Turn off** — the same setting,
+reachable in the moment it is annoying you rather than in another tab. It takes
+two clicks (the options page is the only way back), and turning it off changes
+nothing about the end-of-variation button.
+
 On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
 extension adds a **Sort by popularity** button, which reorders the whole chapter to
 follow the shape of the move tree: lines that share an opening sequence end up
@@ -710,7 +754,13 @@ enough not to run, the ↻ button is the only way back.
   percentage geometry so a resize needs no JS) and our panel covering the comment
   column, which is not decoration but the whole quiz: the lines are printed
   there. The lines come from the `commentSubMove` spans, grouped by the id prefix
-  (`7.0.0` … `7.0.3`), but the **id nesting is not semantic** — ground-truthed
+  (`7.0.0` … `7.0.3`) **scoped by the attach ply** — the ids alone are not
+  unique, because every comment block restarts the numbering, so a variation
+  with three commented moves prints `0.0.0`, `0.0.1` three times over. Grouping
+  on the id alone welded three separate lines into one 8-move line that fitted
+  nowhere and dropped the lot, which broke this button for any variation with
+  more than one commented move (found and fixed while debugging the heads-up).
+  The **id nesting is not semantic** either — ground-truthed
   live, a second line came out nested under the first line's last move while
   branching from the mainline like the first. So the id yields the grouping and
   the mainline attach ply only; the branch position is derived by trying the
@@ -726,6 +776,56 @@ enough not to run, the ↻ button is the only way back.
   on `document` in capture phase — MoveTrainer2's single-key shortcuts ("n" =
   next variation) ignore focus and one keypress would end the quiz. A refused
   move needs no rollback: our position only advances on the right one.
+- **Mid-quiz heads-up** — section 18b, the second way into the same review. It
+  runs in the state the launcher cannot: outside the browse gates, while the
+  quiz is live. **Its lines come from the lesson plan, not the DOM** —
+  ground-truthed by playing a variation through with a MutationObserver
+  watching, a quiz renders no `commentMove`, no `commentSubMove` and not even a
+  `commentScrollContainer`; the comment column says "Quiz — Black to play!" and
+  nothing else, and everything the browse scanner reads is created only once the
+  variation completes. Each ply's `comment` is a JSON string the plan already
+  carries (`{before, after, data:[{key:'V', val:[{key:'S', val:'5.Nb3'}, …]}]}`
+  — `V` a line, `S` a clickable move, `C` prose, a `V` inside a `V` the same
+  nesting the DOM ids spell out), so this gives the grouping, the nesting, the
+  branch index *and* the exact positions the comment hangs between, which the
+  DOM never had. Anchoring is the same discipline as the browse scan: `after`
+  first, then `before`, accepted only when every printed move number matches and
+  every SAN is legal. Three rules keep it honest. Only lines whose **first move
+  is the opponent's** are raised — a line starting with a move of the user's
+  colour branches where the trainer is about to ask them for one, so it would be
+  a spoiler (and it is why the wording is "the opponent can also respond with")
+  — except at the **final** position, where the variation is over and there is
+  nothing left to give away, so the panel runs in the browse state too and
+  offers continuations of either colour (`startPly < finalPly` is the whole
+  test). Only lines anchored on a **mainline** position are raised, since a line
+  anchored inside another comment line branches from a position the user never
+  plays through. And the clock is the plan's own `fen` located in its
+  `sourceFen`s — **never** the board, which can hold a stale duplicate piece
+  (seen live: a knight on b8 *and* c6 after a rolled-back wrong answer) long
+  after any animation, defeating the one-king-per-side check and stopping the
+  clock dead. A line branching at ply *k* goes up when the trainer reaches ply
+  *k* and comes down at *k+2*: the opponent's reply leaves it standing, the
+  user's own next move takes it away. The mini board reuses the quiz board's
+  grid, cloned piece SVGs and arrow shapes wholesale (`fillGrid`, `makePiece`,
+  `shapeArrow`), so the two can never drift apart. **The queue holds the
+  resolved lines themselves**, and `openArmed` hands those objects straight to
+  `beginRun` — driven by the **Review queued lines** button, never by the tick,
+  so nothing starts on its own and the final continuations can be added first;
+  `beginRun` then clears the queue whichever way the run began. It
+  used to store only their names and look them up again in the browse scanner's
+  own list, which let a line be offered mid-quiz and then withdrawn at the end
+  ("no longer offered") — the two readers are allowed to differ (wider anchor
+  set, DOM-counted attach ply, `comment_before` blocks), and any of those can
+  land the same line on a different start position. Nothing about a queued line
+  needs re-deriving: it was resolved against the plan's exact positions and
+  every condition was applied before it was raised. Unlike the quiz panel this one does **not**
+  swallow keys — the user is still playing on Chessable's board and needs their
+  shortcuts — so its buttons blur themselves after a press instead. Only the
+  line's FIRST ply is ever printed: the rest is the quiz's own answer. Setting:
+  `cloLineHeadsUp` in `chrome.storage.local`, opt-out (absent means on), with
+  the options-page checkbox and the panel's own two-click **Turn off** writing
+  the same key — the `storage.onChanged` listener is what keeps every open
+  trainer tab in step.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.

@@ -73,6 +73,12 @@ counted from the DOM instead (`attachPlyOf`: how many `SELECTORS.reviewMoves` ar
 printed before the block). Anything derived from the id prefix is wrong for every
 comment that is not on the final move.
 
+> **Correction (2026-07-27, v0.36.3).** "The leading component numbers the
+> comment block" is also wrong — the numbering **restarts in every block**, so
+> three commented moves each print `0.0.0`, `0.0.1`, … See §6.9: grouping on the
+> id prefix alone merged them, and the group key is now scoped by the attach
+> ply.
+
 Piece letters are SVG figurines (`span.commentMove__piece[data-piece="knight"]`),
 identical to the mainline's, so `quickEditSanFromEl` reads them correctly —
 `textContent` alone gives `"5.b3"`, not `Nb3`.
@@ -351,3 +357,280 @@ what Chessable does. Promotions get our own four-piece picker.
   instead renders a NAG as a badge or an entity (`⁇`), the read returns '' and the
   line is kept: the failure is silent and in the unsafe direction, so this is the
   first thing to check on a course that annotates its continuations.
+
+---
+
+## 6. Layer 2 — the mid-quiz heads-up ("18b", v0.36.0)
+
+### 6.1 The problem
+
+Everything above only starts once the variation is **over**. By then the user
+has played eight moves past the position each line branches from, and the
+launcher's label (`Review clickables (2)`) says nothing about *where*. The user
+asked to be shown the branch **when they are standing on it**, and to decide
+there.
+
+### 6.2 What it does
+
+While a variation is being played — outside the browse gates, which is the one
+state section 18 previously ignored — a small body-mounted panel is raised the
+moment the comment column prints a clickable line branching at the position
+currently reached:
+
+```
+CLICKABLE LINE          [Turn off] ×
+The opponent can also respond with:
+┌──────────┐  5.c3
+│   mini   │
+│  board   │
+└──────────┘
+[ Review on variation end ]
+```
+
+The mini board shows the **branch position** with one arrow per line's first
+move (plus the last-move tint on both its squares — a one-square arrow barely
+registers at 176 px). Pressing the button queues those lines. Ignoring it costs
+nothing: it comes down by itself when the user plays their next move.
+
+**It runs in the browse state too** (v0.37.0), for the lines that carry on from
+the **final** position. Those branch exactly where the variation stops, so there
+is no earlier moment at which to raise them — and once the variation is over the
+spoiler rule lapses, so a continuation of the user's *own* colour is offered
+there as well (`startPly < finalPly` is the whole test). The wording and the
+button follow: *"From here the opponent can play:"* / *"You can also carry on
+with:"*, and **Add to review queue** rather than *Review on variation end* —
+there is no variation end left to wait for.
+
+**Nothing starts by itself** (v0.37.0). A filled **Review queued lines (n)**
+button appears next to the plain launcher once the variation is over, and
+`runQueued()` is what hands the queue to `beginRun()`. Two reasons: being
+dropped into a quiz you did not ask for is jarring, and the final continuations
+are only offered *after* the variation ends — so the user needs a moment to add
+those to the queue before anything starts. The button only shows in the browse
+state (our board overlays Chessable's; running mid-quiz would cover a live quiz
+board), and `beginRun` clears the queue whichever way the run began, so it
+cannot linger after the lines have been played.
+
+While it is up, **"Review clickable(s)" is hidden**. Someone who picked lines by
+hand has already answered "which ones?", so offering "all of them" beside it is
+noise and the two green buttons compete for the same moment. The launcher
+returns as soon as the queue is spent or the variation changes — which is also
+the only way to abandon a queue, deliberately: there is no "clear queue"
+control, because the queue is cheap to spend and wiped at every variation.
+
+**Only the branching move is printed.** The rest of the line is exactly what the
+review is about to ask for, and half of it is the user's own moves — spelling it
+out here would answer the quiz this panel exists to offer. (First cut printed
+the whole line; caught in review before testing.)
+
+**"Turn off" is on the panel.** The options-page checkbox is the canonical
+control, but it is in another tab, and by the time anyone gets there the panel's
+moment has passed — the setting has to be reachable at the instant it is being
+annoying. It arms on the first click and disarms after `headsUpOffArmMs`, the
+same two-click shape as auto-play's "Clear": one misclick would otherwise cost
+the feature for good, with the options page the only way back.
+`turnHeadsUpOff()` sets the local flag and hides the panel *before* attempting
+the write, so an orphaned content script (extension reloaded, page not) still
+obeys the press for the rest of the session.
+
+### 6.3 What is shared, and what is new
+
+`scanContinuations` was split. The reading, anchoring, walking, blunder/ambiguity
+filtering — all of it — is now `collectLines(oid)`, returning
+`{ lines, fens, userColor }` or `{ retry }`, and **both** callers use it. The
+mini board is not a second board implementation either: `fillGrid`, `makePiece`,
+`placeAt` and `shapeArrow` are the quiz board's own, so orientation, square
+colours, piece art and arrow geometry cannot drift apart.
+
+New: the raise/drop decision, the panel, and the arming.
+
+### 6.4 The three rules
+
+| rule | why |
+| --- | --- |
+| Only lines whose **first ply is the opponent's**, *except at the final position* | A line starting with a move of the user's colour branches at a position the trainer is about to ask *them* for a move from. Raising it hands over the answer, or an alternative to it. This is also why the wording is "the opponent can also respond with". At the final position the variation is over, so the rule lapses and either colour is offered. |
+| Only lines anchored on a **mainline** position (`fens.indexOf(startFen) >= 0`) | A line anchored inside another comment line branches from a position the user never plays through — there is no moment at which to raise it. |
+| The clock is `printedPlies()` (`SELECTORS.reviewMoves` in the comment column) | The same count `attachPlyOf` already trusts. A line branching at mainline ply *k* goes up at *k* printed moves and comes down at *k+2*: the opponent's reply (ply *k*) leaves it standing, the **user's** next move (ply *k+1*) takes it away. That is "it disappears when you move", expressed in a clock this section already depends on. |
+
+Also dropped: a first move whose post-position is (on `cacheKey`) the one the
+variation itself goes to — nothing "also" about it.
+
+### 6.5 The queue carries the lines, not their names (v0.36.6)
+
+`cr.hu.armed` maps `lineSig` → **the resolved line object**, and `openArmed`
+hands those objects straight to `beginRun`.
+
+The first cut stored only the signatures and looked them up again in the browse
+scanner's `freshLines()`. That produced the intermittent
+
+```
+continuation: the line(s) queued during the quiz are no longer offered — not opening
+```
+
+The two readers are **allowed** to disagree about where a line sits, and each
+difference changes `startFen` and therefore the signature:
+
+| | plan reader (§6.3) | DOM reader (§2.5) |
+| --- | --- | --- |
+| anchor candidates | the comment's own `before`/`after`, then the parent line's | those *plus the whole mainline* whenever a move number is printed |
+| attach ply | the plan index the comment hangs on | counted from printed `commentMove`s |
+| `comment_before` | its own block, keyed `<i>b` | not distinguished from the after-comment |
+
+So a lookup across the two is a coin toss on any variation where those diverge.
+It is also unnecessary: a queued line was resolved against the plan's **exact**
+positions, `walkLine` proved every SAN legal from the position it would be
+played from, and every condition — opponent to move, mainline anchor, not
+already in the course, no blunder annotation, one answer per position — was
+applied *before* it was ever raised. There is nothing left to re-check.
+
+`openReview` also marks the queue consumed, or closing a hand-opened review
+would immediately restart the armed subset.
+
+### 6.6 Keys
+
+Unlike the quiz panel, this one deliberately does **not** swallow keystrokes:
+the user is still playing on Chessable's board and needs MoveTrainer2's
+shortcuts. The cost is that a button left focused would also fire on the next
+space, so both buttons `blur()` themselves after a press.
+
+### 6.7 Setting
+
+`cloLineHeadsUp` in `chrome.storage.local`, **opt-out** — absent means on, only
+an explicit `false` turns it off. Two controls write it: the options-page
+checkbox and the panel's own "Turn off". Both are watched via
+`chrome.storage.onChanged`, so a change lands in every open trainer tab without
+a reload. Turning it off leaves the end-of-variation launcher untouched, and
+costs nothing while off — `headsUpTick()` returns before it scans anything.
+
+### 6.8 The assumption that was wrong, and what replaced it (v0.36.1–.5)
+
+v0.36.0 read the lines from the DOM, on the assumption that Chessable prints
+`commentMove`/`commentSubMove` spans progressively during a quiz. **It does
+not.** Ground-truthed 2026-07-27 on `/practice/453453/70382641/0/b`, playing the
+variation through with a MutationObserver on `document.body`:
+
+| state | `commentMove` | `commentSubMove` | `commentScrollContainer` |
+| --- | --- | --- | --- |
+| quiz, before an answer | 0 | 0 | 0 |
+| quiz, after a correct answer | 0 | 0 | 0 |
+| quiz, after the opponent's reply | 0 | 0 | 0 |
+| "study this move" (after a failure) | 0 | 8 | 0 |
+| browse (variation complete) | 8 | 12 | 1 |
+
+The comment column shows `Quiz — Black to play!` and nothing else for the whole
+variation. So the panel had nothing to read and never appeared — exactly the
+symptom reported.
+
+**The lesson plan carries it instead, and better.** `plan[i].comment` is a JSON
+string (§6.2 above shows the shape), present for every ply from the first frame,
+with the exact `before`/`after` FENs. `pagestate.js` now passes `comment`,
+`comment_before` and `ctx.fen` through verbatim; parsing lives in the isolated
+world (`commentGroups` → `parseCommentMove` → `resolveCommentLine` → `planLines`).
+
+Verified offline against the plan captured live from that variation — the real
+functions, sliced out of `content/lichessable.js` rather than copied:
+
+```
+mainline positions: 9
+quizzable lines: 4
+  "h3 Nc6"            startPly=2  firstColor=w  raisable   (anchored on `before`)
+  "c3 d5"             startPly=4  firstColor=w  raisable   (anchored on `before`)
+  "Nb3 g6 Be3 Qb4+"   startPly=8  firstColor=w  raisable   (anchored on `after`)
+  "c3 Nf6 Nxc6 bxc6"  startPly=8  firstColor=w  raisable   (anchored on `after`)
+```
+
+Both anchor kinds occur in one variation, discriminated by the printed move
+number exactly as designed.
+
+### 6.9 Two further bugs found while debugging
+
+**Sub-move ids are not unique across comment blocks** (fixed v0.36.3). Every
+block restarts its numbering, so the three commented moves of the test variation
+each printed `0.0.0`, `0.0.1`, …:
+
+```
+0.0.0 -> 2.h3    0.0.1 -> c6      (comment on ply 2)
+0.0.0 -> 3.c3    0.0.1 -> d5      (comment on ply 4)
+0.0.0 -> 5.b3    0.0.1 -> g6  …   (comment on ply 7)
+0.0.3.0.0 -> 5.c3 …               (nested in the ply-7 comment)
+```
+
+The browse scanner grouped on the id prefix alone and therefore welded three
+separate lines into one 8-move "line" that fitted nowhere:
+
+```
+continuation: no position fits line 0.0 (h3 Nc6 c3 d5 Nb3 g6 Be3 Qb4+) — line skipped
+```
+
+This is a **pre-existing** bug in §2.2's model, not one the heads-up introduced:
+"Review clickables" silently lost every line of any variation with more than one
+commented move. The group key is now `attachPly + '|' + idPrefix` — two lines of
+one comment share the attach ply (so a nested line still finds its parent) while
+lines hanging off different moves never collide.
+
+**The board DOM is not a usable ply clock** (fixed v0.36.5). The first cut
+located the live position by reading the placement off the board. After a
+rolled-back wrong answer the board held a **stale duplicate piece** — a knight on
+b8 *and* c6, three black knights on the board — for far longer than an
+animation, which the one-king-per-side check does not catch. The derived
+placement then matched no plan position, the clock stopped, and the panel stayed
+up over a position the user had left several moves earlier. `ctx.fen` had it
+right throughout, so the clock now comes from there (`pollHeadsUpPly`,
+asynchronous, at most one tick stale).
+
+Two smaller ones: the retry budget was being spent entirely on "no fiber root"
+during the cold boot, permanently skipping the variation (now waits for
+`getReviewBoard()` and allows ~30 s); and the `document.hidden` guard, copied
+from auto-play, was dropped — auto-play needs it because it *drives* the board,
+while this panel only reads and renders and is invisible in a hidden document
+anyway, so the guard bought nothing and made the feature impossible to verify
+under automation.
+
+### 6.10 Verified live, and what is not
+
+Verified on the running extension (v0.36.5), `/practice/` and `/learn/`:
+
+* the scan reads all four lines, excludes the two already in the course, and
+  reports the two raisable ones;
+* the panel appears the moment the user reaches the branch position, with the
+  right mini board, orientation and arrow (h2–h3 on a board flipped for Black);
+* it survives the opponent's reply and comes down when the user moves on — and
+  the *next* line (`3.c3`) is raised at its own moment;
+* **Review on variation end** arms and reports "Queued for the end of this
+  variation."
+
+**The hand-over is verified too** (v0.37.1, `/learn/453453/70382641/0/b`, driven
+to completion): `h3 Nc6` raised at ply 2 → queued → variation played out →
+browse state → **Review queued line** → the quiz ran that line on our board
+("CONTINUATION / Black to play / Move 2 of 2") → answered → all overlays closed
+and the queue button gone. Console:
+
+```
+heads-up: 4 clickable line(s) in this variation, 2 can be pointed out (2 already in the course) — h3 Nc6 | c3 d5
+continuation: queued — h3 Nc6
+continuation: line 7|7.0 (Nb3 g6 Be3 Qb4+) is already in this course …
+continuation: 2 line(s) ready — h3 Nc6 | c3 d5 (2 more already in the course)
+continuation review: starting the 1 queued line(s)
+continuation review: started, 1 of 2 line(s)
+continuation review: all lines done
+```
+
+That run also confirms §6.9's grouping fix from the other side: the browse
+scanner now reports **2** lines (`h3 Nc6 | c3 d5`, keys `7|7.0`) where before it
+merged them and offered none.
+
+Re-verified at v0.37.2 with the launcher now hidden behind the queue button:
+browse state showed `clo-cr-queue => Review queued line` /
+`clo-cr-open => (hidden)`; after the queued line was played out the pair flipped
+to `clo-cr-queue => (hidden)` / `clo-cr-open => Review clickables (2)`.
+
+Still unverified: the **final-position** panel on a live board. The test
+variation's two final continuations are both already in the course, so they are
+correctly filtered out and nothing is raised there; the raise timing itself is
+verified offline (§6.8's harness, ply 8 → both lines, one panel).
+
+### 6.11 Not done
+
+* **"Review now"** (interrupting the variation to play the line immediately).
+  Deliberately deferred: it means suspending a live quiz, and "review on
+  variation end" answers the same need without touching the trainer's state.

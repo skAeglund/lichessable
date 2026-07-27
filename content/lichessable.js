@@ -263,6 +263,27 @@
       courseTimeoutMs: 9000, // then give up and leave the line quizzable
       courseCacheKey: 'cloCourseFenCache', // chrome.storage.session: "bid|fenKey" → { t, title }
       courseCacheTtlMs: 12 * 60 * 60 * 1000, // same 12 h as the auto-play record
+
+      // --- mid-quiz heads-up (section 18b) ---------------------------------
+      // The launcher at the end of a variation says nothing about WHERE each
+      // line branches off. This shows that in context instead: the moment the
+      // comment carrying a clickable line is printed, a small panel appears
+      // with the branch position on a mini board, an arrow for the line's
+      // first move, and a button that queues the line for the end of the
+      // variation. Opt-OUT (a heads-up nobody uses is just noise), hence the
+      // stored flag.
+      headsUpKey: 'cloLineHeadsUp', // chrome.storage.local; ON unless set to false
+      headsUpMiniPx: 176,   // mini-board edge; the panel sizes itself around it
+      headsUpMinBoardPx: 200, // below this the trainer board is mid-render — don't place
+      headsUpOffArmMs: 4000,  // how long the panel's "Turn off" stays armed for its second click
+      // Attempts at reading a variation's comments before giving up on it. At
+      // the 500 ms tick this is ~30 s, and it needs to be: unlike the browse
+      // scanner — which only ever starts once reviewBrowseReady() proves the
+      // app is up — this one starts the moment the URL says "trainer", and on
+      // a cold load MoveTrainer2's fibers are seconds away. A small budget was
+      // spent entirely on "no fiber root" and the variation was then skipped
+      // for good (seen live at v0.36.2).
+      headsUpScanTries: 60,
     },
 
     // --- Optional local Stockfish (offscreen document, section 5b) ----------
@@ -489,6 +510,7 @@
   const CR_CLUSTER_ID = 'lichessable-cr';       // "Review clickables" cluster (section 18)
   const CR_BOARD_ID   = 'lichessable-cr-board'; // our quiz board, overlaid on Chessable's (section 18)
   const CR_PANEL_ID   = 'lichessable-cr-panel'; // prompt/controls, covering the comment column (section 18)
+  const CR_HEADS_ID   = 'lichessable-cr-heads'; // mid-quiz "the opponent can also…" heads-up (section 18b)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
@@ -7891,30 +7913,62 @@
       ui: null,
       cluster: null,
       button: null,
+      queueBtn: null,     // "Review queued lines" (section 18b)
       // The opponent's pause borrows auto-play's speed setting so the two
       // features feel the same; the widget's dropdown is the one control.
       speed: CONFIG.autoPlay.defaultSpeed,
+      // --- mid-quiz heads-up (section 18b) ---------------------------------
+      hu: {
+        enabled: true,    // cloLineHeadsUp; opt-out, so ON until storage says otherwise
+        el: null,
+        ui: null,
+        scannedOid: null, // variation whose lesson-plan comments we have read
+        tries: 0,
+        scanning: false,
+        lines: [],        // lines read from the plan's comments (never touches cr.lines)
+        fens: null,       // …and the mainline positions they were anchored on
+        ply: -1,          // where the trainer is (pollHeadsUpPly), kept across unreadable frames
+        polling: false,
+        shown: null,      // { fen, startPly, lines } currently on screen
+        seen: new Set(),  // group signatures already offered in this variation
+        // Queued for "review on variation end": lineSig → the RESOLVED line
+        // itself, not just its name. runQueued runs these objects directly, so
+        // the queue can never be invalidated by the browse scanner reading the
+        // same comment differently (see runQueued).
+        armed: new Map(),
+        offArmed: false,  // "Turn off" is waiting for its confirming second click
+        offTimer: 0,
+      },
     };
 
     continuationActive = () => cr.active;
 
     (async () => {
       try {
-        const stored = await chrome.storage.local.get([CONFIG.autoPlay.speedKey]);
+        const stored = await chrome.storage.local.get([CONFIG.autoPlay.speedKey, C.headsUpKey]);
         const speed = stored[CONFIG.autoPlay.speedKey];
         if (typeof speed === 'string' &&
             Object.prototype.hasOwnProperty.call(CONFIG.autoPlay.speeds, speed)) cr.speed = speed;
+        // Opt-OUT: only an explicit false turns the heads-up off, so a profile
+        // that has never seen the options page still gets it.
+        cr.hu.enabled = stored[C.headsUpKey] !== false;
       } catch (err) {
-        warn('continuation: speed pref read failed:', err);
+        warn('continuation: preference read failed:', err);
       }
     })();
 
     try {
       chrome.storage.onChanged.addListener((changes, area) => {
-        if (area !== 'local' || !changes[CONFIG.autoPlay.speedKey]) return;
-        const v = changes[CONFIG.autoPlay.speedKey].newValue;
-        if (typeof v === 'string' &&
-            Object.prototype.hasOwnProperty.call(CONFIG.autoPlay.speeds, v)) cr.speed = v;
+        if (area !== 'local') return;
+        if (changes[CONFIG.autoPlay.speedKey]) {
+          const v = changes[CONFIG.autoPlay.speedKey].newValue;
+          if (typeof v === 'string' &&
+              Object.prototype.hasOwnProperty.call(CONFIG.autoPlay.speeds, v)) cr.speed = v;
+        }
+        if (changes[C.headsUpKey]) {
+          cr.hu.enabled = changes[C.headsUpKey].newValue !== false;
+          if (!cr.hu.enabled) hideHeadsUp();
+        }
       });
     } catch (err) { /* orphaned context — the default pause is fine */ }
 
@@ -8118,9 +8172,11 @@
       // A line written INSIDE another is an alternative to the parent move its
       // id points at, so the position that move was played from comes first —
       // but only as the best candidate, since the nesting is not always
-      // semantic (see the section header).
-      const parent = resolved.get(parentKey(group.key));
-      const at = branchIndex(group.key);
+      // semantic (see the section header). The parent is looked up under the
+      // same attach ply: keys are scoped by it, because the ids alone repeat
+      // across comment blocks.
+      const parent = resolved.get(group.attachPly + '|' + parentKey(group.idKey));
+      const at = branchIndex(group.idKey);
       const branchFens = [];
       if (parent && Number.isInteger(at)) {
         if (parent.before[at]) branchFens.push(parent.before[at]);
@@ -8343,51 +8399,66 @@
       syncButton();
     }
 
-    async function scanContinuations(signature) {
-      const oid = cr.oid;
+    /**
+     * The quizzable lines the comment column prints RIGHT NOW, resolved against
+     * the lesson plan. Shared by the browse-state launcher (section 18) and the
+     * mid-quiz heads-up (section 18b): the two differ only in when they ask and
+     * what they do with the answer, never in how a line is read or anchored.
+     *
+     * Returns { lines, fens, userColor } — or { retry } when the DOM or the
+     * plan is in a state we cannot read, which every caller turns into its own
+     * bounded retry rather than a wrong answer. The "already in the course"
+     * tagging is deliberately NOT done here: it is network, and the two callers
+     * want it at different moments.
+     */
+    async function collectLines(oid) {
       const els = [...document.querySelectorAll(SELECTORS.reviewSubMoves)];
-      if (!els.length) {
-        cr.scanning = false;
-        cr.signature = signature;
-        cr.lines = [];
-        syncButton();
-        return;
-      }
+      if (!els.length) return { lines: [], fens: null, userColor: cr.userColor };
       const userColor = trainerUserColor();
-      if (!userColor) { retryScan('board orientation unreadable'); return; }
+      if (!userColor) return { retry: 'board orientation unreadable' };
 
       const plan = await readLessonLine();
       if (!plan || plan.error || !Array.isArray(plan.plies) || !plan.plies.length) {
-        retryScan('lesson plan: ' + ((plan && plan.error) || 'empty'));
-        return;
+        return { retry: 'lesson plan: ' + ((plan && plan.error) || 'empty') };
       }
       // The trainer swaps the plan around a variation change; a plan for another
       // variation would anchor every line on the wrong game.
-      if (plan.oid && oid && String(plan.oid) !== String(oid)) { retryScan('plan is for another variation'); return; }
-      if (readQuickEditOid() !== oid) { retryScan('variation changed mid-scan'); return; }
+      if (plan.oid && oid && String(plan.oid) !== String(oid)) return { retry: 'plan is for another variation' };
+      if (readQuickEditOid() !== oid) return { retry: 'variation changed mid-scan' };
 
       const fens = mainlineFens(plan);
-      if (!fens) { retryScan('mainline FENs unusable'); return; }
+      if (!fens) return { retry: 'mainline FENs unusable' };
 
       const groups = [];
       const byKey = new Map();
+      const moveEls = [...document.querySelectorAll(SELECTORS.reviewMoves)];
       for (const el of els) {
         const id = el.id || '';
         const cut = id.lastIndexOf('.');
         if (cut <= 0) continue; // not the "<ply>.<line>.<move>" shape we know
-        const key = id.slice(0, cut);
+        const idKey = id.slice(0, cut);
+        // Sub-move ids are NOT unique across comments: EVERY comment block
+        // restarts its numbering, so a variation with three commented moves
+        // prints "0.0.0", "0.0.1" three times over (ground-truthed live
+        // 2026-07-27 — the design doc's "the leading component numbers the
+        // block" was wrong). Grouping on the id alone therefore welded three
+        // separate lines into one 8-move line that fitted nowhere, and every
+        // one of them was dropped. Scoping the key by the ATTACH PLY fixes it:
+        // two lines of ONE comment share it — so a nested line still finds its
+        // parent — while lines hanging off different moves never do.
+        const attachPly = attachPlyOf(el, moveEls);
+        const key = attachPly + '|' + idKey;
         let group = byKey.get(key);
-        if (!group) { group = { key, els: [] }; byKey.set(key, group); groups.push(group); }
+        if (!group) { group = { key, idKey, attachPly, els: [] }; byKey.set(key, group); groups.push(group); }
         group.els.push(el);
       }
 
       // Shallowest first, so a line genuinely written INSIDE another can anchor
       // on its parent's positions; the output stays in DOM order.
       const resolved = new Map();
-      const moveEls = [...document.querySelectorAll(SELECTORS.reviewMoves)];
-      const byDepth = groups.slice().sort((a, b) => a.key.split('.').length - b.key.split('.').length);
+      const byDepth = groups.slice().sort((a, b) => a.idKey.split('.').length - b.idKey.split('.').length);
       for (const group of byDepth) {
-        const line = resolveLine(group, fens, attachPlyOf(group.els[0], moveEls), resolved);
+        const line = resolveLine(group, fens, group.attachPly, resolved);
         if (line) resolved.set(group.key, line);
       }
       const lines = [];
@@ -8425,17 +8496,23 @@
         lines.push(line);
       }
 
-      const ready = dropAmbiguous(lines, plan, fens, userColor);
+      return { lines: dropAmbiguous(lines, plan, fens, userColor), fens, userColor };
+    }
+
+    async function scanContinuations(signature) {
+      const oid = cr.oid;
+      const got = await collectLines(oid);
+      if (got.retry) { retryScan(got.retry); return; }
       // Network, so last: the lines are otherwise complete, and a failed lookup
       // must not cost us any of them.
-      const inCourse = await tagLinesInCourse(ready);
+      const inCourse = await tagLinesInCourse(got.lines);
       if (readQuickEditOid() !== oid) { retryScan('variation changed mid-scan'); return; }
 
       cr.scanning = false;
       cr.scanTries = 0;
       cr.signature = signature;
-      cr.lines = ready;
-      cr.userColor = userColor;
+      cr.lines = got.lines;
+      cr.userColor = got.userColor;
       const fresh = freshLines();
       if (fresh.length) {
         log('continuation: ' + fresh.length + ' line(s) ready —',
@@ -8497,10 +8574,14 @@
       el.style.transform = 'translate(' + col * 100 + '%, ' + row * 100 + '%)';
     }
 
-    function buildGrid() {
-      const grid = cr.ui.grid;
+    /**
+     * Fills a grid element with 64 square divs in VISUAL order (top-left
+     * first) for the current orientation, calling back with each one. Shared by
+     * the quiz board and the heads-up mini board (section 18b) so the two can
+     * never drift apart on colours or orientation.
+     */
+    function fillGrid(grid, onSquare) {
       while (grid.firstChild) grid.removeChild(grid.firstChild);
-      cr.squares.clear();
       for (let row = 0; row < 8; row++) {
         for (let col = 0; col < 8; col++) {
           const file = cr.userColor === 'w' ? col : 7 - col;
@@ -8508,11 +8589,18 @@
           const idx = rank * 8 + file;
           const sq = document.createElement('div');
           sq.className = 'clo-cr-sq' + ((file + rank) % 2 ? ' clo-cr-sq--light' : ' clo-cr-sq--dark');
-          sq.dataset.sq = String(idx);
           grid.appendChild(sq);
-          cr.squares.set(idx, sq);
+          if (onSquare) onSquare(sq, idx);
         }
       }
+    }
+
+    function buildGrid() {
+      cr.squares.clear();
+      fillGrid(cr.ui.grid, (sq, idx) => {
+        sq.dataset.sq = String(idx);
+        cr.squares.set(idx, sq);
+      });
       cr.orientation = cr.userColor;
     }
 
@@ -9224,19 +9312,27 @@
       return cr.lines.filter((l) => !l.inCourse);
     }
 
-    function openReview() {
-      const fresh = freshLines();
-      if (!fresh.length || cr.active) return;
+    /** Mounts, places and reveals the two overlays. False when the board is not
+     *  measurable, in which case nothing has been shown. */
+    function showOverlays() {
       const userColor = trainerUserColor();
       if (userColor) cr.userColor = userColor;
-      if (!cr.userColor) { warn('continuation: board orientation unreadable — not opening'); return; }
+      if (!cr.userColor) { warn('continuation: board orientation unreadable — not opening'); return false; }
       if (!cr.boardEl || !cr.boardEl.isConnected) buildOverlays();
       // Placed BEFORE it is shown: an overlay revealed at 0,0 because the board
       // happened to be mid-render would flash in the page's top-left corner.
-      if (!positionOverlays()) { warn('continuation: board not measurable — not opening'); return; }
+      if (!positionOverlays()) { warn('continuation: board not measurable — not opening'); return false; }
+      hideHeadsUp(); // the quiz owns the screen from here
       cr.active = true;
       cr.panel.hidden = false;
       syncButton();
+      return true;
+    }
+
+    function openReview() {
+      const fresh = freshLines();
+      if (!fresh.length || cr.active) return;
+      if (!showOverlays()) return;
 
       // Two kinds of line, so the scope is the user's call: carrying on
       // from where the variation ENDED is the ordinary case, while a line
@@ -9271,11 +9367,19 @@
       if (!queue.length) { closeReview('nothing selected'); return; }
       cr.choosing = false;
       cr.queue = queue;
+      // Any run consumes the queue — whether it was the queued lines or the
+      // whole set from the launcher, which contains them. The array above is
+      // already materialised, so clearing here is safe.
+      cr.hu.armed.clear();
       cr.ui.chooser.hidden = true;
       cr.ui.actions.hidden = false;
       cr.boardEl.hidden = false;
       positionOverlays(); // the board was hidden while the picker was up
-      log('continuation review: started,', queue.length, 'of', freshLines().length, 'line(s)');
+      // The queue can come from the heads-up rather than from freshLines()
+      // (runQueued), so the total is whichever is larger — never a smaller
+      // number than what is about to be played.
+      log('continuation review: started,', queue.length, 'of',
+        Math.max(freshLines().length, queue.length), 'line(s)');
       startLine(0);
     }
 
@@ -9318,23 +9422,50 @@
       cluster.id = CR_CLUSTER_ID;
       cluster.className = 'clo-cr';
 
+      // Queued lines are NOT started automatically: arriving in a quiz you did
+      // not ask for is jarring, and the variation's own final continuations are
+      // only offered once it ends — so the user needs a moment to add those to
+      // the queue before anything starts. Hence a button, and a loud one.
+      const queueBtn = document.createElement('button');
+      queueBtn.type = 'button';
+      queueBtn.className = 'clo-cr-queue';
+      queueBtn.hidden = true;
+      queueBtn.addEventListener('click', runQueued);
+
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'clo-cr-open';
       button.addEventListener('click', openReview); // no inline handlers
 
-      cluster.appendChild(button);
+      cluster.append(queueBtn, button);
       widget.appendChild(cluster);
       cr.cluster = cluster;
       cr.button = button;
+      cr.queueBtn = queueBtn;
       return true;
     }
 
     function syncButton() {
       if (!ensureCluster()) return;
       const n = freshLines().length;
-      const show = !cr.active && n > 0;
-      cr.cluster.hidden = !show;
+      const queued = cr.hu.armed.size;
+      // The queue can only be RUN in the browse state — our board overlays
+      // Chessable's, so offering it mid-quiz would cover a live quiz board.
+      const showQueue = !cr.active && queued > 0 && reviewBrowseReady();
+      // Having picked lines by hand, the user has already said which ones they
+      // want — offering "all of them" beside that is just noise, and the two
+      // green buttons compete. The launcher comes back as soon as the queue is
+      // spent (beginRun clears it) or the variation changes.
+      const show = !cr.active && n > 0 && !showQueue;
+      cr.cluster.hidden = !(show || showQueue);
+      cr.queueBtn.hidden = !showQueue;
+      cr.button.hidden = !show;
+      if (showQueue) {
+        cr.queueBtn.textContent = queued > 1
+          ? 'Review queued lines (' + queued + ')' : 'Review queued line';
+        cr.queueBtn.title = 'Play through the ' + (queued > 1 ? queued + ' lines' : 'line') +
+          ' you queued while working through this variation.';
+      }
       if (!show) return;
       // "Clickable", not "continuation": a line branching off earlier in the
       // variation continues nothing — what all of these lines have in common is
@@ -9353,6 +9484,720 @@
       if (cr.cluster) cr.cluster.hidden = true;
     }
 
+    // ------------------------------------------------------------------------
+    // 18b) Mid-quiz heads-up: "the opponent can also respond with…"
+    //
+    // The launcher above only appears once the variation is over, and says
+    // nothing about WHERE each line branches off — by then the user has left
+    // the position behind. This shows it in context instead: the moment
+    // Chessable prints the comment carrying a clickable line, a small panel
+    // appears with that branch position on a mini board, an arrow for the
+    // line's first move, and a button that queues the line to be reviewed when
+    // the variation ends. The launcher stays exactly as it was; this is a
+    // second way IN, not a replacement.
+    //
+    // WHERE THE LINES COME FROM — and why NOT from the DOM. Ground-truthed
+    // live 2026-07-27 on /practice/453453/70382641/0/b, playing the variation
+    // through with a MutationObserver watching: a quiz renders NO
+    // commentMove, NO commentSubMove and not even a commentScrollContainer.
+    // The comment column holds "Quiz — Black to play!" and nothing else, for
+    // the whole variation, before and after every answer. Everything the
+    // browse-state scanner reads is created only once the variation completes.
+    // (This is why the first cut of this section never showed anything.)
+    //
+    // The lesson plan carries it instead, and better. Each ply's `comment` is
+    // a JSON string of Chessable's own:
+    //
+    //   { "before": "<FEN before this ply>",
+    //     "after":  "<FEN after this ply>",
+    //     "data": [ { "key":"V", "val":[ {"key":"S","val":"5.Nb3"},
+    //                                    {"key":"S","val":"g6"},
+    //                                    {"key":"C","val":"<br/>"},
+    //                                    {"key":"V","val":[ … ]} ] } ] }
+    //
+    // "V" is a line, "S" one of its clickable moves, "C" prose, and a "V"
+    // inside a "V" is the nesting the DOM ids express as "7.0.3.0". So this
+    // gives us, with no DOM at all: the grouping, the nesting, the branch
+    // index (the number of "S" siblings before a nested "V"), and — the part
+    // the DOM never had — the EXACT positions the comment hangs between.
+    // No attach-ply counting, no id archaeology.
+    //
+    // Anchoring is still the same discipline as the browse scanner
+    // (resolveLine): candidates in confidence order, accepted only when every
+    // printed move number matches the position it would be played from and
+    // every SAN is legal there. `after` comes first (a line continuing past
+    // the ply) then `before` (a line offering an alternative TO the ply) —
+    // both occur, verified on this variation: the comment on 4...Qb6 holds
+    // "5.Nb3 …" (after) while the one on 2.Nf3 holds "2.h3 Nc6" (before).
+    //
+    // The browse-state scanner is deliberately left on the DOM: it works, it
+    // is ground-truthed, and the two agree on line identity anyway (lineSig is
+    // position + SAN list), which is all the hand-over needs.
+    //
+    // THE PLY CLOCK is the plan's own `fen` (Chessable's current position),
+    // located in the plan's sourceFens — NOT anything read off the board.
+    // readReviewFen is unusable here anyway (it asks readReviewTurn() for a
+    // side to move, and that reads the commentMove spans a quiz does not
+    // render), but the deeper reason is that the board DOM lies: after a
+    // rolled-back wrong answer it can hold a stale duplicate piece for far
+    // longer than an animation (seen live: a knight on b8 AND c6), which no
+    // one-king-per-side check catches. A clock built on the placement then
+    // matches nothing and simply stops, leaving the panel up over a position
+    // the user left several moves ago.
+    //
+    // Rules that fall out of it being shown DURING a quiz:
+    // * ONLY lines whose first move is the OPPONENT'S are offered. A line that
+    //   starts with a move of the user's own colour branches at a position
+    //   where the trainer is about to ASK them for a move — showing it would
+    //   hand them the answer, or an alternative to it. That is also exactly why
+    //   the wording is "The opponent can also respond with".
+    // * Only lines anchored on a MAINLINE position (their startFen is one of
+    //   the lesson plan's own sourceFens) — a line anchored inside another
+    //   comment line branches from a position the user never plays through, so
+    //   there is no moment at which to raise it.
+    // * The clock is the LIVE POSITION located in the plan (`currentPly`). A
+    //   line branching at mainline ply k goes up when the board reaches ply k
+    //   and comes down at k+2: the opponent's own reply, ply k, leaves it
+    //   standing, and the USER'S next move, ply k+1, is what takes it away.
+    //   That is the "it disappears when you move" the feature was asked for.
+    //   An unreadable board (mid-animation) keeps the last known ply rather
+    //   than dropping the panel for a frame.
+    //
+    // Nothing of Chessable's is written to, the plan is read once per
+    // variation, and a variation change wipes the lot.
+    // ------------------------------------------------------------------------
+
+    /** Content-based identity for a line, shared with the browse-state scanner
+     *  so a line queued mid-quiz can be found again in ITS list — the two read
+     *  different sources (plan JSON vs DOM spans), so nothing structural can be
+     *  used as a key. Position + SAN list is what actually names a line. */
+    const lineSig = (line) => cacheKey(line.startFen) + '|' + line.label;
+
+    /**
+     * The clickable lines inside ONE comment string, as flat groups in the
+     * shape resolveCommentLine wants. Null when the string is not the JSON we
+     * know — every caller then just has no lines for that ply, which is the
+     * same outcome as a comment with no lines in it.
+     *
+     * `branchAt` is the index, among the parent line's own moves, of the move a
+     * nested line is written after: the number of "S" siblings preceding it,
+     * minus one. That is the same number the DOM ids carry ("7.0.3.0" → 3),
+     * verified against this variation's own nested line.
+     */
+    function commentGroups(raw, keyBase) {
+      let doc;
+      try { doc = JSON.parse(raw); } catch (err) { return null; }
+      if (!doc || !Array.isArray(doc.data)) return null;
+      if (typeof doc.before !== 'string' || typeof doc.after !== 'string') return null;
+      const groups = [];
+
+      const walk = (items, key, parentKey, branchAt) => {
+        const moves = [];
+        const kids = [];
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          if (item.key === 'S' && typeof item.val === 'string') moves.push(item.val);
+          else if (item.key === 'V' && Array.isArray(item.val)) kids.push({ items: item.val, at: moves.length - 1 });
+        }
+        groups.push({ key, parentKey, branchAt, moves });
+        kids.forEach((kid, n) => walk(kid.items, key + '.' + kid.at + '.' + n, key, kid.at));
+      };
+
+      doc.data.forEach((node, n) => {
+        if (node && node.key === 'V' && Array.isArray(node.val)) walk(node.val, keyBase + '.' + n, '', NaN);
+      });
+      return { before: doc.before, after: doc.after, groups };
+    }
+
+    /**
+     * "5.Nb3" / "Qb4+" / "6.Be3?!" → { san, annot, printed }, or null when what
+     * is left after stripping the move number does not look like SAN at all
+     * (Chessable writes null moves as "--"). Same discipline as the DOM path's
+     * quickEditSanFromEl + moveAnnotation, on a plain string.
+     */
+    function parseCommentMove(val) {
+      const printed = parseMoveNumber(val);
+      let rest = String(val).trim().replace(/^\d+\s*(\.{3}|…|\.)\s*/, '').trim();
+      const annot = (/([!?]+)\s*$/.exec(rest) || ['', ''])[1];
+      if (annot) rest = rest.slice(0, rest.length - annot.length).trim();
+      if (!/^(O-O(-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](=[QRBN])?)[+#]?$/.test(rest)) return null;
+      return { san: rest, annot, printed };
+    }
+
+    /**
+     * One comment group → a resolved line, or null when no position fits it.
+     * The candidate order is the plan's own two positions first — `after` for a
+     * line carrying on past the ply, `before` for one offering an alternative
+     * TO it — then, for a nested line, its parent's positions. walkLine is what
+     * accepts or rejects each, exactly as in the browse-state scanner.
+     */
+    function resolveCommentLine(group, ctx, resolved) {
+      const moves = [];
+      for (const val of group.moves) {
+        const mv = parseCommentMove(val);
+        if (!mv) break; // truncated: the moves before it still place nested lines
+        moves.push(mv);
+      }
+      if (!moves.length) return null;
+      const truncated = moves.length !== group.moves.length;
+
+      const parent = resolved.get(group.parentKey);
+      const anchors = [];
+      if (parent && Number.isInteger(group.branchAt) && group.branchAt >= 0) {
+        if (parent.before[group.branchAt]) anchors.push(parent.before[group.branchAt]);
+        if (parent.plies[group.branchAt]) anchors.push(parent.plies[group.branchAt].fen);
+      }
+      anchors.push(ctx.after, ctx.before);
+      if (parent) anchors.push(parent.startFen, ...parent.plies.map((p) => p.fen));
+
+      for (const fen of [...new Set(anchors)]) {
+        const walk = walkLine(fen, moves);
+        if (!walk) continue;
+        return {
+          key: group.key,
+          startFen: fen,
+          plies: walk.plies,
+          before: walk.before,
+          branched: walk.branched,
+          truncated,
+          inCourse: null,
+          label: moves.map((m) => m.san + m.annot).join(' '),
+        };
+      }
+      return null;
+    }
+
+    /**
+     * Every quizzable clickable line in the whole variation, read from the
+     * lesson plan's comments. Same filters as the browse-state scanner —
+     * branched and truncated groups are resolved but not quizzed (they place
+     * the lines written inside them), a line with no user-colour move has
+     * nothing to ask, and a line asking the user for a "?"/"??"/"?!" move is a
+     * move to avoid, not repertoire.
+     */
+    function planLines(plan, fens, userColor) {
+      const resolved = new Map();
+      const order = [];
+      for (let i = 0; i < plan.plies.length; i++) {
+        const ply = plan.plies[i];
+        for (const [which, raw] of [['b', ply.commentBefore], ['a', ply.comment]]) {
+          if (!raw) continue;
+          const parsed = commentGroups(raw, i + which);
+          if (!parsed) continue;
+          // Shallowest first, so a line written INSIDE another can anchor on it.
+          const byDepth = parsed.groups.slice()
+            .sort((a, b) => a.key.split('.').length - b.key.split('.').length);
+          for (const group of byDepth) {
+            const line = resolveCommentLine(group, parsed, resolved);
+            if (line) resolved.set(group.key, line);
+          }
+          for (const group of parsed.groups) if (resolved.has(group.key)) order.push(group.key);
+        }
+      }
+
+      const out = [];
+      for (const key of order) {
+        const line = resolved.get(key);
+        if (line.truncated || line.branched) continue;
+        if (!line.plies.some((p) => p.color === userColor)) continue;
+        const blunder = line.plies.find((p) => p.color === userColor && isBlunderAnnot(p.annot));
+        if (blunder) {
+          log('heads-up: line', line.label, 'asks the user to play',
+            blunder.san + blunder.annot, '— skipped as a move to avoid');
+          continue;
+        }
+        out.push(line);
+      }
+      return dropAmbiguous(out, plan, fens, userColor);
+    }
+
+    /**
+     * Keeps cr.hu.ply — where the trainer is in the variation — up to date from
+     * the lesson plan's own `fen`, which is Chessable's current position.
+     *
+     * NOT read off the board. Ground-truthed 2026-07-27: after a wrong answer
+     * is rolled back the board DOM can hold a stale duplicate piece (a knight
+     * on b8 AND c6) for far longer than an animation, and no "one king per
+     * side" check catches that. The derived placement then matches no plan
+     * position, the clock stops, and the panel stays up over a position the
+     * user has long left — which is exactly what was seen.
+     *
+     * Asynchronous (the page-state bridge is), so the value is at most one tick
+     * stale. That is the right kind of lag here: the panel should not blink out
+     * on the frame a piece lands.
+     */
+    function pollHeadsUpPly() {
+      if (cr.hu.polling || !cr.hu.fens) return;
+      cr.hu.polling = true;
+      readLessonLine().then((plan) => {
+        cr.hu.polling = false;
+        const fen = plan && !plan.error && typeof plan.fen === 'string' ? plan.fen : null;
+        if (!fen || !cr.hu.fens) return;
+        const key = cacheKey(fen);
+        const at = cr.hu.fens.findIndex((f) => cacheKey(f) === key);
+        if (at >= 0) cr.hu.ply = at; // off the mainline ⇒ unchanged, never "moved on"
+      }, () => { cr.hu.polling = false; });
+    }
+
+    function resetHeadsUp() {
+      hideHeadsUp();
+      cr.hu.lines = [];
+      cr.hu.fens = null;
+      cr.hu.ply = -1;
+      cr.hu.scannedOid = null;
+      cr.hu.tries = 0;
+      cr.hu.seen = new Set();
+      cr.hu.armed = new Map();
+    }
+
+    function hideHeadsUp() {
+      cr.hu.shown = null;
+      disarmOff(); // a pending confirm must never survive into the next showing
+      if (cr.hu.el) cr.hu.el.hidden = true;
+    }
+
+    /** Where the trainer is, as last reported by pollHeadsUpPly. */
+    const headsUpPly = () => cr.hu.ply;
+
+    /**
+     * The lines to raise right now: everything branching at the mainline
+     * position the user is still standing on, minus the ones already offered.
+     * Null when there is nothing to show.
+     */
+    function headsUpGroup() {
+      const fens = cr.hu.fens;
+      const now = headsUpPly();
+      if (!fens || !cr.userColor || now < 0) return null;
+      const finalPly = fens.length - 1;
+      const best = new Map(); // startPly → lines branching there
+      for (const line of cr.hu.lines) {
+        if (line.inCourse) continue;
+        const first = line.plies[0];
+        if (!first) continue;
+        const startPly = fens.indexOf(line.startFen);
+        if (startPly < 0) continue;          // anchored inside another line
+        // The user's own colour is a spoiler only while the trainer might
+        // still ask for a move from that position. At the FINAL position the
+        // variation is over and there is nothing left to give away, so a
+        // continuation of the user's own colour is offered there.
+        if (first.color === cr.userColor && startPly < finalPly) continue;
+        if (now - startPly > 1) continue;    // the user has moved on
+        if (now < startPly) continue;        // not reached yet
+        // Nothing "also" about a first move that reaches the position the
+        // variation itself goes to. Compared on the four-field key, since the
+        // two FENs come from different sources and their counters may differ.
+        const after = fenAfterUci(line.startFen, first.uci);
+        if (after && fens[startPly + 1] && cacheKey(after) === cacheKey(fens[startPly + 1])) continue;
+        const at = best.get(startPly) || [];
+        at.push(line);
+        best.set(startPly, at);
+      }
+      if (!best.size) return null;
+      const startPly = Math.max(...best.keys());
+      const lines = best.get(startPly);
+      const sig = startPly + '|' + lines.map(lineSig).join('~');
+      if (cr.hu.seen.has(sig)) return null;
+      // A line off the FINAL position continues the variation rather than
+      // branching out of it, which changes both the wording and the button:
+      // there is no "variation end" left to wait for.
+      return { sig, startPly, fen: lines[0].startFen, lines, final: startPly === finalPly };
+    }
+
+    // --- the mini board ------------------------------------------------------
+
+    /**
+     * Draws `fen` on a small static board with one arrow per move. Same
+     * percentage geometry, same cloned piece SVGs and the same arrow shapes as
+     * the quiz board, so a resize needs no JS here either. False when the FEN
+     * cannot be parsed, which leaves the caller with nothing to show.
+     */
+    function renderMini(fen, moves) {
+      const pos = CloSan.parseFen(fen);
+      if (!pos) return false;
+      const { grid, layer, arrows } = cr.hu.ui;
+      const squares = new Map();
+      fillGrid(grid, (sq, idx) => squares.set(idx, sq));
+      while (layer.firstChild) layer.removeChild(layer.firstChild);
+      for (let idx = 0; idx < 64; idx++) {
+        const letter = pos.board[idx];
+        if (!letter) continue;
+        const el = makePiece(letter);
+        placeAt(el, idx);
+        layer.appendChild(el);
+      }
+      while (arrows.firstChild) arrows.removeChild(arrows.firstChild);
+      for (const mv of moves) {
+        const move = CloSan.uciToMove(pos, mv.uci);
+        if (!move) continue;
+        arrows.appendChild(shapeArrow(move.from, move.to));
+        // The arrow alone is thin at this size, and a one-square move barely
+        // registers — the same tint the quiz board gives the last move makes
+        // the branching move unmistakable.
+        for (const idx of [move.from, move.to]) {
+          const sq = squares.get(idx);
+          if (sq) sq.classList.add('clo-cr-sq--last');
+        }
+      }
+      return true;
+    }
+
+    // --- the panel -----------------------------------------------------------
+
+    function buildHeadsUp() {
+      const stale = document.getElementById(CR_HEADS_ID);
+      if (stale) stale.remove();
+
+      const el = document.createElement('div');
+      el.id = CR_HEADS_ID;
+      el.className = 'clo-cr-heads';
+      el.hidden = true;
+
+      const head = document.createElement('div');
+      head.className = 'clo-cr-heads__head';
+      const title = document.createElement('span');
+      title.className = 'clo-cr-heads__title';
+      title.textContent = 'Clickable line';
+
+      // Turning the whole feature off has to be reachable from HERE: the
+      // options page is a different tab, and the panel's own moment has passed
+      // by the time anyone gets there. Two clicks, like auto-play's "Clear" —
+      // one misclick would otherwise cost the feature for good, with the
+      // options page the only way back.
+      const off = document.createElement('button');
+      off.type = 'button';
+      off.className = 'clo-cr-heads__off';
+      off.addEventListener('click', onOffClick);
+
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'clo-cr-heads__x';
+      close.textContent = '×';
+      close.title = 'Hide this (the line is still offered at the end of the variation)';
+      close.addEventListener('click', dismissHeadsUp);
+      head.append(title, off, close);
+
+      // Full width, above the board: with only the branching move left to
+      // print, the text column beside the board is too narrow to carry a
+      // sentence as well.
+      const lead = document.createElement('div');
+      lead.className = 'clo-cr-heads__lead';
+
+      const body = document.createElement('div');
+      body.className = 'clo-cr-heads__body';
+
+      const board = document.createElement('div');
+      board.className = 'clo-cr-mini';
+      // Sized from CONFIG so the mini board has one source of truth, like the
+      // quiz overlay (which takes its size off Chessable's own board).
+      board.style.width = C.headsUpMiniPx + 'px';
+      board.style.height = C.headsUpMiniPx + 'px';
+      const grid = document.createElement('div');
+      grid.className = 'clo-cr-grid';
+      const layer = document.createElement('div');
+      layer.className = 'clo-cr-layer';
+      const arrows = document.createElementNS(SVG_NS, 'svg');
+      arrows.setAttribute('class', 'clo-cr-shapes');
+      arrows.setAttribute('viewBox', '0 0 8 8');
+      arrows.setAttribute('preserveAspectRatio', 'none');
+      board.append(grid, layer, arrows);
+
+      const moves = document.createElement('div');
+      moves.className = 'clo-cr-heads__moves';
+      body.append(board, moves);
+
+      const arm = document.createElement('button');
+      arm.type = 'button';
+      arm.className = 'clo-cr-btn clo-cr-btn--primary clo-cr-heads__arm';
+      arm.textContent = 'Review on variation end';
+      arm.addEventListener('click', armHeadsUp);
+
+      const note = document.createElement('div');
+      note.className = 'clo-cr-heads__note';
+      note.hidden = true;
+
+      el.append(head, lead, body, arm, note);
+      document.body.appendChild(el);
+      cr.hu.el = el;
+      cr.hu.ui = { grid, layer, arrows, title, lead, moves, arm, note, off };
+      disarmOff(); // also writes the button's resting label
+    }
+
+    function showHeadsUp(group) {
+      if (!cr.hu.el || !cr.hu.el.isConnected) buildHeadsUp();
+      if (!renderMini(group.fen, group.lines.map((l) => l.plies[0]))) {
+        log('continuation: heads-up start position unusable — not shown');
+        cr.hu.seen.add(group.sig); // don't retry it every tick
+        return;
+      }
+      const ui = cr.hu.ui;
+      const mine = group.lines[0].plies[0].color === cr.userColor;
+      ui.title.textContent = group.final ? 'Continuation' : 'Clickable line';
+      ui.lead.textContent = group.final
+        ? (mine ? 'You can also carry on with:' : 'From here the opponent can play:')
+        : 'The opponent can also respond with:';
+      // At the final position the variation has already ended, so there is
+      // nothing to wait for — the queue is simply added to.
+      ui.arm.textContent = group.final ? 'Add to review queue' : 'Review on variation end';
+      // ONLY the branching move. The rest of the line is what the review will
+      // ask for, and half of it is the user's OWN moves — printing it here
+      // would answer the quiz this panel exists to offer.
+      while (ui.moves.firstChild) ui.moves.removeChild(ui.moves.firstChild);
+      for (const line of group.lines) {
+        const row = document.createElement('div');
+        row.className = 'clo-cr-heads__move';
+        row.textContent = line.plies[0].san + (line.plies[0].annot || '');
+        ui.moves.appendChild(row);
+      }
+      const armed = group.lines.every((l) => cr.hu.armed.has(lineSig(l)));
+      ui.arm.disabled = armed;
+      ui.note.hidden = !armed;
+      if (armed) ui.note.textContent = queuedNote(group);
+      // Placed while still hidden, like the quiz overlays: a panel revealed at
+      // 0,0 because the board happened to be mid-render would flash in the
+      // page's top-left corner.
+      if (!placeHeadsUp()) return;
+      cr.hu.shown = group;
+      cr.hu.el.hidden = false;
+    }
+
+    function dismissHeadsUp(e) {
+      if (cr.hu.shown) cr.hu.seen.add(cr.hu.shown.sig);
+      hideHeadsUp();
+      blurButton(e);
+    }
+
+    // --- "Turn off", from inside the session ---------------------------------
+
+    function onOffClick(e) {
+      blurButton(e);
+      if (!cr.hu.offArmed) { armOff(); return; }
+      disarmOff();
+      turnHeadsUpOff();
+    }
+
+    function armOff() {
+      if (!cr.hu.ui) return;
+      cr.hu.offArmed = true;
+      cr.hu.ui.off.textContent = 'Turn off?';
+      cr.hu.ui.off.classList.add('clo-cr-heads__off--armed');
+      clearTimeout(cr.hu.offTimer);
+      cr.hu.offTimer = setTimeout(disarmOff, C.headsUpOffArmMs);
+    }
+
+    function disarmOff() {
+      clearTimeout(cr.hu.offTimer);
+      cr.hu.offTimer = 0;
+      cr.hu.offArmed = false;
+      if (!cr.hu.ui) return;
+      cr.hu.ui.off.textContent = 'Turn off';
+      cr.hu.ui.off.title = 'Stop pointing out clickable lines while playing.\n' +
+        'The button at the end of a variation is unaffected; turn this back on ' +
+        'from the extension’s options page.\nClick twice to confirm.';
+      cr.hu.ui.off.classList.remove('clo-cr-heads__off--armed');
+    }
+
+    /**
+     * Turns the heads-up off for good. The local flag is set FIRST and the
+     * panel hidden regardless of whether the write lands: an orphaned content
+     * script (extension reloaded, page not) cannot reach storage, and the user
+     * pressing this must still be obeyed for the rest of the session.
+     */
+    function turnHeadsUpOff() {
+      cr.hu.enabled = false;
+      hideHeadsUp();
+      log('continuation: heads-up turned off — re-enable it on the options page');
+      try {
+        chrome.storage.local.set({ [C.headsUpKey]: false })
+          .catch((err) => warn('continuation: heads-up setting not saved:', err));
+      } catch (err) {
+        warn('continuation: storage unavailable:', err);
+      }
+    }
+
+    /**
+     * Hands focus back to the page after one of our buttons is pressed.
+     * MoveTrainer2 binds single-key shortcuts ("n" = next variation, space, …)
+     * on `document` and ignores what has focus, so a button left focused would
+     * ALSO be activated by the next space — this panel deliberately does not
+     * swallow keys (unlike the quiz panel: the user is still playing on
+     * Chessable's board and needs their shortcuts).
+     */
+    function blurButton(e) {
+      const el = e && e.currentTarget;
+      if (el && typeof el.blur === 'function') el.blur();
+    }
+
+    /** Queues the shown lines for the moment the variation completes. The panel
+     *  stays up (with its button spent) until the user moves on, so the press
+     *  visibly did something. */
+    /** What the panel says once its line is in the queue. Mid-variation the
+     *  queue is waited on; at the final position it can be run right away. */
+    const queuedNote = (group) => (group.final
+      ? 'Queued — press “Review queued lines” below.'
+      : 'Queued for the end of this variation.');
+
+    function armHeadsUp(e) {
+      blurButton(e);
+      const group = cr.hu.shown;
+      if (!group) return;
+      for (const line of group.lines) cr.hu.armed.set(lineSig(line), line);
+      cr.hu.seen.add(group.sig);
+      cr.hu.ui.arm.disabled = true;
+      cr.hu.ui.note.textContent = queuedNote(group);
+      cr.hu.ui.note.hidden = false;
+      syncButton(); // the "Review queued lines" button appears/counts up
+      log('continuation: queued —', group.lines.map((l) => l.label).join(' | '));
+    }
+
+    /**
+     * Absolute in DOCUMENT coordinates like every other widget here (never
+     * fixed — see section 11). Preferred spot is the gutter LEFT of the board,
+     * which during a quiz is empty: the review panel only ever shows in the
+     * browse state. Otherwise below the board and the trainer's footer, clamped
+     * into the viewport.
+     */
+    function positionHeadsUp() {
+      if (cr.hu.el && !cr.hu.el.hidden) placeHeadsUp();
+    }
+
+    function placeHeadsUp() {
+      const el = cr.hu.el;
+      if (!el) return false;
+      const board = getReviewBoard();
+      if (!board) return false;
+      const rect = board.getBoundingClientRect();
+      if (rect.width < C.headsUpMinBoardPx) return false; // mid-render; keep the last good spot
+      const gap = CONFIG.review.panelGap;
+      const sx = window.scrollX, sy = window.scrollY;
+      const width = Math.min(Math.max(C.headsUpMiniPx + 120, 300), window.innerWidth - gap * 2);
+      const gutter = rect.left - gap * 2;
+      if (gutter >= width) {
+        setInlinePx(el, { left: rect.left + sx - gap - width, top: Math.max(gap, rect.top + sy), width });
+        return true;
+      }
+      let bottom = rect.bottom;
+      const footer = document.querySelector(SELECTORS.trainerFooter);
+      const fr = footer ? footer.getBoundingClientRect() : null;
+      if (fr && fr.height) bottom = Math.max(bottom, fr.bottom);
+      const widget = document.getElementById(REVIEW_WIDGET_ID);
+      const wr = widget && !widget.hidden ? widget.getBoundingClientRect() : null;
+      if (wr && wr.height) bottom = Math.max(bottom, wr.bottom);
+      const row = document.querySelector(SELECTORS.trainerRow);
+      const rr = row ? row.getBoundingClientRect() : null;
+      if (rr && rr.height && stackedTrainerLayout(rect)) bottom = Math.max(bottom, rr.bottom);
+      const left = Math.min(Math.max(rect.left + (rect.width - width) / 2, gap),
+                            window.innerWidth - width - gap);
+      setInlinePx(el, { left: left + sx, top: bottom + 10 + sy, width });
+      return true;
+    }
+
+    /**
+     * One tick of the heads-up, run while a quiz is in progress (i.e. outside
+     * the browse state the launcher needs). Rescans whenever the comment
+     * column's sub-move list changes, then raises or drops the panel against
+     * the printed-ply clock.
+     */
+    function headsUpTick() {
+      // Deliberately NOT gated on document.hidden. Auto-play is, because it
+      // DRIVES the board and must not race in a background tab; this panel only
+      // reads and renders, and in a hidden document it is invisible anyway — so
+      // the guard bought nothing and cost the ability to verify the feature at
+      // all under automation, where a driven tab reports itself hidden.
+      if (!cr.hu.enabled) { hideHeadsUp(); return; }
+      // The plan holds every comment of the variation from its first frame, so
+      // one read per variation is all this needs — unlike the browse scanner,
+      // whose DOM grows as the user plays. Waiting for the board keeps the
+      // retry budget for real failures: before it exists there are no React
+      // fibers to walk and the read cannot possibly succeed.
+      if (!cr.hu.scanning && cr.hu.scannedOid !== cr.oid && getReviewBoard()) scanHeadsUp(cr.oid);
+      pollHeadsUpPly();
+      if (!cr.hu.shown) {
+        const group = headsUpGroup();
+        if (group) showHeadsUp(group);
+        return;
+      }
+      // Still ours to show? The user moving on is what takes it down.
+      if (headsUpPly() - cr.hu.shown.startPly > 1) { hideHeadsUp(); return; }
+      positionHeadsUp();
+    }
+
+    async function scanHeadsUp(oid) {
+      cr.hu.scanning = true;
+      const giveUp = (why) => {
+        cr.hu.scanning = false;
+        if (++cr.hu.tries <= C.headsUpScanTries) return; // the next tick tries again
+        log('heads-up: giving up reading this variation —', why);
+        cr.hu.scannedOid = oid; // stop retrying until the variation changes
+      };
+
+      let plan;
+      try {
+        plan = await readLessonLine();
+      } catch (err) {
+        giveUp(String((err && err.message) || err));
+        return;
+      }
+      if (!plan || plan.error || !Array.isArray(plan.plies) || !plan.plies.length) {
+        giveUp('lesson plan: ' + ((plan && plan.error) || 'empty'));
+        return;
+      }
+      if (plan.oid && oid && String(plan.oid) !== String(oid)) { giveUp('plan is for another variation'); return; }
+      const userColor = trainerUserColor();
+      if (!userColor) { giveUp('board orientation unreadable'); return; }
+      const fens = mainlineFens(plan);
+      if (!fens) { giveUp('mainline FENs unusable'); return; }
+      if (readQuickEditOid() !== oid) { cr.hu.scanning = false; return; }
+
+      const lines = planLines(plan, fens, userColor);
+      // Only the lines that could ever be raised are worth a lookup — this is a
+      // network round trip and it runs mid-quiz.
+      const candidates = lines.filter((l) => l.plies[0] && l.plies[0].color !== userColor &&
+        fens.indexOf(l.startFen) >= 0);
+      const inCourse = await tagLinesInCourse(candidates);
+      if (readQuickEditOid() !== oid) { cr.hu.scanning = false; return; }
+
+      cr.hu.scanning = false;
+      cr.hu.tries = 0;
+      cr.hu.scannedOid = oid;
+      cr.hu.lines = lines;
+      cr.hu.fens = fens;
+      cr.userColor = userColor;
+      const raisable = candidates.length - inCourse;
+      log('heads-up: ' + lines.length + ' clickable line(s) in this variation, ' +
+        raisable + ' can be pointed out' +
+        (inCourse ? ' (' + inCourse + ' already in the course)' : '') +
+        (raisable ? ' — ' + candidates.filter((l) => !l.inCourse).map((l) => l.label).join(' | ') : ''));
+    }
+
+    /**
+     * Runs the queued lines. Driven by the "Review queued lines" button, NOT by
+     * the tick: dropping the user into a quiz they did not ask for the instant a
+     * variation ends is jarring, and the variation's own final continuations are
+     * only offered once it has ended — so they need a moment to add those to the
+     * queue first.
+     */
+    function runQueued() {
+      if (!cr.hu.armed.size || cr.active) return;
+      // The queue is the RESOLVED lines themselves, straight from the plan.
+      // It used to be a set of names looked up again in the browse scanner's
+      // freshLines(), which meant a line could be offered mid-quiz and then
+      // silently withdrawn at the end ("the line(s) queued during the quiz are
+      // no longer offered"). The two readers are allowed to differ — the DOM
+      // one has a wider anchor set (the whole mainline, not just the comment's
+      // own two positions), counts the attach ply from printed moves rather
+      // than from the plan, and never sees a comment_before block as its own —
+      // so any of those can land the same line on a different startFen, which
+      // changes its lineSig and loses the match. Nothing about the queued line
+      // needs re-deriving: it was resolved against the plan's exact positions,
+      // every SAN was checked legal by walkLine, and every condition (opponent
+      // to move, mainline anchor, not already in the course, no blunder, one
+      // answer per position) was applied before it was ever raised.
+      const queue = [...cr.hu.armed.values()];
+      if (!showOverlays()) return; // warned there; the button stays for a retry
+      log('continuation review: starting the', queue.length, 'queued line(s)');
+      beginRun(queue);
+    }
+
     // --- watchdog ------------------------------------------------------------
 
     function tick() {
@@ -9361,6 +10206,7 @@
         cr.lines = [];
         cr.oid = null;
         cr.signature = '';
+        resetHeadsUp();
         hideButton();
         return;
       }
@@ -9371,6 +10217,7 @@
         cr.lines = [];
         cr.signature = '';
         cr.scanTries = 0;
+        resetHeadsUp(); // queued lines belong to the variation they were queued in
         if (cr.active) closeReview('variation changed');
       }
       if (!reviewBrowseReady()) {
@@ -9379,12 +10226,17 @@
         if (cr.active) closeReview('left the browse state');
         if (cr.lines.length) { cr.lines = []; cr.signature = ''; }
         hideButton();
+        headsUpTick();
         return;
       }
       if (cr.active) {
         positionOverlays();
         return;
       }
+      // The heads-up runs in the browse state too, for the lines that carry on
+      // from the FINAL position: those branch where the variation ends, so
+      // there is no earlier moment at which to raise them.
+      headsUpTick();
       const signature = domSignature();
       if (!cr.scanning && signature !== cr.signature) {
         // A DIFFERENT comment gets its own retry budget: the cap only exists to
@@ -9415,8 +10267,8 @@
       clearInterval(pollTimer);
       closeReview(null);
     });
-    window.addEventListener('resize', () => { if (cr.active) positionOverlays(); });
-    window.addEventListener('scroll', () => { if (cr.active) positionOverlays(); }, true);
+    window.addEventListener('resize', () => { if (cr.active) positionOverlays(); positionHeadsUp(); });
+    window.addEventListener('scroll', () => { if (cr.active) positionOverlays(); positionHeadsUp(); }, true);
     tick();
     log('continuation review active (top document)');
   }
