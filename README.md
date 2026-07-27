@@ -214,12 +214,28 @@ screen back, as does Escape, finishing the last line, or the variation changing
 underneath. **Hint** shows the move; two wrong tries and it appears by itself.
 The pause before the opponent's replies follows the auto-play speed dropdown.
 
+**You are left where the line ended.** When the review closes, Chessable's own
+board is put on the position the line you were last playing reached — the same
+click on that line's last move you would otherwise make yourself. So the Lichess
+panel is already showing that position's database and engine line when the
+overlays come down, instead of the position you started from. Exiting halfway
+through a line lands you on the last move you were actually shown, never on moves
+ahead of you; a review the trainer tore down (the variation changed underneath)
+leaves the board alone.
+
 A variation can carry continuations in two places: after its **final** position,
 and branching off somewhere earlier in the line. When both are present, pressing
 the button first asks which you want — **All continuations** or **Final
 continuations** — since an earlier branch revisits a move you have already
 answered. With only one kind there is nothing to ask and the quiz starts straight
 away.
+
+If you always want them, there is a setting: **Review clickable lines
+automatically** on the options page, off by default. With it on, the review
+starts by itself as soon as a variation is finished and plays every line it has —
+no button, no All/Final question. It fires once per variation, so exiting a
+review does not drop you straight back into it, and it stands down while a
+**Retry** pass is running (that pass moves to the next variation on its own).
 
 Lines that ask *you* to play a move the author marked **?**, **??** or **?!** are
 skipped: those are there to show what to avoid, and drilling them would teach the
@@ -266,9 +282,17 @@ branches off. So while you are still playing, the moment Chessable prints a
 comment offering the opponent an alternative, a small panel appears next to the
 board: **The opponent can also respond with:**, the branch position on a mini
 board with an arrow for that move, and **Review on variation end**. Press it and
-the line is queued. Ignore it and it goes away on its own the moment you play
+the line is queued — the panel confirms it and then takes itself away a moment
+later, since it has nothing left to say and you are in the middle of a move.
+Ignore it and it goes away on its own the moment you play
 your next move; **×** dismisses it for that position, and the end-of-variation
 button still offers everything as before.
+
+On a **phone in portrait**, where Chessable stacks its comment column under the
+board, this panel sits directly under the board while you are playing — over that
+column, which says nothing but "Quiz — White to play!" at that point. Once the
+variation ends and the column holds the actual comment, it moves out of the way
+below everything again.
 
 The same panel appears once more when the variation **ends**, for the lines that
 carry on from the final position — those branch exactly where the variation
@@ -776,6 +800,20 @@ enough not to run, the ↻ button is the only way back.
   on `document` in capture phase — MoveTrainer2's single-key shortcuts ("n" =
   next variation) ignore focus and one keypress would end the quiz. A refused
   move needs no rollback: our position only advances on the right one.
+  Closing a review the user ended (finished, **Exit**, Escape) leaves
+  Chessable's board on the position that line reached, by pressing its last
+  played `commentSubMove` span with the same pointer+mouse recipe the board
+  squares get — ground-truthed live that a bare `.click()` on such a span does
+  nothing at all. The span is found by matching the line's SAN sequence against
+  the freshly grouped spans rather than by a stored element, since a queued line
+  came from the plan and never had one. `cr.plyIdx` caps how far it goes, so an
+  early exit never navigates past what the user saw, and a teardown the trainer
+  forced (variation changed, browse state gone) navigates nothing.
+  **Auto-start** (`cloAutoReviewClickables`, opt-in) fires `beginRun(freshLines())`
+  from the tick once the lines are ready, skipping launcher and picker; it is
+  armed once per variation (`cr.autoRan`, also set by any manual run) and stands
+  down while `retryRunActive()` — a retry pass navigates by itself and would tear
+  the quiz down a moment after it opened.
 - **Mid-quiz heads-up** — section 18b, the second way into the same review. It
   runs in the state the launcher cannot: outside the browse gates, while the
   quiz is live. **Its lines come from the lesson plan, not the DOM** —
@@ -825,7 +863,14 @@ enough not to run, the ↻ button is the only way back.
   `cloLineHeadsUp` in `chrome.storage.local`, opt-out (absent means on), with
   the options-page checkbox and the panel's own two-click **Turn off** writing
   the same key — the `storage.onChanged` listener is what keeps every open
-  trainer tab in step.
+  trainer tab in step. Queueing a line hides the panel after
+  `headsUpQueuedHideMs`; the group is already in `seen`, so the tick does not
+  raise it again. Placement is the usual gutter-left, else below the board — but
+  in a **stacked** layout (portrait) while the quiz is live it stops at the
+  board's own footer instead of clearing the overstudy widget and the whole
+  trainer row, i.e. it covers the comment column, which at that moment holds
+  nothing but "Quiz — White to play!". In the browse state that column holds the
+  comment itself, so the old placement stands.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.

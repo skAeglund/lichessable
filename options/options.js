@@ -9,6 +9,9 @@ const BUILD_KEY = 'cloEngineBuild'; // must match CONFIG.engine.buildKey in cont
 // must match CONFIG.continuation.headsUpKey in content/lichessable.js. Opt-OUT:
 // absent means ON, so only an explicit false is ever stored as "off".
 const HEADS_UP_KEY = 'cloLineHeadsUp';
+// must match CONFIG.continuation.autoKey in content/lichessable.js. Opt-IN,
+// the other way round: only an explicit true starts a review by itself.
+const AUTO_REVIEW_KEY = 'cloAutoReviewClickables';
 const $ = (id) => document.getElementById(id);
 
 // NOTE: there is deliberately no reload hook on this page. An options page
@@ -25,12 +28,23 @@ function setStatus(text, isError) {
 
 async function init() {
   $('loadedVersion').textContent = chrome.runtime.getManifest().version;
-  const stored = await chrome.storage.local.get([TOKEN_KEY, BUILD_KEY, HEADS_UP_KEY]);
+  const stored = await chrome.storage.local.get(
+    [TOKEN_KEY, BUILD_KEY, HEADS_UP_KEY, AUTO_REVIEW_KEY]);
   if (stored[TOKEN_KEY]) $('token').value = stored[TOKEN_KEY];
   const build = stored[BUILD_KEY];
   $('engineBuild').value = build === 'full' || build === 'lite' ? build : 'auto';
   $('headsUp').checked = stored[HEADS_UP_KEY] !== false;
+  $('autoReview').checked = stored[AUTO_REVIEW_KEY] === true;
 }
+
+$('autoReview').addEventListener('change', async () => {
+  // Saved immediately; the content script's storage listener picks it up in
+  // every open trainer tab, no reload needed.
+  await chrome.storage.local.set({ [AUTO_REVIEW_KEY]: $('autoReview').checked });
+  setStatus($('autoReview').checked
+    ? 'Clickable lines will be reviewed automatically.'
+    : 'Automatic clickable-line review off.');
+});
 
 $('headsUp').addEventListener('change', async () => {
   // Saved immediately; the content script's storage listener picks it up in

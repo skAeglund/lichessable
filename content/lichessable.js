@@ -238,6 +238,20 @@
       animMs: 180,          // our own piece glide; ~Chessable's own ~200 ms tween
       dragSlopPx: 4,        // pointer travel before a press counts as a drag rather than a click
 
+      // When a review ends, Chessable's own board is put on the position the
+      // line just played ended on, by clicking that line's last sub-move span
+      // (the click the user would make in the comment column themselves). The
+      // board is what the Lichess panel reads, so this is what makes "look the
+      // final position up in the database" a no-op instead of a hunt.
+      endNavDelayMs: 120,   // let the overlays come down before their board redraws
+
+      // "Auto review all clickables": start the review by itself as soon as a
+      // completed variation's lines are ready, skipping launcher and picker.
+      // OFF by default — landing in a quiz nobody asked for is jarring, which
+      // is the whole reason the queue has a button (18b).
+      autoKey: 'cloAutoReviewClickables', // chrome.storage.local; absent = off
+      autoDelayMs: 700,     // after the lines are ready, so the completion settles
+
       // --- "already in your course" check ---------------------------------
       // A clickable line can be added to the repertoire as a real variation
       // (Chessable's own right-click on the line), and many are. Quizzing one
@@ -276,6 +290,11 @@
       headsUpMiniPx: 176,   // mini-board edge; the panel sizes itself around it
       headsUpMinBoardPx: 200, // below this the trainer board is mid-render — don't place
       headsUpOffArmMs: 4000,  // how long the panel's "Turn off" stays armed for its second click
+      // Once a line is queued the panel has said everything it has to say, and
+      // it sits over the board's gutter (or, on a phone, over the comment
+      // column) — so it takes itself away. Long enough for the "Queued…" note
+      // to be read, short enough not to be in the way.
+      headsUpQueuedHideMs: 1600,
       // Attempts at reading a variation's comments before giving up on it. At
       // the 500 ms tick this is ~30 s, and it needs to be: unlike the browse
       // scanner — which only ever starts once reviewBrowseReady() proves the
@@ -7061,6 +7080,13 @@
   // over by nulling the owner; a run whose owner has gone quiet for
   // ownerStaleMs can be taken over by any trainer tab of the same course.
   // ==========================================================================
+
+  // () => boolean — true while THIS document is driving a retry pass. The
+  // continuation review's auto-start (section 18) stands down then: the pass
+  // navigates between variations by itself and would tear a just-opened quiz
+  // straight down again. Assigned by initRetryRunner; null-safe.
+  let retryRunActive = null;
+
   function initRetryRunner() {
     const C = CONFIG.retry;
     const MY_ID = 'r' + Math.random().toString(36).slice(2, 10);
@@ -7085,6 +7111,8 @@
       ticking: false,     // the whole tick is async — never overlap two
       dead: false,
     };
+
+    retryRunActive = () => Boolean(rr.run && rr.run.owner === MY_ID);
 
     // What each replay mode does, in the popup's own words.
     const MODE_NOTES = {
@@ -7885,6 +7913,9 @@
       lines: [],          // ALL usable continuations found, in DOM order
       queue: [],          // the subset this run is playing (all, or final-position only)
       choosing: false,    // the "All / Final" picker is up, no line started yet
+      auto: false,        // cloAutoReviewClickables; opt-IN, so OFF until storage says otherwise
+      autoRan: null,      // variation the auto-start already fired for (once per variation)
+      autoTimer: 0,
       active: false,
       lineIdx: 0,
       line: null,
@@ -7938,6 +7969,7 @@
         armed: new Map(),
         offArmed: false,  // "Turn off" is waiting for its confirming second click
         offTimer: 0,
+        hideTimer: 0,     // the panel taking itself away after a line was queued
       },
     };
 
@@ -7945,13 +7977,17 @@
 
     (async () => {
       try {
-        const stored = await chrome.storage.local.get([CONFIG.autoPlay.speedKey, C.headsUpKey]);
+        const stored = await chrome.storage.local.get(
+          [CONFIG.autoPlay.speedKey, C.headsUpKey, C.autoKey]);
         const speed = stored[CONFIG.autoPlay.speedKey];
         if (typeof speed === 'string' &&
             Object.prototype.hasOwnProperty.call(CONFIG.autoPlay.speeds, speed)) cr.speed = speed;
         // Opt-OUT: only an explicit false turns the heads-up off, so a profile
         // that has never seen the options page still gets it.
         cr.hu.enabled = stored[C.headsUpKey] !== false;
+        // Opt-IN, the other way round: only an explicit true starts a review
+        // by itself.
+        cr.auto = stored[C.autoKey] === true;
       } catch (err) {
         warn('continuation: preference read failed:', err);
       }
@@ -7968,6 +8004,13 @@
         if (changes[C.headsUpKey]) {
           cr.hu.enabled = changes[C.headsUpKey].newValue !== false;
           if (!cr.hu.enabled) hideHeadsUp();
+        }
+        if (changes[C.autoKey]) {
+          cr.auto = changes[C.autoKey].newValue === true;
+          // Turning it on mid-variation must not pounce on the variation the
+          // user is already browsing; the next one gets it.
+          if (cr.auto) cr.autoRan = cr.oid;
+          else cancelAutoStart();
         }
       });
     } catch (err) { /* orphaned context — the default pause is fine */ }
@@ -8400,6 +8443,38 @@
     }
 
     /**
+     * The comment column's sub-move spans, grouped one group per printed line,
+     * in DOM order.
+     *
+     * Sub-move ids are NOT unique across comments: EVERY comment block restarts
+     * its numbering, so a variation with three commented moves prints "0.0.0",
+     * "0.0.1" three times over (ground-truthed live 2026-07-27 — the design
+     * doc's "the leading component numbers the block" was wrong). Grouping on
+     * the id alone therefore welded three separate lines into one 8-move line
+     * that fitted nowhere, and every one of them was dropped. Scoping the key
+     * by the ATTACH PLY fixes it: two lines of ONE comment share it — so a
+     * nested line still finds its parent — while lines hanging off different
+     * moves never do.
+     */
+    function subMoveGroups(els) {
+      const groups = [];
+      const byKey = new Map();
+      const moveEls = [...document.querySelectorAll(SELECTORS.reviewMoves)];
+      for (const el of els) {
+        const id = el.id || '';
+        const cut = id.lastIndexOf('.');
+        if (cut <= 0) continue; // not the "<ply>.<line>.<move>" shape we know
+        const idKey = id.slice(0, cut);
+        const attachPly = attachPlyOf(el, moveEls);
+        const key = attachPly + '|' + idKey;
+        let group = byKey.get(key);
+        if (!group) { group = { key, idKey, attachPly, els: [] }; byKey.set(key, group); groups.push(group); }
+        group.els.push(el);
+      }
+      return groups;
+    }
+
+    /**
      * The quizzable lines the comment column prints RIGHT NOW, resolved against
      * the lesson plan. Shared by the browse-state launcher (section 18) and the
      * mid-quiz heads-up (section 18b): the two differ only in when they ask and
@@ -8429,29 +8504,7 @@
       const fens = mainlineFens(plan);
       if (!fens) return { retry: 'mainline FENs unusable' };
 
-      const groups = [];
-      const byKey = new Map();
-      const moveEls = [...document.querySelectorAll(SELECTORS.reviewMoves)];
-      for (const el of els) {
-        const id = el.id || '';
-        const cut = id.lastIndexOf('.');
-        if (cut <= 0) continue; // not the "<ply>.<line>.<move>" shape we know
-        const idKey = id.slice(0, cut);
-        // Sub-move ids are NOT unique across comments: EVERY comment block
-        // restarts its numbering, so a variation with three commented moves
-        // prints "0.0.0", "0.0.1" three times over (ground-truthed live
-        // 2026-07-27 — the design doc's "the leading component numbers the
-        // block" was wrong). Grouping on the id alone therefore welded three
-        // separate lines into one 8-move line that fitted nowhere, and every
-        // one of them was dropped. Scoping the key by the ATTACH PLY fixes it:
-        // two lines of ONE comment share it — so a nested line still finds its
-        // parent — while lines hanging off different moves never do.
-        const attachPly = attachPlyOf(el, moveEls);
-        const key = attachPly + '|' + idKey;
-        let group = byKey.get(key);
-        if (!group) { group = { key, idKey, attachPly, els: [] }; byKey.set(key, group); groups.push(group); }
-        group.els.push(el);
-      }
+      const groups = subMoveGroups(els);
 
       // Shallowest first, so a line genuinely written INSIDE another can anchor
       // on its parent's positions; the output stays in DOM order.
@@ -9197,7 +9250,7 @@
       exit.className = 'clo-cr-btn clo-cr-btn--exit';
       exit.textContent = 'Exit';
       exit.title = 'Close the continuation review and give Chessable its board back';
-      exit.addEventListener('click', () => closeReview('exited'));
+      exit.addEventListener('click', () => closeReview('exited', true));
 
       actions.append(hint, skip, exit);
 
@@ -9346,6 +9399,43 @@
       beginRun(fresh);
     }
 
+    /** Drops a pending auto-start (the setting went off, the variation changed,
+     *  the browse state went away, a review was opened by hand). */
+    function cancelAutoStart() {
+      clearTimeout(cr.autoTimer);
+      cr.autoTimer = 0;
+    }
+
+    /**
+     * "Auto review all clickables" (opt-IN): the moment a completed variation's
+     * lines are ready, start the review without being asked — ALL of them, with
+     * launcher and picker skipped, since having the setting on IS the answer to
+     * "which lines?".
+     *
+     * Once per variation, so exiting the quiz does not immediately land the user
+     * back in it, and never while THIS document drives a retry pass: that pass
+     * moves to the next variation on its own and would tear the quiz down a
+     * moment after it opened.
+     */
+    function maybeAutoStart() {
+      if (!cr.auto || cr.active || cr.choosing || cr.autoTimer) return;
+      if (!cr.oid || String(cr.autoRan) === String(cr.oid)) return;
+      if (!freshLines().length) return;
+      if (retryRunActive && retryRunActive()) return;
+      cr.autoRan = cr.oid;
+      // A short pause: the variation has only just been completed, and opening
+      // over a board still finishing its last move reads as a glitch.
+      cr.autoTimer = setTimeout(() => {
+        cr.autoTimer = 0;
+        if (!cr.auto || cr.active || cr.choosing) return;
+        if (String(cr.autoRan) !== String(cr.oid) || !reviewBrowseReady()) return;
+        const queue = freshLines();
+        if (!queue.length || !showOverlays()) return; // warned there
+        log('continuation review: auto-starting —', queue.length, 'line(s)');
+        beginRun(queue);
+      }, C.autoDelayMs);
+    }
+
     /** The scope picker. The board stays HIDDEN behind it: there is no single
      *  position to preview yet, and Chessable's own board is no spoiler. */
     function showChooser(fresh, finalCount) {
@@ -9366,6 +9456,10 @@
     function beginRun(queue) {
       if (!queue.length) { closeReview('nothing selected'); return; }
       cr.choosing = false;
+      // However this run started, the variation has had its review — the
+      // auto-start must not open a second one the moment this is closed.
+      cancelAutoStart();
+      cr.autoRan = cr.oid;
       cr.queue = queue;
       // Any run consumes the queue — whether it was the queued lines or the
       // whole set from the launcher, which contains them. The array above is
@@ -9383,15 +9477,82 @@
       startLine(0);
     }
 
-    function finish() {
-      log('continuation review: all lines done');
-      closeReview(null);
+    /**
+     * The sub-move spans Chessable printed for `line`, or null when the comment
+     * column holds nothing matching it.
+     *
+     * Matched on the SAN sequence rather than on any stored element: the queued
+     * lines (18b) come from the lesson plan and never had a DOM element, the
+     * comment re-renders freely, and the ids repeat across blocks. Two
+     * identically-written lines in one variation are indistinguishable here —
+     * and lead to the same position anyway.
+     */
+    function lineSpans(line) {
+      const n = line.plies.length;
+      for (const group of subMoveGroups([...document.querySelectorAll(SELECTORS.reviewSubMoves)])) {
+        if (group.els.length < n) continue;
+        let ok = true;
+        for (let i = 0; i < n && ok; i++) ok = quickEditSanFromEl(group.els[i]) === line.plies[i].san;
+        if (ok) return group.els;
+      }
+      return null;
     }
 
-    function closeReview(why) {
+    /**
+     * Leaves CHESSABLE's own board on the position the review just left off at,
+     * by clicking the line's last played sub-move — the very click the user
+     * would make in the comment column. Their board is what the Lichess panel
+     * reads, so this turns "now look that final position up in the database"
+     * into something that has already happened.
+     *
+     * `played` is how far the line actually got (cr.plyIdx), so exiting halfway
+     * lands on the position the user was last shown, never on moves ahead of
+     * them; nothing is clicked when the line had not started.
+     */
+    function navigateToLineEnd(line, played) {
+      if (!line || played <= 0 || !reviewBrowseReady()) return;
+      const idx = Math.min(played, line.plies.length) - 1;
+      const els = lineSpans(line);
+      if (!els || !els[idx]) {
+        log('continuation: no printed move found for', line.label, '— board left where it was');
+        return;
+      }
+      // After the overlays are down, so their board is visible while it moves.
+      setTimeout(() => {
+        if (cr.active) return; // a new run started in the meantime
+        try {
+          // The board-square recipe, not a bare .click(): ground-truthed live
+          // 2026-07-27 that a plain click on a sub-move span does NOTHING,
+          // while the pointer+mouse sequence pressSquare sends navigates —
+          // exactly as on Chessable's squares (and it picks the touch flavour
+          // on a phone by itself).
+          pressSquare(els[idx]);
+          log('continuation: board left on', line.plies[idx].san, 'of', line.label);
+        } catch (err) {
+          warn('continuation: could not navigate the board to the line end:', err);
+        }
+      }, C.endNavDelayMs);
+    }
+
+    function finish() {
+      log('continuation review: all lines done');
+      closeReview(null, true);
+    }
+
+    /**
+     * @param {?string} why       logged when a running review is torn down
+     * @param {boolean} [navEnd]  also put Chessable's board on the position the
+     *                            last line reached (a user-driven end: the run
+     *                            finished, or Exit/Escape). Never on a teardown
+     *                            the trainer forced on us — the variation it
+     *                            would click in has gone.
+     */
+    function closeReview(why, navEnd) {
       clearTimer();
       clearTimeout(cr.flashTimer);
       const wasActive = cr.active;
+      const lastLine = cr.line;
+      const played = cr.plyIdx;
       cr.active = false;
       cr.choosing = false;
       cr.queue = [];
@@ -9406,6 +9567,7 @@
       if (cr.boardEl) cr.boardEl.hidden = true;
       if (cr.panel) cr.panel.hidden = true;
       if (wasActive && why) log('continuation review:', why);
+      if (wasActive && navEnd) navigateToLineEnd(lastLine, played);
       syncButton();
     }
 
@@ -9752,6 +9914,8 @@
 
     function hideHeadsUp() {
       cr.hu.shown = null;
+      clearTimeout(cr.hu.hideTimer);
+      cr.hu.hideTimer = 0;
       disarmOff(); // a pending confirm must never survive into the next showing
       if (cr.hu.el) cr.hu.el.hidden = true;
     }
@@ -10047,6 +10211,14 @@
       cr.hu.ui.note.hidden = false;
       syncButton(); // the "Review queued lines" button appears/counts up
       log('continuation: queued —', group.lines.map((l) => l.label).join(' | '));
+      // Its work is done, and it is sitting over the board's gutter (or, on a
+      // phone, over the comment column) — so it takes itself away, after just
+      // long enough for the note to be read. `seen` above is what keeps the
+      // next tick from raising the same group again.
+      clearTimeout(cr.hu.hideTimer);
+      cr.hu.hideTimer = setTimeout(() => {
+        if (cr.hu.shown === group) hideHeadsUp();
+      }, C.headsUpQueuedHideMs);
     }
 
     /**
@@ -10079,12 +10251,23 @@
       const footer = document.querySelector(SELECTORS.trainerFooter);
       const fr = footer ? footer.getBoundingClientRect() : null;
       if (fr && fr.height) bottom = Math.max(bottom, fr.bottom);
-      const widget = document.getElementById(REVIEW_WIDGET_ID);
-      const wr = widget && !widget.hidden ? widget.getBoundingClientRect() : null;
-      if (wr && wr.height) bottom = Math.max(bottom, wr.bottom);
-      const row = document.querySelector(SELECTORS.trainerRow);
-      const rr = row ? row.getBoundingClientRect() : null;
-      if (rr && rr.height && stackedTrainerLayout(rect)) bottom = Math.max(bottom, rr.bottom);
+      // On a phone in portrait the comment column is STACKED under the board,
+      // and everything else of ours (the overstudy widget, the review panel)
+      // drops below the whole trainer row — which puts this panel a scroll
+      // away from the board it is talking about. While a variation is being
+      // PLAYED that column says nothing but "Quiz — White to play!", so the
+      // panel takes its place instead, directly under the board. In the browse
+      // state it is the comment itself down there — the clickable lines
+      // included — so the panel keeps out of the way as before.
+      const coverComment = stackedTrainerLayout(rect) && !reviewBrowseReady();
+      if (!coverComment) {
+        const widget = document.getElementById(REVIEW_WIDGET_ID);
+        const wr = widget && !widget.hidden ? widget.getBoundingClientRect() : null;
+        if (wr && wr.height) bottom = Math.max(bottom, wr.bottom);
+        const row = document.querySelector(SELECTORS.trainerRow);
+        const rr = row ? row.getBoundingClientRect() : null;
+        if (rr && rr.height && stackedTrainerLayout(rect)) bottom = Math.max(bottom, rr.bottom);
+      }
       const left = Math.min(Math.max(rect.left + (rect.width - width) / 2, gap),
                             window.innerWidth - width - gap);
       setInlinePx(el, { left: left + sx, top: bottom + 10 + sy, width });
@@ -10206,6 +10389,7 @@
         cr.lines = [];
         cr.oid = null;
         cr.signature = '';
+        cancelAutoStart();
         resetHeadsUp();
         hideButton();
         return;
@@ -10217,6 +10401,7 @@
         cr.lines = [];
         cr.signature = '';
         cr.scanTries = 0;
+        cancelAutoStart(); // an auto-start belongs to the variation it was armed in
         resetHeadsUp(); // queued lines belong to the variation they were queued in
         if (cr.active) closeReview('variation changed');
       }
@@ -10225,6 +10410,7 @@
         // means the trainer moved on underneath us.
         if (cr.active) closeReview('left the browse state');
         if (cr.lines.length) { cr.lines = []; cr.signature = ''; }
+        cancelAutoStart();
         hideButton();
         headsUpTick();
         return;
@@ -10246,6 +10432,7 @@
         scanContinuations(signature);
       }
       syncButton();
+      maybeAutoStart();
     }
 
     // MoveTrainer2 binds single-key shortcuts ("n" = next variation, space, …)
@@ -10258,7 +10445,7 @@
       document.addEventListener(type, (e) => {
         if (!cr.active || e.ctrlKey || e.metaKey || e.altKey) return;
         e.stopPropagation();
-        if (type === 'keydown' && e.key === 'Escape') closeReview('escaped');
+        if (type === 'keydown' && e.key === 'Escape') closeReview('escaped', true);
       }, true);
     }
 

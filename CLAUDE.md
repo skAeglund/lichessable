@@ -30,7 +30,9 @@ answered (section 17). A completed variation whose comment holds clickable
 subvariation lines offers "Review clickable(s)" — the button is deliberately not
 named after "continuations", since a line branching off earlier in the variation
 continues nothing — which quizzes those lines on
-OUR OWN board overlaid on Chessable's — theirs is navigation-only (section 18).
+OUR OWN board overlaid on Chessable's — theirs is navigation-only (section 18);
+an opt-in setting starts that review by itself, and ending it leaves THEIR board
+on the position the line reached.
 Currently working (v0.18.x).
 
 ## Structure
@@ -888,7 +890,27 @@ Currently working (v0.18.x).
   approximated (33% dot at effective alpha .21; their radial-gradient ring on a
   capture) — the square colour is ours on purpose, the affordances are theirs.
   A refused move needs NO rollback — our position only ever advances on the
-  correct move. Two misses spell the answer out (`wrongHintAfter`). Keys are
+  correct move. Two misses spell the answer out (`wrongHintAfter`).
+  ENDING A REVIEW LEAVES THEIR BOARD ON THE LINE (v0.38.0): `closeReview(why,
+  navEnd)` — true only for a user-driven end (finished, Exit, Escape; NEVER a
+  teardown the trainer forced, where the variation it would click in has gone) —
+  presses the line's last PLAYED sub-move span, so the review panel (whose FEN
+  comes off that board) is already showing the line's final position when the
+  overlays come down. Ground-truthed 2026-07-27: a bare `.click()` on a
+  `commentSubMove` span does NOTHING; it needs `pressSquare`'s pointer+mouse
+  sequence, exactly like a board square. The span is found by matching the
+  line's SAN sequence against freshly grouped spans (`lineSpans` over
+  `subMoveGroups`, extracted from collectLines) — NOT by an element stored on
+  the line: a queued line (18b) came from the plan and never had one, and the
+  comment re-renders freely. `cr.plyIdx` caps the index, so an early exit lands
+  on the last move the user was SHOWN, and `played <= 0` navigates nothing.
+  AUTO-START (`autoKey` = `cloAutoReviewClickables`, storage.local, opt-IN):
+  `maybeAutoStart` runs `beginRun(freshLines())` from the tick once the lines
+  are ready — launcher and picker skipped, the setting IS the answer to "which
+  lines?". Armed once per variation (`cr.autoRan`, which `beginRun` sets for ANY
+  run, so exiting never drops the user straight back in), and it stands down
+  while `retryRunActive()` (section 17's bridge): that pass navigates between
+  variations itself and would tear a just-opened quiz down. Keys are
   swallowed on `document` in CAPTURE phase while active (not bubble like the qe
   popup): our overlays are rarely focused, and MoveTrainer2's single-key
   shortcuts ("n" = next variation) ignore focus, so one keypress would end the
@@ -990,7 +1012,19 @@ Currently working (v0.18.x).
   about a queued line needs re-deriving anyway: it was resolved against the
   plan's exact positions, `walkLine` proved every SAN legal, and every
   condition above was applied before it was ever raised. Never reintroduce a
-  cross-reader lookup here. Unlike the quiz panel this one must NOT
+  cross-reader lookup here.
+  Queueing a line HIDES the panel after `headsUpQueuedHideMs` (v0.38.0): its
+  work is done and it sits over the gutter — or, on a phone, over the comment
+  column. `armHeadsUp` already adds the group to `seen`, so the next tick cannot
+  raise it again; the timer is cleared by `hideHeadsUp`.
+  PLACEMENT in a STACKED layout (portrait) while the quiz is LIVE stops at the
+  board's own FOOTER instead of also clearing the overstudy widget and the whole
+  trainer row (`coverComment` = stacked && `!reviewBrowseReady()`): down there
+  Chessable prints nothing but "Quiz — White to play!", while our panel would
+  otherwise be a scroll away from the board it is talking about. In the BROWSE
+  state that column holds the comment — the clickable lines included — so the
+  old placement stands.
+  Unlike the quiz panel this one must NOT
   swallow keys — the user is still playing on Chessable's board and needs
   MoveTrainer2's shortcuts — so its buttons `blur()` themselves after a press
   instead, or the next space would re-fire them. Opt-OUT setting
