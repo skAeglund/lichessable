@@ -340,10 +340,36 @@ have played into, and clicking a row in the panel plays that move on the board.
 
 The panel over the comment column keeps the move list: click any move to jump to
 it, or use **⏮ / ◀ / ▶**, the arrow keys, Home/End. Playing a move after
-stepping back replaces what followed, like any analysis board. **Flip** (or `F`)
-turns the board around. Nothing here is recorded, rescheduled or saved to your
-course, and **Exit** (or Escape) simply takes the overlay away — Chessable's own
-board never moved.
+stepping back replaces what followed, like any analysis board. **Remove from
+here** (or Backspace) throws away the move the board is standing on together
+with everything after it — click the move you regret in the list, press it, and
+you are back at the position before that move, ready to try something else.
+**Flip** (or `F`) turns the board around. Playing here is never recorded or rescheduled, and
+**Exit** (or Escape) simply takes the overlay away — Chessable's own board never
+moved.
+
+**Add as line** keeps a line you have worked out: it appends it to the comment
+on the move the analysis was opened on, written the way Chessable's authors
+write one — in parentheses, `(12.Be3 Rb7 13.Nc3)` — so Chessable prints it as
+clickable moves, and the extension can then quiz you on it with **Review
+clickable(s)**. The field above the buttons is an optional lead-in: type
+`An example continuation:` and the comment gets
+`An example continuation: (12.Be3 Rb7 13.Nc3)`. It is kept for the next analysis
+in the same tab, and the board's single-key shortcuts (`F` to flip, the arrows)
+stand down while you are typing in it — Escape steps back out of the field.
+The whole move list goes in, not just the part currently on the board.
+
+One press saves — the line under the buttons shows the exact text the whole
+time, so there is nothing a confirmation would tell you that you cannot already
+read. The save goes through the same Chessable edit page the comment pencil
+drives (a small window opens and closes itself), and if you change your mind the
+pencil's **Edit** tab opens that comment for editing. It needs edit rights on the
+course, checked the first time you press it — that check opens the same kind of
+window, and the save follows by itself once it comes back. The button stays greyed out when there is no move to
+hang a line on — the board was on the starting position, or inside a clickable
+line rather than on a move of the variation itself — and the line underneath
+says which. The comment column behind the overlay still shows the old text; it
+is rebuilt the next time the variation is drawn.
 
 On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
 extension adds a **Sort by popularity** button, which reorders the whole chapter to
@@ -916,7 +942,10 @@ enough not to run, the ↻ button is the only way back.
   code unchanged. Free play needs a position of its own, so moves are kept as
   one line of `{uci, san, fen}` with the FEN from `fenAfterUci` (exact castling,
   en passant and halfmove clock); playing a move after stepping back truncates
-  the rest. **The panel follows our board** through a second null-safe bridge,
+  the rest, and `anRemoveFrom` (**Remove from here**, Backspace) truncates
+  without playing anything — it drops the move at `cr.an.idx` and everything
+  after it, then `anGoto`s to the position before it, so one call repaints the
+  board, re-renders the list and refreshes the database panel. **The panel follows our board** through a second null-safe bridge,
   `continuationAnalysisFen`: `readFen()` returns it when it is non-null and
   `reviewPanelTick` skips its usual stand-down, so the database, the opening
   name and the engine all key off our position with no other change — and a
@@ -926,9 +955,36 @@ enough not to run, the ↻ button is the only way back.
   inherits that function's two approximations (castling by home squares, en
   passant always "-"); every position after it is exact. Board orientation moved
   from `cr.userColor` to `cr.view` so **Flip** cannot change what a quiz asks
-  for. Nothing is written anywhere: no proofs, no rescheduling, no course edit,
-  and Chessable's own board is never touched, so leaving is just hiding the
-  overlays.
+  for. Playing writes nothing — no proofs, no rescheduling — and Chessable's own
+  board is never touched, so leaving is just hiding the overlays.
+- **Add as line** — the analysis board's one write, and an ordinary quick-edit
+  `save` job (section 12) with no change to the driver: the line is rendered as
+  numbered SAN from its own start position (`analysisLinePgn`, ellipsis form
+  when Black moves first), wrapped in **parentheses** and given the user's
+  optional lead-in (`analysisCommentText`; the separating space is added only
+  when the typed text does not end in one), then appended to the comment of the
+  move the board was showing when the analysis opened. The lead-in lives on
+  `cr.addPrefix`, outside `cr.an`, so it survives closing one analysis and
+  opening the next; its field is exempted from the panel's own single-key
+  shortcuts, or an "f" typed into it would flip the board. That move is read *before* the overlays go
+  up (`analysisEntryMove` → `reviewMoveDescriptor`, whose ply index maps 1:1
+  onto the edit page) and refused outright when a **sub**-move was shown: the
+  board is then inside a comment line, so the positions our moves continue from
+  are not the ones a mainline comment hangs at. Every refusal carries a sentence
+  for the panel — a greyed-out button with no reason is the one outcome the user
+  cannot act on. Rights come from `quickEditApi` (the shared per-course cache
+  and its lazy probe), probed on the first press rather than on open, because a
+  probe opens a focused driver window; the press that triggered a probe is
+  carried out by `onAnalysisQuickEditResult` once rights come back, unless the
+  text has changed in the meantime. ONE press saves — the status line carries
+  `analysisPreview()` (the exact text) whenever the button is idle, so the
+  preview a confirming press would have shown is on screen before it is pressed.
+  Both the probe and the save get
+  a local watchdog — the worker's job timer does not survive an idle restart,
+  and quick-edit's own probe watchdog only unsticks its own popup. Results
+  arrive on the shared `clo-quick-edit-result` message, which all three modules
+  listen to and each ignores what is not theirs (ours: `save` mode, matching
+  `oid` + `plyIndex`).
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.

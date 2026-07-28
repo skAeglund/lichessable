@@ -36,7 +36,9 @@ an opt-in setting starts that review by itself, and ending it leaves THEIR board
 on the position the line reached. That same board doubles as a free-play
 ANALYSIS board (section 19): "Analyse" on the widget lets any legal move be
 played for either side from the completed position, with the Lichess panel and
-the engine following OUR board instead of Chessable's.
+the engine following OUR board instead of Chessable's, and "Add as line" writes
+the line worked out there back into the course as a clickable line in the
+comment of the move it was opened on.
 Currently working (v0.18.x).
 
 ## Structure
@@ -1105,6 +1107,13 @@ Currently working (v0.18.x).
   quiz. History is ONE line of `{uci, san, fen}` (`cr.an`), the fen from the
   top-level `fenAfterUci` (exact castling/ep/halfmove); playing after stepping
   back truncates, which is the whole "no variation tree" decision.
+  `anRemoveFrom` ("Remove from here", Backspace/Delete, v0.44.0) is that same
+  truncation with nothing played in place: it drops the move at `cr.an.idx` AND
+  everything after it, then `anGoto(idx - 1)` — one call that repaints,
+  re-renders the list, refreshes the panel and lands on the position the
+  replacement move would be played from. Removing is a change to the line, so it
+  clears a finished save's message exactly as `anPlay` does and the Add preview
+  follows.
   THE PANEL FOLLOWS OUR BOARD through a second null-safe bridge,
   `continuationAnalysisFen` — `readFen()` prefers it over `readReviewFen()` and
   `reviewPanelTick` skips its `continuationActive` stand-down while it is
@@ -1118,9 +1127,57 @@ Currently working (v0.18.x).
   (castling from home squares, en passant always "-") — every position after it
   is exact. `positionReviewPanel`'s below-the-board fallback now also clears
   `CR_PANEL_ID`, for the stacked layout where both park under the board.
-  NOTHING is written: no proofs, no rescheduling, no course edit, and
-  Chessable's board is never touched — so `closeReview` skips `navigateToLineEnd`
-  in this mode and leaving is just hiding the overlays.
+  PLAYING writes nothing: no proofs, no rescheduling, and Chessable's board is
+  never touched — so `closeReview` skips `navigateToLineEnd` in this mode and
+  leaving is just hiding the overlays.
+  ADD AS LINE (v0.41.0) is the one write, and it is the UNCHANGED quick-edit
+  'save' job (section 12) — no new driver, no new message type. The line is
+  written out as numbered SAN from its own start position (`analysisLinePgn`;
+  ellipsis form when Black moves first, since that is what Chessable's authors
+  write and what its parser turns into clickable moves), wrapped in PARENTHESES
+  and preceded by the user's optional lead-in — `analysisCommentText`, e.g.
+  "An example continuation: (12.Be3 Rb7 13.Nc3)"; the parentheses are how
+  Chessable writes a line inside a comment and are NOT decoration. The lead-in
+  is typed into a field in the panel and lives on `cr.addPrefix`, OUTSIDE
+  `cr.an`: it is the user's wording, not the board's state, so it survives one
+  analysis closing and the next opening. The document-capture key swallow (below) SKIPS its own
+  board shortcuts while that field has focus, or typing "f" would flip the board
+  and an arrow would walk the move list instead of the caret; Escape blurs the
+  field rather than closing the board on a half-typed sentence. The text is
+  APPENDED to the comment of the move the board was showing when the analysis
+  opened. That move
+  is read BEFORE the overlays go up (`analysisEntryMove` → `reviewMoveDescriptor`
+  — the review ply index maps 1:1 onto the edit page) and stored on `cr.an.entry`,
+  because the line's numbers only name real positions relative to THAT move. A
+  shown SUB-move is REFUSED: the board is then inside a comment line, so the
+  position our moves continue from is not where any mainline comment hangs, and
+  the numbers would name positions the author never joined up. Every refusal
+  carries a sentence (`entryWhy`) for the panel's status line — a greyed-out
+  button with no reason is the one outcome a user cannot act on. Rights come
+  from `quickEditApi` (shared per-course cache + lazy probe), probed on the FIRST
+  PRESS and never on open: a probe opens a focused driver window, which nobody
+  asked for by opening an analysis board. That press MEANT save, so the probe is
+  a detour: `cr.an.pending` holds the composed text and
+  `onAnalysisQuickEditResult` sends it once rights come back — but only while
+  text, oid and plyIndex still match, since a probe window is up for seconds and
+  the board is live behind it.
+  ONE PRESS SAVES (v0.43.0). The arming press this started with was removed on
+  request; what replaces it is that the status line shows `analysisPreview()` —
+  the EXACT text a press would append — for as long as the button is idle. So
+  the preview a confirm would have offered is on screen BEFORE the press instead
+  of after it, and the write stays recoverable through the pencil's Edit tab.
+  Any change to the line or the lead-in clears a finished save's message so the
+  preview comes back (`anPlay`, the prefix field's input listener); the button
+  also `blur()`s itself, or space/Enter would append the same line twice.
+  Probe AND save each get a local watchdog
+  (`addRightsWaitMs` / `addWaitMs`): the worker's 25 s job timer does not survive
+  an idle restart, and quick-edit's own probe watchdog only unsticks ITS popup
+  and the alt check's. Results ride the shared `clo-quick-edit-result` message —
+  three listeners now, each ignoring what is not its own (ours: mode 'save',
+  matching oid AND plyIndex). The whole move list is written, not the part shown:
+  playing after stepping back truncates, so the list IS the line. Chessable's
+  comment column behind our overlay keeps the OLD text until the trainer redraws
+  the variation, so the status line is the entire confirmation.
 
 ## Verification (no automated tests)
 

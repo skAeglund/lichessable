@@ -1559,6 +1559,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cr-actions[hidden],
 .clo-cr-chooser[hidden],
 .clo-cr-list[hidden],
+.clo-cr-anprefix[hidden],
+.clo-cr-anstatus[hidden],
 .clo-cr-heads[hidden],
 .clo-cr-heads__note[hidden],
 .clo-cr[hidden] {
@@ -1778,6 +1780,50 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-size: 14px;
   line-height: 1.6;
 }
+
+/* The lead-in written before an added line ("An example continuation:").
+   `margin-top: auto` moves the panel's free space above it, so the field, the
+   controls and the status stay together at the bottom — the following actions
+   row must then give its own auto margin up, or the space would be split
+   between the two. (In quiz mode this field is hidden and the row that sinks is
+   the one BEFORE it, which keeps its margin.) */
+.clo-cr-anprefix {
+  align-self: stretch;
+  margin-top: auto;
+  box-sizing: border-box;
+  border: 1px solid #3d3a36;
+  border-radius: 3px;
+  background: #1b1a17;
+  color: #d8d8d8;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cr-anprefix::placeholder { color: #6f6f6f; }
+
+.clo-cr-anprefix:focus {
+  outline: none;
+  border-color: #629924;
+}
+
+.clo-cr-anprefix:disabled { opacity: 0.45; }
+
+.clo-cr-anprefix + .clo-cr-actions { margin-top: 0; }
+
+/* "Add as line" status: the exact text about to be appended, the save's
+   progress, and every reason a line cannot be added. Sits under the analysis
+   controls, wraps rather than widening the panel (which is sized to
+   Chessable's comment column). */
+.clo-cr-anstatus {
+  align-self: stretch;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #9a9a9a;
+  overflow-wrap: anywhere;
+}
+
+.clo-cr-anstatus--bad { color: #e08a8a; }
 
 .clo-cr-mvrow {
   display: flex;

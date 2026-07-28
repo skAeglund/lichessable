@@ -303,6 +303,16 @@
       // spent entirely on "no fiber root" and the variation was then skipped
       // for good (seen live at v0.36.2).
       headsUpScanTries: 60,
+
+      // --- analysis board (section 19) -------------------------------------
+      // The line played on the analysis board can be written back into the
+      // course as a clickable line, appended to the comment of the move it was
+      // opened on — the ordinary quick-edit 'save' job (section 12), unchanged.
+      // ONE press saves: the panel's status line shows the exact text it would
+      // append the whole time the button is idle, so a confirming press would
+      // only repeat what is already on screen.
+      addWaitMs:       45000, // watchdog: a save whose result never comes back
+      addRightsWaitMs: 50000, // …and one for a rights probe (quickEdit.probeTimeoutMs + slack)
     },
 
     // --- Optional local Stockfish (offscreen document, section 5b) ----------
@@ -8291,11 +8301,11 @@
       queueBtn: null,     // "Review queued lines" (section 18b)
       analyseBtn: null,   // "Analyse" (section 19)
       // --- analysis board (section 19) -------------------------------------
-      an: {
-        startFen: null,   // the position Chessable's board was on when it opened
-        moves: [],        // [{ uci, san, fen }] — one line, truncated on a branch
-        idx: 0,           // how many of those moves are on the board right now
-      },
+      an: blankAnalysis(),
+      // Lead-in typed for "Add as line" ("An example continuation:"). Lives
+      // OUTSIDE cr.an on purpose: it is the user's wording, not the board's
+      // state, so it survives closing one analysis and opening the next.
+      addPrefix: '',
       // The opponent's pause borrows auto-play's speed setting so the two
       // features feel the same; the widget's dropdown is the one control.
       speed: CONFIG.autoPlay.defaultSpeed,
@@ -9572,9 +9582,15 @@
     //
     // The move history is one line: playing a move after stepping back
     // truncates what followed, the way a plain analysis board does. Nothing is
-    // written anywhere — no proofs, no rescheduling, no course edit; leaving
-    // just takes the overlays away and Chessable's board is exactly where it
-    // was, because we never touched it.
+    // written by PLAYING here — no proofs, no rescheduling, no course edit; and
+    // leaving just takes the overlays away, because Chessable's board was never
+    // touched.
+    //
+    // The one thing that does write is "Add as line" (below): the line on the
+    // board, appended to the comment of the move the analysis was opened on, so
+    // that a variation you worked out here becomes a clickable line in your own
+    // course — and, by section 18, something the extension can quiz you on next
+    // time. It is the ordinary quick-edit 'save' job, unchanged.
     //
     // The STARTING position is readReviewFen(), so it inherits that function's
     // two documented approximations: castling rights are a home-square
@@ -9583,6 +9599,28 @@
     // very first move is out of reach — step one move back on Chessable's own
     // board and it is there.
     // ------------------------------------------------------------------------
+
+    /** A fresh analysis state. Also the reset, so a new board never inherits
+     *  the previous one's line, entry move or save status. */
+    function blankAnalysis() {
+      return {
+        startFen: null,   // the position Chessable's board was on when it opened
+        moves: [],        // [{ uci, san, fen }] — one line, truncated on a branch
+        idx: 0,           // how many of those moves are on the board right now
+        // The mainline move the board was showing when this opened — the move
+        // whose comment an added line belongs after. Null when there is none to
+        // hang it on, with `entryWhy` saying which case it was.
+        entry: null,
+        entryWhy: '',
+        // "Add as line": idle | checking (rights probe) | saving. `msg` is the
+        // panel's status line, `bad` its colour; an empty msg leaves the line
+        // to the live preview of what a press would write.
+        save: { state: 'idle', msg: '', bad: false },
+        job: null,        // { oid, plyIndex } of the save in flight
+        pending: null,    // { text, oid, plyIndex } a rights probe is holding up
+        waitTimer: 0,     // watchdog for a probe / save whose result never lands
+      };
+    }
 
     /** FEN of the position on our board: the start, or the move we are at. */
     function anFen() {
@@ -9604,6 +9642,9 @@
       cr.an.moves.length = cr.an.idx; // a new move here replaces the old continuation
       cr.an.moves.push({ uci, san, fen });
       cr.an.idx++;
+      // The line just changed, so the status line's last word about it — a
+      // finished save, a failure — is stale; the live preview takes over again.
+      if (cr.an.save.state === 'idle' && cr.an.save.msg) resetAnSave('idle', '', false);
       applyMove({ mv }); // animation + cr.pos, exactly as in the quiz
       syncUi();
       scheduleRefresh(); // database + engine follow immediately, not on the next tick
@@ -9629,12 +9670,271 @@
       scheduleRefresh();
     }
 
+    /**
+     * Removes the move the board is standing on AND everything after it, so a
+     * wrong turn taken ten moves ago can be dropped without replaying the rest
+     * — playing a different move only ever truncates from where you are.
+     * Lands on the position before the removed move, which is where you would
+     * want to play the replacement.
+     */
+    function anRemoveFrom() {
+      const idx = cr.an.idx;
+      if (idx <= 0) return; // nothing standing on the start position to remove
+      const gone = cr.an.moves.length - idx + 1;
+      const san = cr.an.moves[idx - 1].san;
+      cr.an.moves.length = idx - 1;
+      // The status line's last word about the line is stale now, exactly as
+      // after playing a move; the live preview takes over again.
+      if (cr.an.save.state === 'idle' && cr.an.save.msg) resetAnSave('idle', '', false);
+      log('analysis: removed', gone, gone > 1 ? 'moves from' : 'move,', san);
+      anGoto(idx - 1); // …which repaints, re-renders the list and refreshes the panel
+    }
+
     function anFlip() {
       cr.view = boardView() === 'w' ? 'b' : 'w';
       buildGrid();
       reconcilePieces();
       renderShapes();
       paint();
+    }
+
+    /**
+     * The mainline move Chessable's board is showing — the move this analysis
+     * carries on FROM, and therefore the one whose comment an added line
+     * belongs after (Chessable's "Comments After", the only field quick-edit
+     * reaches). Returns { move } or { why }, never null: every refusal has a
+     * sentence the panel can print, since a greyed-out button with no reason is
+     * the one outcome a user cannot act on.
+     *
+     * A shown SUB-move is refused outright: the board is then inside a comment
+     * line, so the position our moves continue from is not the one the comment
+     * on any mainline move hangs at, and the numbers we would write would name
+     * positions the author never joined up.
+     */
+    function analysisEntryMove() {
+      if (document.querySelector(SELECTORS.reviewSubMoveShown)) {
+        return { why: 'The board was inside a clickable line, not on a move of the variation ' +
+          '— a line can only be added after a move of the variation itself.' };
+      }
+      const shown = document.querySelector(SELECTORS.reviewMoveShown);
+      if (!shown) {
+        return { why: 'The board was on the starting position, which has no move to comment on.' };
+      }
+      const desc = reviewMoveDescriptor(shown);
+      if (!desc) return { why: 'The move on the board could not be read.' };
+      const oid = readQuickEditOid();
+      if (!oid) return { why: 'This variation could not be identified.' };
+      return {
+        move: {
+          oid, bid: readQuickEditBid() || '',
+          san: desc.san, color: desc.color, plyIndex: desc.plyIndex,
+        },
+      };
+    }
+
+    /**
+     * The analysis line as the moves a Chessable comment wants: SAN numbered
+     * from the position it started on, e.g. "12.Be3 Rb7 13.Nc3". Black-first
+     * lines take the ellipsis form ("12...Rb7"), which is what Chessable's own
+     * authors write and what its parser turns into clickable moves.
+     */
+    function analysisLinePgn() {
+      const start = CloSan.parseFen(cr.an.startFen);
+      if (!start) return '';
+      let number = start.fullmove;
+      let white = start.side === 'w';
+      const out = [];
+      cr.an.moves.forEach((move, i) => {
+        if (white) out.push(number + '.' + move.san);
+        else if (i === 0) out.push(number + '...' + move.san);
+        else out.push(move.san);
+        if (!white) number++;
+        white = !white;
+      });
+      return out.join(' ');
+    }
+
+    /**
+     * What actually goes into the comment: the moves in PARENTHESES, which is
+     * how Chessable writes a line inside a comment, after the user's own
+     * optional lead-in ("An example continuation: (12.Be3 Rb7 13.Nc3)"). The
+     * separating space is added only when the prefix does not end in one, so
+     * what was typed is otherwise kept verbatim.
+     */
+    function analysisCommentText() {
+      const moves = analysisLinePgn();
+      if (!moves) return '';
+      const prefix = cr.addPrefix || '';
+      if (!prefix.trim()) return '(' + moves + ')';
+      return prefix + (/\s$/.test(prefix) ? '' : ' ') + '(' + moves + ')';
+    }
+
+    function setAnStatus(msg, bad) {
+      cr.an.save.msg = msg;
+      cr.an.save.bad = Boolean(bad);
+      syncUi();
+    }
+
+    /** Drops any watchdog and sets the state + status — every path out of a
+     *  press goes through here. */
+    function resetAnSave(state, msg, bad) {
+      clearTimeout(cr.an.waitTimer);
+      cr.an.waitTimer = 0;
+      cr.an.save.state = state || 'idle';
+      cr.an.pending = null;
+      setAnStatus(msg || '', bad);
+    }
+
+    /** What a press would write, spelled out — shown while the button is idle,
+     *  so the exact text is on screen BEFORE it is pressed rather than after.
+     *  Empty when there is nothing to add. */
+    function analysisPreview() {
+      if (!cr.an.entry || !cr.an.moves.length) return '';
+      const text = analysisCommentText();
+      return text ? 'Adds after ' + cr.an.entry.san + ': ' + text : '';
+    }
+
+    /**
+     * "Add as line": append the analysis line to the entry move's comment, via
+     * the unchanged quick-edit 'save' job. ONE press does it — the status line
+     * above the button has been showing the exact text all along, so there is
+     * nothing a confirming press would tell the user that they cannot already
+     * see. (It is also recoverable: the pencil's Edit tab opens that comment.)
+     */
+    function addLineToComment() {
+      const an = cr.an;
+      // A pressed button keeps focus, and space/Enter would then fire it again
+      // — one line appended twice (the heads-up panel's buttons blur for the
+      // same reason).
+      if (cr.ui && cr.ui.anAdd) cr.ui.anAdd.blur();
+      if (an.save.state === 'saving' || an.save.state === 'checking') return;
+      if (!an.moves.length) {
+        resetAnSave('idle', 'Play the moves you want to add first.', true);
+        return;
+      }
+      if (!an.entry) {
+        resetAnSave('idle', an.entryWhy || 'There is no move to add this line to.', true);
+        return;
+      }
+      const text = analysisCommentText();
+      if (!text) {
+        resetAnSave('idle', 'The line could not be written out.', true);
+        return;
+      }
+      if (!extensionAlive()) {
+        resetAnSave('idle', 'The extension was reloaded — reload this page to save.', true);
+        return;
+      }
+      // Rights are per COURSE and probed lazily, exactly as the quick-edit
+      // popup and the alt check do it; the probe opens a focused driver window,
+      // so it is never started merely by opening the analysis board.
+      const rights = quickEditApi ? quickEditApi.rightsFor(an.entry.bid) : null;
+      if (rights === false) {
+        resetAnSave('idle', "You don't have edit rights for this course.", true);
+        return;
+      }
+      if (rights === null) {
+        const started = quickEditApi &&
+          quickEditApi.probe(an.entry.bid, an.entry.oid, popupDriverBounds(cr.panel));
+        if (!started) {
+          resetAnSave('idle', 'Could not check edit rights for this course.', true);
+          return;
+        }
+        resetAnSave('checking', 'Checking edit rights…', false);
+        // The press said "save"; the probe is a detour on the way, so the save
+        // goes ahead by itself once rights are known — but only if the text is
+        // still the one that was pressed for (onAnalysisQuickEditResult).
+        cr.an.pending = { text, oid: an.entry.oid, plyIndex: an.entry.plyIndex };
+        // Nothing about a probe may fail silently: quick-edit's own watchdog
+        // only unsticks ITS popup and the alt check's, so this one is ours.
+        cr.an.waitTimer = setTimeout(() => {
+          if (cr.an.save.state === 'checking') {
+            resetAnSave('idle', 'Could not check edit rights — press again to retry.', true);
+          }
+        }, C.addRightsWaitMs);
+        return;
+      }
+      sendAddLine(text);
+    }
+
+    /** Hands the composed text to the quick-edit worker and starts the wait. */
+    function sendAddLine(text) {
+      const entry = cr.an.entry;
+      if (!entry) return;
+      resetAnSave('saving', 'Saving to Chessable…', false);
+      cr.an.job = { oid: entry.oid, plyIndex: entry.plyIndex };
+      log('analysis: adding line to variation', entry.oid, 'ply', entry.plyIndex, ':', text);
+      try {
+        chrome.runtime.sendMessage({
+          type: 'clo-quick-edit-run', mode: 'save',
+          oid: entry.oid, bid: entry.bid,
+          san: entry.san, color: entry.color, plyIndex: entry.plyIndex,
+          commentText: text,
+          forThisVariationOnly: false, // Chessable's own default, like both popups
+          win: popupDriverBounds(cr.panel),
+        }).catch(() => {});
+      } catch (err) {
+        cr.an.job = null;
+        resetAnSave('idle', 'Could not reach the extension worker.', true);
+        return;
+      }
+      // The worker caps a job at 25 s, but its timer does not survive an idle
+      // restart — without this the panel could sit on "Saving…" for good.
+      cr.an.waitTimer = setTimeout(() => {
+        if (cr.an.save.state === 'saving') {
+          cr.an.job = null;
+          resetAnSave('idle', 'No answer from the save — check Chessable, then retry.', true);
+        }
+      }, C.addWaitMs);
+    }
+
+    /** Quick-edit results that belong to us: our own save, and the probe/read
+     *  answers that settle a rights check we are waiting on. */
+    function onAnalysisQuickEditResult(msg) {
+      if (msg.mode === 'probe' || msg.mode === 'load') {
+        // quick-edit's own listener is registered first (start() order), so its
+        // rights cache is already updated by the time this runs.
+        if (cr.an.save.state !== 'checking' || !cr.an.entry) return;
+        const rights = quickEditApi ? quickEditApi.rightsFor(cr.an.entry.bid) : null;
+        if (rights === true) {
+          // Carry out the press that started the probe — but only if it still
+          // means the same thing: the line, the lead-in or the move it hangs
+          // off may all have moved on while the probe window was up.
+          const pending = cr.an.pending;
+          const same = pending && pending.oid === cr.an.entry.oid &&
+            pending.plyIndex === cr.an.entry.plyIndex && pending.text === analysisCommentText();
+          resetAnSave('idle', '', false);
+          if (same) sendAddLine(pending.text);
+          else log('analysis: the line changed while edit rights were checked — not saving');
+        } else if (rights === false) {
+          resetAnSave('idle', "You don't have edit rights for this course.", true);
+        } else {
+          resetAnSave('idle', 'Could not check edit rights — press again to retry.', true);
+        }
+        return;
+      }
+      const job = cr.an.job;
+      if (cr.an.save.state !== 'saving' || !job) return;
+      if (String(msg.oid) !== String(job.oid)) return;
+      // The worker's own refusals (another job in progress, no driver window)
+      // are relayed WITHOUT a plyIndex — those are ours too, and waiting for
+      // the watchdog to report them instead would be a 45 s "Saving…".
+      if (typeof msg.plyIndex === 'number' && msg.plyIndex !== job.plyIndex) return;
+      cr.an.job = null;
+      if (msg.timing) log('analysis add-line timing:', msg.timing);
+      if (msg.ok) {
+        log('analysis: line added to the comment on ply', job.plyIndex);
+        // Chessable's comment column behind our overlay still shows the old
+        // text — it is only rebuilt when the trainer next renders the variation
+        // — so the status line is the whole confirmation.
+        resetAnSave('idle', 'Added to the comment on ' +
+          (cr.an.entry ? cr.an.entry.san : 'that move') + '.', false);
+      } else {
+        resetAnSave('idle', msg.error === 'another quick-edit is in progress'
+          ? 'Another save is in progress — try again in a moment.'
+          : (msg.error && msg.error !== 'timeout' ? msg.error
+            : 'Save failed or timed out — the line is still here, you can retry.'), true);
+      }
     }
 
     /** Opens the analysis board on the position Chessable's board is showing. */
@@ -9646,7 +9946,14 @@
         return;
       }
       cr.mode = 'analysis';
-      cr.an = { startFen: fen, moves: [], idx: 0 };
+      clearTimeout(cr.an.waitTimer);
+      cr.an = blankAnalysis();
+      cr.an.startFen = fen;
+      // Read BEFORE the overlays go up: the panel covers the comment column,
+      // and the move that was shown is what an added line hangs off.
+      const entry = analysisEntryMove();
+      cr.an.entry = entry.move || null;
+      cr.an.entryWhy = entry.why || '';
       if (!showOverlays()) { cr.mode = 'quiz'; return; }
       cr.view = cr.userColor; // start from the course colour, flippable from here
       cr.busy = false;
@@ -9720,6 +10027,37 @@
       ui.anStart.disabled = cr.an.idx === 0;
       ui.anBack.disabled = cr.an.idx === 0;
       ui.anFwd.disabled = cr.an.idx >= cr.an.moves.length;
+      // Standing on the start position there is no move under us to remove.
+      ui.anCut.disabled = cr.an.idx === 0;
+
+      // "Add as line". The whole line goes in, not just the part shown: playing
+      // after stepping back truncates what followed, so what is in the list IS
+      // the line — and a user who has stepped back to look around would lose
+      // the rest without noticing.
+      const save = cr.an.save;
+      const busy = save.state === 'saving' || save.state === 'checking';
+      ui.anPrefix.hidden = false;
+      ui.anPrefix.disabled = busy;
+      // The field is the source of the prefix while it is up; this only writes
+      // back the value carried over from the previous analysis in this tab.
+      if (ui.anPrefix.value !== cr.addPrefix && document.activeElement !== ui.anPrefix) {
+        ui.anPrefix.value = cr.addPrefix;
+      }
+      ui.anAdd.disabled = busy || !cr.an.moves.length || !cr.an.entry;
+      ui.anAdd.textContent = 'Add as line';
+      ui.anAdd.title = cr.an.entry
+        ? 'Append this line to the comment on ' + cr.an.entry.san +
+          ' in your course, where Chessable prints it as clickable moves. ' +
+          'Saves on one press; needs edit rights.'
+        : (cr.an.entryWhy || 'There is no move to add this line to.');
+      // The status line: what a press would write while nothing is happening,
+      // then the save's own progress, every refusal and its result. Never blank
+      // without reason — it is what makes the single press safe to give.
+      ui.anStatus.textContent = save.msg ||
+        (cr.an.entry ? analysisPreview() : (cr.an.entryWhy || ''));
+      ui.anStatus.className = 'clo-cr-anstatus' +
+        (save.bad || (!save.msg && !cr.an.entry) ? ' clo-cr-anstatus--bad' : '');
+      ui.anStatus.hidden = !ui.anStatus.textContent;
     }
 
     /**
@@ -9849,10 +10187,44 @@
       const anStart = anBtn('⏮', 'Back to the position you started from (Home)', () => anGoto(0));
       const anBack = anBtn('◀', 'One move back (left arrow)', () => anGoto(cr.an.idx - 1));
       const anFwd = anBtn('▶', 'One move forward (right arrow)', () => anGoto(cr.an.idx + 1));
+      const anCut = anBtn('Remove from here',
+        'Remove the move the board is on, and every move after it (Backspace). ' +
+        'Click a move in the list first to pick where the line should stop.',
+        anRemoveFrom);
       anBtn('Flip', 'Turn the board around (F)', anFlip);
+      // Writes to the course — hence the arming press, and the green of every
+      // other button in here that does something rather than navigates.
+      const anAdd = anBtn('Add as line', '', addLineToComment);
+      anAdd.classList.add('clo-cr-btn--primary');
       const anExit = anBtn('Exit', 'Close the analysis board and give Chessable its board back',
         () => closeReview('analysis closed'));
       anExit.classList.add('clo-cr-btn--exit');
+
+      // The lead-in written before the line ("An example continuation:"). Its
+      // keystrokes reach it because the document-capture swallow below stops
+      // propagation without preventing the default action — and that handler
+      // skips its own board shortcuts while this field has focus, or typing an
+      // "f" would flip the board.
+      const anPrefix = document.createElement('input');
+      anPrefix.type = 'text';
+      anPrefix.className = 'clo-cr-anprefix';
+      anPrefix.placeholder = 'Text before the line (optional)';
+      anPrefix.title = 'Written before the line in the comment, e.g. ' +
+        '“An example continuation:”. Kept for the next analysis in this tab.';
+      anPrefix.hidden = true;
+      anPrefix.addEventListener('input', () => {
+        cr.addPrefix = anPrefix.value;
+        // Retyping the lead-in makes the last save's message stale; showing the
+        // preview of the NEW text instead is the useful answer.
+        if (cr.an.save.state === 'idle' && cr.an.save.msg) resetAnSave('idle', '', false);
+        else syncUi(); // the preview follows every keystroke
+      });
+
+      // Status for the add: the text about to be written, the save's progress,
+      // and every reason a line cannot be added. Analysis mode only.
+      const anStatus = document.createElement('div');
+      anStatus.className = 'clo-cr-anstatus';
+      anStatus.hidden = true;
 
       // Scope picker, shown INSTEAD of the actions row when a variation has
       // continuations both from its final position and from earlier in the line
@@ -9882,7 +10254,10 @@
       chooseCancel.addEventListener('click', () => closeReview('cancelled at the picker'));
 
       chooser.append(chooseAll, chooseFinal, chooseCancel);
-      panel.append(title, prompt, progress, list, chooser, actions, anActions);
+      // The prefix field and the status go LAST: the actions rows carry
+      // `margin-top: auto`, so the panel's free space collects above them — put
+      // earlier, they would float far from the button they belong to.
+      panel.append(title, prompt, progress, list, chooser, actions, anPrefix, anActions, anStatus);
 
       document.body.append(boardEl, panel);
       cr.boardEl = boardEl;
@@ -9890,7 +10265,7 @@
       cr.ui = {
         grid, layer, shapes, promo, title, prompt, progress, actions, hint, skip, exit,
         chooser, chooseAll, chooseFinal,
-        list, anActions, anStart, anBack, anFwd,
+        list, anActions, anStart, anBack, anFwd, anCut, anAdd, anPrefix, anStatus,
       };
       cr.orientation = null; // the grid is built on the first startLine
     }
@@ -9940,6 +10315,7 @@
       const analysing = cr.mode === 'analysis';
       cr.ui.list.hidden = !analysing;
       cr.ui.anActions.hidden = !analysing;
+      if (!analysing) { cr.ui.anStatus.hidden = true; cr.ui.anPrefix.hidden = true; }
       if (analysing) {
         cr.ui.actions.hidden = true;
         syncAnalysisUi();
@@ -10187,7 +10563,10 @@
       // Back to the quiz's own defaults, so the next launcher press is a quiz.
       cr.mode = 'quiz';
       cr.view = null;
-      cr.an = { startFen: null, moves: [], idx: 0 };
+      // A save in flight is the worker's job now and finishes (or times out)
+      // there; dropping the state just means its result finds no one waiting.
+      clearTimeout(cr.an.waitTimer);
+      cr.an = blankAnalysis();
       // The panel has been reading OUR position; hand it back to Chessable's
       // board at once rather than a poll later.
       if (wasActive && analysing) scheduleRefresh();
@@ -11084,8 +11463,18 @@
     for (const type of ['keydown', 'keypress', 'keyup']) {
       document.addEventListener(type, (e) => {
         if (!cr.active || e.ctrlKey || e.metaKey || e.altKey) return;
+        // Swallowed for the trainer either way — stopPropagation does not stop
+        // the default action, so the character still reaches a focused field.
         e.stopPropagation();
         if (type !== 'keydown') return;
+        // Typing the lead-in: none of the single-key board shortcuts apply, or
+        // an "f" would flip the board and an arrow would move through the line
+        // instead of the text. Escape steps out of the field rather than
+        // closing the whole board on a half-typed sentence.
+        if (cr.ui && e.target === cr.ui.anPrefix) {
+          if (e.key === 'Escape') cr.ui.anPrefix.blur();
+          return;
+        }
         if (e.key === 'Escape') { closeReview('escaped', true); return; }
         if (cr.mode !== 'analysis') return;
         // Analysis navigation. Swallowed above already, so the trainer's own
@@ -11094,6 +11483,7 @@
         else if (e.key === 'ArrowRight') anGoto(cr.an.idx + 1);
         else if (e.key === 'Home') anGoto(0);
         else if (e.key === 'End') anGoto(cr.an.moves.length);
+        else if (e.key === 'Backspace' || e.key === 'Delete') anRemoveFrom();
         else if (e.key === 'f' || e.key === 'F') anFlip();
         else return;
         e.preventDefault(); // arrows would otherwise scroll the page
@@ -11104,6 +11494,15 @@
     // Bubble phase — the panel is our own element and nothing else reacts to
     // these clicks in a review document.
     document.addEventListener('click', onPanelMoveClick);
+
+    // Section 19's "Add as line" rides the quick-edit job, so its answers come
+    // back the same way. The quick-edit and alt-check modules have listeners of
+    // their own and ignore what is not theirs; so does this one.
+    try {
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (msg && msg.type === 'clo-quick-edit-result') onAnalysisQuickEditResult(msg);
+      });
+    } catch (err) { /* orphaned context — the board still works, saving does not */ }
 
     const pollTimer = setInterval(tick, C.pollMs);
     window.addEventListener('pagehide', () => {
