@@ -18,23 +18,32 @@
  *                                           permission)
  *
  * Quick-edit (content section 12): drives Chessable's own edit page in a
- * small FOCUSED popup window to append a PGN comment (mode 'save') or add
+ * small FOCUSED popup window to append a PGN comment (mode 'save'), REPLACE
+ * one wholesale (mode 'edit'; baseText = the text the popup was filled from,
+ * which the driver refuses to clobber if it has changed since) or add
  * an alternative move (mode 'alt'; altSan = the SAN the trainer should also
- * accept). ALWAYS that popup window, never a background tab — Chrome clamps
- * every timer on a hidden page to ~1 s (Chessable's own boot, animations and
- * dialogs included), which stretched a save from ~4-5 s to ~13-20 s, i.e.
- * right up against this worker's job timeout. One job at a time, kept in
- * chrome.storage.session so it survives a worker idle-restart:
- *   { type:'clo-quick-edit-run', mode:'probe'|'save'|'alt', oid, bid, san,
- *     color, plyIndex, commentText, altSan, forThisVariationOnly, win }
+ * accept). Mode 'load' is the read half of an edit: it selects the move,
+ * reports the raw "Comments After" text and submits NOTHING — the rendered
+ * comment in the review column is not the stored text, so this round trip is
+ * the only way to fill the editor with something safe to save back. Like
+ * 'probe' it also answers the edit-rights question, so an edit never needs a
+ * probe of its own. ALWAYS that popup window, never a background tab — Chrome
+ * clamps every timer on a hidden page to ~1 s (Chessable's own boot,
+ * animations and dialogs included), which stretched a save from ~4-5 s to
+ * ~13-20 s, i.e. right up against this worker's job timeout. One job at a
+ * time, kept in chrome.storage.session so it survives a worker idle-restart:
+ *   { type:'clo-quick-edit-run', mode:'probe'|'load'|'save'|'edit'|'alt', oid,
+ *     bid, san, color, plyIndex, commentText, baseText, altSan,
+ *     forThisVariationOnly, win }
  *     (review tab -> worker) -> opens /explore/edit/<oid>/ in the popup
  *   { type:'clo-quick-edit-claim', oid }   (edit-tab driver -> worker)
- *       -> { claimed, mode, san, color, plyIndex, commentText, altSan,
- *            forThisVariationOnly }
+ *       -> { claimed, mode, san, color, plyIndex, commentText, baseText,
+ *            altSan, forThisVariationOnly }
  *   { type:'clo-quick-edit-submitting', oid } (driver -> worker; marks phase)
  *   { type:'clo-quick-edit-landing', oid }    (post-POST doc -> worker)
  *       -> { isOurs }  (true = the job's submit succeeded)
- *   { type:'clo-quick-edit-result', oid, ok, canEdit?, error? } (driver -> worker)
+ *   { type:'clo-quick-edit-result', oid, ok, canEdit?, text?, error? }
+ *       (driver -> worker; `text` is the 'load' payload)
  *   The worker relays a clo-quick-edit-result back to the review tab via
  *   chrome.tabs.sendMessage and closes the driver window.
  *
@@ -80,6 +89,9 @@ const ENGINE_TARGET_KEY = 'cloEngineTarget';
 // change. Only the numeric variation id is ever interpolated into the URL.
 const QUICK_EDIT_BASE = 'https://www.chessable.com/explore/edit/';
 const QUICK_EDIT_JOB_KEY = 'cloQuickEditJob'; // chrome.storage.session; one job at a time
+// Everything the driver knows how to do. Anything else falls back to 'save'
+// (append a comment), which is what the very first version of this feature did.
+const QUICK_EDIT_MODES = ['probe', 'load', 'save', 'edit', 'alt'];
 // Hard cap; force-fail + close the driver window. Deliberately longer than
 // every wait the driver itself owns (boot gate + drive + post-submit watch),
 // so a stall is reported by the driver with a real reason and this blind
@@ -298,7 +310,12 @@ function relayQuickEditResult(job, result) {
   chrome.tabs.sendMessage(job.requesterTabId, {
     type: 'clo-quick-edit-result',
     oid: job.oid, bid: job.bid, mode: result.mode || job.mode,
-    ok: Boolean(result.ok), canEdit: result.canEdit, error: result.error,
+    // The ply the job was about, so the requester can tell a result for the
+    // move its popup is open on from one for a move it has since left (the
+    // comment editor's read, and its per-ply cache, are keyed on this).
+    plyIndex: job.plyIndex,
+    ok: Boolean(result.ok), canEdit: result.canEdit, text: result.text,
+    error: result.error,
     timing: quickEditTiming(job),
   }, { frameId: job.requesterFrameId }).catch(() => {});
 }
@@ -378,9 +395,9 @@ async function startQuickEditJob(msg, sender) {
 
   const job = {
     oid, bid: msg.bid || '',
-    mode: msg.mode === 'probe' ? 'probe' : msg.mode === 'alt' ? 'alt' : 'save',
+    mode: QUICK_EDIT_MODES.includes(msg.mode) ? msg.mode : 'save',
     san: msg.san, color: msg.color, plyIndex: msg.plyIndex,
-    commentText: msg.commentText, altSan: msg.altSan,
+    commentText: msg.commentText, baseText: msg.baseText, altSan: msg.altSan,
     forThisVariationOnly: Boolean(msg.forThisVariationOnly),
     requesterTabId: sender.tab.id, requesterFrameId: sender.frameId || 0,
     driverTabId: tab.id, phase: 'loading',
@@ -414,7 +431,7 @@ async function claimQuickEditJob(msg, sender) {
   return {
     claimed: true, mode: job.mode,
     san: job.san, color: job.color, plyIndex: job.plyIndex,
-    commentText: job.commentText, altSan: job.altSan,
+    commentText: job.commentText, baseText: job.baseText, altSan: job.altSan,
     forThisVariationOnly: job.forThisVariationOnly,
   };
 }
@@ -446,11 +463,13 @@ async function handleQuickEditLanding(msg, sender) {
   return { isOurs: true };
 }
 
-/** From the driver (probe result, or a save error). */
+/** From the driver (probe/load result, or a save error). */
 async function finishQuickEditJob(msg) {
   const job = await getQuickEditJob();
   if (!job || String(job.oid) !== String(msg.oid)) return;
-  await finalizeQuickEditJob(job, { ok: msg.ok, mode: msg.mode, canEdit: msg.canEdit, error: msg.error });
+  await finalizeQuickEditJob(job, {
+    ok: msg.ok, mode: msg.mode, canEdit: msg.canEdit, text: msg.text, error: msg.error,
+  });
 }
 
 async function failQuickEditJob(reason) {

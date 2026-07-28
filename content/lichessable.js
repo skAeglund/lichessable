@@ -2884,8 +2884,9 @@
   // 12) Quick-edit (review browse state ↔ background edit tab)
   //
   // In the review browse state, hovering a mainline move shows a pencil; the
-  // popup has two tabs: append a PGN comment to the real Chessable variation,
-  // or add an ALTERNATIVE MOVE the trainer should also accept. There is no
+  // popup has three tabs: append a PGN comment to the real Chessable variation,
+  // EDIT that comment as a whole (mode 'edit' — see below), or add an
+  // ALTERNATIVE MOVE the trainer should also accept. There is no
   // JSON API for either — the only safe path is to drive Chessable's own edit
   // page (verified: several of its POST fields are session/CSRF-bound and
   // opaque). So background.js opens /explore/edit/<oid>/ in a small focused
@@ -2910,12 +2911,31 @@
   // board's promotion picker is unverified). While the popup's alt tab is
   // open, clicking a Lichess panel move row prefills the SAN input.
   //
+  // EDITING an existing comment takes TWO visits to the edit page, and that is
+  // not an implementation detail that could be optimised away: the comment as
+  // rendered in the review column is not the text Chessable stores (clickable
+  // lines become figurine spans, prose becomes markup), so filling the editor
+  // from the DOM and saving it back would rewrite the stored comment from a
+  // reconstruction — destroying exactly the clickable lines section 18 quizzes.
+  // So opening the Edit tab runs a READ job (mode 'load'): same driver window,
+  // same move selection, but it reports #moveComment's raw value and submits
+  // nothing. The save (mode 'edit') then carries both the new text and the text
+  // the editor was filled from, and the driver refuses to write when the stored
+  // comment no longer matches the latter — the read and the write are separate
+  // visits, and silently clobbering a comment that moved in between is the one
+  // failure of this feature that would lose the user's work. Reads are cached
+  // per variation+ply for the session and dropped again on any save to that
+  // ply. An empty edit DELETES the comment, so it takes a second press.
+  //
   // Edit rights are a per-COURSE property. They are probed LAZILY: the pencil
   // shows without knowing them, and the probe (one throwaway driver window)
   // only runs when a popup is opened while rights are still unknown — the
   // popup's Save button stays disabled until the probe confirms them. The
   // result is cached per course per session; a known-uneditable course hides
-  // the pencil again.
+  // the pencil again. A 'load' answers the same question on its way past
+  // (no edit form ⇒ no rights), so the Edit tab never starts a probe of its
+  // own: the worker runs ONE job at a time, and a probe fired beside a read
+  // would simply be refused and read as a rights failure.
   // ==========================================================================
 
   /**
@@ -2934,6 +2954,14 @@
   /** SANs compared ignoring a trailing check/mate glyph — Chessable and CloSan
    *  agree on the move but not always on writing "+". */
   const quickEditBareSan = (san) => String(san).replace(/[+#]$/, '');
+
+  /** Comment text compared ignoring line-ending flavour and trailing blanks —
+   *  a textarea's value round-trips through the DOM, a form POST and React, and
+   *  none of those promise to leave "\r\n" or a final newline alone. Used both
+   *  to spot "nothing changed" in the popup and to detect a comment that moved
+   *  under an open editor (driveQuickEditComment). */
+  const quickEditNormalizeText = (text) =>
+    String(text == null ? '' : text).replace(/\r\n?/g, '\n').replace(/\s+$/, '');
 
   const QE_PIECE_LETTER = { king: 'K', queen: 'Q', rook: 'R', bishop: 'B', knight: 'N', pawn: '' };
 
@@ -3170,6 +3198,15 @@
       return;
     }
 
+    // A READ on a course we cannot edit is the same news as a probe, not an
+    // error: report it as a completed read with canEdit false, so the popup
+    // says "no edit rights" and the shared rights cache still learns it (a
+    // thrown error would be cached as nothing and re-probed on the next open).
+    if (job.mode === 'load' && !hasForm) {
+      chrome.runtime.sendMessage({ type: 'clo-quick-edit-result', oid, mode: 'load', ok: true, canEdit: false }).catch(() => {});
+      return;
+    }
+
     if (!hasForm) throw new Error('edit form not available (no edit rights?)');
 
     // Match the move by POSITION (the edit page renumbers from move 1), then
@@ -3181,6 +3218,15 @@
     if (!idm || idm[1] !== job.san || idm[2] !== job.color) {
       throw new Error(`move mismatch at #${job.plyIndex}: id "${moveEl.id}" vs expected ${job.san}/${job.color}`);
     }
+    // A read submits NOTHING — it is over as soon as the textarea is in hand.
+    if (job.mode === 'load') {
+      const text = await readQuickEditComment(job, moveEl);
+      chrome.runtime.sendMessage({
+        type: 'clo-quick-edit-result', oid, mode: 'load', ok: true, canEdit: true, text,
+      }).catch(() => {});
+      return;
+    }
+
     if (job.mode === 'alt') {
       // The alt flow does its own move click (after the shared board-ready
       // gate) and its own settling — a fixed delay here would only add a ~1 s
@@ -3253,14 +3299,15 @@
   }
 
   /**
-   * Selects the target move and appends the comment to #moveComment. The
+   * Selects the target move and hands back its "Comments After" textarea. The
    * selection is VERIFIED against the board (side to move = the opponent of
    * the move's colour) rather than assumed: a click that did not take would
-   * otherwise append the text to whatever move was selected instead. Side-based
-   * checks stay valid on renumbered tactics lines, where the FEN's fullmove
-   * number matches the source game rather than the edit page's numbering.
+   * otherwise leave whatever move was selected before, so the comment would be
+   * read from — or written to — the wrong ply. Side-based checks stay valid on
+   * renumbered tactics lines, where the FEN's fullmove number matches the
+   * source game rather than the edit page's numbering.
    */
-  async function driveQuickEditComment(job, moveEl) {
+  async function quickEditSelectMove(job, moveEl) {
     const fenInput = document.querySelector(SELECTORS.fenInput);
     if (!fenInput) throw new Error('edit-page FEN input not found');
     await quickEditWaitBoardReady(fenInput);
@@ -3276,10 +3323,41 @@
 
     const ta = document.querySelector(SELECTORS.editCommentAfter);
     if (!ta) throw new Error('comment field not found');
+    return ta;
+  }
+
+  /** The stored comment on the target move, verbatim (mode 'load'). Nothing is
+   *  typed and nothing is submitted — this only exists because the comment as
+   *  RENDERED in the review column is not the text Chessable stores (clickable
+   *  lines, line breaks, markup), so an editor filled from the DOM would write
+   *  a reconstruction back over the real thing. */
+  async function readQuickEditComment(job, moveEl) {
+    const ta = await quickEditSelectMove(job, moveEl);
+    return ta.value || '';
+  }
+
+  /**
+   * Writes the comment on the target move: APPENDS (mode 'save') or REPLACES
+   * it wholesale (mode 'edit'). A replace carries the text the editor was
+   * filled from and refuses to run when the stored comment no longer matches
+   * it — the read and the write are two separate visits to the edit page, and
+   * silently overwriting a comment that changed in between is the one failure
+   * mode of this feature that loses the user's work.
+   */
+  async function driveQuickEditComment(job, moveEl) {
+    const ta = await quickEditSelectMove(job, moveEl);
     const existing = ta.value || '';
-    const next = existing.trim()
-      ? existing + CONFIG.quickEdit.commentJoin + job.commentText
-      : job.commentText;
+    let next;
+    if (job.mode === 'edit') {
+      if (quickEditNormalizeText(existing) !== quickEditNormalizeText(job.baseText || '')) {
+        throw new Error('the comment changed since it was loaded — close the popup and edit it again');
+      }
+      next = job.commentText;
+    } else {
+      next = existing.trim()
+        ? existing + CONFIG.quickEdit.commentJoin + job.commentText
+        : job.commentText;
+    }
     setReactTextareaValue(ta, next);
 
     const box = document.querySelector(SELECTORS.editVariationOnly);
@@ -3426,7 +3504,12 @@
     spinner.className = 'clo-qe-shield-spinner';
     const label = document.createElement('div');
     label.className = 'clo-qe-shield-label';
-    label.textContent = res.mode === 'probe' ? 'Checking edit rights…' : 'Saving to Chessable…';
+    // A read writes nothing, so it must not claim to be saving — the window is
+    // focused and in the user's face, and "Saving…" over a job that only looks
+    // at a comment is a lie about what the extension is doing to their course.
+    label.textContent = res.mode === 'probe' ? 'Checking edit rights…'
+      : res.mode === 'load' ? 'Reading the comment from Chessable…'
+      : 'Saving to Chessable…';
     const sub = document.createElement('div');
     sub.className = 'clo-qe-shield-sub';
     sub.textContent = 'This window closes itself.';
@@ -3502,7 +3585,13 @@
       popupTarget: null,      // move element the open popup refers to
       hideTimer: 0,
       saving: false,
-      mode: 'comment',        // 'comment' | 'alt' — which popup tab is active
+      mode: 'comment',        // 'comment' | 'edit' | 'alt' — the active popup tab
+      // The edit tab's read: the stored comment cannot be known without a trip
+      // to the edit page, so the tab has its own little state machine.
+      // `key` is "<oid>#<plyIndex>" — the same key the cache uses.
+      load: { key: '', state: 'idle', text: '', error: '' }, // idle|loading|ready|error
+      comments: new Map(),    // "<oid>#<ply>" -> the last text READ for that ply
+      clearArmed: false,      // an empty edit deletes the comment: needs a second press
     };
 
     // Host adapter. The two pages that offer quick-edit differ ONLY in how
@@ -3579,7 +3668,7 @@
       btn.type = 'button';
       btn.id = QE_PENCIL_ID;
       btn.className = 'clo-qe-pencil';
-      btn.title = 'Add a comment or alternative move';
+      btn.title = 'Comment on this move, edit its comment, or add an alternative move';
       btn.textContent = '✎';
       btn.hidden = true;
       btn.addEventListener('mouseenter', cancelHide);
@@ -3602,12 +3691,13 @@
       const moveLabel = document.createElement('div');
       moveLabel.className = 'clo-qe-move';
 
-      // Mode tabs: append a comment (the original feature) or register an
-      // alternative move the trainer should also accept.
+      // Mode tabs: append to the comment (the original feature), edit the
+      // whole comment, or register an alternative move the trainer should also
+      // accept.
       const tabs = document.createElement('div');
       tabs.className = 'clo-qe-tabs';
       const tabButtons = {};
-      for (const [mode, label] of [['comment', 'Comment'], ['alt', 'Alt move']]) {
+      for (const [mode, label] of [['comment', 'Append'], ['edit', 'Edit'], ['alt', 'Alt move']]) {
         const tab = document.createElement('button');
         tab.type = 'button';
         tab.className = 'clo-qe-tab';
@@ -3621,6 +3711,16 @@
       textarea.className = 'clo-qe-text';
       textarea.rows = 3;
       textarea.placeholder = 'Comment after this move…';
+
+      // The edit tab gets its OWN textarea rather than sharing the append one:
+      // the two hold different things (a fragment to add vs. the whole stored
+      // comment), and the edit box is disabled until the read lands — one
+      // shared field would have to juggle both drafts and both enabled states.
+      const editArea = document.createElement('textarea');
+      editArea.className = 'clo-qe-text clo-qe-text--edit';
+      editArea.rows = 6;
+      editArea.hidden = true;
+      editArea.addEventListener('input', disarmClear);
 
       const sanInput = document.createElement('input');
       sanInput.type = 'text';
@@ -3654,7 +3754,7 @@
       save.addEventListener('click', doSave);
       actions.append(cancel, save);
 
-      popup.append(moveLabel, tabs, textarea, sanInput, scopeLabel, status, actions);
+      popup.append(moveLabel, tabs, textarea, editArea, sanInput, scopeLabel, status, actions);
       // Keep the pencil alive while the pointer is inside the popup.
       popup.addEventListener('mouseenter', cancelHide);
       // MoveTrainer2 binds single-key shortcuts ("n" = next variation, space,
@@ -3673,14 +3773,16 @@
       document.body.appendChild(popup);
 
       qe.popup = popup;
-      qe.els = { moveLabel, tabButtons, textarea, sanInput, scopeBox, status, save, cancel };
+      qe.els = { moveLabel, tabButtons, textarea, editArea, sanInput, scopeBox, status, save, cancel };
     }
 
-    /** Switches the popup between its comment and alt-move tabs. */
+    /** Switches the popup between its append, edit and alt-move tabs. */
     function applyMode(mode) {
       qe.mode = mode;
-      const alt = mode === 'alt';
-      qe.els.textarea.hidden = alt;
+      disarmClear();
+      const alt = mode === 'alt', edit = mode === 'edit';
+      qe.els.textarea.hidden = alt || edit;
+      qe.els.editArea.hidden = !edit;
       qe.els.sanInput.hidden = !alt;
       for (const [m, tab] of Object.entries(qe.els.tabButtons)) {
         tab.classList.toggle('clo-qe-tab--active', m === mode);
@@ -3690,8 +3792,118 @@
       const desc = qe.popupTarget ? host.descriptor(qe.popupTarget) : null;
       const moveText = desc ? desc.san
         : qe.popupTarget ? qe.popupTarget.textContent.trim() : '';
-      qe.els.moveLabel.textContent = (alt ? 'Alternative to ' : 'After ') + moveText;
-      if (!qe.popup.hidden) (alt ? qe.els.sanInput : qe.els.textarea).focus();
+      qe.els.moveLabel.textContent =
+        (alt ? 'Alternative to ' : edit ? 'Edit comment after ' : 'Append after ') + moveText;
+      if (edit) ensureCommentLoaded();
+      else applyRightsToPopup();
+      if (!qe.popup.hidden) {
+        (alt ? qe.els.sanInput : edit ? qe.els.editArea : qe.els.textarea).focus();
+      }
+    }
+
+    // --- the edit tab's read ------------------------------------------------
+
+    /** Cache/state key for the popup's current target: "<oid>#<plyIndex>". */
+    function editKey() {
+      const oid = host.oid();
+      const desc = qe.popupTarget ? host.descriptor(qe.popupTarget) : null;
+      return oid && desc && Number.isInteger(desc.plyIndex) ? oid + '#' + desc.plyIndex : null;
+    }
+
+    /**
+     * Makes sure the edit tab is showing the move's REAL stored comment. The
+     * only source for it is Chessable's own edit page (the review column shows
+     * a rendering, not the stored text), so this opens the driver window once
+     * per move — and, since a read reports edit rights too, it replaces the
+     * rights probe rather than racing it: the worker runs one job at a time, so
+     * firing both would get one of them refused outright.
+     *
+     * Cached per course-variation + ply, and dropped again whenever a save
+     * lands on that ply, so re-opening the editor after a mistyped save is
+     * free but never shows a stale comment.
+     */
+    function ensureCommentLoaded() {
+      const key = editKey();
+      if (!key) {
+        qe.load = { key: '', state: 'error', text: '', error: 'Could not identify the move.' };
+        syncEditUi();
+        return;
+      }
+      if (qe.load.key === key && (qe.load.state === 'loading' || qe.load.state === 'ready')) {
+        syncEditUi();
+        return;
+      }
+      if (qe.comments.has(key)) {
+        setLoadedText(key, qe.comments.get(key));
+        return;
+      }
+      // A course already known to be uneditable never gets a window opened for
+      // it; syncEditUi says so instead.
+      if (host.rights() === false) {
+        qe.load = { key, state: 'idle', text: '', error: '' };
+        syncEditUi();
+        return;
+      }
+      const desc = host.descriptor(qe.popupTarget);
+      qe.load = { key, state: 'loading', text: '', error: '' };
+      syncEditUi();
+      try {
+        chrome.runtime.sendMessage({
+          type: 'clo-quick-edit-run', mode: 'load',
+          oid: host.oid(), bid: host.bid(),
+          san: desc.san, color: desc.color, plyIndex: desc.plyIndex,
+          win: driverWindowBounds(),
+        }).catch(() => {});
+      } catch (err) {
+        qe.load = { key, state: 'error', text: '', error: 'Could not reach the extension worker.' };
+        syncEditUi();
+      }
+    }
+
+    function setLoadedText(key, text) {
+      qe.load = { key, state: 'ready', text, error: '' };
+      if (qe.els) qe.els.editArea.value = text;
+      syncEditUi();
+    }
+
+    /**
+     * The edit tab owns its own status line and Save button (the read decides
+     * both), which is why applyRightsToPopup hands over to this in edit mode
+     * instead of running its own probe.
+     */
+    function syncEditUi() {
+      if (!qe.els || qe.mode !== 'edit' || !qe.popup || qe.popup.hidden) return;
+      const rights = host.rights();
+      const st = qe.load.state;
+      qe.els.editArea.disabled = qe.saving || st !== 'ready';
+      if (qe.saving) return; // doSave owns the status while a save is in flight
+      if (rights === false) {
+        qe.els.save.disabled = true;
+        setStatus("You don't have edit rights for this course.", true);
+      } else if (st === 'loading') {
+        qe.els.save.disabled = true;
+        setStatus('Reading the current comment from Chessable…', false);
+      } else if (st === 'error') {
+        qe.els.save.disabled = true;
+        setStatus(qe.load.error || 'Could not read the current comment.', true);
+      } else if (st !== 'ready') {
+        qe.els.save.disabled = true;
+        setStatus('', false);
+      } else {
+        qe.els.save.disabled = rights !== true;
+        setStatus(qe.load.text.trim() ? '' : 'This move has no comment yet — saving adds one.', false);
+      }
+    }
+
+    /** Cancels the "press again to delete" arming (any edit, tab switch or
+     *  re-open makes the previous press stale). */
+    function disarmClear() {
+      if (!qe.clearArmed) return;
+      qe.clearArmed = false;
+      if (qe.els && !qe.saving) {
+        qe.els.save.textContent = 'Save';
+        setStatus('', false);
+      }
     }
 
     function ensureElements() {
@@ -3727,9 +3939,15 @@
       ensureElements();
       qe.popupTarget = moveEl;
       qe.saving = false;
+      qe.clearArmed = false;
       qe.els.textarea.value = '';
+      qe.els.editArea.value = '';
       qe.els.sanInput.value = '';
       qe.els.scopeBox.checked = false; // matches Chessable's own default
+      // The read belongs to whichever move the popup is open on: dropping it
+      // here is what makes a result for the PREVIOUS move land in a closed
+      // state machine instead of in this popup (the key check in onResult).
+      qe.load = { key: '', state: 'idle', text: '', error: '' };
       setStatus('', false);
       setSavingUi(false);
       const rect = moveEl.getBoundingClientRect();
@@ -3760,8 +3978,18 @@
      */
     function applyRightsToPopup() {
       if (!qe.popup || qe.popup.hidden || qe.saving) return;
+      // On the edit tab the read owns both the status line and Save, and it
+      // reports edit rights itself — so no probe is started there at all.
+      if (qe.mode === 'edit') { syncEditUi(); return; }
       const rights = host.rights();
       qe.els.save.disabled = rights !== true;
+      // A read in flight is already on its way to answering the rights
+      // question. Starting a probe beside it would only be refused (the worker
+      // runs one job at a time) and would then read as a rights failure.
+      if (rights !== true && qe.load.state === 'loading') {
+        setStatus('Checking edit rights…', false);
+        return;
+      }
       if (rights === true) {
         setStatus('', false);
       } else if (rights === false) {
@@ -3777,6 +4005,8 @@
       if (qe.popup) qe.popup.hidden = true;
       qe.popupTarget = null;
       qe.saving = false;
+      qe.clearArmed = false;
+      qe.load = { key: '', state: 'idle', text: '', error: '' };
     }
 
     function setStatus(text, isError) {
@@ -3788,13 +4018,17 @@
 
     function setSavingUi(busy) {
       if (!qe.els) return;
-      qe.els.save.disabled = busy || host.rights() !== true;
+      // On the edit tab Save additionally waits for the read: there is nothing
+      // to overwrite until we know what is being overwritten.
+      qe.els.save.disabled = busy || host.rights() !== true
+        || (qe.mode === 'edit' && qe.load.state !== 'ready');
       qe.els.cancel.disabled = busy;
       qe.els.textarea.disabled = busy;
+      qe.els.editArea.disabled = busy || qe.load.state !== 'ready';
       qe.els.sanInput.disabled = busy;
       qe.els.scopeBox.disabled = busy;
       for (const tab of Object.values(qe.els.tabButtons)) tab.disabled = busy;
-      qe.els.save.textContent = busy ? 'Saving…' : 'Save';
+      if (busy || !qe.clearArmed) qe.els.save.textContent = busy ? 'Saving…' : 'Save';
     }
 
     /** Driver-window bounds beside the open quick-edit popup (see
@@ -3833,6 +4067,28 @@
         }
         payload.mode = 'alt';
         payload.altSan = altSan;
+      } else if (qe.mode === 'edit') {
+        if (qe.load.state !== 'ready' || qe.load.key !== editKey()) {
+          setStatus('The current comment has not been read yet.', true); return;
+        }
+        const text = qe.els.editArea.value;
+        if (quickEditNormalizeText(text) === quickEditNormalizeText(qe.load.text)) {
+          setStatus('Nothing changed.', true); return;
+        }
+        // Saving an empty box DELETES the comment — the one edit that destroys
+        // something outright, so it takes a second press (same arming pattern
+        // as auto-play's "Clear" and the alt check's "Add anyway").
+        if (!text.trim() && !qe.clearArmed) {
+          qe.clearArmed = true;
+          qe.els.save.textContent = 'Delete comment';
+          setStatus('This removes the comment — press again to confirm.', true);
+          return;
+        }
+        payload.mode = 'edit';
+        payload.commentText = text;
+        // What the box was filled from: the driver refuses the write if the
+        // stored comment no longer matches it.
+        payload.baseText = qe.load.text;
       } else {
         const text = qe.els.textarea.value.trim();
         if (!text) { setStatus('Enter a comment first.', true); return; }
@@ -3871,10 +4127,43 @@
         }
         return;
       }
+      if (msg.mode === 'load') {
+        // A read answers the rights question exactly like a probe does, which
+        // is why the edit tab never starts one of its own.
+        if (msg.ok && msg.bid && typeof msg.canEdit === 'boolean') {
+          qe.rightsByBid.set(msg.bid, msg.canEdit);
+          log('quick-edit rights for course', msg.bid, '=', msg.canEdit, '(learnt from a comment read)');
+        }
+        if (msg.timing) log('quick-edit read timing:', msg.timing);
+        const key = String(msg.oid) + '#' + msg.plyIndex;
+        if (msg.ok && msg.canEdit !== false) qe.comments.set(key, String(msg.text || ''));
+        // Only the popup that ASKED cares: it may have been closed, or moved
+        // on to another move, while the driver window was up.
+        if (qe.load.state !== 'loading' || qe.load.key !== key) return;
+        if (msg.ok && msg.canEdit !== false) {
+          setLoadedText(key, qe.comments.get(key));
+        } else {
+          qe.load = {
+            key, state: 'error', text: '',
+            error: msg.canEdit === false ? "You don't have edit rights for this course."
+              : msg.error === 'another quick-edit is in progress'
+                ? 'Another quick-edit is in progress — close the popup and retry in a moment.'
+                : (msg.error && msg.error !== 'timeout' ? msg.error
+                  : 'Could not read the current comment — close the popup and retry.'),
+          };
+          syncEditUi();
+        }
+        return;
+      }
       // save result
       if (msg.timing) log('quick-edit timing:', msg.timing);
+      // The stored comment on that ply is now whatever Chessable made of our
+      // write — drop the cached read rather than guess at it, so the next
+      // editor open reads the truth back.
+      if (msg.ok) qe.comments.delete(String(msg.oid) + '#' + msg.plyIndex);
       if (!qe.popup || qe.popup.hidden) return;
       qe.saving = false;
+      qe.clearArmed = false;
       setSavingUi(false);
       if (msg.ok) {
         setStatus('Saved.', false);
@@ -6641,6 +6930,14 @@
           ac.probeFailed = true;
         }
         applyAcRights();
+        return;
+      }
+      if (msg.mode === 'load') {
+        // The comment editor's read reports edit rights too, and quick-edit's
+        // listener (registered first) has already cached them. Deliberately
+        // NOT treated as a failed probe when it fails: a read that times out
+        // says nothing about rights, and ac.probeFailed is a one-way latch.
+        if (msg.ok) applyAcRights();
         return;
       }
       if (ac.phase !== 'saving' || !ac.job || String(msg.oid) !== String(ac.job.oid)) return;

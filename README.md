@@ -573,7 +573,8 @@ enough not to run, the ↻ button is the only way back.
   native play overlay on the board.
 - **Quick-edit** — hovering a mainline move shows a pencil (a
   body-mounted singleton, never inserted into Chessable's move list) whose popup
-  appends a PGN comment to the variation or adds an alternative move the
+  appends a PGN comment to the variation, edits that comment as a whole, or
+  adds an alternative move the
   trainer should also accept. It runs on two host pages behind a
   small adapter: the completed-variation browse state (moves are `commentMove`
   spans; ply = index in that list; edit rights probed lazily on popup open) and the
@@ -597,7 +598,8 @@ enough not to run, the ↻ button is the only way back.
   the edit page renumbers each variation from move 1 while review keeps the
   source game's numbering) and verifies the board actually reached that move,
   then either appends to the "Comments After"
-  textarea and sets the "For This Variation Only" checkbox, or — for an
+  textarea and sets the "For This Variation Only" checkbox, or replaces that
+  textarea's contents outright (the *Edit* tab — see below), or — for an
   alternative move — runs Chessable's own add-alternative flow: click "Add New
   Alternative Move", confirm the "next move you make on the board" dialog
   (the board then steps back one move), resolve the typed SAN against the edit
@@ -624,6 +626,24 @@ enough not to run, the ↻ button is the only way back.
   confirmed uneditable hides the pencil from then on. So no window ever opens
   unless you actually try to edit. The move rows themselves are read only;
   nothing in Chessable's DOM is mutated.
+- **Editing an existing comment** — the popup's *Edit* tab shows the move's
+  comment as Chessable actually stores it, and saving replaces it. That text
+  cannot come from the review column: what is printed there is a *rendering* —
+  clickable lines are figurine spans, prose is markup — so an editor filled
+  from the page and saved back would rewrite the stored comment from a
+  reconstruction and destroy exactly the clickable lines the continuation
+  review quizzes. So opening the tab makes one extra trip to the edit page: the
+  same driver window, the same move selection, but it reads the "Comments
+  After" textarea and submits nothing. That read also answers the edit-rights
+  question, so it replaces the rights probe instead of queueing behind it, and
+  its result is cached per move for the session (dropped again whenever a save
+  lands on that move). The save then carries both the new text *and* the text
+  the box was filled from, and the driver refuses to write if the stored
+  comment no longer matches the latter — the read and the write are separate
+  visits, and quietly overwriting a comment that changed in between is the one
+  way this feature could lose work. Clearing the box deletes the comment, so
+  Save asks a second time first. Only "Comments After" is reachable this way;
+  a comment attached *before* a move is a different field on Chessable's form.
 - **Review auto-play** — runs entirely in the top document alongside the
   overstudy watcher. A `MutationObserver` on the trainer board coalesces
   mutations per animation frame into placement snapshots (the same

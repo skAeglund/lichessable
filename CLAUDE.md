@@ -16,7 +16,8 @@ variation) that open the variation's overstudy in a background tab. In those
 trainer sessions the Lichess panel also appears once a variation is completed
 (browse state), following the board via a DOM-derived FEN. In that same browse
 state, hovering a mainline move shows a pencil that appends a PGN comment to the
-variation (for courses you can edit) by driving Chessable's own edit page in a
+variation, or EDITS that comment as a whole (for courses you can edit), by
+driving Chessable's own edit page in a
 small focused popup window; the same pencil works on standalone variation pages
 (`/variation/<id>/`), which also get the full Lichess panel (section 11b).
 Trainer sessions (/practice/ and /learn/ alike) can also auto-play moves the
@@ -292,8 +293,9 @@ Currently working (v0.18.x).
   (it nulls `state.engineFen` first, so the stand-down sends no stop either).
 - Quick-edit (section 12 in lichessable.js): hovering a mainline move
   shows a body-mounted pencil (singleton, NOT inserted into Chessable's move
-  list) whose popup has TWO TABS: append a PGN comment to the variation
-  (mode 'save'), or add an ALTERNATIVE MOVE the trainer should also accept
+  list) whose popup has THREE TABS: append a PGN comment to the variation
+  (mode 'save'), EDIT that comment as a whole (mode 'edit', v0.39.0 — see the
+  own paragraph below), or add an ALTERNATIVE MOVE the trainer should also accept
   (mode 'alt'). TWO host pages,
   behind a `HOSTS` adapter in `initQuickEditUi`; they differ ONLY in move
   lookup, ply mapping, oid source and rights signal — popup, save round-trip and
@@ -380,6 +382,37 @@ Currently working (v0.18.x).
   "another quick-edit is in progress" for the whole browser session. Append convention
   (`CONFIG.quickEdit.commentJoin`) and the exact stored wrapper (`( { … } )`)
   are the one thing to confirm in a manual save test.
+  EDIT MODE (v0.39.0) is TWO visits to the edit page, and that is not an
+  implementation detail waiting to be optimised away. The comment as RENDERED
+  in the review column is not the text Chessable stores — clickable lines are
+  figurine spans, prose is markup — so filling the editor from the DOM and
+  saving it back would rewrite the stored comment from a RECONSTRUCTION,
+  destroying exactly the clickable lines section 18 quizzes. Never prefill that
+  box from the DOM or from the lesson plan's parsed `comment` JSON. So opening
+  the Edit tab runs a READ job (`mode:'load'`): the same driver window, the same
+  `quickEditSelectMove` gate (board ready + move click + side-to-move
+  verification, extracted from the comment driver and now shared by read and
+  write), but it reports `#moveComment`'s raw value and submits NOTHING. The
+  save (`mode:'edit'`) carries the new text AND `baseText` — the text the editor
+  was filled from — and `driveQuickEditComment` REFUSES to write when the stored
+  comment no longer matches it (compared through `quickEditNormalizeText`: line
+  endings and trailing blanks survive neither React nor a form POST intact).
+  Read and write are separate visits, and silently clobbering a comment that
+  moved in between is the one failure of this feature that loses the user's
+  work. Reads are cached in `qe.comments` per `"<oid>#<plyIndex>"` and DROPPED
+  on any successful save to that ply (never updated to the text we sent —
+  Chessable is what decides what got stored). The result relay carries
+  `plyIndex` for exactly this keying. A 'load' also answers the RIGHTS question
+  on its way past (no edit form ⇒ `canEdit:false`, reported as a successful read
+  rather than as an error, so the shared cache still learns it), which is why
+  the Edit tab never starts a probe of its own — the worker runs ONE job at a
+  time, so a probe fired beside a read would be refused and read as a rights
+  failure. `applyRightsToPopup` therefore hands over to `syncEditUi` in edit
+  mode, and suppresses its own probe on the other tabs while a read is in
+  flight. An empty edit DELETES the comment, so Save arms first
+  ("Delete comment", auto-play's Clear pattern). Only "Comments After" is
+  reachable: a `comment_before` block is a different field on the edit form and
+  is NOT editable this way.
   Touch has no hover, so after a TAP on a move (`pointerout` with
   `pointerType 'touch'`) the pencil lingers `touchPencilMs` (~4 s) instead of
   the 200 ms mouse hide — tap move (which also navigates the board there),

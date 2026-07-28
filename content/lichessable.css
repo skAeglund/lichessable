@@ -828,10 +828,12 @@ html.clo-injecting .legal-square-capture-mt2 {
   margin-bottom: 6px;
 }
 
-/* Mode tabs: Comment | Alt move. The active tab reads as part of the popup
-   body; the inactive one as a quiet label. */
+/* Mode tabs: Append | Edit | Alt move. The active tab reads as part of the
+   popup body; the inactive ones as quiet labels. Wraps because the touch rules
+   at the end of this file grow all three well past the popup's fixed width. */
 .clo-qe-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 6px;
 }
@@ -870,6 +872,16 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-qe-text { resize: vertical; }
 .clo-qe-san[hidden], .clo-qe-text[hidden] { display: none; }
+/* The edit box holds a whole stored comment, which is usually several lines
+   of prose plus clickable lines — it gets more room, and a monospaced feel so
+   the move sequences inside line up as the author wrote them. */
+.clo-qe-text--edit {
+  max-height: 40vh;
+  font-family: 'SF Mono', 'Consolas', 'Liberation Mono', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.clo-qe-text:disabled { opacity: 0.6; }
 
 .clo-qe-scope {
   display: flex;
@@ -2057,6 +2069,8 @@ html.clo-touch .clo-qe-san {
   font-size: 16px;
   padding: 8px 10px;
 }
+
+html.clo-touch .clo-qe-text--edit { font-size: 14px; }
 
 html.clo-touch .clo-qe-tab {
   font-size: 15px;
