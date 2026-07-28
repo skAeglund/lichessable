@@ -693,6 +693,7 @@
     lastEngineMsgAt: 0,   // last engine update/status received (silence diagnostics)
     enginePingTimer: 0,   // pending silence check after an analyze
     altCheckBusy: false,  // the alt check owns the engine (section 15) — syncEngine stands down
+    tickError: null,      // last message logged by the poll's guard, so it is not repeated
   };
 
   // ==========================================================================
@@ -814,7 +815,12 @@
     // (section 11) — but the standalone variation page, though also a top
     // document, DOES have one (readonly, updated on every move navigation),
     // so it falls through to the normal input read (section 11b).
-    if (IS_REVIEW && !isVariationPath()) return readReviewFen();
+    if (IS_REVIEW && !isVariationPath()) {
+      // The analysis board (section 19) covers Chessable's, and the position
+      // being looked at is ours — so it, not their DOM, is the source here.
+      const analysis = continuationAnalysisFen && continuationAnalysisFen();
+      return analysis || readReviewFen();
+    }
     const input = document.querySelector(SELECTORS.fenInput);
     const value = input ? input.value.trim() : '';
     return value || null;
@@ -2478,7 +2484,26 @@
   // stale position/placement instead of positioning the new page with it.
   let topPanelVariationMode = null;
 
+  /**
+   * The poll is also the panel's self-healer, so a throw inside it is the one
+   * failure nobody notices: the interval keeps firing, every tick dies at the
+   * same statement, and the panel simply freezes on whatever it last showed.
+   * Catch and name it instead — one line per distinct message, so a recurring
+   * fault does not fill the console 120 times a minute.
+   */
   function topPanelTick() {
+    try {
+      topPanelTickInner();
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      if (msg !== state.tickError) {
+        state.tickError = msg;
+        warn('panel poll failed:', err);
+      }
+    }
+  }
+
+  function topPanelTickInner() {
     const variation = isVariationPath();
     if (variation !== topPanelVariationMode) {
       topPanelVariationMode = variation;
@@ -2502,8 +2527,11 @@
     centerReviewBoard();
     // A continuation quiz (section 18) covers Chessable's board with its own,
     // so readReviewFen() would describe a position nobody can see any more.
-    // Stand down entirely rather than show a stale one.
-    if (!reviewBrowseReady() || (continuationActive && continuationActive())) {
+    // Stand down entirely rather than show a stale one. The ANALYSIS board
+    // (section 19) covers it too, but there the panel is the point: readFen
+    // returns its position, so the panel stays up and follows it.
+    const analysing = Boolean(continuationAnalysisFen && continuationAnalysisFen());
+    if (!reviewBrowseReady() || (continuationActive && continuationActive() && !analysing)) {
       if (state.panel) state.panel.hidden = true;
       resetReviewAnchorHold(); // a fresh show must never fight a stale hold
       state.fen = null; // the next completed variation starts with a fresh fetch
@@ -2637,6 +2665,11 @@
     const widget = document.getElementById(REVIEW_WIDGET_ID);
     const widgetRect = widget && !widget.hidden ? widget.getBoundingClientRect() : null;
     if (widgetRect && widgetRect.height) anchorBottom = Math.max(anchorBottom, widgetRect.bottom);
+    // The analysis board's panel (section 19) parks below the board too when
+    // there is no comment column to cover — then this one goes below IT.
+    const crPanel = document.getElementById(CR_PANEL_ID);
+    const crRect = crPanel && !crPanel.hidden ? crPanel.getBoundingClientRect() : null;
+    if (crRect && crRect.height) anchorBottom = Math.max(anchorBottom, crRect.bottom);
     // Portrait/mobile: the comment column WRAPS BELOW the board, so anchoring
     // under the board would overlay the comments/progress block — anchor under
     // the whole trainer row instead (the overstudy widget already sits below
@@ -8186,6 +8219,11 @@
   // also lives in documents where this module never ran.
   let continuationActive = null;
 
+  // () => ?string — the FEN on the analysis board (section 19), or null when it
+  // is not up. This is what makes the panel, the database and the engine follow
+  // OUR board instead of Chessable's; same null-safe bridge pattern.
+  let continuationAnalysisFen = null;
+
   function initContinuationReview() {
     if (typeof CloSan === 'undefined') {
       warn('continuation review disabled: CloSan (engine/san.js) not loaded');
@@ -8214,11 +8252,20 @@
       autoRan: null,      // variation the auto-start already fired for (once per variation)
       autoTimer: 0,
       active: false,
+      // What the overlays are being used for: the clickable-line quiz, or the
+      // free-play analysis board (section 19). Every mode branch below defaults
+      // to 'quiz', so the quiz path reads exactly as it did before.
+      mode: 'quiz',
       lineIdx: 0,
       line: null,
       pos: null,          // CloSan position on our board right now
       plyIdx: 0,          // next ply of the line to play
       userColor: null,    // 'w' | 'b' — board bottom, i.e. the course colour
+      // Which colour the board is DRAWN from. Follows userColor for a quiz;
+      // analysis can flip it. Kept apart from userColor, which keeps its quiz
+      // meaning ("the colour whose moves are asked for") — flipping that would
+      // change what the quiz expects.
+      view: null,
       sel: null,          // selected source square index, or null
       attempts: 0,        // misses on the current ply
       hint: false,        // the answer is being spelled out for this ply
@@ -8242,6 +8289,13 @@
       cluster: null,
       button: null,
       queueBtn: null,     // "Review queued lines" (section 18b)
+      analyseBtn: null,   // "Analyse" (section 19)
+      // --- analysis board (section 19) -------------------------------------
+      an: {
+        startFen: null,   // the position Chessable's board was on when it opened
+        moves: [],        // [{ uci, san, fen }] — one line, truncated on a branch
+        idx: 0,           // how many of those moves are on the board right now
+      },
       // The opponent's pause borrows auto-play's speed setting so the two
       // features feel the same; the widget's dropdown is the one control.
       speed: CONFIG.autoPlay.defaultSpeed,
@@ -8271,6 +8325,9 @@
     };
 
     continuationActive = () => cr.active;
+    // Section 19: while the analysis board is up, the panel describes OUR
+    // position instead of Chessable's (readFen / reviewPanelTick).
+    continuationAnalysisFen = () => (cr.active && cr.mode === 'analysis' ? anFen() : null);
 
     (async () => {
       try {
@@ -8914,9 +8971,15 @@
      *  and square geometry are both percentage-based, so a resize needs no JS. */
     function visualPos(idx) {
       const file = idx & 7, rank = idx >> 3;
-      return cr.userColor === 'w'
+      return boardView() === 'w'
         ? { col: file, row: 7 - rank }
         : { col: 7 - file, row: rank };
+    }
+
+    /** The colour the board is drawn from: the analysis flip if there is one,
+     *  the course colour otherwise. */
+    function boardView() {
+      return cr.view || cr.userColor;
     }
 
     function placeAt(el, idx) {
@@ -8932,10 +8995,11 @@
      */
     function fillGrid(grid, onSquare) {
       while (grid.firstChild) grid.removeChild(grid.firstChild);
+      const view = boardView();
       for (let row = 0; row < 8; row++) {
         for (let col = 0; col < 8; col++) {
-          const file = cr.userColor === 'w' ? col : 7 - col;
-          const rank = cr.userColor === 'w' ? 7 - row : row;
+          const file = view === 'w' ? col : 7 - col;
+          const rank = view === 'w' ? 7 - row : row;
           const idx = rank * 8 + file;
           const sq = document.createElement('div');
           sq.className = 'clo-cr-sq' + ((file + rank) % 2 ? ' clo-cr-sq--light' : ' clo-cr-sq--dark');
@@ -8951,7 +9015,7 @@
         sq.dataset.sq = String(idx);
         cr.squares.set(idx, sq);
       });
-      cr.orientation = cr.userColor;
+      cr.orientation = boardView();
     }
 
     /**
@@ -9154,6 +9218,18 @@
       return letter === letter.toUpperCase() ? 'w' : 'b';
     }
 
+    /**
+     * The colour the board will accept a move from right now, or null when it
+     * accepts none. Analysis plays both sides, so that is simply the side to
+     * move; the quiz accepts only the ply it is currently asking the user for.
+     */
+    function moverColor() {
+      if (!cr.pos) return null;
+      if (cr.mode === 'analysis') return cr.pos.side;
+      const ply = currentPly();
+      return ply && ply.color === cr.userColor ? cr.userColor : null;
+    }
+
     /** Applies a resolved ply to our position and animates it on our board. */
     function applyMove(ply) {
       const mv = ply.mv;
@@ -9207,7 +9283,8 @@
       cr.swallowClick = false;
       clearShapes();
       hidePromo();
-      if (cr.orientation !== cr.userColor) buildGrid();
+      cr.view = cr.userColor; // a quiz is always seen from the course colour
+      if (cr.orientation !== boardView()) buildGrid();
       reconcilePieces();
       paint();
       syncUi();
@@ -9261,9 +9338,11 @@
 
     function onSquare(idx) {
       if (!cr.active || cr.busy || cr.promo) return;
-      const ply = currentPly();
-      if (!ply || ply.color !== cr.userColor) return;
-      const own = colorAt(idx) === cr.userColor;
+      // Analysis plays both sides, so "may I touch this?" is the side to move;
+      // the quiz only ever accepts the ply it is asking for.
+      const mover = moverColor();
+      if (!mover) return;
+      const own = colorAt(idx) === mover;
       if (cr.sel === null) {
         if (own && legalFrom(idx).length) { cr.sel = idx; paint(); }
         return;
@@ -9304,8 +9383,9 @@
       const col = Math.floor((clientX - rect.left) / cell);
       const row = Math.floor((clientY - rect.top) / cell);
       if (col < 0 || col > 7 || row < 0 || row > 7) return null; // dropped off the board
-      const file = cr.userColor === 'w' ? col : 7 - col;
-      const rank = cr.userColor === 'w' ? 7 - row : row;
+      const view = boardView();
+      const file = view === 'w' ? col : 7 - col;
+      const rank = view === 'w' ? 7 - row : row;
       return rank * 8 + file;
     }
 
@@ -9336,15 +9416,15 @@
       // exactly when a leftover arrow is most in the way.
       clearShapes();
       if (cr.busy) return;
-      const ply = currentPly();
-      if (!ply || ply.color !== cr.userColor) return;
+      const mover = moverColor();
+      if (!mover) return;
       const sqEl = e.target.closest('[data-sq]');
       if (!sqEl) return;
       const idx = Number(sqEl.dataset.sq);
-      // Only a piece of the user's colour that can actually move is draggable.
+      // Only a piece of the moving colour that can actually move is draggable.
       // Anything else is left to the click handler (it may be a drop target of
       // an existing selection, which pointerdown must not disturb).
-      if (colorAt(idx) !== cr.userColor || !legalFrom(idx).length) return;
+      if (colorAt(idx) !== mover || !legalFrom(idx).length) return;
       const piece = cr.pieces.get(idx);
       if (!piece) return;
 
@@ -9428,6 +9508,7 @@
     }
 
     function tryMove(mv) {
+      if (cr.mode === 'analysis') { anPlay(mv); return; }
       const ply = currentPly();
       if (!ply) return;
       const uci = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
@@ -9457,7 +9538,10 @@
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'clo-cr-promo-btn';
-        btn.appendChild(makePiece(cr.userColor === 'w' ? promo.toUpperCase() : promo));
+        // The promoting side is whoever is to move — in analysis that is not
+        // always the course colour.
+        const side = (cr.pos && cr.pos.side) || cr.userColor;
+        btn.appendChild(makePiece(side === 'w' ? promo.toUpperCase() : promo));
         btn.title = 'Promote to ' + { q: 'queen', r: 'rook', b: 'bishop', n: 'knight' }[promo];
         btn.addEventListener('click', () => { // no inline handlers
           const chosen = cr.promo && cr.promo.moves.find((m) => m.promo === promo);
@@ -9472,6 +9556,194 @@
     function hidePromo() {
       cr.promo = null;
       if (cr.ui) cr.ui.promo.hidden = true;
+    }
+
+    // ------------------------------------------------------------------------
+    // 19) Analysis board (free play on our own board)
+    //
+    // Chessable's browse board is navigation-only (the ground truth section 18
+    // is built on), so a completed variation cannot be carried on with a move
+    // of your own — the only way to try something was the /analysis/ page in
+    // another tab, with the position set up again by hand. This is the SAME
+    // overlay pair as the quiz, in a second mode: the board accepts any legal
+    // move from either side, and the Lichess panel in the gutter follows OUR
+    // position instead of Chessable's (readFen consults analysisFen, section
+    // 11), so the database and the engine describe what is on our board.
+    //
+    // The move history is one line: playing a move after stepping back
+    // truncates what followed, the way a plain analysis board does. Nothing is
+    // written anywhere — no proofs, no rescheduling, no course edit; leaving
+    // just takes the overlays away and Chessable's board is exactly where it
+    // was, because we never touched it.
+    //
+    // The STARTING position is readReviewFen(), so it inherits that function's
+    // two documented approximations: castling rights are a home-square
+    // heuristic and en passant is always "-". Every position after it is exact
+    // (fenAfterUci → CloSan), so only an en-passant capture available on the
+    // very first move is out of reach — step one move back on Chessable's own
+    // board and it is there.
+    // ------------------------------------------------------------------------
+
+    /** FEN of the position on our board: the start, or the move we are at. */
+    function anFen() {
+      const an = cr.an;
+      return an.idx > 0 && an.moves[an.idx - 1] ? an.moves[an.idx - 1].fen : an.startFen;
+    }
+
+    /** Plays a legal move, dropping whatever followed the current one. */
+    function anPlay(mv) {
+      cr.sel = null;
+      if (!cr.pos) return;
+      const uci = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
+      const san = CloSan.moveToSan(cr.pos, uci);
+      const fen = fenAfterUci(anFen(), uci);
+      if (!san || !fen) {
+        warn('analysis: could not resolve', uci, 'on', anFen());
+        return;
+      }
+      cr.an.moves.length = cr.an.idx; // a new move here replaces the old continuation
+      cr.an.moves.push({ uci, san, fen });
+      cr.an.idx++;
+      applyMove({ mv }); // animation + cr.pos, exactly as in the quiz
+      syncUi();
+      scheduleRefresh(); // database + engine follow immediately, not on the next tick
+    }
+
+    /** Puts the board on the position after `i` moves (clamped). */
+    function anGoto(i) {
+      const idx = Math.max(0, Math.min(i, cr.an.moves.length));
+      cr.an.idx = idx;
+      const pos = CloSan.parseFen(anFen());
+      if (!pos) { warn('analysis: unusable position at move', idx); return; }
+      cr.pos = pos;
+      const last = idx > 0 ? cr.an.moves[idx - 1] : null;
+      cr.lastMove = last
+        ? { from: squareIndexOf(last.uci.slice(0, 2)), to: squareIndexOf(last.uci.slice(2, 4)) }
+        : null;
+      cr.sel = null;
+      hidePromo();
+      clearShapes(); // annotations belong to the position they were drawn on
+      reconcilePieces();
+      paint();
+      syncUi();
+      scheduleRefresh();
+    }
+
+    function anFlip() {
+      cr.view = boardView() === 'w' ? 'b' : 'w';
+      buildGrid();
+      reconcilePieces();
+      renderShapes();
+      paint();
+    }
+
+    /** Opens the analysis board on the position Chessable's board is showing. */
+    function openAnalysis() {
+      if (cr.active) return;
+      const fen = readReviewFen();
+      if (!fen || !CloSan.parseFen(fen)) {
+        warn('analysis: board position unreadable — not opening');
+        return;
+      }
+      cr.mode = 'analysis';
+      cr.an = { startFen: fen, moves: [], idx: 0 };
+      if (!showOverlays()) { cr.mode = 'quiz'; return; }
+      cr.view = cr.userColor; // start from the course colour, flippable from here
+      cr.busy = false;
+      cr.line = null;
+      cr.lastMove = null;
+      cr.ui.chooser.hidden = true; // the quiz's picker never belongs here
+      cr.boardEl.hidden = false;   // …which is also what hides the board
+      buildGrid();
+      anGoto(0);
+      log('analysis board opened on', fen);
+    }
+
+    /** The one-line move list: SAN pairs, the current move highlighted, click
+     *  to jump. Rebuilt whole — it is at most a few dozen short rows. */
+    function renderAnalysisMoves() {
+      const list = cr.ui.list;
+      list.textContent = '';
+      const an = cr.an;
+      const startPos = CloSan.parseFen(an.startFen);
+      // Numbering continues the game the variation came from, so a tactics line
+      // starting at move 25 reads as move 25 here too.
+      let number = startPos ? startPos.fullmove : 1;
+      let white = !startPos || startPos.side === 'w';
+      let row = null;
+      const addRow = () => {
+        row = document.createElement('div');
+        row.className = 'clo-cr-mvrow';
+        const num = document.createElement('span');
+        num.className = 'clo-cr-mvnum';
+        num.textContent = number + '.';
+        row.appendChild(num);
+        if (!white) {
+          const gap = document.createElement('span');
+          gap.className = 'clo-cr-mv clo-cr-mv--gap';
+          gap.textContent = '…';
+          row.appendChild(gap);
+        }
+        list.appendChild(row);
+      };
+      an.moves.forEach((move, i) => {
+        if (white || !row) addRow();
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'clo-cr-mv' + (i + 1 === an.idx ? ' clo-cr-mv--on' : '');
+        el.textContent = move.san;
+        el.dataset.ply = String(i + 1);
+        row.appendChild(el);
+        if (!white) number++;
+        white = !white;
+      });
+      if (!an.moves.length) {
+        const empty = document.createElement('div');
+        empty.className = 'clo-cr-empty';
+        empty.textContent = 'No moves yet — play one on the board.';
+        list.appendChild(empty);
+      }
+      const on = list.querySelector('.clo-cr-mv--on');
+      if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest' });
+    }
+
+    function syncAnalysisUi() {
+      const ui = cr.ui;
+      ui.title.textContent = 'Analysis';
+      const side = cr.pos && cr.pos.side === 'b' ? 'Black' : 'White';
+      ui.prompt.textContent = side + ' to play';
+      ui.prompt.className = 'clo-cr-prompt';
+      ui.progress.textContent = cr.an.moves.length
+        ? 'Move ' + cr.an.idx + ' of ' + cr.an.moves.length
+        : 'Free play — nothing here is recorded';
+      renderAnalysisMoves();
+      ui.anStart.disabled = cr.an.idx === 0;
+      ui.anBack.disabled = cr.an.idx === 0;
+      ui.anFwd.disabled = cr.an.idx >= cr.an.moves.length;
+    }
+
+    /**
+     * Clicking a move row in the Lichess panel plays it on our board. The rows
+     * carry no dataset.uci in review documents (click-to-play there would drive
+     * Chessable's board, which is exactly what does not work), so the move is
+     * resolved from the cell's SAN against our own position — the panel is
+     * showing the database for this very FEN, so it always resolves.
+     */
+    function onPanelMoveClick(e) {
+      if (!cr.active || cr.mode !== 'analysis' || cr.busy || cr.promo) return;
+      // The whole ROW is the target, not just the SAN cell: the percentage and
+      // win-rate columns are the widest part of it, and a click landing there
+      // plainly means the same move.
+      const row = e.target.closest && e.target.closest('#' + PANEL_ID + ' tbody tr');
+      const cell = row && row.querySelector('td.clo-move');
+      if (!cell) return;
+      // The quick-edit popup's alt tab reads the same click to prefill its SAN
+      // input; never let one click do both.
+      const qePopup = document.getElementById(QE_POPUP_ID);
+      if (qePopup && !qePopup.hidden) return;
+      const uci = sanToUci(cr.pos, cell.textContent.trim());
+      const mv = uci && CloSan.uciToMove(cr.pos, uci);
+      if (mv) anPlay(mv);
     }
 
     // --- overlays ------------------------------------------------------------
@@ -9551,6 +9823,37 @@
 
       actions.append(hint, skip, exit);
 
+      // --- analysis mode (section 19): its own move list and controls, shown
+      // INSTEAD of the quiz's prompt/actions. Built once, with the quiz.
+      const list = document.createElement('div');
+      list.className = 'clo-cr-list';
+      list.hidden = true;
+      list.addEventListener('click', (e) => { // delegated: our own buttons only
+        const el = e.target.closest('[data-ply]');
+        if (el) anGoto(Number(el.dataset.ply));
+      });
+
+      const anActions = document.createElement('div');
+      anActions.className = 'clo-cr-actions';
+      anActions.hidden = true;
+      const anBtn = (label, title, onClick) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'clo-cr-btn';
+        btn.textContent = label;
+        btn.title = title;
+        btn.addEventListener('click', onClick); // no inline handlers
+        anActions.appendChild(btn);
+        return btn;
+      };
+      const anStart = anBtn('⏮', 'Back to the position you started from (Home)', () => anGoto(0));
+      const anBack = anBtn('◀', 'One move back (left arrow)', () => anGoto(cr.an.idx - 1));
+      const anFwd = anBtn('▶', 'One move forward (right arrow)', () => anGoto(cr.an.idx + 1));
+      anBtn('Flip', 'Turn the board around (F)', anFlip);
+      const anExit = anBtn('Exit', 'Close the analysis board and give Chessable its board back',
+        () => closeReview('analysis closed'));
+      anExit.classList.add('clo-cr-btn--exit');
+
       // Scope picker, shown INSTEAD of the actions row when a variation has
       // continuations both from its final position and from earlier in the line
       // (openReview). With only one kind there is nothing to choose, and it
@@ -9579,7 +9882,7 @@
       chooseCancel.addEventListener('click', () => closeReview('cancelled at the picker'));
 
       chooser.append(chooseAll, chooseFinal, chooseCancel);
-      panel.append(title, prompt, progress, chooser, actions);
+      panel.append(title, prompt, progress, list, chooser, actions, anActions);
 
       document.body.append(boardEl, panel);
       cr.boardEl = boardEl;
@@ -9587,6 +9890,7 @@
       cr.ui = {
         grid, layer, shapes, promo, title, prompt, progress, actions, hint, skip, exit,
         chooser, chooseAll, chooseFinal,
+        list, anActions, anStart, anBack, anFwd,
       };
       cr.orientation = null; // the grid is built on the first startLine
     }
@@ -9630,7 +9934,19 @@
     }
 
     function syncUi() {
-      if (!cr.ui || !cr.line) return;
+      if (!cr.ui) return;
+      // The two modes own different halves of the panel; whichever is up hides
+      // the other's rows, so nothing of the quiz shows on the analysis board.
+      const analysing = cr.mode === 'analysis';
+      cr.ui.list.hidden = !analysing;
+      cr.ui.anActions.hidden = !analysing;
+      if (analysing) {
+        cr.ui.actions.hidden = true;
+        syncAnalysisUi();
+        return;
+      }
+      // The quiz's own rows are owned by showChooser/beginRun, not by this.
+      if (!cr.line) return;
       const total = cr.queue.length;
       cr.ui.title.textContent = total > 1
         ? 'Continuation ' + (cr.lineIdx + 1) + ' of ' + total
@@ -9848,6 +10164,7 @@
       clearTimer();
       clearTimeout(cr.flashTimer);
       const wasActive = cr.active;
+      const analysing = cr.mode === 'analysis';
       const lastLine = cr.line;
       const played = cr.plyIdx;
       cr.active = false;
@@ -9863,8 +10180,17 @@
       hidePromo();
       if (cr.boardEl) cr.boardEl.hidden = true;
       if (cr.panel) cr.panel.hidden = true;
-      if (wasActive && why) log('continuation review:', why);
-      if (wasActive && navEnd) navigateToLineEnd(lastLine, played);
+      if (wasActive && why) log(analysing ? 'analysis board:' : 'continuation review:', why);
+      // Only a quiz has a line to leave Chessable's board on; analysis never
+      // touched their board, so there is nothing to put back either way.
+      if (wasActive && navEnd && !analysing) navigateToLineEnd(lastLine, played);
+      // Back to the quiz's own defaults, so the next launcher press is a quiz.
+      cr.mode = 'quiz';
+      cr.view = null;
+      cr.an = { startFen: null, moves: [], idx: 0 };
+      // The panel has been reading OUR position; hand it back to Chessable's
+      // board at once rather than a poll later.
+      if (wasActive && analysing) scheduleRefresh();
       syncButton();
     }
 
@@ -9896,11 +10222,24 @@
       button.className = 'clo-cr-open';
       button.addEventListener('click', openReview); // no inline handlers
 
-      cluster.append(queueBtn, button);
+      // Section 19. Unlike the two above this one does not depend on the
+      // variation having clickable lines — any completed position can be
+      // analysed — so it shows for the whole browse state.
+      const analyse = document.createElement('button');
+      analyse.type = 'button';
+      analyse.className = 'clo-cr-analyse';
+      analyse.textContent = 'Analyse';
+      analyse.title = 'Play on from this position on our own board: any legal move, ' +
+        'both sides, with the Lichess database and the engine following along. ' +
+        'Nothing you play here is saved or counted.';
+      analyse.addEventListener('click', openAnalysis);
+
+      cluster.append(queueBtn, button, analyse);
       widget.appendChild(cluster);
       cr.cluster = cluster;
       cr.button = button;
       cr.queueBtn = queueBtn;
+      cr.analyseBtn = analyse;
       return true;
     }
 
@@ -9916,9 +10255,13 @@
       // green buttons compete. The launcher comes back as soon as the queue is
       // spent (beginRun clears it) or the variation changes.
       const show = !cr.active && n > 0 && !showQueue;
-      cr.cluster.hidden = !(show || showQueue);
+      // Analysis needs no lines — only a position to start from, i.e. the
+      // browse state — so the cluster can now be up for that alone.
+      const showAnalyse = !cr.active && reviewBrowseReady();
+      cr.cluster.hidden = !(show || showQueue || showAnalyse);
       cr.queueBtn.hidden = !showQueue;
       cr.button.hidden = !show;
+      cr.analyseBtn.hidden = !showAnalyse;
       if (showQueue) {
         cr.queueBtn.textContent = queued > 1
           ? 'Review queued lines (' + queued + ')' : 'Review queued line';
@@ -10742,9 +11085,25 @@
       document.addEventListener(type, (e) => {
         if (!cr.active || e.ctrlKey || e.metaKey || e.altKey) return;
         e.stopPropagation();
-        if (type === 'keydown' && e.key === 'Escape') closeReview('escaped', true);
+        if (type !== 'keydown') return;
+        if (e.key === 'Escape') { closeReview('escaped', true); return; }
+        if (cr.mode !== 'analysis') return;
+        // Analysis navigation. Swallowed above already, so the trainer's own
+        // single-key shortcuts never see these either.
+        if (e.key === 'ArrowLeft') anGoto(cr.an.idx - 1);
+        else if (e.key === 'ArrowRight') anGoto(cr.an.idx + 1);
+        else if (e.key === 'Home') anGoto(0);
+        else if (e.key === 'End') anGoto(cr.an.moves.length);
+        else if (e.key === 'f' || e.key === 'F') anFlip();
+        else return;
+        e.preventDefault(); // arrows would otherwise scroll the page
       }, true);
     }
+
+    // Section 19: a database move row plays that move on the analysis board.
+    // Bubble phase — the panel is our own element and nothing else reacts to
+    // these clicks in a review document.
+    document.addEventListener('click', onPanelMoveClick);
 
     const pollTimer = setInterval(tick, C.pollMs);
     window.addEventListener('pagehide', () => {

@@ -33,7 +33,10 @@ named after "continuations", since a line branching off earlier in the variation
 continues nothing — which quizzes those lines on
 OUR OWN board overlaid on Chessable's — theirs is navigation-only (section 18);
 an opt-in setting starts that review by itself, and ending it leaves THEIR board
-on the position the line reached.
+on the position the line reached. That same board doubles as a free-play
+ANALYSIS board (section 19): "Analyse" on the widget lets any legal move be
+played for either side from the completed position, with the Lichess panel and
+the engine following OUR board instead of Chessable's.
 Currently working (v0.18.x).
 
 ## Structure
@@ -117,6 +120,11 @@ Currently working (v0.18.x).
   500 ms poll, all debounced 300 ms.
 - The 500 ms poll is also a self-healing watchdog: re-mounts the panel and
   re-binds listeners after SPA-style re-renders. All healing is idempotent.
+  `topPanelTick` wraps its body in a try/catch that logs one line per distinct
+  message: the interval survives a throw, so without it every tick would die at
+  the same statement and the panel would simply freeze on its last position
+  with nothing in the console — the one failure mode of this poll that is
+  invisible from the outside.
 - Fetches carry a sequence number; stale responses are cached but not
   rendered. LRU cache: 200 positions, keyed on the first four FEN fields
   (so move-counter-only differences share entries).
@@ -1082,6 +1090,37 @@ Currently working (v0.18.x).
   (v0.36.2). Budget is `headsUpScanTries` (~30 s at the 500 ms tick).
   Wiped by `resetHeadsUp` on every variation change and on leaving the trainer
   path.
+- Analysis board (section 19, v0.40.0): the SAME overlay pair as section 18 in a
+  second MODE (`cr.mode`), never a board of its own — the whole point is that
+  the quiz already solved "Chessable's browse board accepts no input", and a
+  copy would drift. Only three input gates branch, all defaulting to the quiz:
+  `onSquare` and `onDragStart` ask `moverColor()` (analysis = whoever is to
+  move; quiz = the ply being asked for) and `tryMove` calls `anPlay` instead of
+  comparing against the line. Everything else — grid, drag layer, promotion
+  picker, arrows, `positionOverlays`, `closeReview` — is shared and unchanged.
+  Board ORIENTATION moved out of `cr.userColor` into `cr.view` (`boardView()`,
+  read by `visualPos`/`fillGrid`/`dragSquareAt`/`buildGrid`): Flip must never
+  touch `cr.userColor`, which is what the quiz means by "the colour whose moves
+  are asked for", and `startLine` resets `cr.view` so a flip never leaks into a
+  quiz. History is ONE line of `{uci, san, fen}` (`cr.an`), the fen from the
+  top-level `fenAfterUci` (exact castling/ep/halfmove); playing after stepping
+  back truncates, which is the whole "no variation tree" decision.
+  THE PANEL FOLLOWS OUR BOARD through a second null-safe bridge,
+  `continuationAnalysisFen` — `readFen()` prefers it over `readReviewFen()` and
+  `reviewPanelTick` skips its `continuationActive` stand-down while it is
+  non-null, which is all it takes for the database, the opening name and
+  `syncEngine` to describe our position. A database ROW click plays that move
+  (`onPanelMoveClick`): review rows carry no `dataset.uci` (click-to-play there
+  would drive Chessable's board, which does not work), so the SAN is resolved
+  with `sanToUci` against `cr.pos`; it stands down while the quick-edit popup is
+  open, which reads the same clicks for its alt tab. The START position is
+  `readReviewFen()`, so it inherits both of that function's approximations
+  (castling from home squares, en passant always "-") — every position after it
+  is exact. `positionReviewPanel`'s below-the-board fallback now also clears
+  `CR_PANEL_ID`, for the stacked layout where both park under the board.
+  NOTHING is written: no proofs, no rescheduling, no course edit, and
+  Chessable's board is never touched — so `closeReview` skips `navigateToLineEnd`
+  in this mode and leaving is just hiding the overlays.
 
 ## Verification (no automated tests)
 

@@ -1558,6 +1558,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cr-panel[hidden],
 .clo-cr-actions[hidden],
 .clo-cr-chooser[hidden],
+.clo-cr-list[hidden],
 .clo-cr-heads[hidden],
 .clo-cr-heads__note[hidden],
 .clo-cr[hidden] {
@@ -1743,6 +1744,89 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cr-open:hover {
   background: rgba(98, 153, 36, 0.25);
   color: #fff;
+}
+
+/* "Analyse" (section 19). Neutral rather than green: unlike the two buttons
+   above it is not a review of anything, and it is up for the whole browse
+   state, so it must not compete with the one that is. */
+.clo-cr-analyse {
+  border: 1px solid #3d3a36;
+  background: transparent;
+  color: #bababa;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cr-analyse:hover {
+  border-color: #629924;
+  color: #fff;
+}
+
+/* --- analysis board move list (section 19) ---------------------------------
+   The one line of moves played on the analysis board, filling the panel between
+   the prompt and the controls. It is the only scrolling part: the panel itself
+   is sized to Chessable's comment column and must not grow past it. */
+.clo-cr-list {
+  align-self: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.clo-cr-mvrow {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.clo-cr-mvnum {
+  min-width: 2.2em;
+  text-align: right;
+  color: #7c7c7c;
+  font-size: 12px;
+}
+
+.clo-cr-mv {
+  border: 0;
+  background: transparent;
+  color: #d8d8d8;
+  padding: 0 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: inherit;
+  min-width: 3.4em;
+  text-align: left;
+}
+
+.clo-cr-mv:hover {
+  background: #3d3a36;
+  color: #fff;
+}
+
+.clo-cr-mv--on {
+  background: #629924;
+  color: #fff;
+}
+
+/* The "…" standing in for the white move a line starting on Black's turn does
+   not have. Not a button — there is no position to go to. */
+.clo-cr-mv--gap {
+  color: #6a6a6a;
+  cursor: default;
+  pointer-events: none;
+}
+
+.clo-cr-empty {
+  color: #7c7c7c;
+  font-size: 12px;
+  font-style: italic;
 }
 
 /* --- mid-quiz heads-up (section 18b) ----------------------------------------
@@ -1973,6 +2057,7 @@ html.clo-touch .clo-ap-clear,
 html.clo-touch .clo-chapter-btn,
 html.clo-touch .clo-cr-open,
 html.clo-touch .clo-cr-queue,
+html.clo-touch .clo-cr-analyse,
 html.clo-touch .clo-cr-btn,
 html.clo-touch .clo-qe-save {
   font-size: 16px;
@@ -1994,6 +2079,23 @@ html.clo-touch .clo-cr-title,
 html.clo-touch .clo-cr-progress,
 html.clo-touch .clo-cr-heads__title,
 html.clo-touch .clo-cr-heads__note {
+  font-size: 14px;
+}
+
+/* The analysis move list is TAPPED to navigate, so its moves are tap targets
+   as well as text (section 19). */
+html.clo-touch .clo-cr-mv {
+  font-size: 17px;
+  padding: 4px 8px;
+  min-width: 4em;
+}
+
+html.clo-touch .clo-cr-list {
+  font-size: 17px;
+}
+
+html.clo-touch .clo-cr-mvnum,
+html.clo-touch .clo-cr-empty {
   font-size: 14px;
 }
 

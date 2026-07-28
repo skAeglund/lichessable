@@ -328,6 +328,23 @@ reachable in the moment it is annoying you rather than in another tab. It takes
 two clicks (the options page is the only way back), and turning it off changes
 nothing about the end-of-variation button.
 
+Once a variation is completed the widget also offers **Analyse**, which opens a
+free-play board on the position Chessable is showing — step back through the
+move list first if you want to start somewhere earlier in the line. It is the
+same overlay board the clickable-line review uses (Chessable's own browse board
+accepts no moves at all), but here it takes **any legal move, for either side**,
+by click or by drag; right-click still draws arrows and circles. The **Lichess
+Database** panel in the gutter follows *that* board rather than Chessable's, so
+the database — and Stockfish, if the engine is on — describe the position you
+have played into, and clicking a row in the panel plays that move on the board.
+
+The panel over the comment column keeps the move list: click any move to jump to
+it, or use **⏮ / ◀ / ▶**, the arrow keys, Home/End. Playing a move after
+stepping back replaces what followed, like any analysis board. **Flip** (or `F`)
+turns the board around. Nothing here is recorded, rescheduled or saved to your
+course, and **Exit** (or Escape) simply takes the overlay away — Chessable's own
+board never moved.
+
 On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
 extension adds a **Sort by popularity** button, which reorders the whole chapter to
 follow the shape of the move tree: lines that share an opening sequence end up
@@ -891,6 +908,27 @@ enough not to run, the ↻ button is the only way back.
   trainer row, i.e. it covers the comment column, which at that moment holds
   nothing but "Quiz — White to play!". In the browse state that column holds the
   comment itself, so the old placement stands.
+- **Analysis board** — section 19, a second *mode* of the section-18 overlays
+  rather than a board of its own: `cr.mode` flips three input gates (which
+  colour may move, and whether a move is checked against a line or simply
+  played) and the panel's contents; everything else — the grid, the drag layer,
+  the promotion picker, the arrows, the positioning, the teardown — is the quiz
+  code unchanged. Free play needs a position of its own, so moves are kept as
+  one line of `{uci, san, fen}` with the FEN from `fenAfterUci` (exact castling,
+  en passant and halfmove clock); playing a move after stepping back truncates
+  the rest. **The panel follows our board** through a second null-safe bridge,
+  `continuationAnalysisFen`: `readFen()` returns it when it is non-null and
+  `reviewPanelTick` skips its usual stand-down, so the database, the opening
+  name and the engine all key off our position with no other change — and a
+  click on a database row plays that move here (the row carries no
+  `dataset.uci` in a review document, so the SAN is resolved against our
+  position with `sanToUci`). The starting position is `readReviewFen()`, so it
+  inherits that function's two approximations (castling by home squares, en
+  passant always "-"); every position after it is exact. Board orientation moved
+  from `cr.userColor` to `cr.view` so **Flip** cannot change what a quiz asks
+  for. Nothing is written anywhere: no proofs, no rescheduling, no course edit,
+  and Chessable's own board is never touched, so leaving is just hiding the
+  overlays.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.
