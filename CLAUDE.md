@@ -27,7 +27,9 @@ engine check of the refused move and one-click addition as an accepted
 alternative (section 15). Every move failed in a session is logged from the
 trainer's own per-move quiz record (section 16) and a "Retry" button walks
 those variations again as overstudy, with auto-play covering the moves already
-answered (section 17). A completed variation whose comment holds clickable
+answered (section 17); "Drill mistakes" is the fast alternative to that pass —
+the same failed moves asked for on OUR OWN board, one card each, with no
+navigation and nothing rescheduled (section 20). A completed variation whose comment holds clickable
 subvariation lines offers "Review clickable(s)" — the button is deliberately not
 named after "continuations", since a line branching off earlier in the variation
 continues nothing — which quizzes those lines on
@@ -1178,6 +1180,63 @@ Currently working (v0.18.x).
   playing after stepping back truncates, so the list IS the line. Chessable's
   comment column behind our overlay keeps the OLD text until the trainer redraws
   the variation, so the status line is the entire confirmation.
+- Mistake drill (section 20, v0.45.0; verified live 2026-07-29): the fast
+  alternative to the retry pass —
+  the session's failed MOVES, one card each, instead of their whole variations.
+  It is a THIRD MODE of section 18's overlays (`cr.mode = 'drill'`), never a
+  board of its own: a card is built in exactly the `cr.line` shape the quiz
+  plays, so `startLine`/`step`/`tryMove`, the drag layer, the promotion picker,
+  the arrows and `positionOverlays` are the quiz's and UNCHANGED. What the mode
+  actually costs is the wording in `syncUi`, two launchers, and the rules below.
+  Nothing navigates, nothing loads, Chessable's board is never touched and
+  nothing is rescheduled.
+  Everything a card needs was already in the log: `sourceFen` is the exact
+  position before the failed move (lesson plan, so castling and en passant are
+  real), `san` is the course move, and the NEW `lead` field (section 16) holds
+  the plies before it — captured in `ingest`, where the whole plan is in hand,
+  because it is unobtainable later without loading that variation, which is the
+  very cost this feature exists to avoid. `CONFIG.retry.leadPlies` (4) is what
+  is STORED, `CONFIG.continuation.drillLeadPlies` (1) is what is PLAYED: the
+  run-up length is meant to become a setting and a stored log cannot be
+  back-filled. An entry logged before v0.45.0 has no `lead` and simply gets no
+  run-up.
+  Two rules, both load-bearing:
+  * the run-up ply is played ONLY if it is the OPPONENT'S. A user-colour ply
+    would be ASKED FOR by `step()` — the drill would quiz a move the user never
+    failed. Future modes wanting more run-up need a per-ply "auto" flag in
+    `step()`, not a bigger `drillLeadPlies`.
+  * a mistake leaves the pending list only on a CLEAN answer — no miss, no hint
+    (`finishDrillCard`, called from `step()`'s line-done branch, which is
+    reachable only by the correct move being played; "Skip move" goes straight
+    to `nextLine` and so marks nothing, deliberately). It sets the SAME
+    `retried` flag the runner does (`mistakeLogApi.markDone(oid, mkey)`), so the
+    drill and Retry share one list and cannot disagree about what is
+    outstanding.
+  `drillLine` refuses rather than guesses: a card whose SANs do not resolve is
+  dropped with one console line, and a card whose run-up does not resolve falls
+  back to the failed move alone. `drillPlies` walks with `sanToUci` +
+  `fenAfterUci`, the same step `walkLine` takes, so both kinds of card carry
+  identical ply objects. A drill line carries `userColor` (a queue spans a whole
+  session and can mix colours; the board's orientation is only the last
+  variation's) — `startLine` applies it, and clickable lines, which carry none,
+  are unaffected. `closeReview` skips `navigateToLineEnd` for anything but a
+  quiz: a drill's positions come from the log, and the comment column holds
+  nothing matching them.
+  Both launchers are browse-state gated ("Drill mistakes (N)" on the section-18
+  cluster, "Drill selected" in the mistake popup through the `continuationDrill`
+  bridge, which returns FALSE when it cannot open so the popup can say why): our
+  board overlays Chessable's, so offering this mid-quiz would cover a live quiz
+  board. The gate lives in `openDrill` itself, NOT only in `syncButton` — the
+  popup is reachable mid-quiz, and the watchdog closes any active overlay the
+  moment the browse gates go false, so a drill started there flashed up and was
+  torn down on the next tick, leaving no board AND no message (seen live,
+  v0.45.1). The Lichess panel keeps its ordinary stand-down (active overlay, no
+  analysis FEN) — here that is the point, since the database's top move would
+  name the answer.
+  `closeReview` also clears `cr.busy` now. Exit is live during an opponent's
+  move and during the finished-line pause, only `step()` ever cleared it, and a
+  drill has an opponent move on nearly every card — so a stale `true` left the
+  NEXT run's board refusing every press.
 
 ## Verification (no automated tests)
 

@@ -1304,6 +1304,21 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-mx-start:hover { background: #71ad2a; border-color: #71ad2a; }
 
+/* "Drill selected" (section 20): the other way to spend the same list, so it
+   sits beside Retry — amber-outlined, like every other mistake control. */
+.clo-mx-drill {
+  border: 1px solid #7a6a2e;
+  background: transparent;
+  color: #d9a942;
+  padding: 3px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-mx-drill:hover { background: rgba(217, 169, 66, 0.2); color: #fff; }
+
 .clo-mx-cancel {
   border: none;
   background: transparent;
@@ -1767,6 +1782,25 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: #fff;
 }
 
+/* "Drill mistakes" (section 20). Amber, matching the mistake cluster's own
+   chip rather than the green review buttons: it is the same session mistakes,
+   reached from a second place. */
+.clo-cr-drill {
+  border: 1px solid #7a6a2e;
+  background: transparent;
+  color: #d9a942;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cr-drill:hover {
+  background: rgba(217, 169, 66, 0.2);
+  color: #fff;
+}
+
 /* --- analysis board move list (section 19) ---------------------------------
    The one line of moves played on the analysis board, filling the panel between
    the prompt and the controls. It is the only scrolling part: the panel itself
@@ -2104,6 +2138,7 @@ html.clo-touch .clo-chapter-btn,
 html.clo-touch .clo-cr-open,
 html.clo-touch .clo-cr-queue,
 html.clo-touch .clo-cr-analyse,
+html.clo-touch .clo-cr-drill,
 html.clo-touch .clo-cr-btn,
 html.clo-touch .clo-qe-save {
   font-size: 16px;
@@ -2315,6 +2350,7 @@ html.clo-touch .clo-mx-note {
 }
 
 html.clo-touch .clo-mx-start,
+html.clo-touch .clo-mx-drill,
 html.clo-touch .clo-mx-cancel {
   font-size: 15px;
   padding: 8px 14px;

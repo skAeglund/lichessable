@@ -179,6 +179,25 @@ off) for the duration and put back the way you had it afterwards:
   retried mistake, so in a line where you failed moves 8 and 12 you play those
   two moves and nothing else.
 
+**Drill mistakes (N)** is the fast way through the same list, and sits on the
+widget beside **Analyse** once a variation is finished (the popup has a **Drill
+selected** button too, for a subset). Instead of walking whole variations, it
+asks for the failed **moves** — on our own board, the one the clickable-line
+review and the analysis board use. Each card plays the opponent's move that came
+before your mistake, then asks you for the move you got wrong; answer it and the
+next one comes up. Nothing is loaded, nothing is rescheduled, and Chessable's
+board is never touched, so a pass through eight mistakes takes under a minute
+rather than eight page loads.
+
+A move you get right **first try, with no hint** comes off the list; one you
+miss, ask for a hint on, or skip stays on it, so it comes round again in a later
+drill or in a full **Retry**. Wrong moves are simply refused — nothing is rolled
+back, because nothing was played — and after two tries the panel names the move,
+exactly as in the clickable-line review. **Skip move**, **Exit** and Escape all
+work as they do there. The Lichess panel stays out of the way for the duration:
+its top move for the position would be the answer. The drill needs a board to
+lay itself over, so it is offered on a finished variation, not mid-quiz.
+
 A failed move is always yours to play even if you happened to answer it
 correctly later in the session (which would otherwise count as proven and get
 replayed past). The progress line offers **Skip** and **Stop**; Stop restores
@@ -797,7 +816,10 @@ enough not to run, the ↻ button is the only way back.
   the list. Writes merge rather than overwrite, since every tab shares that
   storage area. One accepted race: a variation completed and skipped inside one
   sampling interval can lose its last ply's record, because the plan swaps to
-  the next variation ~90 ms before its first move animates.
+  the next variation ~90 ms before its first move animates. Each entry also
+  keeps the handful of plies *before* the failed one (`lead`) — free at logging
+  time, since the whole plan is in hand, and unobtainable afterwards without
+  loading that variation, which is the cost the drill exists to avoid.
 - **Retry runner** — section 17. A pass is a queue of one item per *variation*
   (targeting the last failed move of the line, so the earlier ones are met on
   the way) held in `chrome.storage.session`, because the first switch is a real
@@ -831,6 +853,25 @@ enough not to run, the ↻ button is the only way back.
   this mode asks for — and **Whole variation** forces the toggle *off* instead
   of on and waits for the line to complete. The lift is scoped to the
   variation a pass is driving, so ordinary sessions behave as before.
+- **Mistake drill** — section 20, and deliberately not a feature of its own: a
+  card is built in exactly the line shape the clickable-line quiz already plays
+  (opponent plies auto-played, user plies asked for), so it is a third *mode*
+  of those same overlays and inherits the board, the drag layer, the promotion
+  picker, the arrows and the positioning unchanged. Everything a card needs is
+  already in the log — `sourceFen` is the exact position before the failed move
+  (from the lesson plan, so castling and en passant are real), `san` is the move
+  the course wanted, and `lead` supplies the run-up. Two rules carry the design:
+  the run-up ply is played only if it is the **opponent's** (a user-colour ply
+  would be *asked for*, i.e. the drill would quiz a move that was never failed),
+  and a mistake leaves the pending list only on a **clean** answer — no miss, no
+  hint — because getting it right after being told the move proves nothing, and
+  that list is what both this and Retry work from. It sets the same `retried`
+  flag the runner does, so the two can never disagree about what is outstanding.
+  A card whose position cannot be rebuilt is dropped with a console line rather
+  than guessed at; a card whose run-up does not resolve falls back to the failed
+  move alone. The Lichess panel keeps its ordinary stand-down (any active
+  overlay with no analysis FEN behind it), which here is exactly right: the
+  database's top move for the position would name the answer.
 - **Continuation review** — section 18. Chessable's browse board is
   **navigation-only**: verified live that the extension's own click-click move
   recipe changes nothing on it, on any square pair, so the quiz cannot happen
@@ -1278,4 +1319,11 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
   runs in the tab that started it, pauses while that tab is hidden, and ends if
   you leave the trainer. Mistakes are listed for the course you are currently
   in — a session across two courses gives you one list per course.
+- The mistake **drill** is the other way round, and its limits follow from that:
+  it never touches Chessable, so nothing you do there is recorded, rescheduled
+  or visible to the course — it is practice, and a clean answer only marks the
+  move off *our* list. It is offered on a finished variation, since it needs a
+  board to lay itself over. Only one opponent move of run-up is played for now;
+  the log stores more, so a "how much run-up?" setting can be added without
+  losing anything already recorded.
 - All class names Chessable-side are treated as fragile; see `SELECTORS`.

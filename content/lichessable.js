@@ -252,6 +252,15 @@
       autoKey: 'cloAutoReviewClickables', // chrome.storage.local; absent = off
       autoDelayMs: 700,     // after the lines are ready, so the completion settles
 
+      // --- mistake drill (section 20) --------------------------------------
+      // The same overlays in a third mode: this session's failed moves, one
+      // after another, on our own board. `leadPlies` is how much run-up each
+      // one gets — 1 means the opponent's move before the mistake is played
+      // for the user and then their move is asked for. The mistake log stores
+      // more than this (CONFIG.retry.leadPlies), so raising it needs no new
+      // data capture.
+      drillLeadPlies: 1,
+
       // --- "already in your course" check ---------------------------------
       // A clickable line can be added to the repertoire as a real variation
       // (Chessable's own right-click on the line), and many are. Quizzing one
@@ -466,6 +475,15 @@
       logTtlMs:   12 * 3600 * 1000,
       sampleMs:   900,   // lesson-plan sampling interval while in a trainer session
       maxWrongKept: 6,   // refused attempts kept per entry (display only)
+      // Plies of the variation kept BEFORE the failed move, so the mistake
+      // drill (section 20) can give the position a run-up. They are free here —
+      // `ingest` has the whole lesson plan in hand — and unobtainable later:
+      // the log is session-scoped and the plan of another variation cannot be
+      // read without loading it, which is the very cost the drill exists to
+      // avoid. More than the drill currently plays, deliberately: the run-up
+      // length is meant to become a setting, and a stored log cannot be
+      // back-filled.
+      leadPlies: 4,
       // Runner pacing. A variation switch is a drawer click (or, from a review
       // session, one navigation); either way the trainer needs a moment before
       // the new oid is readable, so retries are spaced.
@@ -7244,7 +7262,8 @@
       const meta = onBoard ? readCurrentMeta() : { lid: '', title: '' };
       const now = Date.now();
       let dirty = false;
-      for (const ply of sample.plies) {
+      for (let i = 0; i < sample.plies.length; i++) {
+        const ply = sample.plies[i];
         if (!ply.isUserMove || !ply.progress) continue;
         const attempts = ply.progress.quizIncorrectAttempts || [];
         if (!attempts.length) continue;
@@ -7277,6 +7296,12 @@
           mid: ply.mid, ply: ply.ply, mkey,
           san: ply.san, color: ply.color, from: ply.from, to: ply.to,
           sourceFen: ply.sourceFen,
+          // The plies leading UP to the failed one, so the drill (section 20)
+          // can start a move or two early instead of dropping the user into a
+          // bare position. The plan's ARRAY order is ply order (`ply.ply` is
+          // allowed to be null), so the index is the anchor, not the field.
+          lead: sample.plies.slice(Math.max(0, i - C.leadPlies), i)
+            .map((p) => ({ san: p.san, color: p.color, sourceFen: p.sourceFen })),
           num: fullmoveOf(ply.sourceFen),
           title: meta.title || sample.variationName || (existing && existing.title) || '',
           wrong: attempts.slice(-C.maxWrongKept),
@@ -7350,6 +7375,21 @@
       return n;
     }
 
+    /**
+     * Marks ONE move as dealt with — the mistake drill (section 20), which
+     * handles single moves rather than whole variations. The flag is the same
+     * `retried` the runner sets: both mean "handled this session", so the two
+     * features share one list and cannot disagree about what is still pending.
+     */
+    function markDone(oid, mkey) {
+      if (!ml.log) return false;
+      const entry = ml.log[oid + ':' + mkey];
+      if (!entry || entry.retried) return false;
+      entry.retried = true;
+      scheduleSave();
+      return true;
+    }
+
     function tick() {
       if (ml.dead || !isTrainerPath()) return;
       // A hidden tab cannot commit a board move at all (MoveTrainer2 commits
@@ -7366,6 +7406,7 @@
       bid: () => ml.bid,
       pending: pendingEntries,
       markRetried,
+      markDone,
       moveLabel,
       wrongLabel,
       /** The current variation's live record for one logged move, or null when
@@ -7938,21 +7979,45 @@
       cancel.className = 'clo-mx-cancel';
       cancel.textContent = 'Close';
       cancel.addEventListener('click', closePopup);
+      /** The ticked rows, or null after saying why there are none. */
+      const chosenEntries = () => {
+        const pending = (mistakeLogApi && mistakeLogApi.pending()) || [];
+        const chosen = pending.filter((e) => !rr.unselected.has(entryKey(e)));
+        if (chosen.length) return chosen;
+        status.textContent = 'Nothing selected.';
+        status.hidden = false;
+        return null;
+      };
+
+      // Section 20: the same moves drilled on our own board instead of walked
+      // through as overstudy — no navigation, so the mode select above (which
+      // is about how much of a VARIATION gets replayed) does not apply.
+      const drill = document.createElement('button');
+      drill.type = 'button';
+      drill.className = 'clo-mx-drill';
+      drill.textContent = 'Drill selected';
+      drill.title = 'Play just these moves, one after another, on our own board: ' +
+        'the opponent’s move before each is played for you. Nothing is loaded and ' +
+        'nothing is rescheduled, and the “You play” setting above does not apply.';
+      drill.addEventListener('click', () => {
+        const chosen = chosenEntries();
+        if (!chosen) return;
+        if (continuationDrill && continuationDrill(chosen)) { closePopup(); return; }
+        // The popup is reachable mid-quiz, where our board would cover a live
+        // one — the drill declines there rather than opening over it.
+        status.textContent = 'The drill needs the board — finish the variation first.';
+        status.hidden = false;
+      });
+
       const start = document.createElement('button');
       start.type = 'button';
       start.className = 'clo-mx-start';
       start.textContent = 'Retry selected';
       start.addEventListener('click', () => {
-        const pending = (mistakeLogApi && mistakeLogApi.pending()) || [];
-        const chosen = pending.filter((e) => !rr.unselected.has(entryKey(e)));
-        if (!chosen.length) {
-          status.textContent = 'Nothing selected.';
-          status.hidden = false;
-          return;
-        }
-        startRun(chosen);
+        const chosen = chosenEntries();
+        if (chosen) startRun(chosen);
       });
-      actions.append(cancel, start);
+      actions.append(cancel, drill, start);
 
       popup.append(title, list, modeLabel, note, status, actions);
       // Same key discipline as the other popups: MoveTrainer2 binds single-key
@@ -8234,6 +8299,12 @@
   // OUR board instead of Chessable's; same null-safe bridge pattern.
   let continuationAnalysisFen = null;
 
+  // (entries) => boolean — opens the mistake drill (section 20) on a list of
+  // mistake-log entries, false when it cannot (no board, already running,
+  // nothing usable). Section 17's mistake popup is the only outside caller;
+  // the drill's own launcher sits on this module's cluster.
+  let continuationDrill = null;
+
   function initContinuationReview() {
     if (typeof CloSan === 'undefined') {
       warn('continuation review disabled: CloSan (engine/san.js) not loaded');
@@ -8262,9 +8333,11 @@
       autoRan: null,      // variation the auto-start already fired for (once per variation)
       autoTimer: 0,
       active: false,
-      // What the overlays are being used for: the clickable-line quiz, or the
-      // free-play analysis board (section 19). Every mode branch below defaults
-      // to 'quiz', so the quiz path reads exactly as it did before.
+      // What the overlays are being used for: the clickable-line quiz, the
+      // free-play analysis board (section 19), or the mistake drill (section
+      // 20). Every mode branch below defaults to 'quiz', so the quiz path reads
+      // exactly as it did before — and the drill, whose cards ARE quiz lines,
+      // rides that default nearly everywhere.
       mode: 'quiz',
       lineIdx: 0,
       line: null,
@@ -8300,6 +8373,10 @@
       button: null,
       queueBtn: null,     // "Review queued lines" (section 18b)
       analyseBtn: null,   // "Analyse" (section 19)
+      drillBtn: null,     // "Drill mistakes" (section 20)
+      // --- mistake drill (section 20) --------------------------------------
+      // Only a tally: a drill card carries its own log entry on the line.
+      drill: { done: 0, clean: 0 },
       // --- analysis board (section 19) -------------------------------------
       an: blankAnalysis(),
       // Lead-in typed for "Add as line" ("An example continuation:"). Lives
@@ -8338,6 +8415,9 @@
     // Section 19: while the analysis board is up, the panel describes OUR
     // position instead of Chessable's (readFen / reviewPanelTick).
     continuationAnalysisFen = () => (cr.active && cr.mode === 'analysis' ? anFen() : null);
+    // Section 20: the mistake popup can start a drill, and hears back whether
+    // the board could be opened at all.
+    continuationDrill = (entries) => openDrill(entries);
 
     (async () => {
       try {
@@ -9276,6 +9356,11 @@
       cr.lineIdx = idx;
       cr.line = cr.queue[idx];
       if (!cr.line) { finish(); return; }
+      // A drill queue can mix colours — the mistakes of a whole session, and
+      // the board's orientation is only the last variation's — so a line may
+      // name the colour it asks for. Clickable lines carry none and keep the
+      // course colour showOverlays read off the board.
+      if (cr.line.userColor) cr.userColor = cr.line.userColor;
       cr.pos = CloSan.parseFen(cr.line.startFen);
       if (!cr.pos) {
         warn('continuation: start position of line', cr.line.key, 'is unusable — skipping');
@@ -9310,6 +9395,13 @@
     function step() {
       if (!cr.active || !cr.line) return;
       if (cr.plyIdx >= cr.line.plies.length) {
+        // A line only ever ends by its moves being PLAYED — a refused move is
+        // never applied — so reaching here in a drill means the mistake was
+        // answered. Whether it counts as dealt with is the stricter question
+        // (section 20): only an answer with no miss and no hint takes the move
+        // off the list. Skipping a card goes straight to nextLine and so can
+        // never mark anything, which is the point of that button.
+        if (cr.mode === 'drill') finishDrillCard();
         cr.busy = true;
         syncUi();
         clearTimer();
@@ -10084,6 +10176,149 @@
       if (mv) anPlay(mv);
     }
 
+    // ========================================================================
+    // 20) Mistake drill: this session's failed moves, on our own board
+    //
+    // "Retry" (section 17) is correct but slow — it walks every failed
+    // VARIATION again as a real overstudy session, one navigation or drawer
+    // click at a time, with MoveTrainer2 booting the line and auto-play
+    // replaying it. This drills the MOVES instead, in place: no navigation, no
+    // page load, nothing rescheduled.
+    //
+    // It is not a board of its own. A drill card is built in exactly the
+    // `cr.line` shape the clickable-line quiz plays — opponent plies
+    // auto-played, user plies asked for — so `startLine`/`step`/`tryMove`, the
+    // drag layer, the promotion picker, the arrows and the positioning are the
+    // quiz's, unchanged. What the mode actually costs is the wording in syncUi,
+    // a launcher, and the two rules below.
+    //
+    // Everything a card needs is in the mistake log: `sourceFen` is the exact
+    // position before the failed move (from the lesson plan, so castling and en
+    // passant are real), `san` is the move the course wanted, and `lead` holds
+    // the plies before it (section 16) — which is what lets the card start a
+    // move early instead of dropping the user into a bare position.
+    //
+    // Two rules:
+    // * the run-up ply is played only if it is the OPPONENT'S. A user-colour
+    //   ply would be ASKED for by step(), i.e. the drill would quiz a move the
+    //   user never failed.
+    // * a mistake leaves the pending list only on a CLEAN answer — no miss, no
+    //   hint. Getting it right after being told the move is not evidence of
+    //   anything, and the list is what both this and Retry work from.
+    //
+    // The Lichess panel deliberately keeps standing down here (it does so for
+    // any active overlay whose FEN bridge is null): the database's top move for
+    // the position would simply name the answer.
+    // ========================================================================
+
+    const pendingMistakes = () => (mistakeLogApi && mistakeLogApi.pending()) || [];
+
+    /**
+     * Walks `sans` from `startFen`, producing the quiz's own ply shape, or null
+     * if any of them does not resolve — a card is never guessed at.
+     */
+    function drillPlies(startFen, sans) {
+      let fen = startFen;
+      const plies = [];
+      for (const san of sans) {
+        // The same step walkLine takes for a clickable line, so both kinds of
+        // card carry byte-identical ply objects (fenAfterUci keeps the halfmove
+        // clock honest, which CloSan's position object does not hold).
+        const pos = CloSan.parseFen(fen);
+        const uci = pos && san && sanToUci(pos, san);
+        const next = uci ? fenAfterUci(fen, uci) : null;
+        if (!next) return null;
+        plies.push({ san, uci, color: pos.side, fen: next });
+        fen = next;
+      }
+      return plies;
+    }
+
+    /** One mistake-log entry as a playable card, or null when its position
+     *  cannot be reconstructed at all. */
+    function drillLine(entry) {
+      if (!entry || !entry.san || !entry.sourceFen) return null;
+      const lead = Array.isArray(entry.lead) ? entry.lead : [];
+      const prev = C.drillLeadPlies > 0 ? lead[lead.length - 1] : null;
+      // Only the opponent's move is played for the user; anything else would be
+      // asked for as if they had failed it.
+      const runUp = prev && prev.sourceFen && prev.color && prev.color !== entry.color
+        ? prev : null;
+      let startFen = runUp ? runUp.sourceFen : entry.sourceFen;
+      let plies = drillPlies(startFen, runUp ? [runUp.san, entry.san] : [entry.san]);
+      if (!plies && runUp) {
+        // The run-up is a nicety; the failed move itself is the card.
+        startFen = entry.sourceFen;
+        plies = drillPlies(startFen, [entry.san]);
+      }
+      if (!plies) return null;
+      return {
+        key: entry.oid + ':' + entry.mkey,
+        startFen,
+        plies,
+        userColor: entry.color,
+        label: (mistakeLogApi && mistakeLogApi.moveLabel(entry)) || entry.san,
+        entry,
+      };
+    }
+
+    /**
+     * Opens the drill on a list of mistake-log entries. False when it cannot —
+     * a review already running, no board to overlay (the popup that calls this
+     * is reachable mid-quiz), or nothing that could be rebuilt.
+     *
+     * Deliberately NOT beginRun: that one belongs to the clickable lines and
+     * clears the heads-up queue, which has nothing to do with a drill.
+     */
+    function openDrill(entries) {
+      if (cr.active || !entries || !entries.length) return false;
+      // The browse state, exactly as for the cluster's own launcher. Not merely
+      // a policy: the watchdog closes any active overlay the moment the browse
+      // gates go false, so a drill started mid-quiz would flash up and be torn
+      // down on the next tick — which is what the popup's Drill button did
+      // before this line (seen live), leaving no board and no message.
+      if (!reviewBrowseReady()) return false;
+      const queue = [];
+      let dropped = 0;
+      for (const entry of entries) {
+        const line = drillLine(entry);
+        if (line) queue.push(line);
+        else dropped++;
+      }
+      if (dropped) warn('mistake drill:', dropped, 'logged move(s) could not be rebuilt — skipped');
+      if (!queue.length) return false;
+      if (!showOverlays()) return false; // cr.mode is still 'quiz'
+      cr.mode = 'drill';
+      cr.drill = { done: 0, clean: 0 };
+      cr.choosing = false;
+      cancelAutoStart(); // the clickable-line auto-start must not open over this
+      cr.ui.chooser.hidden = true;
+      cr.ui.actions.hidden = false;
+      cr.boardEl.hidden = false;
+      cr.queue = queue;
+      positionOverlays();
+      log('mistake drill: started,', queue.length, 'move(s)');
+      startLine(0);
+      return true;
+    }
+
+    /** The card has just been answered: count it, and take the move off the
+     *  pending list if the answer was clean. */
+    function finishDrillCard() {
+      const entry = cr.line && cr.line.entry;
+      if (!entry) return;
+      cr.drill.done++;
+      const clean = !cr.attempts && !cr.hint;
+      if (!clean) {
+        log('mistake drill:', cr.line.label, '— answered with help, still on the list');
+        return;
+      }
+      cr.drill.clean++;
+      if (mistakeLogApi && mistakeLogApi.markDone(entry.oid, entry.mkey)) {
+        log('mistake drill:', cr.line.label, '— clean, taken off the list');
+      }
+    }
+
     // --- overlays ------------------------------------------------------------
 
     function buildOverlays() {
@@ -10324,16 +10559,30 @@
       // The quiz's own rows are owned by showChooser/beginRun, not by this.
       if (!cr.line) return;
       const total = cr.queue.length;
-      cr.ui.title.textContent = total > 1
-        ? 'Continuation ' + (cr.lineIdx + 1) + ' of ' + total
-        : 'Continuation';
+      // A drill card is a quiz line, so only the wording differs: which mistake
+      // of how many, and what was played instead of it — a move is much easier
+      // to place with the variation it came from beside it (section 20).
+      const drilling = cr.mode === 'drill';
+      const entry = drilling ? cr.line.entry : null;
       const plies = cr.line.plies.length;
       const done = Math.min(cr.plyIdx, plies);
-      cr.ui.progress.textContent = 'Move ' + Math.min(done + 1, plies) + ' of ' + plies;
+      if (drilling) {
+        cr.ui.title.textContent = total > 1
+          ? 'Mistake ' + (cr.lineIdx + 1) + ' of ' + total
+          : 'Mistake';
+        const where = (entry && (entry.title || '#' + entry.oid)) || '';
+        const wrong = (entry && mistakeLogApi && mistakeLogApi.wrongLabel(entry)) || '';
+        cr.ui.progress.textContent = [shortDrillTitle(where), wrong].filter(Boolean).join(' · ');
+      } else {
+        cr.ui.title.textContent = total > 1
+          ? 'Continuation ' + (cr.lineIdx + 1) + ' of ' + total
+          : 'Continuation';
+        cr.ui.progress.textContent = 'Move ' + Math.min(done + 1, plies) + ' of ' + plies;
+      }
 
       const ply = currentPly();
       let prompt;
-      if (cr.plyIdx >= plies) prompt = 'Line complete.';
+      if (cr.plyIdx >= plies) prompt = drilling ? 'Correct.' : 'Line complete.';
       else if (!ply || ply.color !== cr.userColor) prompt = '…';
       else if (cr.hint) prompt = 'Play ' + ply.san;
       else if (cr.attempts) prompt = 'Not that one — try again';
@@ -10343,7 +10592,14 @@
         (cr.plyIdx >= plies ? ' clo-cr-prompt--ok' : (cr.attempts && !cr.hint ? ' clo-cr-prompt--bad' : ''));
       cr.ui.hint.disabled = cr.busy || !ply || ply.color !== cr.userColor || cr.hint;
       cr.ui.skip.hidden = total < 2; // with one line "skip" and "exit" are the same button
+      cr.ui.skip.textContent = drilling ? 'Skip move' : 'Skip line';
+      cr.ui.skip.title = drilling
+        ? 'Leave this one for now — it stays on the mistake list'
+        : 'Give up on this continuation and go to the next one';
     }
+
+    /** Variation names run long, and the panel is one column wide. */
+    const shortDrillTitle = (t) => (t.length > 34 ? t.slice(0, 33) + '…' : t);
 
     /** The lines this feature offers: everything discovered MINUS the ones the
      *  user has already added to the course as real variations (tagLinesInCourse
@@ -10524,7 +10780,12 @@
     }
 
     function finish() {
-      log('continuation review: all lines done');
+      if (cr.mode === 'drill') {
+        log('mistake drill: done —', cr.drill.clean, 'of', cr.drill.done,
+          'answered cleanly and taken off the list');
+      } else {
+        log('continuation review: all lines done');
+      }
       closeReview(null, true);
     }
 
@@ -10541,6 +10802,7 @@
       clearTimeout(cr.flashTimer);
       const wasActive = cr.active;
       const analysing = cr.mode === 'analysis';
+      const wasQuiz = cr.mode === 'quiz';
       const lastLine = cr.line;
       const played = cr.plyIdx;
       cr.active = false;
@@ -10549,6 +10811,11 @@
       cr.line = null;
       cr.pos = null;
       cr.sel = null;
+      // Exit is live during an opponent's move and during the pause on a
+      // finished line, i.e. exactly while this is true — and only step() ever
+      // clears it, so leaving it set makes the NEXT run's board refuse every
+      // press (onSquare/onDragStart both bail on it).
+      cr.busy = false;
       cr.flash = null;
       cr.drag = null;
       cr.swallowClick = false;
@@ -10556,10 +10823,14 @@
       hidePromo();
       if (cr.boardEl) cr.boardEl.hidden = true;
       if (cr.panel) cr.panel.hidden = true;
-      if (wasActive && why) log(analysing ? 'analysis board:' : 'continuation review:', why);
-      // Only a quiz has a line to leave Chessable's board on; analysis never
-      // touched their board, so there is nothing to put back either way.
-      if (wasActive && navEnd && !analysing) navigateToLineEnd(lastLine, played);
+      if (wasActive && why) {
+        log(analysing ? 'analysis board:' : (wasQuiz ? 'continuation review:' : 'mistake drill:'), why);
+      }
+      // Only the clickable-line quiz has a printed line to leave Chessable's
+      // board on. Analysis never touched their board, and a drill's positions
+      // come from the mistake log — the comment column holds nothing matching
+      // them, so there would be nothing to click.
+      if (wasActive && navEnd && wasQuiz) navigateToLineEnd(lastLine, played);
       // Back to the quiz's own defaults, so the next launcher press is a quiz.
       cr.mode = 'quiz';
       cr.view = null;
@@ -10613,12 +10884,20 @@
         'Nothing you play here is saved or counted.';
       analyse.addEventListener('click', openAnalysis);
 
-      cluster.append(queueBtn, button, analyse);
+      // Section 20. Like Analyse it needs no lines in this variation — its
+      // cards come from the session's mistake log, which spans all of them.
+      const drill = document.createElement('button');
+      drill.type = 'button';
+      drill.className = 'clo-cr-drill';
+      drill.addEventListener('click', () => openDrill(pendingMistakes()));
+
+      cluster.append(queueBtn, button, analyse, drill);
       widget.appendChild(cluster);
       cr.cluster = cluster;
       cr.button = button;
       cr.queueBtn = queueBtn;
       cr.analyseBtn = analyse;
+      cr.drillBtn = drill;
       return true;
     }
 
@@ -10637,10 +10916,25 @@
       // Analysis needs no lines — only a position to start from, i.e. the
       // browse state — so the cluster can now be up for that alone.
       const showAnalyse = !cr.active && reviewBrowseReady();
-      cr.cluster.hidden = !(show || showQueue || showAnalyse);
+      // The drill (section 20) needs no lines either, only failed moves and a
+      // board to overlay — so, like the others, the browse state: offering it
+      // mid-quiz would cover a live quiz board.
+      const mistakes = pendingMistakes().length;
+      const showDrill = !cr.active && mistakes > 0 && reviewBrowseReady();
+      cr.cluster.hidden = !(show || showQueue || showAnalyse || showDrill);
       cr.queueBtn.hidden = !showQueue;
       cr.button.hidden = !show;
       cr.analyseBtn.hidden = !showAnalyse;
+      cr.drillBtn.hidden = !showDrill;
+      if (showDrill) {
+        cr.drillBtn.textContent = mistakes > 1
+          ? 'Drill mistakes (' + mistakes + ')' : 'Drill mistake';
+        cr.drillBtn.title = 'Go through the ' + (mistakes > 1 ? mistakes + ' moves' : 'move') +
+          ' you failed this session, right here on our own board: the opponent’s ' +
+          'move before each one is played for you, yours is asked for. Much faster ' +
+          'than Retry — nothing is loaded and nothing is rescheduled. A move you ' +
+          'get right first try, with no hint, comes off the list.';
+      }
       if (showQueue) {
         cr.queueBtn.textContent = queued > 1
           ? 'Review queued lines (' + queued + ')' : 'Review queued line';

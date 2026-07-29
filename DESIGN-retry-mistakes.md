@@ -2,9 +2,10 @@
 
 Status: **Layer 1 implemented in v0.29.0** — the mistake log (section 16) and the
 retry runner (section 17) in `content/lichessable.js`, plus the extra fields
-`content/pagestate.js` now reads. Layer 2 (§3.2, a drill on our own board fed by
-`/difficult-moves`) is NOT implemented, and neither is the optional
-difficult-moves diff backstop of §3.1. Ground-truthed live on the test account
+`content/pagestate.js` now reads. **Layer 2 (§3.2) landed in v0.45.0** as
+section 20, but built differently from the sketch below — see the note there.
+The optional difficult-moves diff backstop of §3.1 is still NOT implemented, and
+neither the drill nor anything else reads `/difficult-moves`. Ground-truthed live on the test account
 against course **453453** on 2026-07-26. Everything in "Findings" below was
 observed, not inferred; everything in "Open questions" was not.
 
@@ -244,6 +245,21 @@ plus a storage upsert). The runner is a queue + drawer clicks + the existing
 completion gate. No new permissions, no new hosts, no new libraries.
 
 ### 3.2 Layer 2 — "Drill" on our own board (optional, and the only true single-move retry)
+
+> **Built in v0.45.0 as section 20, and the sketch below is superseded on three
+> points.** (a) There is no board of its own: sections 18/19 had since built one
+> — real piece art cloned off Chessable's board, drag and click, promotion
+> picker, arrows — so the drill is a third MODE of those overlays, and a card is
+> built in the very line shape their quiz plays. (b) `/difficult-moves` is not
+> used and no request is made at all: the session log already carries the exact
+> `sourceFen` and the course SAN, and section 16 now also stores the plies
+> BEFORE the failed one (`lead`), which is what lets a card play the opponent's
+> move first instead of dropping the user into a bare position. (c) The
+> "accepts only the course move" trade-off below stands, unmitigated for now: a
+> miss shows the move after two tries, and only a clean answer takes the mistake
+> off the list, so an alternative the trainer would have accepted costs a
+> re-drill rather than anything worse. Routing it into section 15's alt-check
+> remains the obvious next step. The original sketch:
 
 Chessable cannot quiz a bare FEN, so a real one-card-per-mistake drill has to be
 ours. It is self-contained and cheap in dependencies:
