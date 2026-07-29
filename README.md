@@ -413,6 +413,49 @@ point, not per variation — a real 64-variation chapter needed 29 requests
 (~20 s) — results are cached across chapters and runs, and the button turns into
 **Cancel** while it works. See "Chapter sort" under Architecture notes.
 
+On a **course page** (`/course/<course>/`) a **Repertoire coverage** button
+answers the question Chessable's *Add to Repertoire* leaves open: after adding 90
+of a course's 100 variations, which 10 are left? Pick one of your own courses
+from the dropdown, press **Check coverage**, and you get a summary line ("66 of
+77 present · 11 missing · 3 duplicated") and the missing lines, each shown up to
+the move where your repertoire and the course part company.
+
+The comparison is over **positions**, not variation names or move strings, so a
+line you added from a different course, or edited afterwards, still counts as
+covered. What kind of gap it is decides the badge:
+
+- **hole** — your move, and your repertoire has nothing to play there;
+- **line ends** — your repertoire simply stops at that position, so whatever the
+  opponent plays, your next move is unprepared;
+- **unmet** — an opponent move your repertoire answers that position but does not
+  branch on; you may never be asked;
+- **other move** — your repertoire does answer, with a different move. Not a
+  hole, a different choice.
+
+The list is ranked by how likely you are to actually face the gap: the product of
+the **Lichess** frequencies of the opponent's moves on the way to it (your own
+moves are a choice, not a risk, so they count 1), using the same rating and speed
+filters as the database panel. It is shown *conditional* on reaching the course's
+own root position — "12% of your Sicilians" rather than "0.4% of your games" —
+with the unconditional figure beside it in grey. A `~` means the estimate is
+truncated: a position on the way had too few games to divide by, so the product
+stopped there instead of multiplying noise in. Depth counts as a second signal
+through `score = probability × exp(−depth / D)`, with `D` editable in the panel
+(16 by default: a gap 16 plies deep is worth ~37% of an equally likely one at the
+root). Probability, depth and score are all columns, and the sort can be switched
+to any of them, so the ranking is auditable rather than a black box.
+
+Tick the lines you want and **Add selected** copies them into your repertoire
+through Chessable's own add call — one press, arming first, naming the count and
+the destination. Chessable creates a *new chapter per add* and never
+deduplicates, so the chapter name is yours to set (it defaults to the source
+course's) and the panel also lists any line your repertoire holds **more than
+once**, with a **Remove duplicates** button that keeps the oldest copy of each.
+That one is irreversible from here, so it wants the word `delete` typed beside it
+first. Both actions refuse any course you did not create, and both re-read the
+repertoire afterwards rather than trusting what they think they just wrote. See
+"Repertoire coverage" under Architecture notes.
+
 The panel can also run **optional local Stockfish analysis** (eval + top 3
 lines in SAN) for the current position — see "Local engine (optional)" below.
 
@@ -1065,8 +1108,9 @@ enough not to run, the ↻ button is the only way back.
 
 ### Chapter sort
 
-The **Sort by popularity** button (section 14 in `content/lichessable.js`) is the
-only part of the extension that calls Chessable's own JSON API. Notes worth
+The **Sort by popularity** button (section 14 in `content/lichessable.js`) was
+the first part of the extension to call Chessable's own JSON API; the clickable-
+line review (18) and the coverage report (21) use the same auth. Notes worth
 keeping:
 
 - **Drag-and-drop is not what saves an order.** Dragging a card only dispatches
@@ -1136,6 +1180,84 @@ Notes on the popularity ranking itself:
   informational cards are *not* in that group — they lead.
 - The result is **not stable over time**: the database shifts, so re-running the
   sort months later can produce a slightly different order.
+
+### Repertoire coverage
+
+Section 21 in `content/lichessable.js`; the ground truth behind every endpoint
+and field name is in `DESIGN-repertoire-coverage.md`, including the calls that
+were run against a live account and undone again.
+
+- **The add call's body was captured, not guessed**: `targetCourse` is an
+  *object* — `{courseId, chapterId}` — which is why it isn't called
+  `targetCourseId` like the duplicate-check call's field. A bare number returns
+  `403 UNAUTHORIZED`, which looks like an auth problem and isn't. It was read by
+  hooking `fetch`, driving Chessable's own three-step flow to its final button
+  and *blocking* the request, so the shape came out without writing anything.
+- **Four endpoints, all same-origin and JWT-only** (no CSRF, so a plain `fetch`
+  from the content script does it): `getHomeData` for the list of your courses,
+  `getList` for a course's variations, `duplicateVariationsToRepertoire` to add,
+  and `updateOpening&mode=del` to delete. That is the same auth the chapter sort
+  and the clickable-line position search already use.
+- **`checkVariationDuplicatesInCourse` is deliberately not used.** It was the
+  obvious candidate and it is not the answer: called with all 77 source ids
+  against a target that already held all 77, it still returned
+  `duplicatedChapters: []`. Whatever it detects, it is not membership.
+- **The copy keeps no back-reference.** A variation added to a repertoire is a
+  brand-new id with no trace of where it came from — it preserves only `name`,
+  the moves, `color` and `initialFEN`. So membership can only ever be decided
+  from the moves, which is what makes the position walk necessary rather than
+  merely nicer.
+- **`getList`'s `moves[].san` carries the move number** — the array reads
+  `["1.e4", "c5", "2.Nf3", …]`, one ply per entry. Stripping it is not optional:
+  without it every line fails to replay and the report says "0 of 77 present ·
+  0 missing" rather than failing. A run where the unplayable lines outnumber the
+  playable ones is therefore refused outright, with the lines named in the
+  console.
+- **Lines that can't be ranked say so.** A line starting from a position your
+  repertoire never reaches — a tactic, anything beginning mid-game — has no
+  opponent plies before its divergence to multiply, so it would score a
+  perfect 1.0 and sort to the top. Those read "—" instead. A course written for
+  the other colour is flagged above the list for the same reason: every line
+  then diverges at move 1 and the ranking means nothing.
+- **The repertoire is re-read on every run**, only the source course is cached.
+  The repertoire is the side that changes — through this panel and through
+  Chessable's own add flow in another tab.
+- **Positions are walked, not fetched.** `getList` does return a `fens` array,
+  but the SAN is replayed with `CloSan` from each variation's own `initialFEN`
+  instead — that is what makes castling rights and en passant exact, and it is
+  the only thing that works on a repertoire copy the user has edited. A line
+  whose SAN does not resolve is reported as unplayable, never half-inserted.
+- **Severity comes from what the repertoire has at the divergence position**, not
+  just from whose move it is: nothing at all is a *hole* (our move) or a
+  *line ends* (theirs); a different move is an *alternative* (ours) or an
+  *unmet option* (theirs). The design's table had only the middle two; the other
+  two came out of testing the walk, and without them a repertoire that merely
+  recommends something else, or that simply stops, reads as a hole or as
+  "you may never be asked" — the second being the opposite of true.
+- **Transpositions**: a line reaching your positions by another *move order* is
+  still reported, at the first move you have no answer to — against an 1.e4
+  repertoire, a course line starting 1.Nf3 is a real gap however it transposes
+  later. What the walk covers is the other case: the same line already in your
+  repertoire under a different name, from another course, or edited since.
+- **One explorer request per distinct position**, shared across gaps (a course's
+  lines share their opening moves, so this collapses hard) and cached in the same
+  `chrome.storage.local` cache the chapter sort fills, keyed on the four-field
+  position key plus the rating/speed filters. Both features now ask for the
+  deeper 50-move list, so their entries are interchangeable — a sideline outside
+  the top 20 replies would otherwise be scored "never played" rather than "not
+  asked for".
+- Course listings are cached in `chrome.storage.session` (12 h) **reduced** to
+  id/name/SAN/colour/start-FEN — the raw payload is ~180 KB per course and the
+  analysis is re-run every time you work through the list. Any write drops the
+  target's entry.
+- **Writes are guarded three ways**: the destination must be one of your own
+  courses (by `authorUid` — `isRepertoire` is *not* that signal; it was `true`
+  for the source course and `false` for the actual repertoire), it must be the
+  course the report on screen was computed against, and Add arms before it fires.
+  Delete additionally wants `delete` typed. Both re-read the course afterwards.
+- The panel is body-mounted and fixed, and gates itself on the **current** URL
+  from its own 500 ms poll — a course page is reached by `pushState`, so nothing
+  may be decided from the load-time path.
 
 ## Local engine (optional)
 

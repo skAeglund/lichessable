@@ -194,6 +194,12 @@
       allRatings: [0, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2500],
       filtersKey: 'cloLichessFilters', // chrome.storage.local: { speeds, ratings }
       movesLimit: 20,             // max candidate moves to request (side panel has room)
+      // The bulk position scans (chapter sort, coverage) ask deeper: they look
+      // up ONE named move's share, and a course's sideline is regularly outside
+      // the top 20 replies — where a truncated list would score it as "never
+      // played" rather than "not asked for". One limit for both, so they share
+      // the persistent cache below entry for entry.
+      bulkMovesLimit: 50,
       cacheMax: 200,              // positions kept in the in-memory LRU cache
       rateLimitCooldownMs: 61000, // Lichess asks for a full minute after a 429
     },
@@ -542,6 +548,39 @@
         // pays for itself across a course, not just on a re-run.
       },
     },
+
+    // --- Repertoire coverage (section 21) ----------------------------------
+    // "Which variations of this course are missing from my repertoire?" — see
+    // DESIGN-repertoire-coverage.md for the ground truth behind every endpoint
+    // and field name here. All four are same-origin and JWT-only, like the
+    // chapter sort's pair.
+    coverage: {
+      listPath: '/api/v1/getList',    // GET  ?uid&bid → { list: { name, data:[{id,name,moves:[{san}],color,initialFEN}] } }
+      homePath: '/api/v1/getHomeData',// GET  ?uid&sortBookRowsBy&userLanguageShort → { homeData: { booksList[] } }
+      addPath:  '/api/v1/duplicateVariationsToRepertoire', // POST { variations:[{oid,chapterName}], sourceCourseId, targetCourse }
+      delPath:  '/api/v1/updateOpening',                   // GET  ?uid&oid&mode=del&val=1 → { data: { owned } }
+
+      pollMs:         500,   // mount/position watchdog (also catches SPA course switches)
+      fetchTimeoutMs: 20000, // a course listing is ~180 KB; a repertoire can be bigger
+      requestGapMs:   300,   // politeness pause between uncached explorer calls
+      delConcurrency: 6,     // parallel delete GETs (6 ran clean over 140 variations)
+
+      // Reduced course listings (id/name/SAN/colour/initialFEN only — never the
+      // 180 KB payload) live beside cloCourseFenCache with the same 12 h TTL:
+      // the analysis is re-run every time the user works through the list.
+      cacheKey:    'cloCourseListCache', // chrome.storage.session: bid → { t, name, ours, vars[] }
+      cacheTtlMs:  12 * 60 * 60 * 1000,
+      cacheMax:    6,                    // courses kept; oldest pruned first
+      targetsKey:  'cloCoverageTargets',  // chrome.storage.local: sourceBid → target bid
+      depthKey:    'cloCoverageDepth',    // chrome.storage.local: the D below
+
+      // Ranking. P is the product of the OPPONENT plies' Lichess shares on the
+      // way to the divergence; the depth discount is deliberately gentle and
+      // tunable, because P already decays with depth (see the design, §3.2).
+      depthDefault: 16,   // score = P_cond × exp(−d / D)
+      minGames:     50,   // explorer total below which the estimate is truncated, not multiplied
+      maxRanked:    120,  // gaps ranked with Lichess data; the rest keep score 0
+    },
   };
 
   const PANEL_ID = 'lichessable-panel';
@@ -558,6 +597,8 @@
   const CR_BOARD_ID   = 'lichessable-cr-board'; // our quiz board, overlaid on Chessable's (section 18)
   const CR_PANEL_ID   = 'lichessable-cr-panel'; // prompt/controls, covering the comment column (section 18)
   const CR_HEADS_ID   = 'lichessable-cr-heads'; // mid-quiz "the opponent can also…" heads-up (section 18b)
+  const COV_BTN_ID    = 'lichessable-cov-btn';  // "Repertoire coverage" launcher (section 21)
+  const COV_PANEL_ID  = 'lichessable-cov';      // the coverage report panel (section 21)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
@@ -588,6 +629,13 @@
     const postHalf = (isPawn || isCapture) ? 0 : (Number.isInteger(preHalf) ? preHalf : 0) + 1;
     return CloSan.fenFromPos(CloSan.makeMove(pos, mv), postHalf);
   }
+
+  /**
+   * Check/mate suffixes dropped. Chessable and CloSan agree on the move but not
+   * always on writing "+", so every comparison between their SAN and ours goes
+   * through this. Shared by the chapter sort (section 14) and coverage (21).
+   */
+  const bareSan = (san) => String(san).replace(/[+#]+$/, '');
 
   /**
    * UCI string for the legal move whose SAN matches `san` on `pos` (check/mate
@@ -1190,6 +1238,64 @@
       fenCache.delete(fenCache.keys().next().value); // evict least recently used
     }
   }
+
+  // --- persistent explorer popularity cache (chrome.storage.local) -----------
+  // "How often is each move played from this position", the one explorer fact
+  // both bulk features need: the chapter sort (section 14) to order sibling
+  // branches, and the coverage report (section 21) to multiply out how likely a
+  // gap is to be reached. They share ONE cache — a repertoire's chapters and
+  // its coverage report ask about exactly the same early positions.
+  //
+  // Tagged with the filters AND the moves limit, so changing the settings-menu
+  // filters invalidates cleanly and a truncated answer can never be read as if
+  // it were a deeper one. Entries are keyed on `cacheKey`, not the full FEN:
+  // the explorer's answer depends on the position, not on the move counters.
+  const popCacheTag = (movesLimit) =>
+    'r:' + lichessFilters.ratings.join(',') + '|s:' + lichessFilters.speeds.join(',') +
+    '|m:' + (movesLimit || CONFIG.lichess.bulkMovesLimit);
+
+  async function loadPopCache() {
+    try {
+      const got = await chrome.storage.local.get(CONFIG.chapterSort.popularity.cacheKey);
+      const raw = got && got[CONFIG.chapterSort.popularity.cacheKey];
+      return (raw && typeof raw === 'object') ? raw : {};
+    } catch (err) {
+      warn('popularity cache unreadable — continuing without it:', err);
+      return {};
+    }
+  }
+
+  async function savePopCache(cache) {
+    const { cacheKey: key, cacheMax } = CONFIG.chapterSort.popularity;
+    try {
+      let entries = Object.entries(cache);
+      if (entries.length > cacheMax) { // prune oldest first
+        entries.sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
+        entries = entries.slice(0, cacheMax);
+      }
+      await chrome.storage.local.set({ [key]: Object.fromEntries(entries) });
+    } catch (err) {
+      warn('could not persist the popularity cache:', err);
+    }
+  }
+
+  /**
+   * One explorer lookup reduced to what both callers want: how many games each
+   * move was played in, and the position's own total. The total comes from the
+   * response's top level, NOT from summing `counts` — the move list is capped
+   * at `movesLimit`, so the sum is short wherever the tail was cut off.
+   */
+  async function fetchPopularityCounts(fen, movesLimit) {
+    const data = await fetchExplorerData(fen, movesLimit);
+    const counts = {};
+    for (const m of (data && data.moves) || []) {
+      counts[bareSan(m.san)] = (m.white || 0) + (m.draws || 0) + (m.black || 0);
+    }
+    const total = data ? (data.white || 0) + (data.draws || 0) + (data.black || 0) : 0;
+    return { counts, total };
+  }
+
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ==========================================================================
   // 6) Panel — mounting and rendering
@@ -5966,9 +6072,8 @@
     // chapter in their existing order, because "most popular reply" is not a
     // meaningful question for them.
 
-    // Check/mate suffixes are dropped on BOTH sides before comparing: Chessable
-    // and CloSan agree on the move, but not always on writing "+".
-    const bareSan = (san) => String(san).replace(/[+#]$/, '');
+    // Check/mate suffixes are dropped on BOTH sides before comparing (top-level
+    // bareSan), since Chessable and CloSan don't always agree on writing "+".
 
     /** CloSan position → FEN. The halfmove clock isn't tracked (or needed). */
     function positionToFen(pos) {
@@ -6068,39 +6173,10 @@
       return out;
     }
 
-    // --- explorer results cache (chrome.storage.local) ----------------------
+    // The explorer results cache (popCacheTag/loadPopCache/savePopCache) is
+    // shared with the coverage report — see the top-level block beside fenCache.
 
-    // Tagged with the filters, so changing them in the settings menu (or in
-    // CONFIG.lichess) invalidates cleanly.
-    const popCacheTag = () =>
-      'r:' + lichessFilters.ratings.join(',') + '|s:' + lichessFilters.speeds.join(',');
-
-    async function loadPopCache() {
-      try {
-        const got = await chrome.storage.local.get(CONFIG.chapterSort.popularity.cacheKey);
-        const raw = got && got[CONFIG.chapterSort.popularity.cacheKey];
-        return (raw && typeof raw === 'object') ? raw : {};
-      } catch (err) {
-        warn('popularity cache unreadable — continuing without it:', err);
-        return {};
-      }
-    }
-
-    async function savePopCache(cache) {
-      const { cacheKey, cacheMax } = CONFIG.chapterSort.popularity;
-      try {
-        let entries = Object.entries(cache);
-        if (entries.length > cacheMax) { // prune oldest first
-          entries.sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
-          entries = entries.slice(0, cacheMax);
-        }
-        await chrome.storage.local.set({ [cacheKey]: Object.fromEntries(entries) });
-      } catch (err) {
-        warn('could not persist the popularity cache:', err);
-      }
-    }
-
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const sleep = sleepMs;
 
     /**
      * Fills node.pop = { san: gameCount } for every branching node, from cache
@@ -6116,15 +6192,15 @@
         if (job.cancelled) throw new Error('cancelled');
         const node = nodes[i];
         const fen = positionToFen(node.pos);
-        const key = tag + '||' + fen;
+        const key = tag + '||' + cacheKey(fen);
 
         const hit = cache[key];
         if (hit && hit.m) { node.pop = hit.m; fromCache++; continue; }
 
         setStatus(`Checking Lichess… ${i + 1}/${nodes.length} positions`, '');
-        let data;
+        let got;
         try {
-          data = await fetchExplorerData(fen);
+          got = await fetchPopularityCounts(fen, CONFIG.lichess.bulkMovesLimit);
         } catch (err) {
           if (err.isRateLimit) {
             // Same cooldown the panel honours, then one retry.
@@ -6132,7 +6208,7 @@
             await sleep(CONFIG.lichess.rateLimitCooldownMs);
             if (job.cancelled) throw new Error('cancelled');
             setStatus(`Checking Lichess… ${i + 1}/${nodes.length} positions`, '');
-            data = await fetchExplorerData(fen);
+            got = await fetchPopularityCounts(fen, CONFIG.lichess.bulkMovesLimit);
           } else if (err.isAuth) {
             throw new Error(err.noToken
               ? 'a Lichess API token is needed — add one in the extension options'
@@ -6142,13 +6218,10 @@
           }
         }
 
-        const counts = {};
-        for (const m of (data && data.moves) || []) {
-          counts[bareSan(m.san)] = (m.white || 0) + (m.draws || 0) + (m.black || 0);
-        }
+        const counts = got.counts;
         if (!Object.keys(counts).length) empty++;
         node.pop = counts;
-        cache[key] = { m: counts, t: Date.now() };
+        cache[key] = { m: counts, n: got.total, t: Date.now() };
         dirty = true;
         fetched++;
         if (i < nodes.length - 1) await sleep(CONFIG.chapterSort.popularity.requestGapMs);
@@ -11810,6 +11883,1339 @@
   }
 
   // ==========================================================================
+  // 21) Repertoire coverage (top document, /course/<bid>/)
+  //
+  // "Which variations of this course are missing from my repertoire?" —
+  // Chessable's own Add to Repertoire copies lines out of any course into one
+  // of the user's own, and keeps no ledger of what it copied, so after adding
+  // 90 of 100 lines there is no way to see the other 10. Design and the ground
+  // truth behind every endpoint here: DESIGN-repertoire-coverage.md.
+  //
+  // Matching is POSITION-TREE coverage, never a variation-list diff. Exact SAN
+  // matching does work today, but it cries "missing" about a line that was
+  // added from another course, edited afterwards, or is covered by a
+  // transposition — and a coverage report that lies about even one line is not
+  // trusted about any of them. So both courses are walked into positions
+  // (keyed on `cacheKey`, the four-field FEN key used everywhere else) and each
+  // source variation is walked against the repertoire's tree to its FIRST
+  // DIVERGENCE. What that divergence is decides the severity:
+  //
+  //   our colour, repertoire has NO move here    → hole: you are guessing
+  //   our colour, repertoire plays another move  → alternative: you chose differently
+  //   opponent's, repertoire has no move here    → the repertoire line ENDS here
+  //   opponent's, repertoire branches elsewhere  → unmet option: you may never be asked
+  //   no divergence                              → covered, whatever the SAN string says
+  //
+  // The design's table has only the middle two rows; the other two are the
+  // refinement this implementation makes, and both were found by testing the
+  // walk rather than reasoned about up front:
+  //  * without "alternative", every line where the repertoire simply recommends
+  //    a different move reads as a hole — exactly the false alarm the tree walk
+  //    exists to avoid;
+  //  * without "ends", a repertoire line that just STOPS is filed under "you may
+  //    never be asked", which is the opposite of true: whatever the opponent
+  //    plays there, the move after it is ours and unprepared. "Unmet option"
+  //    only means something when the repertoire does answer that position and
+  //    merely does not branch on this move.
+  //
+  // What "transpositions are covered" does and does not mean here: a course line
+  // reaching the repertoire's positions by ANOTHER MOVE ORDER is reported at the
+  // first move the repertoire does not have, which for 1.Nf3 c5 2.e4 against an
+  // 1.e4 repertoire is ply 0 — and that is right, not a miss: the user really
+  // has nothing prepared against 1.Nf3, whatever happens two moves later. The
+  // transposition case the walk exists for is the other one: a line already in
+  // the repertoire under a different NAME, from another course, or edited since,
+  // whose positions all match. Those come out covered, and exact-SAN matching
+  // would have called every one of them missing.
+  //
+  // Ranking is Lichess reachability: the product of the OPPONENT plies' shares
+  // (games(move)/games(position)) on the way to the divergence — the user's own
+  // plies are a choice, not a risk, so they contribute 1. The divergence ply
+  // itself is included when it is the OPPONENT'S: facing an unmet option
+  // requires them to actually play it, whereas a hole is already reached. It is
+  // reported CONDITIONAL on the course's own root position (the deepest position
+  // all its variations share), so the number reads "12% of your Sicilians"
+  // rather than "0.4% of your games"; the unconditional figure is a column of
+  // its own. Where a position falls below CONFIG.coverage.minGames the walk
+  // STOPS and the estimate is marked truncated (~) rather than multiplying noise
+  // into fake precision. Second signal, as asked for: divergence depth, through
+  // a deliberately gentle and visible discount, score = P_cond × exp(−d/D) —
+  // P already decays with depth, so D is a setting and every term is a column.
+  //
+  // Writing back is the same press away: "Add selected" is one
+  // duplicateVariationsToRepertoire call, "Remove duplicates" is one
+  // updateOpening&mode=del per surplus oid. Both are refused unless the target
+  // course is authored by the user, both arm before they fire, and both re-read
+  // the course afterwards rather than trusting our model of what we just wrote.
+  //
+  // CAUTION: checkVariationDuplicatesInCourse is NOT used and must not be —
+  // called against a target that already held all 77 source variations it still
+  // answered `duplicatedChapters: []`. Whatever it detects, it is not membership.
+  //
+  // The panel is body-mounted and fixed — nothing of ours goes inside
+  // Chessable's React tree — and the module gates itself on the CURRENT url
+  // from its own 500 ms poll, since a course page is reached by pushState.
+  // ==========================================================================
+  function initCoverage() {
+    const C = CONFIG.coverage;
+    // Any /course/<bid>/… page — the course root and its chapter views alike;
+    // the report is built from the API, not from the page, so it is just as
+    // valid on either. Deliberately NOT the chapter's own "Edit Variations"
+    // page (/course/<bid>/<lid>/e/): that is the chapter sort's (section 14),
+    // whose widget parks in the same corner.
+    const COURSE_PATH_RE = /^\/course\/(\d+)(?:\/|$)/;
+    const CHAPTER_EDIT_RE = /^\/course\/\d+\/\d+\/e\/?$/;
+
+    const cv = {
+      bid: null,          // course being looked at (the SOURCE of the comparison)
+      panel: null, launcher: null,
+      targetSel: null, runBtn: null, statusEl: null, summaryEl: null,
+      listEl: null, dupesEl: null, chapterInput: null,
+      addBtn: null, delBtn: null, delInput: null, sortSel: null, depthInput: null,
+      open: false,
+      busy: false,
+      job: null,          // in-flight run, so the button can cancel it
+      books: null,        // the user's own courses (getHomeData), or null until read
+      targets: {},        // sourceBid → target bid (storage.local)
+      targetBid: null,
+      depth: C.depthDefault,
+      sort: 'score',
+      report: null,       // last computed report for cv.bid
+      selected: new Set(),// oids ticked in the gap list
+      armed: null,        // 'add' while the Add button is armed
+      armTimer: null,
+    };
+
+    // --- Chessable's JSON API ------------------------------------------------
+    // Same auth as the chapter sort and the position search: the page's own
+    // session JWT as a Bearer token, no CSRF field, same origin.
+
+    function creds() {
+      const jwt = localStorage.getItem(CONFIG.chessableApi.jwtKey);
+      const uid = localStorage.getItem(CONFIG.chessableApi.uidKey);
+      if (!jwt || !uid) return null;
+      return { jwt, uid };
+    }
+
+    function headersFor(cr, json) {
+      const h = { 'Authorization': 'Bearer ' + cr.jwt, 'platform': 'web' };
+      if (json) h['Content-Type'] = 'application/json';
+      return h;
+    }
+
+    /**
+     * A JSON body when the server sends one, `{ raw }` when it does not — the
+     * add call's response was never read during the ground-truthing, so its
+     * content type is not something to bet the flow on. HTTP status is.
+     */
+    async function apiFetch(url, init) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), C.fetchTimeoutMs);
+      try {
+        const res = await fetch(url, Object.assign({ signal: ctl.signal }, init));
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text();
+        try {
+          return JSON.parse(text);
+        } catch (err) {
+          return { raw: text };
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    function apiUrl(path, params) {
+      const url = new URL(location.origin + path);
+      for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+      return url.toString();
+    }
+
+    /**
+     * The user's courses. `isRepertoire` is NOT the filter — it was true for the
+     * source course and false for the actual repertoire (ground-truthed). The
+     * usable signal is authorUid === our own uid, which is also exactly the set
+     * Chessable's own add flow offers as a destination.
+     */
+    async function fetchBooks(cr) {
+      const body = await apiFetch(apiUrl(C.homePath, {
+        uid: cr.uid, sortBookRowsBy: 'alphabetically', userLanguageShort: 'en',
+      }), { headers: headersFor(cr) });
+      const list = body && body.homeData && body.homeData.booksList;
+      if (!Array.isArray(list)) throw new Error('unexpected response listing your courses');
+      return list.map((b) => ({
+        bid: String(b && b.bid),
+        name: String((b && b.name) || ('Course ' + (b && b.bid))),
+        ours: b && b.authorUid != null && String(b.authorUid) === String(cr.uid),
+      })).filter((b) => b.bid && b.bid !== 'undefined');
+    }
+
+    /**
+     * getList writes the move NUMBER into the SAN of every White ply — the
+     * moves array reads ["1.e4", "c5", "2.Nf3", "Nc6", …], not ["e4", "c5", …]
+     * (ground-truthed live 2026-07-29 on course 453453; the design's §2.4 has
+     * the field but not this detail, and taking it at face value made 76 of 77
+     * lines "unplayable"). Same convention as the PGN-ish `moves` string the
+     * chapter sort tokenises, one ply per entry. The ellipsis form ("1...c5")
+     * is stripped by the same pattern.
+     */
+    const MOVE_NUM_PREFIX = /^\d+\.+/;
+    const sanOfMove = (m) =>
+      (m && typeof m.san === 'string') ? m.san.replace(MOVE_NUM_PREFIX, '').trim() : '';
+
+    /**
+     * A course reduced to what the tree walk needs: oid, title, SAN list,
+     * colour and start FEN. The raw payload is ~180 KB for 77 variations and
+     * carries a `fens` array we deliberately ignore — walking the SAN ourselves
+     * with sanToUci/fenAfterUci is what makes castling rights and en passant
+     * exact, and it is the only way to walk a repertoire copy the user edited.
+     */
+    function reduceCourse(body) {
+      const list = body && body.list;
+      const data = list && list.data;
+      if (!Array.isArray(data)) throw new Error('unexpected response reading the course');
+      const vars = [];
+      let odd = 0, oddShape = '';
+      for (const v of data) {
+        const oid = v && (v.id != null ? v.id : v.oid);
+        if (oid == null) { odd++; continue; }
+        // Ground-truthed as an array of { san, isKey, … }. Deliberately no
+        // fallback parser for any other shape: guessing at an unobserved format
+        // is how a coverage report starts quietly lying. One named warning
+        // instead, so a change here is diagnosable rather than invisible.
+        if (!Array.isArray(v.moves)) { odd++; oddShape = typeof v.moves; continue; }
+        vars.push({
+          oid: String(oid),
+          name: String((v.name || '')).trim(),
+          sans: v.moves.map(sanOfMove).filter(Boolean),
+          color: typeof v.color === 'string' ? v.color : '',
+          fen: (typeof v.initialFEN === 'string' && v.initialFEN.trim()) || '',
+        });
+      }
+      if (odd) {
+        warn(`coverage: ${odd} variation(s) skipped — getList gave no readable ` +
+          `moves array (saw ${oddShape || 'no moves field'}; expected [{san,…}])`);
+      }
+      return {
+        name: String((list.name || '')).trim(),
+        owned: Boolean(list.owned),
+        vars,
+      };
+    }
+
+    async function readCourseCache() {
+      try {
+        await sessionStorageReady();
+        const got = await chrome.storage.session.get([C.cacheKey]);
+        const map = got && got[C.cacheKey];
+        return (map && typeof map === 'object') ? map : {};
+      } catch (err) {
+        return {}; // orphaned script or storage.session unavailable — just don't cache
+      }
+    }
+
+    async function writeCourseCache(map) {
+      try {
+        let entries = Object.entries(map);
+        if (entries.length > C.cacheMax) {
+          entries.sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
+          entries = entries.slice(0, C.cacheMax);
+        }
+        await chrome.storage.session.set({ [C.cacheKey]: Object.fromEntries(entries) });
+      } catch (err) {
+        // Not being able to cache is not a reason to fail the report.
+      }
+    }
+
+    /** Drops one course from the session cache — used after we write to it. */
+    async function dropCourseCache(bid) {
+      const map = await readCourseCache();
+      if (map[bid]) { delete map[bid]; await writeCourseCache(map); }
+    }
+
+    async function fetchCourse(bid, cr, useCache) {
+      const map = useCache ? await readCourseCache() : {};
+      const hit = map[bid];
+      if (hit && Date.now() - (hit.t || 0) < C.cacheTtlMs && Array.isArray(hit.vars)) {
+        return { name: hit.name, owned: hit.owned, vars: hit.vars, cached: true };
+      }
+      const body = await apiFetch(apiUrl(C.listPath, { uid: cr.uid, bid }),
+        { headers: headersFor(cr) });
+      const course = reduceCourse(body);
+      const fresh = await readCourseCache();
+      fresh[bid] = { t: Date.now(), name: course.name, owned: course.owned, vars: course.vars };
+      await writeCourseCache(fresh);
+      return course;
+    }
+
+    // --- the tree walk, pure -------------------------------------------------
+
+    /**
+     * A variation's plies with a real position before and after each one, or
+     * null when a SAN does not resolve (a corrupt line, or one whose initialFEN
+     * does not match its moves). Never guessed at — an unplayable line is
+     * reported as such rather than half-inserted into the tree.
+     */
+    function walkVariation(v) {
+      const start = v.fen || START_FEN;
+      if (typeof CloSan === 'undefined') return null;
+      let fen = start;
+      const plies = [];
+      for (const san of v.sans) {
+        const pos = CloSan.parseFen(fen);
+        const uci = pos && sanToUci(pos, san);
+        const after = uci && fenAfterUci(fen, uci);
+        if (!after) return null;
+        plies.push({ san, uci, before: fen, after, side: pos.side });
+        fen = after;
+      }
+      return { start, plies, end: fen };
+    }
+
+    /** 'w' | 'b' | null — the side a variation is written for. */
+    function sideOf(color) {
+      return color === 'white' ? 'w' : color === 'black' ? 'b' : null;
+    }
+
+    /**
+     * The course's own side. Per-variation `color` is preferred but has been
+     * seen as 'both', so the course-wide majority is the fallback — "which side
+     * is the opponent" is the one question the whole ranking rests on.
+     */
+    function courseSide(vars) {
+      let w = 0, b = 0;
+      for (const v of vars) {
+        const s = sideOf(v.color);
+        if (s === 'w') w++; else if (s === 'b') b++;
+      }
+      return w === b ? null : (w > b ? 'w' : 'b');
+    }
+
+    /** The exact-line key: start position + the uci sequence. */
+    const lineKey = (w) => cacheKey(w.start) + '|' + w.plies.map((p) => p.uci).join(' ');
+
+    /**
+     * Everything the repertoire knows: which moves it answers each position
+     * with, which positions it reaches at all, and which of its own lines are
+     * byte-identical duplicates of each other (Chessable does not deduplicate —
+     * adding one course twice really does store every line twice).
+     */
+    function indexRepertoire(vars) {
+      const answers = new Map(); // posKey → Set(uci)
+      const seen = new Set();    // every position the repertoire passes through
+      const byLine = new Map();  // lineKey → [{oid, name, plies}]
+      const unplayable = [];
+      let informational = 0;
+
+      for (const v of vars) {
+        const w = walkVariation(v);
+        if (!w) { unplayable.push(v); continue; }
+        if (!w.plies.length) { informational++; continue; }
+        seen.add(cacheKey(w.start));
+        for (const p of w.plies) {
+          const k = cacheKey(p.before);
+          let set = answers.get(k);
+          if (!set) answers.set(k, set = new Set());
+          set.add(p.uci);
+          seen.add(cacheKey(p.after));
+        }
+        const key = lineKey(w);
+        let group = byLine.get(key);
+        if (!group) byLine.set(key, group = []);
+        group.push({ oid: v.oid, name: v.name, plies: w.plies.length });
+      }
+      return { answers, seen, byLine, unplayable, informational };
+    }
+
+    /**
+     * Walks one source variation against the repertoire, stopping at the first
+     * position+move the repertoire does not have. Returns null when the line is
+     * fully covered.
+     */
+    function firstDivergence(w, rep, ourSide) {
+      let at = -1;
+      for (let i = 0; i < w.plies.length; i++) {
+        const set = rep.answers.get(cacheKey(w.plies[i].before));
+        if (set && set.has(w.plies[i].uci)) continue;
+        at = i;
+        break;
+      }
+      if (at < 0) return null;
+
+      const ply = w.plies[at];
+      const key = cacheKey(ply.before);
+      const set = rep.answers.get(key);
+      // Only reachable at ply 0: every later position was reached along a move
+      // the repertoire itself plays, so it is in `seen` by construction.
+      if (!rep.seen.has(key)) return { at, severity: 'unreachable' };
+      // A position with no continuation at all is a repertoire line that ENDS
+      // here, which is a different thing from one that branches on other moves.
+      // On our own move that is a hole outright; on the opponent's it is a hole
+      // one ply later — whatever they play, the next move is ours and unprepared
+      // — so it is reported as its own severity rather than being filed under
+      // "you may never be asked", which is what an unmet OPTION means.
+      const branches = Boolean(set && set.size);
+      if (ply.side === ourSide) return { at, severity: branches ? 'alternative' : 'hole' };
+      return { at, severity: branches ? 'unmet' : 'ends' };
+    }
+
+    /**
+     * The deepest position every variation of the course passes through — the
+     * "conditional on" of the probability column. Zero when the course's lines
+     * do not even share a starting position (a mixed or tactics course).
+     */
+    function rootPlyOf(walks) {
+      if (!walks.length) return 0;
+      const start = cacheKey(walks[0].start);
+      if (!walks.every((w) => cacheKey(w.start) === start)) return 0;
+      let n = 0;
+      for (;; n++) {
+        const first = walks[0].plies[n];
+        if (!first) return n;
+        for (const w of walks) {
+          const p = w.plies[n];
+          if (!p || p.uci !== first.uci) return n;
+        }
+      }
+    }
+
+    // --- ranking -------------------------------------------------------------
+
+    /** The opponent plies a gap needs, deepest included when it IS the gap. */
+    function riskPlies(gap) {
+      const out = [];
+      for (let i = 0; i <= gap.at; i++) {
+        const ply = gap.w.plies[i];
+        if (ply.side === gap.ourSide) continue;
+        // A hole is reached as soon as the position is on the board; an unmet
+        // option additionally needs the opponent to pick that very move. Where
+        // the repertoire simply ENDS, any opponent move leaves us unprepared,
+        // so the divergence move's own share is not a condition either.
+        if (i === gap.at && gap.severity !== 'unmet') continue;
+        out.push({ i, ply });
+      }
+      return out;
+    }
+
+    const SEVERITY_RANK = { hole: 0, ends: 1, unreachable: 2, unmet: 3, alternative: 4 };
+
+    /**
+     * Fills gap.p / gap.pCond / gap.truncated from the explorer, one lookup per
+     * DISTINCT position (a course's lines share their opening moves, so this
+     * collapses hard). Honours the same 429 cooldown + one retry the panel does,
+     * reports progress, and can be cancelled between requests.
+     */
+    async function rankGaps(gaps, rootPly, job) {
+      const positions = new Map(); // posKey → { fen, data }
+      for (const gap of gaps) {
+        for (const { ply } of riskPlies(gap)) {
+          const k = cacheKey(ply.before);
+          if (!positions.has(k)) positions.set(k, { fen: ply.before, data: null });
+        }
+      }
+
+      const cache = await loadPopCache();
+      const tag = popCacheTag();
+      const entries = [...positions.entries()];
+      let fetched = 0, dirty = false;
+
+      for (let i = 0; i < entries.length; i++) {
+        if (job.cancelled) throw new Error('cancelled');
+        const [posKey, slot] = entries[i];
+        const key = tag + '||' + posKey;
+        const hit = cache[key];
+        if (hit && hit.m && typeof hit.n === 'number') {
+          slot.data = { counts: hit.m, total: hit.n };
+          continue;
+        }
+        setStatus(`Checking Lichess… ${i + 1}/${entries.length} positions`, '');
+        let got;
+        try {
+          got = await fetchPopularityCounts(slot.fen, CONFIG.lichess.bulkMovesLimit);
+        } catch (err) {
+          if (err.isRateLimit) {
+            setStatus('Lichess rate limit — waiting 60 s…', 'warn');
+            await sleepMs(CONFIG.lichess.rateLimitCooldownMs);
+            if (job.cancelled) throw new Error('cancelled');
+            got = await fetchPopularityCounts(slot.fen, CONFIG.lichess.bulkMovesLimit);
+          } else if (err.isAuth) {
+            throw new Error(err.noToken
+              ? 'a Lichess API token is needed — add one in the extension options'
+              : 'Lichess rejected the API token — check it in the extension options');
+          } else {
+            throw err;
+          }
+        }
+        slot.data = got;
+        cache[key] = { m: got.counts, n: got.total, t: Date.now() };
+        dirty = true;
+        fetched++;
+        if (i < entries.length - 1) await sleepMs(C.requestGapMs);
+      }
+      if (dirty) await savePopCache(cache);
+
+      for (const gap of gaps) {
+        let p = 1, pCond = 1, truncated = false;
+        for (const { i, ply } of riskPlies(gap)) {
+          const slot = positions.get(cacheKey(ply.before));
+          const data = slot && slot.data;
+          // Below the floor the sample is noise; stop rather than multiply a
+          // fake precision into the answer.
+          if (!data || data.total < C.minGames) { truncated = true; break; }
+          const share = (data.counts[bareSan(ply.san)] || 0) / data.total;
+          p *= share;
+          if (i >= rootPly) pCond *= share;
+        }
+        gap.p = p;
+        gap.pCond = pCond;
+        gap.truncated = truncated;
+        gap.score = pCond * Math.exp(-gap.at / Math.max(1, cv.depth));
+      }
+      return { fetched, positions: entries.length };
+    }
+
+    function sortGaps(gaps) {
+      const key = cv.sort;
+      return gaps.slice().sort((a, b) => {
+        if (key === 'depth') return a.at - b.at || (b.score || 0) - (a.score || 0);
+        if (key === 'severity') {
+          return (SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]) ||
+            (b.score || 0) - (a.score || 0);
+        }
+        const av = key === 'p' ? (a.pCond || 0) : (a.score || 0);
+        const bv = key === 'p' ? (b.pCond || 0) : (b.score || 0);
+        return bv - av || a.at - b.at;
+      });
+    }
+
+    // --- the run ------------------------------------------------------------
+
+    async function runCoverage() {
+      if (cv.busy || !cv.bid) return;
+      if (typeof CloSan === 'undefined') {
+        setStatus('move engine unavailable — reload the page', 'warn');
+        return;
+      }
+      if (!cv.targetBid) { setStatus('Pick a repertoire first.', 'warn'); return; }
+      if (cv.targetBid === cv.bid) { setStatus('That is this course.', 'warn'); return; }
+
+      cv.busy = true;
+      cv.job = { cancelled: false };
+      const job = cv.job;
+      const bid = cv.bid; // an SPA course switch mid-run must not land a report here
+      cv.report = null;
+      cv.selected.clear();
+      disarm();
+      renderReport();
+      try {
+        const cr = creds();
+        if (!cr) throw new Error('no Chessable session found — reload the page');
+
+        // The SOURCE course is cached: it is the big one (~180 KB), it is
+        // somebody else's published material, and the report is re-run every
+        // time the user works through the list. The TARGET repertoire is read
+        // FRESH every time — it is the one that changes under us, through our
+        // own writes AND through Chessable's own add flow in another tab, and
+        // pressing "Check coverage" is an explicit request for an answer, not
+        // for a twelve-hour-old one. Serving it from cache silently reported
+        // "0 duplicated" about a repertoire that had just gained a duplicate.
+        setStatus('Reading this course…', '');
+        const source = await fetchCourse(cv.bid, cr, true);
+        if (job.cancelled) throw new Error('cancelled');
+        setStatus('Reading your repertoire…', '');
+        const target = await fetchCourse(cv.targetBid, cr, false);
+        if (job.cancelled) throw new Error('cancelled');
+
+        // Which side each course is written for. A White course compared with a
+        // Black repertoire produces a full report that means NOTHING — every
+        // line diverges at ply 0 on our own first move, scoring a perfect 1.0
+        // (seen live). The comparison is not refused (a course may legitimately
+        // be 'both', and "none of these are in there" is still a true answer),
+        // but the report has to say so rather than look authoritative.
+        const sourceSide = courseSide(source.vars);
+        const repSide = courseSide(target.vars);
+        const ourSide = sourceSide || repSide;
+        const rep = indexRepertoire(target.vars);
+
+        const walks = [];
+        const gaps = [];
+        let covered = 0, informational = 0;
+        const unplayable = [];
+        for (const v of source.vars) {
+          const w = walkVariation(v);
+          if (!w) { unplayable.push(v); continue; }
+          if (!w.plies.length) { informational++; continue; }
+          walks.push(w);
+          const d = firstDivergence(w, rep, sideOf(v.color) || ourSide);
+          if (!d) { covered++; continue; }
+          gaps.push({
+            v, w, at: d.at, severity: d.severity,
+            ourSide: sideOf(v.color) || ourSide,
+            p: null, pCond: null, truncated: false, score: 0,
+          });
+        }
+
+        // A handful of unplayable lines is ordinary (tactics, null moves,
+        // a corrupt import). MOST of them unplayable is a bug in how we read
+        // the API — which is exactly what a changed `san` format did once, and
+        // it produced a confident "0 of 77 present · 0 missing" rather than an
+        // error. So the lines are named in the console and the report says so.
+        if (unplayable.length) {
+          warn(`coverage: ${unplayable.length} of ${source.vars.length} source line(s) ` +
+            'could not be replayed; first few:',
+            unplayable.slice(0, 3).map((v) => v.oid + ' ' + v.sans.join(' ')).join(' | '));
+        }
+        if (unplayable.length > walks.length) {
+          throw new Error(`${unplayable.length} of ${source.vars.length} lines could not be ` +
+            'replayed — the course data is not in the shape this expects (see the console)');
+        }
+
+        const rootPly = rootPlyOf(walks);
+        // Duplicates: the same line stored more than once in the repertoire.
+        const dupes = [...rep.byLine.values()]
+          .filter((g) => g.length > 1)
+          .map((g) => g.slice().sort((a, b) => Number(a.oid) - Number(b.oid)))
+          .sort((a, b) => b.length - a.length);
+
+        // A line whose START position the repertoire never reaches — a tactics
+        // puzzle, anything beginning mid-game — cannot be priced: there are no
+        // opponent plies before its divergence to multiply, so the walk would
+        // hand it P = 1 and a perfect score, sorting the one thing we know
+        // least about to the top of the list. Its probability is UNKNOWN, not
+        // 100%, so it is left unranked and says "—" (seen live on a tactics
+        // course, where all 71 gaps came out at 100% / 1.0000).
+        const rankable = gaps.filter((g) => g.severity !== 'unreachable');
+        // The Lichess pass is the only slow part, and the only one worth
+        // capping: the shallowest gaps are both the likeliest and the cheapest.
+        const ranked = rankable.slice().sort((a, b) => a.at - b.at).slice(0, C.maxRanked);
+        let stats = { fetched: 0, positions: 0 };
+        if (ranked.length) stats = await rankGaps(ranked, rootPly, job);
+        if (job.cancelled || cv.bid !== bid) throw new Error('cancelled');
+
+        cv.report = {
+          bid, targetBid: cv.targetBid,
+          sourceName: source.name, targetName: target.name,
+          total: source.vars.length, covered, informational,
+          unplayable: unplayable.length,
+          repUnplayable: rep.unplayable.length,
+          gaps, dupes, rootPly, ourSide,
+          colorClash: Boolean(sourceSide && repSide && sourceSide !== repSide),
+          sourceSide, repSide,
+          unreachable: gaps.length - rankable.length,
+          unranked: Math.max(0, rankable.length - ranked.length),
+          positions: stats.positions, fetched: stats.fetched,
+        };
+        // Keeping one chapter name across adds is the only lever we have over
+        // Chessable's "a new chapter every time" behaviour — so default it to
+        // the source course rather than leaving it blank.
+        if (cv.chapterInput && !cv.chapterInput.value.trim()) {
+          cv.chapterInput.value = source.name || '';
+        }
+        log(`coverage: ${source.name} → ${target.name}: ${covered}/${source.vars.length} covered, ` +
+          `${gaps.length} gap(s), ${dupes.length} duplicated line(s); ` +
+          `${stats.positions} position(s) checked (${stats.fetched} fetched), root ply ${rootPly}`);
+        setStatus('', '');
+      } catch (err) {
+        if (String(err && err.message) === 'cancelled') {
+          setStatus('Cancelled.', 'warn');
+        } else {
+          warn('coverage check failed:', err);
+          setStatus(String((err && err.message) || err), 'warn');
+        }
+      } finally {
+        cv.busy = false;
+        cv.job = null;
+        renderReport();
+      }
+    }
+
+    // --- writing back --------------------------------------------------------
+
+    /**
+     * The target must be one of the user's OWN courses (authorUid, per the
+     * design — `isRepertoire` is not that signal), and it must be the very
+     * course the report on screen was computed against.
+     */
+    function targetIsOurs() {
+      const book = (cv.books || []).find((b) => b.bid === cv.targetBid);
+      if (!book || !book.ours) return false;
+      return !cv.report || cv.report.targetBid === cv.targetBid;
+    }
+
+    function targetName() {
+      const book = (cv.books || []).find((b) => b.bid === cv.targetBid);
+      return (book && book.name) || (cv.report && cv.report.targetName) || 'that course';
+    }
+
+    async function addSelected() {
+      if (cv.busy || !cv.selected.size) return;
+      if (!targetIsOurs()) { setStatus('That course is not yours to write to.', 'warn'); return; }
+      const cr = creds();
+      if (!cr) { setStatus('no Chessable session found — reload the page', 'warn'); return; }
+
+      const oids = [...cv.selected];
+      const chapterName = (cv.chapterInput && cv.chapterInput.value.trim()) ||
+        (cv.report && cv.report.sourceName) || 'Added lines';
+      cv.busy = true;
+      render();
+      try {
+        setStatus(`Adding ${oids.length} variation(s)…`, '');
+        // CAPTURED FROM CHESSABLE'S OWN ADD FLOW, 2026-07-29 (the request was
+        // intercepted and blocked, so nothing was written to get this). The
+        // design had the field NAMES from the minified bundle but not the
+        // shape, and the shape is the whole story: `targetCourse` is an OBJECT,
+        // which is precisely why it is not called `targetCourseId` like the
+        // check call's. A bare number gets a 403 UNAUTHORIZED — the server
+        // reads no course id out of it and refuses rather than complaining.
+        //
+        // `chapterId: null` is what Chessable itself sends when the user picks
+        // a repertoire rather than a chapter inside it, and it means "file
+        // these under a chapter called chapterName". Sending an existing
+        // chapter's id is presumably how its own UI merges into one, but we
+        // never enumerate the target's chapters, so this stays byte-identical
+        // to the official flow.
+        const body = {
+          variations: oids.map((oid) => ({ oid: Number(oid), chapterName })),
+          sourceCourseId: String(cv.bid),
+          targetCourse: { courseId: Number(cv.targetBid), chapterId: null },
+        };
+        log('coverage: adding', oids.length, 'variation(s) to', cv.targetBid, 'chapter', chapterName);
+        const res = await apiFetch(apiUrl(C.addPath, {}), {
+          method: 'POST',
+          headers: headersFor(cr, true),
+          body: JSON.stringify(body),
+        });
+        log('coverage: add response', res);
+        // Never trust our own model of what just landed — drop the cache and
+        // re-read the repertoire.
+        await dropCourseCache(cv.targetBid);
+        cv.busy = false;
+        setStatus(`Added ${oids.length} variation(s) — re-checking…`, 'ok');
+        await runCoverage();
+        setStatus(`Added ${oids.length} variation(s) to "${targetName()}".`, 'ok');
+      } catch (err) {
+        warn('coverage: add failed:', err);
+        setStatus('Could not add: ' + String((err && err.message) || err), 'warn');
+      } finally {
+        cv.busy = false;
+        render();
+      }
+    }
+
+    /** One GET per surplus oid, a few at a time. Irreversible from our side. */
+    async function removeDuplicates() {
+      if (cv.busy || !cv.report || !cv.report.dupes.length) return;
+      if (!targetIsOurs()) { setStatus('That course is not yours to write to.', 'warn'); return; }
+      if (!cv.delInput || cv.delInput.value.trim().toLowerCase() !== 'delete') {
+        setStatus('Type "delete" beside the button to confirm.', 'warn');
+        return;
+      }
+      const cr = creds();
+      if (!cr) { setStatus('no Chessable session found — reload the page', 'warn'); return; }
+
+      const surplus = [];
+      for (const group of cv.report.dupes) surplus.push(...group.slice(1).map((x) => x.oid));
+      if (!surplus.length) return;
+
+      cv.busy = true;
+      render();
+      let done = 0, failed = 0;
+      try {
+        log('coverage: deleting', surplus.length, 'duplicate variation(s) from', cv.targetBid,
+          '—', surplus.join(','));
+        const queue = surplus.slice();
+        const worker = async () => {
+          for (;;) {
+            const oid = queue.shift();
+            if (oid === undefined) return;
+            try {
+              const res = await apiFetch(apiUrl(C.delPath, { uid: cr.uid, oid, mode: 'del', val: 1 }),
+                { headers: headersFor(cr) });
+              // A 200 with an unrecognised body is not a confirmed delete.
+              if (!res || !res.data) throw new Error('the server did not confirm the delete');
+            } catch (err) {
+              failed++;
+              warn('coverage: could not delete', oid, err);
+            }
+            done++;
+            setStatus(`Deleting… ${done}/${surplus.length}`, '');
+          }
+        };
+        await Promise.all(Array.from({ length: C.delConcurrency }, worker));
+        await dropCourseCache(cv.targetBid);
+        cv.busy = false;
+        if (cv.delInput) cv.delInput.value = '';
+        setStatus(`Deleting… ${done}/${surplus.length} — re-checking…`, '');
+        await runCoverage();
+        setStatus(`Deleted ${done - failed} of ${surplus.length} surplus copy(ies)` +
+          (failed ? ` — ${failed} failed, see the console` : '') + '.', failed ? 'warn' : 'ok');
+      } catch (err) {
+        warn('coverage: delete pass failed:', err);
+        setStatus('Could not delete: ' + String((err && err.message) || err), 'warn');
+      } finally {
+        cv.busy = false;
+        render();
+      }
+    }
+
+    // --- UI ------------------------------------------------------------------
+
+    const el = (tag, cls, text) => {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+
+    function setStatus(text, kind) {
+      if (!cv.statusEl) return;
+      cv.statusEl.textContent = text || '';
+      cv.statusEl.hidden = !text;
+      cv.statusEl.className = 'clo-cov-status' + (kind ? ' clo-cov-status--' + kind : '');
+    }
+
+    function disarm() {
+      cv.armed = null;
+      clearTimeout(cv.armTimer);
+    }
+
+    const pct = (x) => {
+      if (!(x > 0)) return '0%';
+      if (x >= 0.1) return (x * 100).toFixed(0) + '%';
+      if (x >= 0.001) return (x * 100).toFixed(1) + '%';
+      return '<0.1%';
+    };
+
+    const SEVERITY_TEXT = {
+      hole: 'hole',
+      ends: 'line ends',
+      alternative: 'other move',
+      unmet: 'unmet',
+      unreachable: 'not reached',
+    };
+    const SEVERITY_TITLE = {
+      hole: 'Your move, and your repertoire has nothing to play here — over the board you are guessing.',
+      ends: 'Your repertoire stops at this position. Whatever the opponent plays here, your next move is unprepared.',
+      alternative: 'Your move, but your repertoire answers this position with a different move. Not a hole; a different choice.',
+      unmet: 'An opponent move your repertoire does not branch on — it answers this position, just not this move, so you may never be asked.',
+      unreachable: 'Your repertoire never reaches this line’s starting position at all.',
+    };
+
+    /** "1.e4 c5 2.Nf3" up to and including `upto`, divergence move marked. */
+    function lineNodes(w, upto, at) {
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i <= upto && i < w.plies.length; i++) {
+        const ply = w.plies[i];
+        const fields = ply.before.split(' ');
+        const num = Number(fields[5]) || 1;
+        if (ply.side === 'w') frag.append(el('span', 'clo-cov-num', num + '.'));
+        else if (i === 0) frag.append(el('span', 'clo-cov-num', num + '…'));
+        const span = el('span', i === at ? 'clo-cov-san clo-cov-san--div' : 'clo-cov-san', ply.san);
+        frag.append(span, document.createTextNode(' '));
+      }
+      if (upto < w.plies.length - 1) frag.append(el('span', 'clo-cov-more', '…'));
+      return frag;
+    }
+
+    function renderGapRow(gap) {
+      const row = el('div', 'clo-cov-row-gap');
+
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'clo-cov-check';
+      box.checked = cv.selected.has(gap.v.oid);
+      box.addEventListener('change', () => {
+        if (box.checked) cv.selected.add(gap.v.oid); else cv.selected.delete(gap.v.oid);
+        disarm();
+        syncActions();
+      });
+
+      const main = el('div', 'clo-cov-gap-main');
+      const line = el('div', 'clo-cov-line');
+      line.append(lineNodes(gap.w, gap.at, gap.at));
+      const meta = el('div', 'clo-cov-meta');
+
+      const sev = el('span', 'clo-cov-badge clo-cov-badge--' + gap.severity,
+        SEVERITY_TEXT[gap.severity] || gap.severity);
+      sev.title = SEVERITY_TITLE[gap.severity] || '';
+      meta.append(sev);
+
+      // "~" = truncated: a position on the way had too few Lichess games to
+      // divide by, so the product stopped there rather than multiplying noise in.
+      const prefix = gap.truncated ? '~' : '';
+      const prob = el('span', 'clo-cov-num-cell',
+        gap.pCond === null ? '—' : prefix + pct(gap.pCond));
+      prob.title = 'How often you reach this gap, counting only the opponent’s choices, ' +
+        'conditional on reaching this course’s own root position.' +
+        (gap.truncated ? ' Truncated: a position on the way had too few Lichess games to divide by.' : '');
+      meta.append(prob);
+
+      // The unconditional figure gets its own (dimmer) column, per the design —
+      // "12% of your Sicilians" and "0.4% of your games" answer different
+      // questions and neither substitutes for the other. Shown only when the
+      // course HAS a root worth conditioning on.
+      if (gap.p !== null && cv.report && cv.report.rootPly) {
+        const abs = el('span', 'clo-cov-num-cell clo-cov-dim', prefix + pct(gap.p));
+        abs.title = 'The same figure over ALL your games, not just the ones that reach this course.';
+        meta.append(abs);
+      }
+
+      const depth = el('span', 'clo-cov-num-cell', 'ply ' + (gap.at + 1));
+      depth.title = 'How deep the divergence is. A hole near the start costs more than one you ' +
+        'only reach after 12 moves you do know.';
+      meta.append(depth);
+
+      const score = el('span', 'clo-cov-num-cell clo-cov-score',
+        gap.score ? gap.score.toFixed(4) : '—');
+      score.title = 'score = probability × exp(−depth / D)';
+      meta.append(score);
+
+      const link = document.createElement('a');
+      link.className = 'clo-cov-link';
+      link.href = '/variation/' + gap.v.oid + '/';
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = gap.v.name || ('#' + gap.v.oid);
+      meta.append(link);
+
+      main.append(line, meta);
+      row.append(box, main);
+      return row;
+    }
+
+    function renderList() {
+      const host = cv.listEl;
+      host.textContent = '';
+      const report = cv.report;
+      if (!report) return;
+      if (!report.gaps.length) {
+        host.append(el('div', 'clo-cov-empty', 'Nothing missing — every line of this course is covered.'));
+        return;
+      }
+      const head = el('div', 'clo-cov-list-head');
+      const all = document.createElement('input');
+      all.type = 'checkbox';
+      all.className = 'clo-cov-check';
+      all.checked = cv.selected.size === report.gaps.length && report.gaps.length > 0;
+      all.title = 'Select every gap below';
+      all.addEventListener('change', () => {
+        cv.selected.clear();
+        if (all.checked) for (const g of report.gaps) cv.selected.add(g.v.oid);
+        disarm();
+        renderList();
+        syncActions();
+      });
+      cv.allBox = all;
+      head.append(all, el('span', 'clo-cov-list-head-text',
+        `${report.gaps.length} missing line(s), most reachable first`));
+      host.append(head);
+
+      for (const gap of sortGaps(report.gaps)) host.append(renderGapRow(gap));
+      if (report.unranked) {
+        host.append(el('div', 'clo-cov-note',
+          `${report.unranked} deeper gap(s) were listed but not ranked (the Lichess pass is ` +
+          `capped at ${C.maxRanked} lines).`));
+      }
+    }
+
+    function renderDupes() {
+      const host = cv.dupesEl;
+      host.textContent = '';
+      const report = cv.report;
+      if (!report || !report.dupes.length) return;
+      const surplus = report.dupes.reduce((n, g) => n + g.length - 1, 0);
+      host.append(el('div', 'clo-cov-sub-title',
+        `${report.dupes.length} line(s) stored more than once in ${targetName()} ` +
+        `— ${surplus} surplus copy(ies)`));
+      host.append(el('div', 'clo-cov-note',
+        'Chessable does not deduplicate: adding a course twice stores every line twice. ' +
+        'The oldest copy of each is kept.'));
+      const list = el('div', 'clo-cov-dupe-list');
+      for (const group of report.dupes.slice(0, 40)) {
+        const row = el('div', 'clo-cov-dupe');
+        row.append(el('span', 'clo-cov-dupe-count', '×' + group.length));
+        row.append(el('span', 'clo-cov-dupe-name', group[0].name || ('#' + group[0].oid)));
+        row.append(el('span', 'clo-cov-dupe-plies', group[0].plies + ' plies'));
+        list.append(row);
+      }
+      if (report.dupes.length > 40) {
+        list.append(el('div', 'clo-cov-note', `…and ${report.dupes.length - 40} more.`));
+      }
+      host.append(list);
+    }
+
+    function renderSummary() {
+      const host = cv.summaryEl;
+      host.textContent = '';
+      const report = cv.report;
+      host.hidden = !report;
+      if (!report) return;
+      const parts = [
+        `${report.covered} of ${report.total} present`,
+        `${report.gaps.length} missing`,
+      ];
+      if (report.dupes.length) parts.push(`${report.dupes.length} duplicated`);
+      host.append(el('div', 'clo-cov-summary-line', parts.join(' · ')));
+      if (report.colorClash) {
+        const side = (s) => (s === 'w' ? 'White' : 'Black');
+        host.append(el('div', 'clo-cov-clash',
+          `This course is written for ${side(report.sourceSide)} and that repertoire for ` +
+          `${side(report.repSide)} — the two cannot really be compared, so the ranking below ` +
+          'means nothing.'));
+      }
+      const notes = [];
+      if (report.informational) notes.push(`${report.informational} informational card(s) ignored`);
+      if (report.unreachable) {
+        notes.push(`${report.unreachable} line(s) start from a position your repertoire never ` +
+          'reaches — a tactic, or a line beginning mid-game — so they cannot be ranked');
+      }
+      if (report.unplayable) notes.push(`${report.unplayable} line(s) here could not be replayed`);
+      if (report.repUnplayable) notes.push(`${report.repUnplayable} line(s) in the repertoire could not be replayed`);
+      if (report.rootPly) {
+        notes.push(`probabilities are conditional on the first ${report.rootPly} ply/plies, ` +
+          'which every line here shares');
+      }
+      if (!report.ourSide) notes.push('the course does not say which side it is for — severities may be inverted');
+      if (notes.length) host.append(el('div', 'clo-cov-note', notes.join('. ') + '.'));
+    }
+
+    function syncActions() {
+      if (!cv.addBtn) return;
+      const report = cv.report;
+      const n = cv.selected.size;
+      if (cv.allBox && cv.allBox.isConnected) {
+        cv.allBox.checked = Boolean(report && report.gaps.length && n === report.gaps.length);
+      }
+      const ours = targetIsOurs();
+      cv.addBtn.hidden = !report || !report.gaps.length;
+      cv.addBtn.disabled = cv.busy || !n || !ours;
+      cv.addBtn.textContent = cv.armed === 'add'
+        ? `Really add ${n} to "${targetName()}"?`
+        : (n ? `Add ${n} selected` : 'Add selected');
+      cv.addBtn.classList.toggle('clo-cov-armed', cv.armed === 'add');
+      cv.addBtn.title = ours
+        ? 'Copies the ticked variations into your repertoire (Chessable’s own ' +
+          'duplicateVariationsToRepertoire call), into the chapter named beside it.'
+        : 'Only courses you created can be written to.';
+      const dupes = Boolean(report && report.dupes.length);
+      cv.delBtn.hidden = !dupes;
+      cv.delInput.hidden = !dupes;
+      cv.delBtn.disabled = cv.busy || !ours;
+      cv.chapterInput.hidden = !report || !report.gaps.length;
+      cv.controlsEl.hidden = !report || !report.gaps.length;
+    }
+
+    /**
+     * Visibility and button state only — this runs on EVERY 500 ms tick, so it
+     * must never rebuild the gap list: that would fight the user's scroll
+     * position and their focus in a checkbox. renderReport() is the one that
+     * redraws, and it is called only when the report itself changes.
+     */
+    function render() {
+      if (!cv.panel) return;
+      cv.panel.hidden = !cv.open;
+      cv.launcher.hidden = cv.open;
+      if (!cv.open) return;
+      // Only a coverage RUN is interruptible. A write in flight also sets busy,
+      // and offering "Cancel" for something that cannot be cancelled is worse
+      // than a greyed-out button.
+      const cancellable = cv.busy && Boolean(cv.job);
+      cv.runBtn.textContent = cancellable ? 'Cancel' : 'Check coverage';
+      cv.runBtn.classList.toggle('clo-cov-btn--cancel', cancellable);
+      cv.runBtn.disabled = cv.busy && !cancellable;
+      syncActions();
+    }
+
+    function renderReport() {
+      if (!cv.panel) return;
+      renderSummary();
+      renderList();
+      renderDupes();
+      render();
+    }
+
+    function fillTargets() {
+      const sel = cv.targetSel;
+      const previous = cv.targetBid;
+      sel.textContent = '';
+      const books = (cv.books || []).filter((b) => b.ours && b.bid !== cv.bid);
+      if (!books.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = cv.books ? 'no courses of your own' : 'loading…';
+        sel.append(opt);
+        sel.disabled = true;
+        return;
+      }
+      sel.disabled = false;
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = 'pick a repertoire…';
+      sel.append(blank);
+      for (const b of books.sort((a, b2) => a.name.localeCompare(b2.name))) {
+        const opt = document.createElement('option');
+        opt.value = b.bid;
+        opt.textContent = b.name;
+        sel.append(opt);
+      }
+      const want = previous || cv.targets[cv.bid] || '';
+      if (want && books.some((b) => b.bid === want)) {
+        sel.value = want;
+        cv.targetBid = want;
+      } else {
+        sel.value = '';
+        cv.targetBid = null;
+      }
+    }
+
+    async function loadBooks() {
+      if (cv.books) return;
+      const cr = creds();
+      if (!cr) { setStatus('no Chessable session found — reload the page', 'warn'); return; }
+      try {
+        cv.books = await fetchBooks(cr);
+        fillTargets();
+        render();
+      } catch (err) {
+        warn('coverage: could not list your courses:', err);
+        setStatus('Could not list your courses: ' + String((err && err.message) || err), 'warn');
+      }
+    }
+
+    async function loadPrefs() {
+      try {
+        const got = await chrome.storage.local.get([C.targetsKey, C.depthKey]);
+        const map = got && got[C.targetsKey];
+        cv.targets = (map && typeof map === 'object') ? map : {};
+        const d = Number(got && got[C.depthKey]);
+        if (Number.isFinite(d) && d >= 2 && d <= 60) cv.depth = d;
+        if (cv.depthInput) cv.depthInput.value = String(cv.depth);
+        if (cv.bid && cv.targets[cv.bid] && !cv.targetBid) fillTargets();
+      } catch (err) {
+        // Preferences are a convenience; the panel works without them.
+      }
+    }
+
+    function rememberTarget() {
+      if (!cv.bid) return;
+      cv.targets[cv.bid] = cv.targetBid || '';
+      try {
+        chrome.storage.local.set({ [C.targetsKey]: cv.targets }).catch(() => {});
+      } catch (err) { /* orphaned script — the choice just isn't remembered */ }
+    }
+
+    function buildPanel() {
+      const panel = el('div', 'clo-cov');
+      panel.id = COV_PANEL_ID;
+
+      const head = el('div', 'clo-cov-head');
+      head.append(el('span', 'clo-cov-title', 'Repertoire coverage'));
+      const close = el('button', 'clo-cov-x', '×');
+      close.type = 'button';
+      close.title = 'Close';
+      close.addEventListener('click', () => { cv.open = false; render(); });
+      head.append(close);
+
+      const body = el('div', 'clo-cov-body');
+
+      const pick = el('div', 'clo-cov-pick');
+      pick.append(el('label', 'clo-cov-label', 'Repertoire'));
+      const targetSel = el('select', 'clo-cov-select');
+      targetSel.addEventListener('change', () => {
+        cv.targetBid = targetSel.value || null;
+        cv.report = null;
+        cv.selected.clear();
+        disarm();
+        rememberTarget();
+        setStatus('', '');
+        renderReport();
+      });
+      const runBtn = el('button', 'clo-cov-btn', 'Check coverage');
+      runBtn.type = 'button';
+      runBtn.addEventListener('click', () => {
+        if (cv.busy && cv.job) { cv.job.cancelled = true; setStatus('Cancelling…', 'warn'); return; }
+        runCoverage();
+      });
+      pick.append(targetSel, runBtn);
+
+      const statusEl = el('div', 'clo-cov-status');
+      statusEl.hidden = true;
+      const summaryEl = el('div', 'clo-cov-summary');
+      summaryEl.hidden = true;
+
+      const controls = el('div', 'clo-cov-controls');
+      const sortSel = el('select', 'clo-cov-select clo-cov-select--small');
+      for (const [value, text] of [
+        ['score', 'sort: score'], ['p', 'sort: probability'],
+        ['depth', 'sort: depth'], ['severity', 'sort: severity'],
+      ]) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = text;
+        sortSel.append(opt);
+      }
+      sortSel.value = cv.sort;
+      sortSel.addEventListener('change', () => { cv.sort = sortSel.value; renderList(); });
+
+      const depthWrap = el('label', 'clo-cov-depth', 'D ');
+      depthWrap.title = 'The depth discount in score = probability × exp(−depth / D). ' +
+        'Larger D = depth matters less. 16 means a gap 16 plies deep is worth ~37% of an ' +
+        'equally likely one at the root.';
+      const depthInput = document.createElement('input');
+      depthInput.type = 'number';
+      depthInput.className = 'clo-cov-depth-input';
+      depthInput.min = '2';
+      depthInput.max = '60';
+      depthInput.value = String(cv.depth);
+      depthInput.addEventListener('change', () => {
+        const d = Number(depthInput.value);
+        if (!Number.isFinite(d) || d < 2 || d > 60) { depthInput.value = String(cv.depth); return; }
+        cv.depth = d;
+        try {
+          chrome.storage.local.set({ [C.depthKey]: d }).catch(() => {});
+        } catch (err) { /* not remembered, still applied */ }
+        // Rescoring needs no new Lichess data — the probabilities are already in.
+        if (cv.report) {
+          for (const g of cv.report.gaps) {
+            if (g.pCond !== null) g.score = g.pCond * Math.exp(-g.at / Math.max(1, cv.depth));
+          }
+          renderList();
+        }
+      });
+      depthWrap.append(depthInput);
+      controls.append(sortSel, depthWrap);
+      controls.hidden = true; // nothing to sort or rescore until a report exists
+
+      const listEl = el('div', 'clo-cov-list');
+      const dupesEl = el('div', 'clo-cov-dupes');
+
+      const actions = el('div', 'clo-cov-actions');
+      const chapterInput = document.createElement('input');
+      chapterInput.type = 'text';
+      chapterInput.className = 'clo-cov-chapter';
+      chapterInput.placeholder = 'chapter name';
+      chapterInput.title = 'The chapter the added lines are filed under. Chessable creates a ' +
+        'new chapter per add, so keeping one name here is how they stay together.';
+      chapterInput.addEventListener('input', () => { disarm(); syncActions(); });
+      const addBtn = el('button', 'clo-cov-add', 'Add selected');
+      addBtn.type = 'button';
+      addBtn.addEventListener('click', () => {
+        // Arm first: this writes to the user's own course, and the count and
+        // destination belong on the button, not in a dialog nobody reads.
+        if (cv.armed !== 'add') {
+          cv.armed = 'add';
+          clearTimeout(cv.armTimer);
+          cv.armTimer = setTimeout(() => { disarm(); syncActions(); }, 4000);
+          syncActions();
+          return;
+        }
+        disarm();
+        addBtn.blur();
+        addSelected();
+      });
+
+      const delRow = el('div', 'clo-cov-del-row');
+      const delInput = document.createElement('input');
+      delInput.type = 'text';
+      delInput.className = 'clo-cov-del-input';
+      delInput.placeholder = 'type delete';
+      delInput.hidden = true;
+      const delBtn = el('button', 'clo-cov-del', 'Remove duplicates');
+      delBtn.type = 'button';
+      delBtn.hidden = true;
+      delBtn.title = 'Deletes every surplus copy, keeping the oldest of each line. ' +
+        'Irreversible from here — type "delete" beside it first.';
+      delBtn.addEventListener('click', () => { delBtn.blur(); removeDuplicates(); });
+      delRow.append(delInput, delBtn);
+
+      actions.append(chapterInput, addBtn);
+
+      body.append(pick, statusEl, summaryEl, controls, listEl, actions, dupesEl, delRow);
+      panel.append(head, body);
+      document.body.appendChild(panel);
+
+      Object.assign(cv, {
+        panel, targetSel, runBtn, statusEl, summaryEl, listEl, dupesEl,
+        chapterInput, addBtn, delBtn, delInput, sortSel, depthInput,
+        controlsEl: controls,
+      });
+    }
+
+    function buildLauncher() {
+      const btn = el('button', 'clo-cov-launch', 'Repertoire coverage');
+      btn.id = COV_BTN_ID;
+      btn.type = 'button';
+      btn.title = 'Compare this course against one of your own repertoires and list the ' +
+        'variations you have not added, ranked by how likely you are to face them.';
+      btn.addEventListener('click', () => {
+        cv.open = true;
+        render();
+        loadBooks();
+      });
+      document.body.appendChild(btn);
+      cv.launcher = btn;
+    }
+
+    function mount() {
+      for (const id of [COV_PANEL_ID, COV_BTN_ID]) {
+        const stale = document.getElementById(id);
+        if (stale) stale.remove(); // defensive: no duplicates across re-inits
+      }
+      buildLauncher();
+      buildPanel();
+      if (cv.report) cv.chapterInput.value = cv.report.sourceName || '';
+      fillTargets();
+      loadPrefs();
+      renderReport();
+    }
+
+    function tick() {
+      const m = CHAPTER_EDIT_RE.test(location.pathname)
+        ? null : COURSE_PATH_RE.exec(location.pathname);
+      if (!m) {
+        if (cv.panel) { cv.panel.hidden = true; cv.launcher.hidden = true; }
+        return;
+      }
+      const fresh = !cv.panel || !cv.panel.isConnected || !cv.launcher.isConnected;
+      if (cv.bid !== m[1]) {
+        // SPA-switched to another course: everything computed for the old one
+        // is meaningless here. A run in flight is left to finish and then
+        // discarded by its own bid check.
+        cv.bid = m[1];
+        cv.report = null;
+        cv.selected.clear();
+        cv.targetBid = null;
+        disarm();
+        if (cv.job) cv.job.cancelled = true;
+        if (!fresh) {
+          setStatus('', '');
+          cv.chapterInput.value = '';
+          fillTargets();
+          renderReport();
+          return;
+        }
+      }
+      if (fresh) { mount(); return; } // idempotent self-heal; mount renders
+      render();
+    }
+
+    // One try/catch around the whole tick: the interval must survive a throw,
+    // or the panel would silently freeze on whatever it last drew — the one
+    // failure mode of a watchdog poll that is invisible from the outside.
+    let lastTickError = '';
+    const pollTimer = setInterval(() => {
+      try {
+        tick();
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        if (msg !== lastTickError) { lastTickError = msg; warn('coverage tick failed:', err); }
+      }
+    }, C.pollMs);
+    window.addEventListener('pagehide', () => clearInterval(pollTimer));
+    tick();
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -11854,6 +13260,7 @@
     initRetryRunner();
     initContinuationReview();
     initChapterSort();
+    initCoverage();
   }
 
   // Dev lever: dispatching a `clo-dev-reload` DOM event on any Chessable page

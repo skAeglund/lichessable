@@ -2035,6 +2035,423 @@ html.clo-injecting .legal-square-capture-mt2 {
 /* The glyph fallback is sized for the full-size board; scale it to this one. */
 .clo-cr-mini .clo-cr-piece--glyph { font-size: 18px; }
 
+/* --- repertoire coverage (section 21) ----------------------------------------
+   A body-mounted, fixed panel on a course page — never inside Chessable's React
+   tree — with a small launcher button in its place while it is closed. It is
+   the only piece of our UI that is a REPORT rather than an overlay on something
+   of theirs, so it is the one that gets to be a plain, scrollable panel parked
+   in the corner. */
+
+.clo-cov-launch {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 99999;
+  border: 1px solid #629924;
+  background: #629924;
+  color: #fff;
+  padding: 7px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.clo-cov-launch:hover { background: #71ad2a; border-color: #71ad2a; }
+.clo-cov-launch[hidden] { display: none; }
+
+.clo-cov {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  width: 460px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 90px);
+  box-sizing: border-box;
+  border: 1px solid #1b1a17;
+  border-radius: 4px;
+  background: #262421;
+  color: #bababa;
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+}
+
+/* display:flex would defeat the hidden attribute without this. */
+.clo-cov[hidden] { display: none; }
+
+.clo-cov-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-bottom: 1px solid #3d3a36;
+  flex: 0 0 auto;
+}
+
+.clo-cov-title {
+  color: #dcdcdc;
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.clo-cov-x {
+  border: none;
+  background: transparent;
+  color: #949494;
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  font-family: inherit;
+}
+
+.clo-cov-x:hover { color: #fff; }
+
+/* The panel itself never scrolls — its body does, so the header and the write
+   actions stay reachable however long the gap list gets. */
+.clo-cov-body {
+  padding: 8px 10px 10px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+
+.clo-cov-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.clo-cov-label { color: #949494; font-size: 12px; }
+
+.clo-cov-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid #3d3a36;
+  border-radius: 3px;
+  background: #1b1a17;
+  color: #bababa;
+  padding: 3px 4px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cov-select--small { flex: 0 0 auto; }
+
+.clo-cov-btn {
+  border: 1px solid #629924;
+  background: #629924;
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clo-cov-btn:hover:not(:disabled) { background: #71ad2a; border-color: #71ad2a; }
+.clo-cov-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* While the Lichess queue runs the button becomes Cancel: it stays enabled and
+   must read as an interrupt, not as the primary action (same as section 14). */
+.clo-cov-btn--cancel,
+.clo-cov-btn--cancel:hover:not(:disabled) {
+  border-color: #a33;
+  background: transparent;
+  color: #e08a8a;
+}
+
+.clo-cov-status {
+  color: #949494;
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 2px 0 4px;
+}
+
+.clo-cov-status[hidden] { display: none; }
+.clo-cov-status--ok { color: #a5c96a; }
+.clo-cov-status--warn { color: #d9a942; }
+
+.clo-cov-summary { padding: 2px 0 4px; }
+.clo-cov-summary[hidden] { display: none; }
+
+.clo-cov-summary-line {
+  color: #dcdcdc;
+  font-weight: 500;
+}
+
+/* A cross-colour comparison: the report is real but the ranking is not, and
+   that has to be visible above the list rather than in a grey footnote. */
+.clo-cov-clash {
+  color: #d9a942;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 4px;
+  padding: 4px 6px;
+  border-left: 2px solid #7a6a2e;
+  background: rgba(217, 169, 66, 0.08);
+}
+
+.clo-cov-note {
+  color: #6e6a63;
+  font-size: 11px;
+  line-height: 1.4;
+  margin-top: 3px;
+}
+
+.clo-cov-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 4px;
+}
+
+.clo-cov-controls[hidden] { display: none; }
+
+.clo-cov-depth {
+  color: #6e6a63;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.clo-cov-depth-input {
+  width: 46px;
+  border: 1px solid #3d3a36;
+  border-radius: 3px;
+  background: #1b1a17;
+  color: #bababa;
+  padding: 2px 4px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cov-list-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px solid #3d3a36;
+  color: #949494;
+  font-size: 11px;
+}
+
+.clo-cov-check {
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: #629924;
+  cursor: pointer;
+}
+
+.clo-cov-row-gap {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 0;
+  border-bottom: 1px solid #302e2b;
+}
+
+.clo-cov-gap-main { flex: 1 1 auto; min-width: 0; }
+
+.clo-cov-line {
+  color: #bababa;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.clo-cov-num { color: #6e6a63; margin-right: 1px; }
+.clo-cov-san { color: #bababa; }
+
+/* The divergence move is the whole point of the row — everything before it is
+   context the repertoire already covers. */
+.clo-cov-san--div {
+  color: #fff;
+  font-weight: 600;
+  background: rgba(217, 169, 66, 0.22);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+.clo-cov-more { color: #6e6a63; }
+
+.clo-cov-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #8a8478;
+}
+
+.clo-cov-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 8px;
+  border: 1px solid currentColor;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  cursor: help;
+}
+
+/* Red = you are guessing over the board; amber = a line you may never be
+   asked; grey = your repertoire simply recommends something else there. */
+.clo-cov-badge--hole { color: #d85c5c; }
+.clo-cov-badge--ends { color: #d85c5c; }
+.clo-cov-badge--unreachable { color: #d85c5c; }
+.clo-cov-badge--unmet { color: #d9a942; }
+.clo-cov-badge--alternative { color: #8a8478; }
+
+.clo-cov-num-cell { flex: 0 0 auto; cursor: help; white-space: nowrap; }
+.clo-cov-score { color: #a5c96a; }
+/* The unconditional probability: the same number over all your games, and the
+   secondary reading of the two. */
+.clo-cov-dim { color: #565248; }
+
+.clo-cov-link {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: #6e6a63;
+  text-decoration: none;
+}
+
+.clo-cov-link:hover { color: #bababa; text-decoration: underline; }
+
+.clo-cov-empty {
+  color: #a5c96a;
+  font-style: italic;
+  font-size: 12px;
+  padding: 6px 0;
+}
+
+.clo-cov-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.clo-cov-chapter {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid #3d3a36;
+  border-radius: 3px;
+  background: #1b1a17;
+  color: #bababa;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cov-chapter[hidden] { display: none; }
+
+.clo-cov-add {
+  border: 1px solid #629924;
+  background: #629924;
+  color: #fff;
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clo-cov-add:hover:not(:disabled) { background: #71ad2a; border-color: #71ad2a; }
+.clo-cov-add:disabled { opacity: 0.5; cursor: default; }
+.clo-cov-add[hidden] { display: none; }
+
+/* Armed: the next press writes. Amber, like every other "are you sure" in this
+   extension (auto-play's Clear, the heads-up's Turn off). */
+.clo-cov-armed,
+.clo-cov-armed:hover:not(:disabled) {
+  border-color: #d9a942;
+  background: transparent;
+  color: #d9a942;
+}
+
+.clo-cov-dupes { margin-top: 10px; }
+
+.clo-cov-sub-title {
+  color: #dcdcdc;
+  font-size: 12px;
+  font-weight: 500;
+  padding-top: 6px;
+  border-top: 1px solid #3d3a36;
+}
+
+.clo-cov-dupe-list { margin-top: 4px; }
+
+.clo-cov-dupe {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 0;
+  font-size: 11px;
+}
+
+.clo-cov-dupe-count { color: #d9a942; font-weight: 600; }
+.clo-cov-dupe-name {
+  color: #949494;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clo-cov-dupe-plies { color: #6e6a63; white-space: nowrap; }
+
+.clo-cov-del-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.clo-cov-del-input {
+  width: 96px;
+  border: 1px solid #3d3a36;
+  border-radius: 3px;
+  background: #1b1a17;
+  color: #bababa;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cov-del-input[hidden] { display: none; }
+
+/* Deleting is irreversible from here, so it never looks like a primary action. */
+.clo-cov-del {
+  border: 1px solid #a33;
+  background: transparent;
+  color: #e08a8a;
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clo-cov-del:hover:not(:disabled) { background: rgba(170, 51, 51, 0.2); color: #fff; }
+.clo-cov-del:disabled { opacity: 0.5; cursor: default; }
+.clo-cov-del[hidden] { display: none; }
+
 /* --- touch-sized UI (html.clo-touch) ----------------------------------------
    Set by applyTouchUiClass() in lichessable.js on the <html> of whichever
    document this script runs in (the mt1 iframe for the panel, the top document
@@ -2354,4 +2771,52 @@ html.clo-touch .clo-mx-drill,
 html.clo-touch .clo-mx-cancel {
   font-size: 15px;
   padding: 8px 14px;
+}
+
+/* Coverage panel (section 21). Its own width already clamps to the viewport,
+   so only the type and the tap targets grow. */
+
+html.clo-touch .clo-cov-launch {
+  font-size: 15px;
+  padding: 10px 16px;
+}
+
+html.clo-touch .clo-cov {
+  font-size: 15px;
+}
+
+html.clo-touch .clo-cov-btn,
+html.clo-touch .clo-cov-add,
+html.clo-touch .clo-cov-del {
+  font-size: 15px;
+  padding: 8px 14px;
+}
+
+html.clo-touch .clo-cov-select,
+html.clo-touch .clo-cov-chapter,
+html.clo-touch .clo-cov-del-input,
+html.clo-touch .clo-cov-depth-input {
+  font-size: 16px;
+  padding: 6px 6px;
+}
+
+html.clo-touch .clo-cov-line,
+html.clo-touch .clo-cov-status,
+html.clo-touch .clo-cov-empty {
+  font-size: 15px;
+}
+
+html.clo-touch .clo-cov-meta,
+html.clo-touch .clo-cov-note,
+html.clo-touch .clo-cov-dupe {
+  font-size: 13px;
+}
+
+html.clo-touch .clo-cov-row-gap {
+  padding: 8px 0;
+}
+
+html.clo-touch .clo-cov-check {
+  width: 18px;
+  height: 18px;
 }

@@ -40,7 +40,13 @@ ANALYSIS board (section 19): "Analyse" on the widget lets any legal move be
 played for either side from the completed position, with the Lichess panel and
 the engine following OUR board instead of Chessable's, and "Add as line" writes
 the line worked out there back into the course as a clickable line in the
-comment of the move it was opened on.
+comment of the move it was opened on. A COURSE page
+(`https://www.chessable.com/course/<bid>/`) gets a "Repertoire coverage" panel
+(section 21): it walks the course's move tree against one of the user's own
+courses, lists the variations that are missing ranked by how likely the user is
+to face them, flags the lines their repertoire holds twice, and writes both
+answers back — adding the ticked lines through Chessable's own add call and
+deleting the surplus copies.
 Currently working (v0.18.x).
 
 ## Structure
@@ -1237,6 +1243,98 @@ Currently working (v0.18.x).
   move and during the finished-line pause, only `step()` ever cleared it, and a
   drill has an opponent move on nearly every card — so a stale `true` left the
   NEXT run's board refusing every press.
+- Repertoire coverage (section 21, v0.46.5; ground truth and every endpoint in
+  DESIGN-repertoire-coverage.md; read, ranking, add and duplicate-removal all
+  verified live 2026-07-29): answers "which of this
+  course's variations are still missing from my repertoire?", on a course page,
+  and adds them. Four same-origin JWT-only endpoints, the same auth as the
+  chapter sort: `getHomeData` (the user's courses), `getList` (a course's
+  variations), `duplicateVariationsToRepertoire` (add) and
+  `updateOpening&mode=del` (delete). `checkVariationDuplicatesInCourse` is
+  DELIBERATELY unused and must stay that way — called with all 77 source oids
+  against a target that already held all 77 it still answered
+  `duplicatedChapters: []`, so whatever it detects it is not membership.
+  MATCHING IS THE POSITION TREE, never a variation-list diff. Chessable's copy
+  keeps NO back-reference (a new oid carrying only name/moves/color/initialFEN),
+  so membership can only come from the moves — and exact-SAN matching, which
+  does work today, cries "missing" about a line added from another course, one
+  the user edited, or one covered by a transposition. Both courses are walked
+  into positions keyed on `cacheKey` and each source variation is walked to its
+  FIRST DIVERGENCE. Severity is decided by what the repertoire HAS at that
+  position, not merely by whose move it is: nothing at all ⇒ 'hole' (our move)
+  or 'ends' (theirs, i.e. the repertoire line stops — whatever they play, our
+  next move is unprepared); a different move ⇒ 'alternative' (ours) or 'unmet'
+  (theirs). The design's table had only 'hole' and 'unmet'; the other two came
+  out of testing the walk, and WITHOUT them a repertoire that merely recommends
+  something else reads as a hole and one that simply stops reads as "you may
+  never be asked", which is the opposite of true. A line reaching our positions
+  by another MOVE ORDER is still reported, at the first move we cannot answer —
+  that is correct, not a miss: nothing prepared against 1.Nf3 stays a gap
+  however it transposes on move 3.
+  Positions are WALKED with CloSan from each variation's own `initialFEN`, never
+  taken from `getList`'s `fens` array — that is what makes castling and en
+  passant exact, and the only thing that works on a copy the user edited. A line
+  whose SAN does not resolve is reported unplayable, never half-inserted.
+  RANKING is the product of the OPPONENT plies' Lichess shares to the divergence
+  (our own plies are a choice, not a risk, so they count 1), the divergence ply
+  itself included only when it IS an opponent option ('unmet'); reported
+  conditional on the course's own root position (the deepest position all its
+  variations share) with the unconditional figure in a second column, and
+  truncated with a "~" wherever a position falls under `minGames` rather than
+  multiplying noise into a fake precision. `score = P_cond × exp(−d/D)`, D a
+  panel setting, every term a column so the sort is auditable.
+  ONE explorer request per DISTINCT position, cached in the SAME
+  `cloPopularityCache` the chapter sort fills — which is why `popCacheTag`,
+  `loadPopCache`, `savePopCache` and `fetchPopularityCounts` were hoisted to
+  top level, why entries are keyed on `cacheKey(fen)` rather than the full FEN
+  (the explorer's answer does not depend on the move counters), and why BOTH
+  features now ask for `CONFIG.lichess.bulkMovesLimit` (50): a course's sideline
+  is regularly outside the panel's top 20, where a truncated list would score it
+  "never played" rather than "not asked for".
+  Course listings cache in `chrome.storage.session` REDUCED to
+  oid/name/SAN/colour/start-FEN (the raw payload is ~180 KB per course), 12 h,
+  dropped for the target after any write. WRITES are guarded three ways: the
+  destination must be authored by the user (`authorUid` — NOT `isRepertoire`,
+  which was true for the source course and false for the actual repertoire), it
+  must be the course the on-screen report was computed against, and Add arms
+  before it fires; delete additionally wants "delete" typed. Both re-read the
+  course afterwards rather than trusting our model of what we wrote.
+  The panel is body-mounted and fixed, and `render()` (every 500 ms tick) does
+  visibility and buttons ONLY — `renderReport()` is what redraws the list, or
+  the poll would fight the user's scroll position and their focus in a checkbox.
+  FOUR THINGS THE LIVE TEST CHANGED, none of them guessable from the design:
+  * `getList`'s `moves[].san` CARRIES THE MOVE NUMBER — the array is
+    ["1.e4","c5","2.Nf3",…], one ply per entry, the same convention as
+    editVariations' PGN-ish STRING. `sanOfMove` strips `/^\d+\.+/`. Taking the
+    design's §2.4 at face value made 76 of 77 lines unplayable and produced a
+    confident "0 of 77 present · 0 missing" — so a run where the unplayable
+    lines OUTNUMBER the playable ones now THROWS, with the offending lines named
+    in the console. A systematic parse failure must never come back as an answer.
+  * the add body's `targetCourse` is an OBJECT, `{courseId, chapterId}` — which
+    is exactly why it is not called `targetCourseId` like the check call's field.
+    A bare number returns 403 UNAUTHORIZED, which reads like an auth failure and
+    is not one (the same headers get 200 on the check call). Captured by hooking
+    `fetch`, driving Chessable's own flow to its last button and BLOCKING the
+    request — the way to read a write's shape without performing it. `chapterId:
+    null` is what the UI itself sends when a repertoire rather than a chapter is
+    picked, so we send exactly that.
+  * a gap whose line starts from a position the repertoire NEVER REACHES cannot
+    be ranked: no opponent plies precede its divergence, so the product is empty
+    and every tactics puzzle scored P = 1 and 1.0000, sorting the lines we know
+    least about to the top. `rankable` excludes severity 'unreachable'; they read
+    "—" and the summary says why.
+  * the TARGET repertoire is read FRESH every run (`fetchCourse(..., false)`),
+    only the source is cached. The target is the side that changes — our writes
+    AND Chessable's own add flow in another tab — and a cached read reported
+    "0 duplicated" about a repertoire that had just gained a duplicate.
+  Also flagged: a cross-colour comparison (White course vs Black repertoire)
+  diverges at ply 0 on our own first move for every line and scores a perfect
+  1.0, so `colorClash` prints a warning above the list. Not refused — "none of
+  these are in there" is still a true answer.
+  STILL OPEN (§4 of the design): whether passing a real `chapterId` merges into
+  that chapter; whether `mode=del` is recoverable through the course page's
+  "Show Deleted"; and the tree walk's cost on a 500+ variation course (largest
+  tested is 81).
 
 ## Verification (no automated tests)
 
