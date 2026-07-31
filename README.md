@@ -18,7 +18,84 @@ card. The panel is always visible — deliberately
 independent of the **Toggle Opening Explorer** toolbar button, which Chessable
 disables in some entry states (e.g. opening the page via a `?fen=` link).
 
-The panel header's **⚙ cogwheel** opens its settings menu: the **database
+## Repertoire badges
+
+Nominate one of your Chessable courses as **your repertoire** and the panel
+starts answering a second question beside "what do people play here?": **"what
+do *I* play here?"**
+
+* Every move row your repertoire plays from the current position gets a filled
+  **blue dot** and a tinted row. Hover the dot for the variations it comes from.
+* A move your repertoire does *not* play here, but whose resulting position it
+  reaches by another move order, gets a hollow **orange ring** and a fainter
+  tint — it **transposes**. This is the thing an exact-line comparison always
+  gets wrong.
+* **On the opponent's move only**, a move played *more often than anything your
+  repertoire covers here* gets a red **warning triangle** and the strongest
+  tint. That is the "you prepared a sideline and the main line is still open"
+  alarm — e.g. after 4…Qb6 in the Sicilian, a repertoire holding only 5.Nb3
+  (34%) is flagged on 5.Nxc6 (41%).
+* The colours are deliberate: blue is Chessable's, and green — which the rest of
+  the panel uses for its lichess accents — reads in a move table as *"this is
+  the good move"*, which is not what the badge means. It means *"this one is
+  yours"*. Transpositions are orange rather than a second blue because they are
+  a different **kind** of answer, not a weaker version of the same one. The
+  warning is a different **shape**, not just a third colour: it is the only
+  badge that means "act on this", and shape survives what colour does not.
+
+The warning stays quiet in four cases, all of which would otherwise turn the
+table red:
+
+* **Your own move.** Choosing one line over a more popular one is a repertoire
+  *decision*, not a gap — 1…c5 stays unflagged even though 1…e5 is more played.
+  Only what the opponent can throw at you is a risk.
+* **Nothing covered here at all.** With no covered move there is no threshold to
+  be "more popular than", and the summary line already says the repertoire does
+  not reach (or stops at) this position.
+* **A move already badged.** A transposition is answered, so it is not a gap
+  however popular it is — orange wins over red.
+* **Too few games.** Below 50 games for the position the ordering is noise
+  (3 games against 2), so nothing is flagged. Same floor the coverage report
+  uses, for the same reason.
+
+Knowing whose move it is comes from the repertoire course's own colour. If the
+course does not say (its variations are split, or marked "both"), the warning
+never fires rather than risk inverting it.
+* Above the table, one line says what your repertoire actually does here:
+  *"Sicilian ▸ plays Nb3"*, *"reaches this position but stops here"*, or
+  *"does not reach this position"*. It is deliberately shown even when Lichess
+  has **no games at all** for the position — deep in a line that is exactly the
+  only thing left to tell you. Your repertoire's move is often outside Lichess's
+  top dozen, so there would be no row to badge.
+* On the Explore board and the free-play **Analysis** board (section 19 — the
+  one behind the trainer's **Analyse** button) those move chips are clickable
+  and play the move, so you can walk your own repertoire forward from any
+  position. On the trainer's browse board and on variation pages they are
+  labels, since those boards accept no input at all.
+
+Pick the repertoire in the panel's **⚙ menu**, or from the *"+ link a
+repertoire"* prompt the panel shows until you have. The choice is remembered
+per browser and applies everywhere the panel appears. The **↻** beside the
+picker re-reads the course — worth pressing after you have edited it, since the
+index is cached for 12 h.
+
+The course is read through the same JWT-only `getList` call the coverage report
+uses, then walked into a position → moves index with the extension's own move
+generator, so **castling rights and en passant are exact** and a line you edited
+after adding it still matches. Nothing is ever written back. Positions are keyed
+on **placement + side to move only**: in the trainer the panel's FEN is rebuilt
+from the DOM, where castling is a home-square heuristic and en passant is always
+"-", so keying on all four fields would silently lose the badges after every
+double pawn push. The built index is cached in `chrome.storage.session`, so only
+the first page of a browser session pays for the walk.
+
+This is a *different question* from the **Repertoire coverage** panel further
+down: that one asks "which lines of the course I am looking at are missing from
+my repertoire?" and writes them back. This one asks "standing here, what do I
+play?" and only reads.
+
+The panel header's **⚙ cogwheel** opens its settings menu: the repertoire
+picker above, and the **database
 filters** the Lichess numbers are drawn from — which **time controls**
 (UltraBullet … Correspondence) and which **rating bands** (0, 1000 … 2500,
 the lower bounds of Lichess's own buckets) count. The defaults are
@@ -1180,6 +1257,74 @@ Notes on the popularity ranking itself:
   informational cards are *not* in that group — they lead.
 - The result is **not stable over time**: the database shifts, so re-running the
   sort months later can produce a slightly different order.
+
+### Repertoire badges
+
+Section 6c in `content/lichessable.js` — part of the panel, not a module of its
+own, because it answers a question about the position the panel is already
+showing.
+
+- **It runs in the mt1 iframe too.** The reads it needs (session token, the two
+  GET helpers, `getList` + the reduce, the course cache, the tree walk) were
+  hoisted out of `initCoverage` into section **5c**, since that module only ever
+  runs in the *top* document on `/course/` pages. The iframe is same-origin, so
+  it reads the same `localStorage` JWT. The two **writes** stayed inside
+  `initCoverage`, behind its arming and its "is this course yours" guard —
+  nothing in 6c can write to a course.
+- **Positions are keyed on placement + side to move**, not on the four-field
+  `cacheKey` the explorer caches use. In the trainer the panel's FEN is rebuilt
+  from the DOM, where castling rights are a home-square heuristic and en passant
+  is always `-`, while the repertoire walk computes both exactly; keying on all
+  four fields would make the badges vanish after every double pawn push and most
+  rook moves, for no visible reason. Section 20's mistake holds compare on the
+  same two fields for the same reason. The cost is that two positions differing
+  only in castling rights or an en-passant chance collapse into one.
+- **The walk yields to the event loop** every 20 variations — a 500-line
+  repertoire is a few hundred thousand move-generator calls, and the panel must
+  not freeze the page it is injected into. The result is cached in
+  `chrome.storage.session` (12 h), so only the first page of a browser session
+  pays; a new mt1 iframe — Chessable makes one per Explore page — costs nothing.
+  The `seen` set is not stored: it is the answers' own keys plus the line-end
+  positions, so only the latter go in the cache.
+- **The move cell is no longer only SAN.** The badge is a child of it, so the
+  two existing readers of that cell — the analysis board's click-to-play and the
+  quick-edit popup's alt-move prefill — take `dataset.san` instead of
+  `textContent`, which now picks the badge up too.
+- **The shapes are drawn in CSS**, not `●`/`○`/`▲` glyphs: those differ in size
+  and baseline from font to font, and three marks that have to be told apart at
+  a glance need their geometry set exactly. The two circles share an outer
+  diameter so a column of badges stays aligned; the triangle is cut from its box
+  with `clip-path` rather than the border-triangle trick, so the same width /
+  height sizing rules (and the touch override) keep working on it.
+- **The explorer's uci is resolved, never compared raw.** Lichess writes
+  castling as **king takes rook** (`e1h1`); CloSan's move generator — and so the
+  index built from it — uses the king-two-files form (`e1g1`). Everything else
+  in the extension that consumes a uci happens to cope, because
+  `CloSan.uciToMove` normalizes the pair internally, but a string lookup in the
+  answers map does not: before v0.48.1 every castling move fell through to the
+  transposition arm, which then *succeeded* (the repertoire does reach the
+  position after its own castling move) and painted `O-O` orange while the
+  summary line right above it said the repertoire plays `O-O`. It also kept a
+  covered castling move from counting towards the red threshold, which could
+  invent a warning. `repertoireMoveState()` therefore resolves the move through
+  CloSan and matches on the canonical key.
+- **The warning is comparative, so it cannot be decided per row.**
+  `repertoireRowStates()` takes the whole move list, finds the most popular
+  covered move, and only then flags what beats it — which is why the badge
+  helper takes a pre-computed state rather than a `(fen, uci)` pair.
+- **`.clo-move` is `white-space: nowrap`.** Its `width: 3.5em` is only a
+  suggestion to the auto table layout, and the cell is no longer just SAN; in a
+  narrow panel the badge wrapped onto its own line under the move.
+- **The row tint is set on the cells, not the row.** `.clo-table tr:hover td`
+  paints a background on the `td`, which would cover a background sitting on the
+  `tr`; the two tint rules therefore outrank it on specificity (2 classes + 3
+  types, and 3 + 3 for the hover state).
+- **Chip clickability flips without the position changing.** Opening the
+  analysis board keeps the board on the position the browse state was showing,
+  so `refresh()` short-circuits and the summary line would keep the dead chips
+  it was drawn with. `syncRepertoireLine()` on the top-panel tick compares one
+  boolean and redraws only when it flips — redrawing the line every 500 ms would
+  kill a tooltip mid-hover.
 
 ### Repertoire coverage
 

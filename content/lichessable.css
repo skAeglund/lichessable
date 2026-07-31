@@ -150,6 +150,66 @@
   border-color: #71ad2a;
 }
 
+/* Repertoire picker (section 6c). First row of the menu, with a rule under it:
+   it is not a database filter, and it must not read as one — least of all as
+   something the filters' "Reset" would put back. */
+.clo-rep-menu {
+  border-bottom: 1px solid #302e2a;
+  padding-bottom: 8px;
+}
+
+.clo-rep-menu-pick {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.clo-rep-select {
+  flex: 1;
+  min-width: 0; /* a long course name must shrink, not stretch the panel */
+  border: 1px solid #3a3630;
+  border-radius: 3px;
+  background: #262421;
+  color: #bababa;
+  padding: 2px 4px;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.clo-rep-reload {
+  flex: none;
+  border: 1px solid #3a3630;
+  border-radius: 3px;
+  background: transparent;
+  color: #949494;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  line-height: 1.2;
+}
+
+.clo-rep-reload:hover:not(:disabled) {
+  color: #fff;
+  border-color: #4d4842;
+}
+
+.clo-rep-reload:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.clo-rep-menu-note {
+  display: block;
+  margin-top: 4px;
+  color: #949494;
+  font-size: 11px;
+}
+
+.clo-rep-menu-note--warn {
+  color: #d3a836;
+}
+
 .clo-filters-foot {
   display: flex;
   align-items: center;
@@ -197,6 +257,174 @@
   color: #949494;
   font-style: italic;
   margin-bottom: 6px;
+}
+
+/* --- repertoire line + badges (section 6c) ---------------------------------
+   What the user's own course plays HERE. Deliberately outside everything
+   showStatus() hides: a position with no Lichess games at all is exactly where
+   this line is the only thing the panel can still answer.
+
+   COLOUR: blue for "in your repertoire", NOT the lichess green the rest of the
+   panel uses for its accents. Green in a move table reads as a verdict — "this
+   is the good move" — and that is exactly what this badge does not mean; it
+   means "this one is yours". Blue is also Chessable's own brand colour, so the
+   panel's two voices stay apart: green = lichess, blue = your course.
+   Transpositions get orange rather than a second blue, because they are a
+   different KIND of answer (you reach this position by another move order), not
+   a weaker version of the same one. */
+
+:root {
+  --clo-rep-in: #4d8ff0;    /* Chessable blue, lifted for a dark panel */
+  --clo-rep-trans: #e0883c; /* transposition — a different answer, not a fainter one */
+  --clo-rep-risk: #e05c5c;  /* an opponent reply you have no answer to */
+}
+
+.clo-rep {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.clo-rep-name {
+  color: #bababa;
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clo-rep-note {
+  color: #949494;
+}
+
+.clo-rep-note--out {
+  font-style: italic;
+}
+
+.clo-rep-note--warn {
+  color: #d3a836;
+}
+
+/* The moves the repertoire answers this position with. Chips, not plain text:
+   they are the answer, and on the free-play boards they are clickable. */
+.clo-rep-move {
+  border: 1px solid rgba(77, 143, 240, 0.45);
+  border-radius: 3px;
+  padding: 0 5px;
+  color: var(--clo-rep-in);
+}
+
+.clo-rep-move--play {
+  cursor: pointer;
+}
+
+.clo-rep-move--play:hover {
+  color: #fff;
+  border-color: var(--clo-rep-in);
+  background: var(--clo-rep-in);
+}
+
+/* "Link a repertoire" — the whole feature is invisible until a course is
+   nominated, and the cogwheel is not where anyone looks for "my repertoire". */
+.clo-rep-hint {
+  border: 1px dashed #3a3630;
+  border-radius: 3px;
+  background: transparent;
+  color: #949494;
+  padding: 0 6px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.clo-rep-hint:hover {
+  color: #fff;
+  border-color: var(--clo-rep-in);
+}
+
+/* Row badge: filled = your repertoire plays this move here, hollow ring = it
+   does not, but the position after it is one your repertoire reaches by another
+   move order. DRAWN, not a "●"/"○" glyph — those differ in size and baseline
+   from font to font, and this pair has to be told apart at a glance. */
+.clo-rep-badge {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-left: 5px;
+  border-radius: 50%;
+  vertical-align: 0.5px;
+  cursor: help;
+}
+
+.clo-rep-badge--in {
+  background: var(--clo-rep-in);
+}
+
+/* Hollow: the ring is the whole shape, so it is a border rather than a smaller
+   filled dot — same outer diameter as the filled one, so a column of badges
+   stays aligned and only the fill distinguishes them. */
+.clo-rep-badge--transposes {
+  border: 2px solid var(--clo-rep-trans);
+}
+
+/* Warning triangle: a DIFFERENT SHAPE, not just a third colour. This is the
+   only badge that means "act on this", and shape survives what colour does not
+   — a red/blue pair is exactly the confusion the ~8% of men with a red-green or
+   red-blue deficiency get least help from, and the panel is often glanced at
+   rather than read. Cut from the same box with clip-path rather than the
+   border-triangle trick, so the sizing rules above (and the touch override
+   below) keep working on it unchanged. Slightly wider and shorter than the
+   circles: a triangle in an identical box reads smaller than one. */
+.clo-rep-badge--risk {
+  width: 11px;
+  height: 10px;
+  border-radius: 0;
+  background: var(--clo-rep-risk);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  vertical-align: 0;
+}
+
+/* Row tint. A 9px dot is still easy to miss in a twelve-row table, so the whole
+   row carries the answer. Set on the CELLS, not the row: the generic
+   `.clo-table tr:hover td` rule paints a background on the td, which would
+   cover a background sitting on the tr. Both selectors below therefore
+   outrank it (2 classes + 3 types, and 3 + 3 for the hover). */
+.clo-table tbody tr.clo-rep-row--in td {
+  background: rgba(77, 143, 240, 0.13);
+}
+
+.clo-table tbody tr.clo-rep-row--in:hover td {
+  background: rgba(77, 143, 240, 0.22);
+}
+
+/* Fainter: a transposition is a hint, not the answer. */
+.clo-table tbody tr.clo-rep-row--transposes td {
+  background: rgba(224, 136, 60, 0.09);
+}
+
+.clo-table tbody tr.clo-rep-row--transposes:hover td {
+  background: rgba(224, 136, 60, 0.17);
+}
+
+/* The warning is the one row you are meant to notice, so it is the strongest
+   tint of the three — but still a tint: the numbers on it have to stay
+   readable, since how MUCH more popular the move is is the whole point. */
+.clo-table tbody tr.clo-rep-row--risk td {
+  background: rgba(224, 92, 92, 0.15);
+}
+
+.clo-table tbody tr.clo-rep-row--risk:hover td {
+  background: rgba(224, 92, 92, 0.24);
+}
+
+/* The move itself reads brighter on a tinted row — the tint alone dulls it. */
+.clo-rep-row--in .clo-move,
+.clo-rep-row--risk .clo-move {
+  color: #e8e8e8;
 }
 
 /* Aggregate row: total game count + overall W/D/B bar. */
@@ -288,6 +516,12 @@
   width: 3.5em;
   font-weight: 400;
   color: #bababa;
+  /* The width above is only a suggestion to the auto table layout, and the cell
+     is no longer just SAN — a repertoire badge (section 6c) sits beside it. In
+     a narrow panel that wrapped the badge onto its own line under the move;
+     nowrap makes the column claim the few extra pixels instead. SAN never
+     contains a space, so this changes nothing when there is no badge. */
+  white-space: nowrap;
 }
 
 .clo-th-pct {
@@ -2516,6 +2750,37 @@ html.clo-touch .clo-filters-reset {
 
 html.clo-touch .clo-body {
   padding: 12px;
+}
+
+/* Repertoire line + picker (section 6c). The move chips and the "link a
+   repertoire" hint are tap targets on the free-play boards. */
+html.clo-touch .clo-rep,
+html.clo-touch .clo-rep-menu-note,
+html.clo-touch .clo-rep-select,
+html.clo-touch .clo-rep-reload {
+  font-size: 13px;
+}
+
+html.clo-touch .clo-rep-move,
+html.clo-touch .clo-rep-hint {
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+html.clo-touch .clo-rep-reload {
+  padding: 6px 10px;
+}
+
+/* The shapes are drawn, not typed — they scale by size, not font-size. */
+html.clo-touch .clo-rep-badge {
+  width: 11px;
+  height: 11px;
+  margin-left: 7px;
+}
+
+html.clo-touch .clo-rep-badge--risk {
+  width: 13px;
+  height: 12px;
 }
 
 html.clo-touch .clo-table th {

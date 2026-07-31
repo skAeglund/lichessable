@@ -46,7 +46,9 @@ comment of the move it was opened on. A COURSE page
 courses, lists the variations that are missing ranked by how likely the user is
 to face them, flags the lines their repertoire holds twice, and writes both
 answers back — adding the ticked lines through Chessable's own add call and
-deleting the surplus copies.
+deleting the surplus copies. The panel itself also BADGES the moves one of the
+user's own courses already plays (section 6c) — nominate a repertoire in the
+panel's cogwheel menu and every host of the panel marks what is prepared.
 Currently working (v0.18.x).
 
 ## Structure
@@ -139,7 +141,9 @@ Currently working (v0.18.x).
   rendered. LRU cache: 200 positions, keyed on the first four FEN fields
   (so move-counter-only differences share entries).
 - Database filters (section 6b): ratings and speeds are USER settings, edited
-  in the panel header's cogwheel menu. `CONFIG.lichess.defaultSpeeds/
+  in the panel header's cogwheel menu — which also holds the repertoire picker
+  (6c), first row, with a rule under it so it never reads as a filter the
+  menu's "Reset" would put back. `CONFIG.lichess.defaultSpeeds/
   defaultRatings` are only defaults — the live values are the module-level
   `lichessFilters`, which is what `fetchExplorerData` and the chapter sort's
   `popCacheTag` read. Persisted in `chrome.storage.local` (`cloLichessFilters`)
@@ -154,6 +158,110 @@ Currently working (v0.18.x).
   `.clo-body`, NOT a floating popover: `.clo-panel` is `overflow: hidden` and
   the analysis/review panel is a sized overlay whose body is the scroll
   container.
+- Repertoire badges (section 6c): one of the user's Chessable courses is
+  nominated as THE repertoire (picker in the SETTINGS MENU, 6b — the panel's
+  preference belongs with the panel's other preferences), read through the
+  shared `getList` and walked into a position → moves index; every panel move
+  row the repertoire plays gets a badge. READ-ONLY, and a different question
+  from section 21: that one asks "which lines of the course I am looking at are
+  missing from my repertoire" and WRITES them back; this one asks "standing
+  here, what do I play".
+  Section 5c is what makes it possible: `chessableCreds/Headers/ApiFetch/ApiUrl`,
+  `fetchChessableBooks`, `reduceCourse`, `fetchCourse` + the course cache and
+  `walkVariation` were HOISTED out of `initCoverage`, which only ever runs in
+  the TOP document on `/course/` pages — the panel also lives in the mt1 iframe
+  (same origin, so the same localStorage JWT). The two WRITES stayed inside
+  initCoverage, behind its arming and its "is this course yours" guard.
+  THE KEY IS PLACEMENT + SIDE TO MOVE (`repKey`), NOT `cacheKey`. In review the
+  panel's FEN is rebuilt from the DOM, where castling is a home-square heuristic
+  and en passant is always "-", while the walk computes both exactly — keying on
+  all four fields would silently drop the badges after every double pawn push
+  and most rook moves. Section 20's holds compare on the same two fields for the
+  same reason. Cost: two positions differing only in castling/ep collapse into
+  one, which at worst badges a move that is in the repertoire one board-state
+  away. It is also what makes the TRANSPOSITION badge work (hollow ring: the
+  repertoire does not play this move here, but the position after it is in its
+  `seen` set) — the one thing an exact-line answer always gets wrong.
+  The FOURTH verdict is the unprepared-reply WARNING (red triangle), and it is
+  COMPARATIVE — which is why `repertoireRowStates(fen, moves, positionGames)`
+  decides the whole move list at once and `repertoireBadge` takes a
+  pre-computed state instead of a `(fen, uci)` pair. A move is 'risk' when it is
+  played MORE OFTEN than the most popular move the repertoire covers here. FOUR
+  silences, each of which would otherwise turn the table red:
+  * OUR MOVE — only the opponent's options are a risk; preferring a less popular
+    line is a repertoire DECISION (1...c5 over 1...e5), not a gap. Whose move it
+    is comes from `ix.side` (`courseSide`, hoisted to 5c beside `sideOf`); a
+    course that does not say which side it is for NEVER fires the warning rather
+    than risk inverting it.
+  * NOTHING COVERED HERE — no covered move means no threshold to beat, and the
+    summary line already says the repertoire does not reach / stops here.
+  * ALREADY BADGED — a transposition is answered, so it is not a gap however
+    popular (`if (out[i] || …) continue`): orange beats red, by request.
+  * BELOW `riskMinGames` (50, section 21's floor) for the POSITION — deep in a
+    line "more popular" is regularly 3 games against 2.
+  COLOUR IS LOAD-BEARING, not decoration: BLUE (Chessable's own) for "in your
+  repertoire", never the lichess green the rest of the panel accents with —
+  green in a move table reads as a VERDICT ("this is the good move"), which is
+  the one thing the badge does not mean. ORANGE for a transposition, because it
+  is a different KIND of answer, not a weaker version of the same one. RED for
+  the warning. All three are CSS variables (`--clo-rep-in`, `--clo-rep-trans`,
+  `--clo-rep-risk`) at the top of the 6c block.
+  The marks are DRAWN (an empty span sized in CSS), never "●"/"○"/"▲" glyphs:
+  those differ in size and baseline per font, and three marks that must be told
+  apart at a glance need exact geometry. The hollow one is a BORDER, so both
+  circles share an outer diameter and a column stays aligned; the TRIANGLE is a
+  `clip-path` on the same box, NOT the border-triangle trick, so the width/height
+  sizing rules (and the `html.clo-touch` override) keep working on it. Shape,
+  not just a third colour: the warning is the only badge meaning "act on this",
+  and a red/blue pair is exactly what a colour deficiency helps least with.
+  The WHOLE ROW is tinted from the same answer (a 9px mark is easy to miss in a
+  twelve-row table), set on the `td`s and NOT on the `tr`: `.clo-table tr:hover
+  td` paints a background on the cell, which would cover one sitting on the row,
+  so all six tint rules are written to outrank it. `.clo-move` is
+  `white-space: nowrap` because its `width: 3.5em` is only a suggestion to the
+  auto table layout and the badge otherwise wrapped under the move.
+  `CONFIG.repertoire.indexVersion` is checked on every cache read: an index
+  written by an older build parses fine and is quietly missing whatever field
+  was added (v2 added `side`, without which the warning silently never fires).
+  Bump it whenever the index gains a field.
+  The SUMMARY LINE above the table carries the two answers a badge cannot: the
+  move the repertoire plays INSTEAD (regularly outside Lichess's top dozen, so
+  there is no row to badge at all) and "reaches this position but stops here" vs
+  "does not reach this position". It sits OUTSIDE everything `showStatus()`
+  hides, deliberately: a position with no Lichess games is exactly where it is
+  the only thing the panel can still answer. Its move chips PLAY the move where
+  a board accepts one — Chessable's own board outside review, and inside review
+  only OUR analysis board (section 19, through the `continuationAnalysisPlay`
+  bridge); the trainer's browse board and the variation page accept nothing.
+  That answer flips WITHOUT the position changing (opening the analysis board
+  keeps the board where it was, so `refresh()` short-circuits on
+  `fen === state.fen`), so `syncRepertoireLine()` on the top-panel tick compares
+  `rep.linePlayable` and redraws only on a flip — redrawing every 500 ms would
+  kill a tooltip mid-hover.
+  The walk YIELDS every `chunkVars` variations (a 500-line repertoire is a few
+  hundred thousand CloSan calls and must not freeze the page) and the built
+  index is cached in `chrome.storage.session` (12 h, ONE repertoire — there is
+  only one selected). `seen` is not stored: it is the answers' own keys plus the
+  line-END positions, so only those go in. `state.lastData` exists so the rows
+  drawn before the index landed can be re-badged.
+  THE EXPLORER'S UCI IS RESOLVED THROUGH CloSan, NEVER COMPARED RAW
+  (`repertoireMoveState`, v0.48.1). Lichess writes castling as KING TAKES ROOK
+  ("e1h1"); CloSan's generator — and so the index — uses "e1g1". Everything else
+  that consumes a uci copes because `CloSan.uciToMove` normalizes the pair
+  internally, but a string lookup in `answers` does not: every castling move
+  fell through to the transposition arm, which then SUCCEEDED (the repertoire
+  does reach the position after its own castling move), so "O-O" was painted
+  orange while the summary line above it said the repertoire plays O-O. It also
+  kept a covered castling move out of the red threshold, which can invent a
+  warning. Section 21 is unaffected — it compares walk output against walk
+  output, both canonical; the mismatch only exists where Lichess's uci meets our
+  index. Ground-truthed 2026-08-01.
+  THE MOVE CELL IS NO LONGER ONLY SAN — the badge is a child of it, so both
+  existing readers (the analysis board's `onPanelMoveClick` and the quick-edit
+  popup's alt-move prefill) read `tdMove.dataset.san`, never `textContent`,
+  which now says "Nf3●".
+  Everything fails soft: no session, an HTTP error, an unreadable course — the
+  badges simply do not appear and the menu says why.
 - The Lichess opening explorer requires a Bearer token since early 2026 and
   lives at `explorer.lichess.org` (`explorer.lichess.ovh` now 401s). Token:
   `chrome.storage.local` key `lichessToken` — the string is duplicated in

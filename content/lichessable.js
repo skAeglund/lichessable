@@ -549,6 +549,39 @@
       },
     },
 
+    // --- Repertoire badges in the panel (section 6c) -----------------------
+    // One of the user's own Chessable courses is nominated as THE repertoire;
+    // it is read through the same JWT-only getList the coverage report uses
+    // (section 5c hoists that call), walked into a position → moves index, and
+    // every panel move that the repertoire plays from the current position gets
+    // a badge. Read-only: nothing here ever writes to a course.
+    repertoire: {
+      prefKey:  'cloRepertoire',       // chrome.storage.local: { bid, name }
+      indexKey: 'cloRepertoireIndex',  // chrome.storage.session: the built index
+      // Bumped whenever the index gains a FIELD. A cached index from an older
+      // build parses fine and is quietly missing the new one — v2 added `side`,
+      // without which the unprepared-reply warning simply never fires and there
+      // is nothing to see or diagnose. Cheaper to rebuild than to detect.
+      indexVersion: 2,
+      // Same 12 h TTL as every other course-derived cache. The index is not a
+      // preference: it describes a course the user edits all day, so it may go
+      // stale, and the ↻ beside the picker is the manual way out.
+      indexTtlMs: 12 * 60 * 60 * 1000,
+      // The walk is a few hundred thousand CloSan calls on a big repertoire, so
+      // it yields to the event loop this often rather than freezing the page.
+      chunkVars: 20,
+      maxNames: 3,          // variation names kept per (position, move) for the tooltip
+      maxNameLen: 60,       // …each truncated, so the cached index stays small
+      maxIndexPositions: 40000, // above this the index is used but NOT cached (quota guard)
+      maxLineMoves: 6,      // repertoire moves listed in the panel's summary line
+      // The unprepared-reply warning compares game counts, so it needs the
+      // position to have been played enough for the ordering to mean anything.
+      // Deep in a line "more popular" is regularly 3 games against 2, and a red
+      // triangle on that is a false alarm — the same reason section 21 stops
+      // multiplying shares below its own floor. Same number, deliberately.
+      riskMinGames: 50,
+    },
+
     // --- Repertoire coverage (section 21) ----------------------------------
     // "Which variations of this course are missing from my repertoire?" — see
     // DESIGN-repertoire-coverage.md for the ground truth behind every endpoint
@@ -752,6 +785,9 @@
   // ==========================================================================
   const state = {
     fen: null,            // last FEN we fetched/rendered
+    lastData: null,       // the explorer response state.fen was rendered from, so the
+                          // repertoire badges (section 6c) can be drawn onto those rows
+                          // once the index finishes loading
     requestSeq: 0,        // increases per fetch; responses for stale positions are dropped
     hidden: false,        // panel body collapsed? (persisted in chrome.storage.local)
     filtersOpen: false,   // settings menu (header cogwheel) open? deliberately NOT persisted
@@ -787,6 +823,7 @@
     state.engineEnabled = await loadEnginePref();
     state.engineBuild = await loadEngineBuildPref();
     await loadFilters();
+    await loadRepertoirePref(); // before mountPanel, so the first draw is right
     mountPanel();
     bindFenInput();
     observeMovesTable();
@@ -817,6 +854,17 @@
       renderFilters();  // an open menu must show what is actually in force
       state.fen = null; // the rendered data was fetched under the old filters
       scheduleRefresh();
+    }
+    // The nominated repertoire (section 6c) — changed here, in the other
+    // document of this tab (the panel is in the mt1 iframe on Explore/Analysis
+    // but in the top document in review), or in another tab.
+    if (changes[CONFIG.repertoire.prefKey]) {
+      if (applyRepertoirePref(changes[CONFIG.repertoire.prefKey].newValue)) {
+        renderRepertoireUi();
+        renderRepertoireLine();
+        if (state.lastData) present(state.lastData); // drop the old badges now
+        if (rep.bid) ensureRepertoireIndex(false);
+      }
     }
     // Keeps the toggle in sync across tabs/modes (idempotent in the tab that
     // flipped it — syncEngine dedups on state.engineFen).
@@ -967,7 +1015,12 @@
     if (!fen) return;
     if (fen === state.fen) return; // tbody churn without an actual position change
     state.fen = fen;
+    state.lastData = null;        // whatever is on screen describes the previous position
     syncEngine(); // before the cache short-circuit: engine analysis is per-position
+    // The repertoire's answer for this position needs no network and no Lichess
+    // data, so it is drawn immediately rather than with the move table.
+    renderRepertoireLine();
+    ensureRepertoireIndex(false); // no-op once the index is in
 
     const seq = ++state.requestSeq;
     log('position:', fen);
@@ -1019,6 +1072,10 @@
 
   /** Renders a response, choosing the empty state when there are no games. */
   function present(data) {
+    // Kept so the repertoire badges can be drawn onto rows that were rendered
+    // before the index finished loading (section 6c) — an index read is a
+    // network round trip and a walk, and the panel must not wait for it.
+    state.lastData = data;
     const total = data ? (data.white || 0) + (data.draws || 0) + (data.black || 0) : 0;
     if (!data || (total === 0 && (!data.moves || data.moves.length === 0))) {
       showStatus('No Lichess games for this position');
@@ -1298,6 +1355,230 @@
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ==========================================================================
+  // 5c) Chessable's own course API — shared by the coverage report (section 21)
+  //     and the panel's repertoire badges (6c)
+  //
+  // Same-origin, JWT-only, no CSRF field: the page's own session token out of
+  // localStorage, sent as a Bearer header. Everything here was ground-truthed
+  // for section 21 (DESIGN-repertoire-coverage.md) and is hoisted to top level
+  // for the same reason `fetchPopularityCounts` was — the badges run in the mt1
+  // IFRAME, where initCoverage (a /course/ page module in the top document)
+  // does not exist. Same origin, so the iframe reads the same localStorage.
+  //
+  // Read-only calls only. The two WRITES (duplicateVariationsToRepertoire and
+  // updateOpening&mode=del) deliberately stay inside initCoverage, behind its
+  // arming and its "is this course yours" guard.
+  // ==========================================================================
+
+  function chessableCreds() {
+    const jwt = localStorage.getItem(CONFIG.chessableApi.jwtKey);
+    const uid = localStorage.getItem(CONFIG.chessableApi.uidKey);
+    if (!jwt || !uid) return null;
+    return { jwt, uid };
+  }
+
+  function chessableHeaders(cr, json) {
+    const h = { 'Authorization': 'Bearer ' + cr.jwt, 'platform': 'web' };
+    if (json) h['Content-Type'] = 'application/json';
+    return h;
+  }
+
+  /**
+   * A JSON body when the server sends one, `{ raw }` when it does not — the add
+   * call's response was never read during the ground-truthing, so its content
+   * type is not something to bet a flow on. HTTP status is.
+   */
+  async function chessableApiFetch(url, init) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), CONFIG.coverage.fetchTimeoutMs);
+    try {
+      const res = await fetch(url, Object.assign({ signal: ctl.signal }, init));
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        return { raw: text };
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function chessableApiUrl(path, params) {
+    const url = new URL(location.origin + path);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+    return url.toString();
+  }
+
+  /**
+   * The user's courses. `isRepertoire` is NOT a usable filter — it was true for
+   * a bought course and false for the actual repertoire (ground-truthed); the
+   * signal that means "you may write to this" is authorUid === our own uid,
+   * which is also exactly the set Chessable's own add flow offers as a
+   * destination. Both are reported; only the coverage report's WRITES care.
+   */
+  async function fetchChessableBooks(cr) {
+    const body = await chessableApiFetch(chessableApiUrl(CONFIG.coverage.homePath, {
+      uid: cr.uid, sortBookRowsBy: 'alphabetically', userLanguageShort: 'en',
+    }), { headers: chessableHeaders(cr) });
+    const list = body && body.homeData && body.homeData.booksList;
+    if (!Array.isArray(list)) throw new Error('unexpected response listing your courses');
+    return list.map((b) => ({
+      bid: String(b && b.bid),
+      name: String((b && b.name) || ('Course ' + (b && b.bid))),
+      ours: b && b.authorUid != null && String(b.authorUid) === String(cr.uid),
+    })).filter((b) => b.bid && b.bid !== 'undefined');
+  }
+
+  /**
+   * getList writes the move NUMBER into the SAN of every White ply — the moves
+   * array reads ["1.e4", "c5", "2.Nf3", "Nc6", …], not ["e4", "c5", …]
+   * (ground-truthed live 2026-07-29 on course 453453; the design's §2.4 has the
+   * field but not this detail, and taking it at face value made 76 of 77 lines
+   * "unplayable"). Same convention as the PGN-ish `moves` string the chapter
+   * sort tokenises, one ply per entry. The ellipsis form ("1...c5") is stripped
+   * by the same pattern.
+   */
+  const MOVE_NUM_PREFIX = /^\d+\.+/;
+  const sanOfMove = (m) =>
+    (m && typeof m.san === 'string') ? m.san.replace(MOVE_NUM_PREFIX, '').trim() : '';
+
+  /**
+   * A course reduced to what a tree walk needs: oid, title, SAN list, colour
+   * and start FEN. The raw payload is ~180 KB for 77 variations and carries a
+   * `fens` array we deliberately ignore — walking the SAN ourselves with
+   * sanToUci/fenAfterUci is what makes castling rights and en passant exact,
+   * and it is the only thing that works on a repertoire copy the user edited.
+   */
+  function reduceCourse(body) {
+    const list = body && body.list;
+    const data = list && list.data;
+    if (!Array.isArray(data)) throw new Error('unexpected response reading the course');
+    const vars = [];
+    let odd = 0, oddShape = '';
+    for (const v of data) {
+      const oid = v && (v.id != null ? v.id : v.oid);
+      if (oid == null) { odd++; continue; }
+      // Ground-truthed as an array of { san, isKey, … }. Deliberately no
+      // fallback parser for any other shape: guessing at an unobserved format
+      // is how a coverage report starts quietly lying. One named warning
+      // instead, so a change here is diagnosable rather than invisible.
+      if (!Array.isArray(v.moves)) { odd++; oddShape = typeof v.moves; continue; }
+      vars.push({
+        oid: String(oid),
+        name: String((v.name || '')).trim(),
+        sans: v.moves.map(sanOfMove).filter(Boolean),
+        color: typeof v.color === 'string' ? v.color : '',
+        fen: (typeof v.initialFEN === 'string' && v.initialFEN.trim()) || '',
+      });
+    }
+    if (odd) {
+      warn(`${odd} variation(s) skipped — getList gave no readable moves array ` +
+        `(saw ${oddShape || 'no moves field'}; expected [{san,…}])`);
+    }
+    return {
+      name: String((list.name || '')).trim(),
+      owned: Boolean(list.owned),
+      vars,
+    };
+  }
+
+  // Reduced course listings (id/name/SAN/colour/initialFEN only — never the
+  // 180 KB payload) in chrome.storage.session, so the coverage report and the
+  // badges share one read of a course.
+
+  async function readCourseCache() {
+    try {
+      await sessionStorageReady();
+      const got = await chrome.storage.session.get([CONFIG.coverage.cacheKey]);
+      const map = got && got[CONFIG.coverage.cacheKey];
+      return (map && typeof map === 'object') ? map : {};
+    } catch (err) {
+      return {}; // orphaned script or storage.session unavailable — just don't cache
+    }
+  }
+
+  async function writeCourseCache(map) {
+    try {
+      let entries = Object.entries(map);
+      if (entries.length > CONFIG.coverage.cacheMax) {
+        entries.sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
+        entries = entries.slice(0, CONFIG.coverage.cacheMax);
+      }
+      await chrome.storage.session.set({ [CONFIG.coverage.cacheKey]: Object.fromEntries(entries) });
+    } catch (err) {
+      // Not being able to cache is not a reason to fail the caller.
+    }
+  }
+
+  /** Drops one course from the session cache — used after we write to it. */
+  async function dropCourseCache(bid) {
+    const map = await readCourseCache();
+    if (map[bid]) { delete map[bid]; await writeCourseCache(map); }
+  }
+
+  async function fetchCourse(bid, cr, useCache) {
+    const map = useCache ? await readCourseCache() : {};
+    const hit = map[bid];
+    if (hit && Date.now() - (hit.t || 0) < CONFIG.coverage.cacheTtlMs && Array.isArray(hit.vars)) {
+      return { name: hit.name, owned: hit.owned, vars: hit.vars, cached: true };
+    }
+    const body = await chessableApiFetch(
+      chessableApiUrl(CONFIG.coverage.listPath, { uid: cr.uid, bid }),
+      { headers: chessableHeaders(cr) });
+    const course = reduceCourse(body);
+    const fresh = await readCourseCache();
+    fresh[bid] = { t: Date.now(), name: course.name, owned: course.owned, vars: course.vars };
+    await writeCourseCache(fresh);
+    return course;
+  }
+
+  /**
+   * A variation's plies with a real position before and after each one, or null
+   * when a SAN does not resolve (a corrupt line, or one whose initialFEN does
+   * not match its moves). Never guessed at — an unplayable line is reported as
+   * such rather than half-inserted into a tree.
+   */
+  function walkVariation(v) {
+    const start = v.fen || START_FEN;
+    if (typeof CloSan === 'undefined') return null;
+    let fen = start;
+    const plies = [];
+    for (const san of v.sans) {
+      const pos = CloSan.parseFen(fen);
+      const uci = pos && sanToUci(pos, san);
+      const after = uci && fenAfterUci(fen, uci);
+      if (!after) return null;
+      plies.push({ san, uci, before: fen, after, side: pos.side });
+      fen = after;
+    }
+    return { start, plies, end: fen };
+  }
+
+  /** 'w' | 'b' | null — the side a variation is written for. */
+  function sideOf(color) {
+    return color === 'white' ? 'w' : color === 'black' ? 'b' : null;
+  }
+
+  /**
+   * The course's own side. Per-variation `color` is preferred but has been seen
+   * as 'both', so the course-wide majority is the fallback — "which side is the
+   * opponent" is what the coverage ranking rests on (section 21) and what
+   * decides whether a panel row can carry the unprepared-reply warning (6c).
+   * Null when the course does not say; both callers then stand down rather
+   * than guess, since guessing inverts the whole answer.
+   */
+  function courseSide(vars) {
+    let w = 0, b = 0;
+    for (const v of vars) {
+      const s = sideOf(v.color);
+      if (s === 'w') w++; else if (s === 'b') b++;
+    }
+    return w === b ? null : (w > b ? 'w' : 'b');
+  }
+
+  // ==========================================================================
   // 6) Panel — mounting and rendering
   // ==========================================================================
 
@@ -1339,12 +1620,20 @@
         <span class="clo-title">Lichess Database</span>
         <span class="clo-stub-badge" hidden>stub data</span>
         <button type="button" class="clo-engine-toggle" aria-pressed="false">Engine</button>
-        <button type="button" class="clo-cog" aria-expanded="false" aria-label="Database filters">⚙</button>
+        <button type="button" class="clo-cog" aria-expanded="false" aria-label="Panel settings">⚙</button>
         <button type="button" class="clo-toggle" aria-expanded="true">Hide</button>
       </div>
       <div class="clo-moves" hidden></div>
       <div class="clo-body">
         <div class="clo-filters" hidden>
+          <div class="clo-filters-row clo-rep-menu">
+            <span class="clo-filters-label">Repertoire</span>
+            <span class="clo-rep-menu-pick">
+              <select class="clo-rep-select"></select>
+              <button type="button" class="clo-rep-reload" title="Re-read the course (after editing it)">↻</button>
+            </span>
+            <span class="clo-rep-menu-note"></span>
+          </div>
           <div class="clo-filters-row">
             <span class="clo-filters-label">Time control</span>
             <span class="clo-filters-chips clo-filters-speeds"></span>
@@ -1369,6 +1658,7 @@
           <div class="clo-engine-line"><span class="clo-line-eval"></span><span class="clo-line-moves"></span></div>
         </div>
         <div class="clo-opening" hidden></div>
+        <div class="clo-rep" hidden></div>
         <div class="clo-summary" hidden>
           <span class="clo-total"></span>
           <div class="clo-bar clo-summary-bar"></div>
@@ -1423,6 +1713,10 @@
       filterRatings: panel.querySelector('.clo-filters-ratings'),
       filtersNote:  panel.querySelector('.clo-filters-note'),
       filtersReset: panel.querySelector('.clo-filters-reset'),
+      repLine:      panel.querySelector('.clo-rep'),
+      repSelect:    panel.querySelector('.clo-rep-select'),
+      repReload:    panel.querySelector('.clo-rep-reload'),
+      repNote:      panel.querySelector('.clo-rep-menu-note'),
       engine:       panel.querySelector('.clo-engine'),
       engineToggle: panel.querySelector('.clo-engine-toggle'),
       engineEval:   panel.querySelector('.clo-engine-eval'),
@@ -1438,7 +1732,11 @@
     state.ui.engineToggle.addEventListener('click', onEngineToggle);
     state.ui.cog.addEventListener('click', onCogToggle);
     state.ui.filtersReset.addEventListener('click', onFiltersReset);
+    state.ui.repSelect.addEventListener('change', onRepertoireSelect);
+    state.ui.repReload.addEventListener('click', onRepertoireReload);
     buildFilterChips();
+    renderRepertoireUi();
+    renderRepertoireLine();
     // One delegated listener instead of per-row handlers: rows are rebuilt on
     // every render, the tbody lives as long as the panel.
     state.ui.tbody.addEventListener('click', onMoveRowClick);
@@ -1847,6 +2145,10 @@
     ui.filters.hidden = !state.filtersOpen;
     ui.cog.setAttribute('aria-expanded', String(state.filtersOpen));
     renderFilters();
+    renderRepertoireUi();
+    // Listing the user's courses is one API call; it happens when the menu is
+    // actually opened, so a panel nobody configures makes no request at all.
+    if (state.filtersOpen) loadRepertoireBooks();
   }
 
   /** One chip per value the explorer offers; built once per panel mount. */
@@ -1893,7 +2195,7 @@
     }
     const custom = !filtersAreDefault();
     ui.cog.classList.toggle('clo-cog--custom', custom);
-    ui.cog.title = 'Database filters — ' + filtersSummary();
+    ui.cog.title = 'Panel settings — repertoire, and database filters: ' + filtersSummary();
     ui.filtersReset.hidden = !custom; // nothing to reset while they are the defaults
   }
 
@@ -1946,6 +2248,641 @@
     filtersNoteTimer = setTimeout(() => {
       if (state.ui) state.ui.filtersNote.textContent = '';
     }, CONFIG.settingsNoteMs);
+  }
+
+  // ==========================================================================
+  // 6c) Repertoire badges — "which of these moves have I actually prepared?"
+  //
+  // One of the user's Chessable courses is nominated as THE repertoire (picked
+  // in the settings menu, section 6b, so the panel's own preference lives with
+  // the panel's other preferences). It is read once through the shared getList
+  // of section 5c, walked into a position → moves index, and from then on every
+  // move row the repertoire plays from the current position carries a badge.
+  //
+  // Read-only, and deliberately a SEPARATE question from section 21's coverage
+  // report: that one asks "which lines of the course I am looking at are
+  // missing from my repertoire" and writes them back; this one asks "standing
+  // here, what do I play" and never writes anything.
+  //
+  // THE KEY IS PLACEMENT + SIDE TO MOVE, nothing else — NOT `cacheKey`, which
+  // the explorer caches use. In review mode the panel's FEN is rebuilt from the
+  // DOM (section 11), where castling rights are a home-square heuristic and en
+  // passant is always "-", while the repertoire walk computes both exactly. Key
+  // on all four fields there and every position after a double pawn push, and
+  // most after a rook moves, would simply MISS — the badges would vanish for no
+  // visible reason. Section 20's mistake holds compare on placement+side for
+  // exactly this reason. The cost is that two positions differing only in
+  // castling rights or an en-passant chance collapse into one, which at worst
+  // badges a move that is in the repertoire one board-state away.
+  //
+  // Three states are worth telling apart, and the summary line carries the two
+  // the badges cannot:
+  //   * the repertoire plays this move here            → badge on the row
+  //   * the repertoire plays something ELSE here       → the summary line names it
+  //     (its move is regularly outside Lichess's top 12, so there would be no
+  //     row to badge at all)
+  //   * the repertoire never reaches this position     → the summary line says so
+  // A move that merely TRANSPOSES into the repertoire (the position after it is
+  // one the repertoire reaches, by another move order) gets the hollow badge —
+  // free from the same walk, and the one thing an exact-line answer gets wrong.
+  // ==========================================================================
+
+  const REP = CONFIG.repertoire;
+
+  const rep = {
+    bid: null,        // chosen course id, or null for "no repertoire"
+    name: '',         // its title, remembered so the line can be drawn before the index is in
+    prefLoaded: false,
+    index: null,      // built index (see buildRepertoireIndex), for rep.bid
+    loading: false,
+    error: '',        // one-line failure, shown in the settings menu
+    linePlayable: false, // what the summary line's chips were last drawn assuming
+    books: null,      // [{bid,name,ours}] once listed, null until then
+    booksLoading: false,
+    // Kept apart from `error`: failing to LIST the user's courses says nothing
+    // about the repertoire already loaded, and reporting it on the summary line
+    // as "could not be read" would be a lie about working badges.
+    booksError: '',
+  };
+
+  /**
+   * Placement + side to move. See the section comment: the review-mode FEN
+   * cannot be trusted about castling or en passant, so neither is part of the
+   * key — on either side of the comparison.
+   */
+  const repKey = (fen) => fen.split(' ').slice(0, 2).join(' ');
+
+  // --- the index -------------------------------------------------------------
+
+  /**
+   * Walks a whole course into { answers, seen }. Yields to the event loop every
+   * `chunkVars` variations: a 500-line repertoire is a few hundred thousand
+   * CloSan calls, and the panel must not freeze the page it is injected into
+   * while it thinks.
+   */
+  async function buildRepertoireIndex(course, bid) {
+    const answers = new Map(); // repKey → Map(uci → { san, n, names[] })
+    const seen = new Set();    // every position the repertoire passes through
+    const ends = [];           // …minus the answers keys: what the session cache stores
+    let unplayable = 0, i = 0;
+
+    for (const v of course.vars) {
+      if (++i % REP.chunkVars === 0) await sleepMs(0);
+      const w = walkVariation(v);
+      if (!w) { unplayable++; continue; }
+      if (!w.plies.length) continue; // informational card, no moves to index
+      seen.add(repKey(w.start));
+      for (const p of w.plies) {
+        const k = repKey(p.before);
+        let moves = answers.get(k);
+        if (!moves) answers.set(k, moves = new Map());
+        let entry = moves.get(p.uci);
+        if (!entry) moves.set(p.uci, entry = { san: p.san, n: 0, names: [] });
+        entry.n++;
+        if (v.name && entry.names.length < REP.maxNames && !entry.names.includes(v.name)) {
+          entry.names.push(v.name.slice(0, REP.maxNameLen));
+        }
+        seen.add(repKey(p.after));
+      }
+      ends.push(repKey(w.end));
+    }
+    return {
+      bid: String(bid),
+      name: course.name,
+      // Which side the repertoire is written for — the whole basis of "is this
+      // the opponent's move here?", and so of the unprepared-reply warning.
+      side: courseSide(course.vars),
+      vars: course.vars.length,
+      indexed: course.vars.length - unplayable,
+      unplayable,
+      answers,
+      seen,
+      ends: ends.filter((k) => !answers.has(k)),
+    };
+  }
+
+  /**
+   * The index is `seen` = the answers' own keys plus the line-END positions, so
+   * only the latter are stored — the rest is reconstructed. Names are what make
+   * this big, hence the caps in CONFIG.repertoire.
+   */
+  function serializeRepertoireIndex(ix) {
+    const pos = {};
+    for (const [k, moves] of ix.answers) {
+      pos[k] = [...moves].map(([uci, e]) => [uci, e.san, e.n, e.names]);
+    }
+    return {
+      t: Date.now(), v: REP.indexVersion, bid: ix.bid, name: ix.name,
+      side: ix.side, vars: ix.vars,
+      indexed: ix.indexed, unplayable: ix.unplayable, pos, ends: ix.ends,
+    };
+  }
+
+  function deserializeRepertoireIndex(raw) {
+    if (!raw || !raw.pos || typeof raw.pos !== 'object') return null;
+    const answers = new Map();
+    const seen = new Set();
+    for (const [k, list] of Object.entries(raw.pos)) {
+      const moves = new Map();
+      for (const [uci, san, n, names] of list) {
+        moves.set(uci, { san, n, names: Array.isArray(names) ? names : [] });
+      }
+      answers.set(k, moves);
+      seen.add(k);
+    }
+    for (const k of raw.ends || []) seen.add(k);
+    return {
+      bid: String(raw.bid), name: raw.name || '', side: raw.side || null,
+      vars: raw.vars || 0,
+      indexed: raw.indexed || 0, unplayable: raw.unplayable || 0,
+      answers, seen, ends: raw.ends || [],
+    };
+  }
+
+  /**
+   * The built index in chrome.storage.session, so the second document (and
+   * every later mt1 iframe — Chessable makes a new one per explore page) pays
+   * nothing. Only ONE repertoire is cached: there is only one selected.
+   */
+  async function readRepertoireIndexCache(bid) {
+    try {
+      await sessionStorageReady();
+      const got = await chrome.storage.session.get([REP.indexKey]);
+      const raw = got && got[REP.indexKey];
+      if (!raw || String(raw.bid) !== String(bid)) return null;
+      if (raw.v !== REP.indexVersion) return null; // written by an older build
+      if (Date.now() - (raw.t || 0) > REP.indexTtlMs) return null;
+      return deserializeRepertoireIndex(raw);
+    } catch (err) {
+      return null; // orphaned script, or storage.session unavailable — just rebuild
+    }
+  }
+
+  async function writeRepertoireIndexCache(ix) {
+    if (ix.answers.size > REP.maxIndexPositions) {
+      log('repertoire index too large to cache (', ix.answers.size, 'positions ) — rebuilt per document');
+      return;
+    }
+    try {
+      await chrome.storage.session.set({ [REP.indexKey]: serializeRepertoireIndex(ix) });
+    } catch (err) {
+      // Not being able to cache costs a rebuild, nothing else.
+    }
+  }
+
+  async function dropRepertoireIndexCache() {
+    try {
+      await chrome.storage.session.remove(REP.indexKey);
+    } catch (err) { /* nothing cached, or no session area — either way, fine */ }
+  }
+
+  // --- loading ---------------------------------------------------------------
+
+  async function loadRepertoirePref() {
+    try {
+      const got = await chrome.storage.local.get(REP.prefKey);
+      applyRepertoirePref(got && got[REP.prefKey]);
+    } catch (err) {
+      warn('repertoire preference unreadable:', err);
+    }
+    rep.prefLoaded = true;
+  }
+
+  /** Adopt a stored `{ bid, name }` (or a cleared one). Idempotent. */
+  function applyRepertoirePref(pref) {
+    const bid = pref && pref.bid ? String(pref.bid) : null;
+    const changed = bid !== rep.bid;
+    rep.bid = bid;
+    rep.name = (pref && pref.name) || '';
+    if (changed) {
+      rep.index = null;
+      rep.error = '';
+    }
+    return changed;
+  }
+
+  /**
+   * Loads the index for the selected repertoire if it is not in already. Safe
+   * to call on every render: it is a no-op once loaded, and one flight at a
+   * time. `force` skips both caches (the ↻ beside the picker).
+   */
+  async function ensureRepertoireIndex(force) {
+    if (!rep.bid || rep.loading) return;
+    if (rep.index && !force) return;
+    const bid = rep.bid;
+    rep.loading = true;
+    rep.error = '';
+    renderRepertoireUi();
+    try {
+      let ix = force ? null : await readRepertoireIndexCache(bid);
+      if (!ix) {
+        const cr = chessableCreds();
+        if (!cr) throw new Error('no Chessable session found — reload the page');
+        const course = await fetchCourse(bid, cr, !force);
+        ix = await buildRepertoireIndex(course, bid);
+        await writeRepertoireIndexCache(ix);
+        log('repertoire indexed:', ix.name, '—', ix.indexed, 'line(s),',
+          ix.answers.size, 'positions' + (ix.unplayable ? `, ${ix.unplayable} unplayable` : ''));
+      }
+      if (rep.bid !== bid) return; // the user changed their mind mid-flight
+      rep.index = ix;
+      if (ix.name && ix.name !== rep.name) {
+        rep.name = ix.name;
+        saveRepertoirePref(); // getList's own title beats whatever the picker said
+      }
+    } catch (err) {
+      rep.error = String((err && err.message) || err);
+      warn('could not read the repertoire:', err);
+    } finally {
+      rep.loading = false;
+      renderRepertoireUi();
+      // The move rows were drawn without badges while this was in flight.
+      if (state.lastData) present(state.lastData);
+      renderRepertoireLine();
+    }
+  }
+
+  function saveRepertoirePref() {
+    try {
+      chrome.storage.local.set({
+        [REP.prefKey]: rep.bid ? { bid: rep.bid, name: rep.name } : null,
+      }).catch(() => {});
+    } catch (err) { /* orphaned script — the choice just isn't remembered */ }
+  }
+
+  /** The picker's answer: adopt, persist, rebuild, redraw. */
+  function setRepertoire(bid, name) {
+    rep.bid = bid || null;
+    rep.name = name || '';
+    rep.index = null;
+    rep.error = '';
+    saveRepertoirePref();
+    dropRepertoireIndexCache(); // the cache holds exactly one index — this one is stale
+    renderRepertoireUi();
+    renderRepertoireLine();
+    if (state.lastData) present(state.lastData);
+    if (rep.bid) ensureRepertoireIndex(false);
+  }
+
+  // --- queries ---------------------------------------------------------------
+
+  /** Map(uci → entry) the repertoire answers `fen` with, or null. */
+  function repertoireMovesAt(fen) {
+    if (!rep.index || !fen) return null;
+    return rep.index.answers.get(repKey(fen)) || null;
+  }
+
+  /** True when the repertoire passes through this position at all. */
+  function repertoireReaches(fen) {
+    return Boolean(rep.index && fen && rep.index.seen.has(repKey(fen)));
+  }
+
+  /**
+   * The repertoire's verdict on ONE move, plus the index key it was matched by.
+   * 'in' when the repertoire plays this move here, 'transposes' when it does
+   * not but the position AFTER it is one the repertoire reaches by some other
+   * move order, null otherwise. The transposition arm is what an exact-line
+   * comparison always gets wrong, and it costs one makeMove per row.
+   *
+   * THE INCOMING UCI IS RESOLVED, NEVER COMPARED RAW. Lichess's explorer writes
+   * castling as KING TAKES ROOK ("e1h1"); CloSan's move generator — and so the
+   * index, which is built from it — uses the king-two-files form ("e1g1").
+   * Everything else in this extension that consumes a uci happens to cope,
+   * because CloSan.uciToMove normalizes the pair internally; a string lookup in
+   * `answers` does not, so before this every castling move in the panel fell
+   * through to the transposition arm, which then SUCCEEDED (the repertoire does
+   * reach the position after its own castling move) and painted "O-O" orange
+   * while the summary line above it said the repertoire plays O-O. It also kept
+   * a covered castling move from counting towards the unprepared-reply
+   * threshold, which could invent a red row. Ground-truthed 2026-08-01: the
+   * explorer really does answer `uci: "e1h1"`.
+   *
+   * `pos` and `answers` are passed in because the caller has a whole move list
+   * for one position — parsing the FEN and looking the position up per row was
+   * pure waste.
+   */
+  function repertoireMoveState(pos, answers, uci) {
+    if (!rep.index || !pos || !uci || typeof CloSan === 'undefined') return null;
+    const mv = CloSan.uciToMove(pos, uci);
+    if (!mv) return null; // not legal here — the explorer and our board disagree
+    const key = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
+    if (answers && answers.has(key)) return { kind: 'in', uci: key };
+    // The halfmove clock is irrelevant: repKey reads placement + side to move
+    // only, so there is no need to go through fenAfterUci to recompute it.
+    const after = CloSan.fenFromPos(CloSan.makeMove(pos, mv), 0);
+    return (after && rep.index.seen.has(repKey(after)))
+      ? { kind: 'transposes', uci: key }
+      : null;
+  }
+
+  /** True when the side to move in `fen` is NOT the side the repertoire is for. */
+  function repertoireOpponentToMove(fen) {
+    const side = rep.index && rep.index.side;
+    if (!side || !fen) return false; // course does not say which side it is for
+    const stm = fen.split(' ')[1];
+    return (stm === 'w' || stm === 'b') && stm !== side;
+  }
+
+  /**
+   * The repertoire's verdict on every move of one explorer response, in order.
+   * Decided for the WHOLE list at once rather than per row, because the fourth
+   * verdict is comparative:
+   *
+   *   'in'         — the repertoire plays this move here.
+   *   'transposes' — it does not, but the position after it is one it reaches
+   *                  by another move order.
+   *   'risk'       — ON THE OPPONENT'S MOVE ONLY: neither of the above, and
+   *                  played MORE OFTEN than the most popular move the
+   *                  repertoire does cover here. That is the "you prepared a
+   *                  sideline and the main line is still open" warning, and it
+   *                  is the one thing a per-move check cannot see.
+   *   null         — nothing to say.
+   *
+   * Three deliberate silences, all of which would otherwise turn the table red:
+   *  * OUR move — choosing one line over a more popular one is a repertoire
+   *    DECISION, not a gap; only what the opponent can throw at us is a risk.
+   *  * nothing covered here at all — with no covered move there is no threshold
+   *    to be "more popular than", and the summary line already says the
+   *    repertoire does not reach (or stops at) this position.
+   *  * a move already badged: a transposition is answered, so it is not a gap
+   *    however popular it is.
+   *
+   * …and a fourth, on sample size: below `riskMinGames` for the position the
+   * ordering is noise (3 games against 2), so nothing is flagged.
+   */
+  function repertoireRowStates(fen, moves, positionGames) {
+    const out = moves.map(() => null);
+    if (!rep.index || !fen) return out;
+
+    // One parse and one position lookup for the whole list, not one per row.
+    const pos = typeof CloSan !== 'undefined' ? CloSan.parseFen(fen) : null;
+    const answers = repertoireMovesAt(fen);
+    const totals = moves.map((m) => (m.white || 0) + (m.draws || 0) + (m.black || 0));
+    let topCovered = -1, topCoveredSan = '';
+    for (let i = 0; i < moves.length; i++) {
+      const state = repertoireMoveState(pos, answers, moves[i].uci);
+      if (state) out[i] = state;
+      if (state && state.kind === 'in' && totals[i] > topCovered) {
+        topCovered = totals[i];
+        topCoveredSan = moves[i].san || moves[i].uci;
+      }
+    }
+    if (topCovered < 0 || !repertoireOpponentToMove(fen)) return out;
+    if (!(positionGames >= REP.riskMinGames)) return out; // too few games to rank
+    for (let i = 0; i < moves.length; i++) {
+      if (out[i] || totals[i] <= topCovered) continue;
+      out[i] = { kind: 'risk', games: totals[i], overSan: topCoveredSan, overGames: topCovered };
+    }
+    return out;
+  }
+
+  /**
+   * The badge for one move row, or null when the repertoire says nothing. The
+   * shapes are DRAWN in CSS (an empty span), not "●"/"○"/"▲" glyphs: those
+   * differ in size and baseline from font to font, and three marks that have to
+   * be told apart at a glance need their geometry set exactly.
+   */
+  function repertoireBadge(fen, state, san) {
+    if (!state) return null;
+    const kind = state.kind;
+    const badge = document.createElement('span');
+    badge.className = 'clo-rep-badge clo-rep-badge--' + kind;
+    badge.dataset.kind = kind; // the row reads this back to tint itself
+    badge.setAttribute('role', 'img'); // it carries meaning, and has no text to read
+    const repName = rep.name || 'your repertoire';
+    if (kind === 'in') {
+      // state.uci is the CANONICAL key the state was matched by, not the raw
+      // one the explorer sent — see repertoireMoveState.
+      const answers = repertoireMovesAt(fen);
+      const entry = answers && answers.get(state.uci);
+      const names = (entry && entry.names) || [];
+      badge.title = `${san} is in "${repName}"` +
+        (names.length ? ' — ' + names.join(', ') + (entry.n > names.length ? ', …' : '') : '');
+      badge.setAttribute('aria-label', 'in your repertoire');
+    } else if (kind === 'transposes') {
+      badge.title = `Your repertoire does not play ${san} here, but the position after it ` +
+        `appears in "${repName}" — this transposes.`;
+      badge.setAttribute('aria-label', 'transposes into your repertoire');
+    } else {
+      badge.title = `${san} is played more often than anything "${repName}" covers here ` +
+        `(${state.games.toLocaleString('en-US')} games, against ` +
+        `${state.overGames.toLocaleString('en-US')} for ${state.overSan}) — and you have no ` +
+        'answer to it.';
+      badge.setAttribute('aria-label', 'more popular than anything your repertoire covers here');
+    }
+    return badge;
+  }
+
+  // --- the summary line ------------------------------------------------------
+
+  /**
+   * One line above the move table saying what the repertoire does HERE. It sits
+   * outside everything showStatus() hides, on purpose: a position with no
+   * Lichess games at all is exactly where "your repertoire plays 14.Nb3" is the
+   * only thing the panel can still tell you.
+   */
+  /**
+   * Whether a chip in that line can be pressed to PLAY its move: Chessable's
+   * own board accepts injected moves outside review, and inside review only our
+   * analysis board (section 19) does.
+   */
+  function repertoireLinePlayable() {
+    return !IS_REVIEW || Boolean(continuationAnalysisFen && continuationAnalysisFen());
+  }
+
+  /**
+   * That answer flips WITHOUT the position changing: opening the analysis board
+   * keeps the board on the position the browse state was showing, so refresh()
+   * short-circuits on `fen === state.fen` and the line would keep the chips it
+   * was drawn with — dead ones on a board that now accepts moves. One cheap
+   * comparison per top-panel tick instead of redrawing the line every 500 ms,
+   * which would also kill a tooltip mid-hover.
+   */
+  function syncRepertoireLine() {
+    if (!state.ui || !state.ui.repLine) return;
+    if (repertoireLinePlayable() === rep.linePlayable) return;
+    renderRepertoireLine();
+  }
+
+  function renderRepertoireLine() {
+    const ui = state.ui;
+    if (!ui || !ui.repLine) return;
+    rep.linePlayable = repertoireLinePlayable(); // what this draw is about to assume
+    const host = ui.repLine;
+    host.textContent = '';
+    host.className = 'clo-rep';
+
+    if (!rep.prefLoaded) { host.hidden = true; return; }
+    host.hidden = false;
+
+    if (!rep.bid) {
+      // Discoverability: the feature is invisible until a course is nominated,
+      // and the cogwheel is not an obvious place to look for "my repertoire".
+      const hint = document.createElement('button');
+      hint.type = 'button';
+      hint.className = 'clo-rep-hint';
+      hint.textContent = '+ link a repertoire';
+      hint.title = 'Pick one of your Chessable courses and this panel will mark the moves ' +
+        'you have already prepared.';
+      hint.addEventListener('click', openRepertoirePicker);
+      host.appendChild(hint);
+      return;
+    }
+
+    const label = document.createElement('span');
+    label.className = 'clo-rep-name';
+    label.textContent = rep.name || ('course ' + rep.bid);
+    label.title = 'The repertoire these badges are measured against (change it in ⚙).';
+    host.appendChild(label);
+
+    const say = (text, cls) => {
+      const span = document.createElement('span');
+      span.className = 'clo-rep-note' + (cls ? ' ' + cls : '');
+      span.textContent = text;
+      host.appendChild(span);
+      return span;
+    };
+
+    if (rep.loading) { say('reading…'); return; }
+    if (rep.error)   { say('could not be read', 'clo-rep-note--warn').title = rep.error; return; }
+    if (!rep.index)  { say('not loaded'); return; }
+
+    const fen = state.fen;
+    if (!fen) return;
+    const moves = repertoireMovesAt(fen);
+    if (!moves || !moves.size) {
+      say(repertoireReaches(fen)
+        ? 'reaches this position but stops here'
+        : 'does not reach this position', 'clo-rep-note--out');
+      return;
+    }
+
+    say('plays');
+    const entries = [...moves].sort((a, b) => b[1].n - a[1].n);
+    for (const [uci, entry] of entries.slice(0, REP.maxLineMoves)) {
+      const chip = document.createElement('span');
+      chip.className = 'clo-rep-move';
+      chip.textContent = entry.san;
+      const names = entry.names || [];
+      // The trainer's browse board and the variation page accept no injected
+      // move at all, so there the chip is a label (see repertoireLinePlayable).
+      const playable = rep.linePlayable;
+      chip.title = `${entry.n} line(s)` + (names.length ? ': ' + names.join(', ') : '') +
+        (playable ? ' · click to play it' : '');
+      if (playable) {
+        chip.classList.add('clo-rep-move--play');
+        chip.addEventListener('click', () => {
+          if (IS_REVIEW) continuationAnalysisPlay && continuationAnalysisPlay(uci);
+          else playMove(uci);
+        });
+      }
+      host.appendChild(chip);
+    }
+    if (entries.length > REP.maxLineMoves) say(`+${entries.length - REP.maxLineMoves} more`);
+  }
+
+  // --- the picker (inside the settings menu, section 6b) ---------------------
+
+  function openRepertoirePicker() {
+    if (!state.filtersOpen) onCogToggle();
+    loadRepertoireBooks();
+    if (state.ui && state.ui.repSelect) state.ui.repSelect.focus();
+  }
+
+  /**
+   * The user's course list, for the dropdown. Lazy — one call, only once the
+   * menu is actually opened, so a panel nobody configures makes no request.
+   */
+  async function loadRepertoireBooks() {
+    if (rep.books || rep.booksLoading) return;
+    const cr = chessableCreds();
+    if (!cr) {
+      rep.booksError = 'no Chessable session found — reload the page';
+      renderRepertoireUi();
+      return;
+    }
+    rep.booksLoading = true;
+    rep.booksError = '';
+    renderRepertoireUi();
+    try {
+      rep.books = await fetchChessableBooks(cr);
+    } catch (err) {
+      rep.booksError = 'could not list your courses: ' + String((err && err.message) || err);
+      warn('could not list your courses:', err);
+    } finally {
+      rep.booksLoading = false;
+      renderRepertoireUi();
+    }
+  }
+
+  /** Rebuilds the dropdown's options; keeps the current selection selected. */
+  function fillRepertoireOptions() {
+    const sel = state.ui && state.ui.repSelect;
+    if (!sel) return;
+    sel.textContent = '';
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'none';
+    sel.appendChild(none);
+
+    const books = (rep.books || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+    // The chosen course may not be in the list yet (books not loaded, or it was
+    // removed from the library) — keep it selectable rather than silently
+    // resetting a preference the user set.
+    if (rep.bid && !books.some((b) => b.bid === rep.bid)) {
+      books.unshift({ bid: rep.bid, name: rep.name || ('course ' + rep.bid) });
+    }
+    for (const b of books) {
+      const opt = document.createElement('option');
+      opt.value = b.bid;
+      opt.textContent = b.name;
+      sel.appendChild(opt);
+    }
+    sel.value = rep.bid || '';
+  }
+
+  /** Dropdown + note + ↻ state. Cheap; called on every menu render. */
+  function renderRepertoireUi() {
+    const ui = state.ui;
+    if (!ui || !ui.repSelect) return;
+    fillRepertoireOptions();
+    ui.repSelect.disabled = rep.booksLoading;
+    ui.repReload.hidden = !rep.bid;
+    ui.repReload.disabled = rep.loading;
+
+    let note = '';
+    if (rep.booksLoading) note = 'listing your courses…';
+    else if (rep.loading) note = 'reading the repertoire…';
+    else if (rep.error) note = rep.error;
+    else if (rep.booksError) note = rep.booksError;
+    else if (rep.index) {
+      note = `${rep.index.indexed} line(s), ${rep.index.answers.size} positions` +
+        (rep.index.unplayable ? ` · ${rep.index.unplayable} could not be replayed` : '');
+    } else if (!rep.bid) {
+      note = 'Marks every move your own course already plays.';
+    }
+    ui.repNote.textContent = note;
+    ui.repNote.classList.toggle('clo-rep-menu-note--warn', Boolean(rep.error || rep.booksError));
+  }
+
+  function onRepertoireSelect() {
+    const sel = state.ui && state.ui.repSelect;
+    if (!sel) return;
+    const bid = sel.value || null;
+    const name = bid ? sel.options[sel.selectedIndex].textContent : '';
+    if (bid === rep.bid) return;
+    log('repertoire:', bid ? `${name} (${bid})` : 'none');
+    setRepertoire(bid, name);
+  }
+
+  function onRepertoireReload() {
+    if (!rep.bid || rep.loading) return;
+    rep.books = null; // the library may have changed too
+    rep.booksError = '';
+    dropRepertoireIndexCache();
+    dropCourseCache(rep.bid);
+    ensureRepertoireIndex(true);
+    loadRepertoireBooks();
   }
 
   /** Loading: if data is already on screen, just dim it; otherwise show text. */
@@ -2016,7 +2953,13 @@
     // Per-move rows. Built with createElement/textContent — SAN strings come
     // from a remote API and must never be interpreted as HTML.
     ui.tbody.textContent = '';
-    for (const move of data.moves || []) {
+    const repFen = state.fen; // the position these rows describe (section 6c)
+    const moveList = data.moves || [];
+    // Decided for the whole list at once: the "more popular than anything you
+    // cover" warning is comparative, so it cannot be answered per row.
+    const repStates = repertoireRowStates(repFen, moveList, total);
+    for (let mi = 0; mi < moveList.length; mi++) {
+      const move = moveList[mi];
       const moveTotal = (move.white || 0) + (move.draws || 0) + (move.black || 0);
 
       const tr = document.createElement('tr');
@@ -2027,10 +2970,24 @@
       const tdMove = document.createElement('td');
       tdMove.className = 'clo-move';
       tdMove.textContent = move.san || move.uci || '?';
+      // The SAN as its own field, because the cell is no longer only SAN: the
+      // repertoire badge below is a child of it, so `textContent` reads "Nf3●".
+      // Both readers of this cell — the analysis board's click-to-play and the
+      // quick-edit popup's alt-move prefill — take this instead.
+      tdMove.dataset.san = move.san || move.uci || '';
       const hints = [];
       if (move.averageRating) hints.push(`Avg rating ${move.averageRating}`);
       if (!IS_REVIEW) hints.push(`Click to play ${move.san || move.uci}`);
       if (hints.length) tdMove.title = hints.join(' · ');
+      // "Do I already play this?" — the badge carries its own tooltip, so it is
+      // appended rather than folded into the row's hints (section 6c). The
+      // WHOLE ROW is tinted from the same answer: a dot alone is easy to miss
+      // in a twelve-row table, and the tint is what makes the panel scannable.
+      const badge = repertoireBadge(repFen, repStates[mi], move.san || move.uci);
+      if (badge) {
+        tdMove.appendChild(badge);
+        tr.classList.add('clo-rep-row', 'clo-rep-row--' + badge.dataset.kind);
+      }
 
       const tdPct = document.createElement('td');
       tdPct.className = 'clo-pct';
@@ -2598,6 +3555,7 @@
     state.engineEnabled = await loadEnginePref();
     state.engineBuild = await loadEngineBuildPref();
     await loadFilters(); // also serves the alt-check's win-rate lookup and the chapter sort
+    await loadRepertoirePref();
     chrome.storage.onChanged.addListener(onStorageChanged);
     chrome.runtime.onMessage.addListener(onEngineMessage);
     document.addEventListener('visibilitychange', onVisibilityChange);
@@ -2648,6 +3606,9 @@
     }
     if (variation) variationPanelTick();
     else reviewPanelTick();
+    // The analysis board (section 19) goes up and down without the position
+    // changing, and that is what decides whether a repertoire chip plays a move.
+    syncRepertoireLine();
   }
 
   function positionTopPanel() {
@@ -4437,7 +5398,9 @@
       if (!qe.popup || qe.popup.hidden || qe.mode !== 'alt' || qe.saving) return;
       const cell = e.target.closest && e.target.closest('#' + PANEL_ID + ' td.clo-move');
       if (!cell) return;
-      const san = quickEditSan(cell.textContent);
+      // dataset.san, not textContent: the cell also carries the repertoire
+      // badge (section 6c), which would ride along into the SAN input.
+      const san = quickEditSan(cell.dataset.san || cell.textContent);
       if (!san) return;
       qe.els.sanInput.value = san;
       setStatus('', false);
@@ -8378,6 +9341,13 @@
   // the drill's own launcher sits on this module's cluster.
   let continuationDrill = null;
 
+  // (uci) => boolean — plays a move on the analysis board (section 19), false
+  // when it is not up or the move is not legal there. The panel's repertoire
+  // chips (section 6c) use it for the same reason the move ROWS have their own
+  // handler in that mode: `playMove` drives Chessable's board, which does not
+  // accept input in the browse state at all.
+  let continuationAnalysisPlay = null;
+
   function initContinuationReview() {
     if (typeof CloSan === 'undefined') {
       warn('continuation review disabled: CloSan (engine/san.js) not loaded');
@@ -8491,6 +9461,16 @@
     // Section 20: the mistake popup can start a drill, and hears back whether
     // the board could be opened at all.
     continuationDrill = (entries) => openDrill(entries);
+    // Section 6c: a repertoire chip in the panel plays its move on our board.
+    // Same guards as onPanelMoveClick — a move landing mid-animation, mid-
+    // promotion or on a quiz board would be anything but "show me that line".
+    continuationAnalysisPlay = (uci) => {
+      if (!cr.active || cr.mode !== 'analysis' || cr.busy || cr.promo) return false;
+      const mv = uci && cr.pos && CloSan.uciToMove(cr.pos, uci);
+      if (!mv) return false;
+      anPlay(mv);
+      return true;
+    };
 
     (async () => {
       try {
@@ -10244,7 +11224,9 @@
       // input; never let one click do both.
       const qePopup = document.getElementById(QE_POPUP_ID);
       if (qePopup && !qePopup.hidden) return;
-      const uci = sanToUci(cr.pos, cell.textContent.trim());
+      // dataset.san, not textContent: the cell also carries the repertoire
+      // badge (section 6c), so its text is "Nf3●" and resolves to nothing.
+      const uci = sanToUci(cr.pos, (cell.dataset.san || cell.textContent).trim());
       const mv = uci && CloSan.uciToMove(cr.pos, uci);
       if (mv) anPlay(mv);
     }
@@ -11987,209 +12969,18 @@
     };
 
     // --- Chessable's JSON API ------------------------------------------------
-    // Same auth as the chapter sort and the position search: the page's own
-    // session JWT as a Bearer token, no CSRF field, same origin.
-
-    function creds() {
-      const jwt = localStorage.getItem(CONFIG.chessableApi.jwtKey);
-      const uid = localStorage.getItem(CONFIG.chessableApi.uidKey);
-      if (!jwt || !uid) return null;
-      return { jwt, uid };
-    }
-
-    function headersFor(cr, json) {
-      const h = { 'Authorization': 'Bearer ' + cr.jwt, 'platform': 'web' };
-      if (json) h['Content-Type'] = 'application/json';
-      return h;
-    }
-
-    /**
-     * A JSON body when the server sends one, `{ raw }` when it does not — the
-     * add call's response was never read during the ground-truthing, so its
-     * content type is not something to bet the flow on. HTTP status is.
-     */
-    async function apiFetch(url, init) {
-      const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), C.fetchTimeoutMs);
-      try {
-        const res = await fetch(url, Object.assign({ signal: ctl.signal }, init));
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const text = await res.text();
-        try {
-          return JSON.parse(text);
-        } catch (err) {
-          return { raw: text };
-        }
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-
-    function apiUrl(path, params) {
-      const url = new URL(location.origin + path);
-      for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-      return url.toString();
-    }
-
-    /**
-     * The user's courses. `isRepertoire` is NOT the filter — it was true for the
-     * source course and false for the actual repertoire (ground-truthed). The
-     * usable signal is authorUid === our own uid, which is also exactly the set
-     * Chessable's own add flow offers as a destination.
-     */
-    async function fetchBooks(cr) {
-      const body = await apiFetch(apiUrl(C.homePath, {
-        uid: cr.uid, sortBookRowsBy: 'alphabetically', userLanguageShort: 'en',
-      }), { headers: headersFor(cr) });
-      const list = body && body.homeData && body.homeData.booksList;
-      if (!Array.isArray(list)) throw new Error('unexpected response listing your courses');
-      return list.map((b) => ({
-        bid: String(b && b.bid),
-        name: String((b && b.name) || ('Course ' + (b && b.bid))),
-        ours: b && b.authorUid != null && String(b.authorUid) === String(cr.uid),
-      })).filter((b) => b.bid && b.bid !== 'undefined');
-    }
-
-    /**
-     * getList writes the move NUMBER into the SAN of every White ply — the
-     * moves array reads ["1.e4", "c5", "2.Nf3", "Nc6", …], not ["e4", "c5", …]
-     * (ground-truthed live 2026-07-29 on course 453453; the design's §2.4 has
-     * the field but not this detail, and taking it at face value made 76 of 77
-     * lines "unplayable"). Same convention as the PGN-ish `moves` string the
-     * chapter sort tokenises, one ply per entry. The ellipsis form ("1...c5")
-     * is stripped by the same pattern.
-     */
-    const MOVE_NUM_PREFIX = /^\d+\.+/;
-    const sanOfMove = (m) =>
-      (m && typeof m.san === 'string') ? m.san.replace(MOVE_NUM_PREFIX, '').trim() : '';
-
-    /**
-     * A course reduced to what the tree walk needs: oid, title, SAN list,
-     * colour and start FEN. The raw payload is ~180 KB for 77 variations and
-     * carries a `fens` array we deliberately ignore — walking the SAN ourselves
-     * with sanToUci/fenAfterUci is what makes castling rights and en passant
-     * exact, and it is the only way to walk a repertoire copy the user edited.
-     */
-    function reduceCourse(body) {
-      const list = body && body.list;
-      const data = list && list.data;
-      if (!Array.isArray(data)) throw new Error('unexpected response reading the course');
-      const vars = [];
-      let odd = 0, oddShape = '';
-      for (const v of data) {
-        const oid = v && (v.id != null ? v.id : v.oid);
-        if (oid == null) { odd++; continue; }
-        // Ground-truthed as an array of { san, isKey, … }. Deliberately no
-        // fallback parser for any other shape: guessing at an unobserved format
-        // is how a coverage report starts quietly lying. One named warning
-        // instead, so a change here is diagnosable rather than invisible.
-        if (!Array.isArray(v.moves)) { odd++; oddShape = typeof v.moves; continue; }
-        vars.push({
-          oid: String(oid),
-          name: String((v.name || '')).trim(),
-          sans: v.moves.map(sanOfMove).filter(Boolean),
-          color: typeof v.color === 'string' ? v.color : '',
-          fen: (typeof v.initialFEN === 'string' && v.initialFEN.trim()) || '',
-        });
-      }
-      if (odd) {
-        warn(`coverage: ${odd} variation(s) skipped — getList gave no readable ` +
-          `moves array (saw ${oddShape || 'no moves field'}; expected [{san,…}])`);
-      }
-      return {
-        name: String((list.name || '')).trim(),
-        owned: Boolean(list.owned),
-        vars,
-      };
-    }
-
-    async function readCourseCache() {
-      try {
-        await sessionStorageReady();
-        const got = await chrome.storage.session.get([C.cacheKey]);
-        const map = got && got[C.cacheKey];
-        return (map && typeof map === 'object') ? map : {};
-      } catch (err) {
-        return {}; // orphaned script or storage.session unavailable — just don't cache
-      }
-    }
-
-    async function writeCourseCache(map) {
-      try {
-        let entries = Object.entries(map);
-        if (entries.length > C.cacheMax) {
-          entries.sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
-          entries = entries.slice(0, C.cacheMax);
-        }
-        await chrome.storage.session.set({ [C.cacheKey]: Object.fromEntries(entries) });
-      } catch (err) {
-        // Not being able to cache is not a reason to fail the report.
-      }
-    }
-
-    /** Drops one course from the session cache — used after we write to it. */
-    async function dropCourseCache(bid) {
-      const map = await readCourseCache();
-      if (map[bid]) { delete map[bid]; await writeCourseCache(map); }
-    }
-
-    async function fetchCourse(bid, cr, useCache) {
-      const map = useCache ? await readCourseCache() : {};
-      const hit = map[bid];
-      if (hit && Date.now() - (hit.t || 0) < C.cacheTtlMs && Array.isArray(hit.vars)) {
-        return { name: hit.name, owned: hit.owned, vars: hit.vars, cached: true };
-      }
-      const body = await apiFetch(apiUrl(C.listPath, { uid: cr.uid, bid }),
-        { headers: headersFor(cr) });
-      const course = reduceCourse(body);
-      const fresh = await readCourseCache();
-      fresh[bid] = { t: Date.now(), name: course.name, owned: course.owned, vars: course.vars };
-      await writeCourseCache(fresh);
-      return course;
-    }
+    // The reads (session token, GET helpers, the course listing and the tree
+    // walk) are shared with the panel's repertoire badges and live at top level
+    // in section 5c. Local aliases so the body below reads as it always did;
+    // the two WRITES stay here, behind this panel's own guards.
+    const creds     = chessableCreds;
+    const headersFor = chessableHeaders;
+    const apiFetch  = chessableApiFetch;
+    const apiUrl    = chessableApiUrl;
+    const fetchBooks = fetchChessableBooks;
 
     // --- the tree walk, pure -------------------------------------------------
-
-    /**
-     * A variation's plies with a real position before and after each one, or
-     * null when a SAN does not resolve (a corrupt line, or one whose initialFEN
-     * does not match its moves). Never guessed at — an unplayable line is
-     * reported as such rather than half-inserted into the tree.
-     */
-    function walkVariation(v) {
-      const start = v.fen || START_FEN;
-      if (typeof CloSan === 'undefined') return null;
-      let fen = start;
-      const plies = [];
-      for (const san of v.sans) {
-        const pos = CloSan.parseFen(fen);
-        const uci = pos && sanToUci(pos, san);
-        const after = uci && fenAfterUci(fen, uci);
-        if (!after) return null;
-        plies.push({ san, uci, before: fen, after, side: pos.side });
-        fen = after;
-      }
-      return { start, plies, end: fen };
-    }
-
-    /** 'w' | 'b' | null — the side a variation is written for. */
-    function sideOf(color) {
-      return color === 'white' ? 'w' : color === 'black' ? 'b' : null;
-    }
-
-    /**
-     * The course's own side. Per-variation `color` is preferred but has been
-     * seen as 'both', so the course-wide majority is the fallback — "which side
-     * is the opponent" is the one question the whole ranking rests on.
-     */
-    function courseSide(vars) {
-      let w = 0, b = 0;
-      for (const v of vars) {
-        const s = sideOf(v.color);
-        if (s === 'w') w++; else if (s === 'b') b++;
-      }
-      return w === b ? null : (w > b ? 'w' : 'b');
-    }
+    // sideOf / courseSide are shared with the repertoire badges (section 5c).
 
     /** The exact-line key: start position + the uci sequence. */
     const lineKey = (w) => cacheKey(w.start) + '|' + w.plies.map((p) => p.uci).join(' ');
