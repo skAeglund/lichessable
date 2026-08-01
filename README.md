@@ -193,14 +193,26 @@ already holds the current variation's full line in memory before it plays the
 first move, so nothing is fetched, cached or waited for.
 
 You can also **quick-edit a move**: hover a mainline move and a small pencil
-appears; its popup has two tabs. **Comment** lets you type a note and append it
+appears; its popup has four tabs. **Append** lets you type a note and add it
 as a PGN comment after that move (with the same "For this variation only"
-toggle Chessable's editor has). **Alt move** registers an alternative move the
+toggle Chessable's editor has), and **Edit** opens the comment already stored
+there so you can change or delete it as a whole. **Arrows** edits the arrows
+and circles drawn on that move: the position after it appears on a small board
+in the popup with whatever the course already has on it, and you draw by
+dragging between two squares (an arrow) or pressing one square (a circle), in
+Chessable's own four colours — drawing the same one again removes it, and
+drawing it in another colour recolours it. "Clear all" empties the board, and
+saving an empty board deletes the move's arrows (that one takes a second
+press). **Alt move** registers an alternative move the
 trainer should also accept in place of that move — type its notation (`Nf6`,
 `Qxd5`, `O-O`), or just click a move row in the Lichess panel to fill it in.
 The tab is only available on your own moves (your colour is the side at the
 bottom of the board) — an alternative to an opponent move would be a misclick,
 since the trainer plays those itself.
+On the variation page the change appears straight away — the extension makes
+the page re-read itself, without a reload. In a trainer session Chessable keeps
+showing the old version until you next open that variation, and the popup says
+so.
 This works in two places — the completed-variation browse state during review,
 and any standalone **variation page** (`/variation/<id>/`). It only shows for
 courses you can edit, and it works by driving Chessable's own edit page in a
@@ -869,6 +881,58 @@ enough not to run, the ↻ button is the only way back.
   way this feature could lose work. Clearing the box deletes the comment, so
   Save asks a second time first. Only "Comments After" is reachable this way;
   a comment attached *before* a move is a different field on Chessable's form.
+- **Editing a move's arrows** — the popup's *Arrows* tab. Chessable stores
+  arrows and circles as a per-move field of the variation, right beside the
+  comment: `{object:'arrow'|'circle', start, end, color}` entries keyed on an
+  index of their own (`arrow_d4b3`, `circle_b4`). They are **saved by the same
+  POST as the comment** — `addVariation()` posts the whole `allTheMoves` blob —
+  so this needed no new job, no new driver window and no new endpoint; it is
+  also why the comment driver has never damaged a variation's arrows.
+  The *read* rides the same `load` visit the Edit tab makes (one trip answers
+  both tabs, plus the edit-rights question), taken off the edit page's own
+  drawing layer, where each shape is an SVG element classed exactly as
+  Chessable indexes it and stroked with its colour's hex.
+  The *write* replaces the set as a whole, driving Chessable's own gestures on
+  the edit board: a middle click clears every shape on the move, then one
+  right-button drag per shape draws it (press and release on the same square
+  for a circle), with the colour coming from the modifier key — Shift green,
+  Ctrl red, Alt yellow, none blue. It carries the shapes the editor was filled
+  from and refuses to write when the stored set no longer matches, exactly like
+  a comment edit; and the result is **verified against the board** before
+  anything is submitted, so a course with drawing switched off cannot silently
+  swallow every press and save an empty set over your annotations. One quirk of
+  Chessable's own code is worked around: its mousedown draws a preview circle
+  on the source square and the very first arrow of a page's life never clears
+  it, so the driver draws one throwaway arrow before the clear.
+  Drawing happens on **our own board** inside the popup, because Chessable's
+  drawing code lives only in its edit page — the browse board and the variation
+  page's board merely paint the stored shapes from a React renderer with no
+  input path, so there is nothing there to switch on. That board reuses the
+  continuation overlay's geometry, cloned piece SVGs and shape drawing (one
+  implementation, two boards). Its position is the one *after* the move: taken
+  from the trainer's own lesson plan where that is available (exact, and free),
+  otherwise by pressing the move — which navigates the host's board there, the
+  same click you would make — and reading the FEN back, verified by the side to
+  move.
+- **Seeing the save without reloading** — a save goes to the *server*, not to
+  the copy Chessable is rendering from, so the page keeps showing the old
+  comment and arrows. On the **variation page** that is fixed automatically:
+  the page fetches its whole chapter once at load and never again while you
+  move through it, but its own variation pager *is* a real router navigation
+  that refetches, so after a save the extension steps to a neighbouring
+  variation, comes straight back with `history.back()`, and puts the board back
+  on the move you were on. No document reload happens — verified live, the
+  page's `navigation` entry count stays at 1 — so nothing of the extension's own
+  state is lost either. Coming back uses `history.back()` rather than the
+  opposite pager button, which is disabled at the ends of a chapter and would
+  strand you on the neighbour; a chapter with only one variation has no
+  neighbour to step to, and the popup then says "reload the page to see it"
+  instead of pretending. Putting the shown move back is verified and retried,
+  because the press has to beat the page's own render, which navigates to the
+  first move as it finishes. In a **trainer session** none of this is possible:
+  the trainer only re-reads a variation when you switch to it (`getLesson`), and
+  switching back re-quizzes it, so the popup says so instead — "Saved.
+  Chessable shows it next time you open this variation."
 - **Review auto-play** — runs entirely in the top document alongside the
   overstudy watcher. A `MutationObserver` on the trainer board coalesces
   mutations per animation frame into placement snapshots (the same

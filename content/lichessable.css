@@ -1052,9 +1052,17 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-size: 13px;
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  /* The arrows tab is tall enough to reach the fold on a short window; the
+     popup scrolls rather than hiding its own Save button. */
+  max-height: calc(100vh - 12px);
+  overflow-y: auto;
 }
 
 .clo-qe-popup[hidden] { display: none; }
+
+/* The arrows tab carries a board, and a 32px square is a small target for a
+   drawn arrow — it gets the extra width the other tabs have no use for. */
+.clo-qe-popup--arrows { width: 330px; }
 
 .clo-qe-move {
   color: #dcdcdc;
@@ -1116,6 +1124,82 @@ html.clo-injecting .legal-square-capture-mt2 {
   line-height: 1.4;
 }
 .clo-qe-text:disabled { opacity: 0.6; }
+
+/* --- Arrows tab (section 12b) ---------------------------------------------
+   Our own board inside the popup: Chessable's drawing code lives only in its
+   edit page, so the browse board and the variation page's board can only be
+   read, never drawn on. Square/piece/shape classes are the overlay board's
+   (section 11c builds both), so only the sizing and the touch behaviour are
+   set here. */
+.clo-qe-arrows[hidden] { display: none; }
+
+.clo-qe-board {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  margin-bottom: 6px;
+  border: 1px solid #3a3630;
+  border-radius: 3px;
+  overflow: hidden;
+  /* A finger drawing an arrow must not scroll the page under it — `none`, not
+     `manipulation`, exactly as on the overlay board. */
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.clo-qe-board .clo-cr-sq { cursor: crosshair; }
+/* Full strength here, unlike the overlay board's translucent scratch marks:
+   these are the annotations being SAVED, and the point of the tab is to show
+   what the course will look like. */
+.clo-qe-board .clo-cr-shape { opacity: 1; }
+/* The overlay board's glyph fallback is sized for a full-size board. */
+.clo-qe-board .clo-cr-piece--glyph { font-size: 26px; }
+/* Nothing here animates: the position never changes while the tab is open. */
+.clo-qe-board .clo-cr-piece { transition: none; }
+
+.clo-qe-swatches {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+/* Chessable's own four colours, shown as themselves — the swatch IS the ink.
+   The active one gets a light ring rather than a different shade, so the
+   colour it stands for stays readable. */
+.clo-qe-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid #1b1a17;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.clo-qe-swatch--on { box-shadow: 0 0 0 2px #dcdcdc; }
+.clo-qe-swatch:disabled { opacity: 0.5; cursor: default; }
+
+.clo-qe-clearshapes {
+  margin-left: auto;
+  border: 1px solid #3a3630;
+  background: transparent;
+  color: #949494;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-qe-clearshapes:hover:not(:disabled) { color: #dcdcdc; border-color: #629924; }
+.clo-qe-clearshapes:disabled { opacity: 0.5; cursor: default; }
+
+.clo-qe-hint {
+  color: #7d7d7d;
+  font-size: 11px;
+  line-height: 1.35;
+  margin-bottom: 4px;
+}
 
 .clo-qe-scope {
   display: flex;
@@ -3001,6 +3085,25 @@ html.clo-touch .clo-qe-pencil {
 html.clo-touch .clo-qe-popup {
   font-size: 16px;
 }
+
+/* Drawing an arrow with a fingertip needs bigger squares and bigger swatches;
+   the board is all percentages, so only the popup's width has to grow — kept
+   inside the viewport, which is the one dimension a phone cannot spare. */
+html.clo-touch .clo-qe-popup--arrows {
+  width: min(400px, calc(100vw - 16px));
+}
+
+html.clo-touch .clo-qe-swatch {
+  width: 30px;
+  height: 30px;
+}
+
+html.clo-touch .clo-qe-clearshapes {
+  font-size: 15px;
+  padding: 6px 12px;
+}
+
+html.clo-touch .clo-qe-hint { font-size: 13px; }
 
 html.clo-touch .clo-qe-text,
 html.clo-touch .clo-qe-san {

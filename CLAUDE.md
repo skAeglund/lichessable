@@ -16,8 +16,9 @@ variation) that open the variation's overstudy in a background tab. In those
 trainer sessions the Lichess panel also appears once a variation is completed
 (browse state), following the board via a DOM-derived FEN. In that same browse
 state, hovering a mainline move shows a pencil that appends a PGN comment to the
-variation, or EDITS that comment as a whole (for courses you can edit), by
-driving Chessable's own edit page in a
+variation, EDITS that comment as a whole, or edits the move's ARROWS AND
+CIRCLES on a board of our own (section 12b) — all for courses you can edit, all
+by driving Chessable's own edit page in a
 small focused popup window; the same pencil works on standalone variation pages
 (`/variation/<id>/`), which also get the full Lichess panel (section 11b).
 Trainer sessions (/practice/ and /learn/ alike) can also auto-play moves the
@@ -441,9 +442,10 @@ Currently working (v0.18.x).
   (it nulls `state.engineFen` first, so the stand-down sends no stop either).
 - Quick-edit (section 12 in lichessable.js): hovering a mainline move
   shows a body-mounted pencil (singleton, NOT inserted into Chessable's move
-  list) whose popup has THREE TABS: append a PGN comment to the variation
+  list) whose popup has FOUR TABS: append a PGN comment to the variation
   (mode 'save'), EDIT that comment as a whole (mode 'edit', v0.39.0 — see the
-  own paragraph below), or add an ALTERNATIVE MOVE the trainer should also accept
+  own paragraph below), edit the move's ARROWS (mode 'shapes', v0.52.0 —
+  section 12b below), or add an ALTERNATIVE MOVE the trainer should also accept
   (mode 'alt'). TWO host pages,
   behind a `HOSTS` adapter in `initQuickEditUi`; they differ ONLY in move
   lookup, ply mapping, oid source and rights signal — popup, save round-trip and
@@ -561,6 +563,108 @@ Currently working (v0.18.x).
   ("Delete comment", auto-play's Clear pattern). Only "Comments After" is
   reachable: a `comment_before` block is a different field on the edit form and
   is NOT editable this way.
+  ARROWS MODE (section 12b, `mode:'shapes'`, v0.52.0; ground truth in
+  DESIGN-quick-edit-arrows.md, verified end to end 2026-08-01 on both hosts):
+  arrows and circles are a PER-MOVE FIELD of the variation, beside the comment —
+  `allTheMoves['<san>_<w|b>_<n>'].drawing`, entries
+  `{object:'arrow'|'circle', start, end, color:'g'|'r'|'b'|'y', move:'4b',
+  index:'arrow_d4b3'}`. NOT in the comment text, NOT a PGN `[%cal]`. THE SAVE
+  NEEDED NO NEW MECHANISM: `addVariation()` posts `JSON.stringify(allTheMoves)`
+  as `#commentsToSubmit`, so the comment driver's own submit already carries
+  every move's shapes — which is also why quick-edit has never damaged a
+  variation's arrows. The `index` IS the identity: same squares in a new colour
+  REPLACES, same colour is a NO-OP on Chessable's board (not a toggle; ours
+  toggles, which is the nicer rule and cannot disagree since we replace the set
+  as a whole).
+  READ = the same `mode:'load'` visit the Edit tab already makes (one trip
+  answers both tabs AND the rights question; a second window for the arrows
+  would be pure cost — hence `qe.reads` holding `{text, shapes}` and
+  `readingMode()` covering both tabs). Taken off the edit page's drawing layer:
+  `SELECTORS.editDrawings`, class `arrow_d4b3`/`circle_b4` + the `stroke` hex.
+  `getAttribute('class')`, never `.className` — on an SVG element that is an
+  SVGAnimatedString.
+  WRITE = Chessable's own gestures, delegated from `#board` onto
+  `.square-55d63`: right-button mousedown→mousemove→mouseup adds a shape (same
+  square = circle), MIDDLE click clears every shape on the move, LEFT click
+  undoes the last. Colour from the modifier on those same events: shift g,
+  ctrl r, alt y, none b. Plain synthetic MouseEvents on the SQUARE element
+  drive all of it.
+  `quickEditPrimeShapes` exists for a quirk of THEIR code: mousedown draws a
+  preview CIRCLE on the source square, and the branch taken on the FIRST arrow
+  of a document's life is `null == n ? l.add(line) : (l.clear(), l.add(line))`
+  — so that preview survives and the commit moves it into the drawing layer as
+  a `circle_<from>` that is in the SVG but NOT in turnArray. One throwaway
+  arrow before the clear puts the layer in the state every later shape assumes.
+  Without it the verification below fails on every first save.
+  The write is VERIFIED against the board before anything is submitted
+  (`sameShapes(after, want)`): a course with `can_add_arrows` false would
+  otherwise swallow every press and save an EMPTY set over the user's
+  annotations without a word. `baseShapes` is the comment flow's staleness
+  guard, for the same reason it has one.
+  DRAWING HAPPENS ON OUR OWN BOARD, inside the popup — Chessable's drawing code
+  exists ONLY in the mt1 edit page; `/variation/` and the trainer board are a
+  different React renderer that only PAINTS `svg#drawings` (children carrying
+  `data-start`/`data-end`/`data-color`, indices 0-based FROM a8), with no input
+  path and no flag to flip. That board is section 11c's, shared with the
+  continuation overlay — geometry, cloned piece SVGs and shape drawing are
+  written once. Its POSITION is the one AFTER the move: `reviewPlan.fens[ply+1]`
+  where the lesson plan has it (exact and free), else `pressAndReadFen` presses
+  the move (navigating the host board, the click the user would make) and reads
+  `readFen()` back, verified by side to move.
+  A READ QUEUES BEHIND A RIGHTS PROBE rather than racing it (`state 'waiting'`):
+  the popup opens on a non-reading tab, which is what STARTS the probe, and the
+  worker runs one job at a time — so a read fired beside it was refused, and the
+  refusal carried no `plyIndex`, so it matched no key and the tab sat on
+  "Reading…" for ever. Both halves fixed (the worker now echoes `plyIndex` on a
+  refusal); `onResult`'s probe branch and the probe watchdog both release a
+  waiting read.
+  REFRESHING THE HOST AFTER A SAVE (section 12c, v0.53.x): our write goes to
+  the SERVER, not to the copy Chessable is rendering from, so both hosts keep
+  showing the old comment and the old arrows until they re-read.
+  * The VARIATION PAGE can be made to re-read IN PLACE, and is
+    (`host.refresh` → `refreshVariationPage`). It fetches its whole chapter
+    ONCE at load (`getOpeningsForBookLevelInCorrectOrder`) and never again while
+    you navigate moves — only `getCommentsByFEN` per position — but its own
+    variation PAGER (`#variation-btn-next-variation` / `-prev-`, stable ids, so
+    no language-dependent text matching) is a real router navigation that
+    refetches `getGame` + the chapter. Step to a sibling, then `history.back()`.
+    Ground-truthed 2026-08-01 that `performance.getEntriesByType('navigation')
+    .length` stays at 1 throughout: no document reload, so nothing of ours is
+    torn down either. Coming back is `history.back()` and NOT the opposite pager
+    button: the click just pushed exactly one entry, so back is guaranteed to
+    undo it (verified to refetch the same way), while the opposite button is
+    DISABLED at the ends of a chapter and would strand the user on the sibling.
+    A chapter of one has both buttons disabled — `refreshVariationPage` returns
+    false and the popup says "reload the page to see it" rather than implying
+    the page is current. If the pager never navigated we return WITHOUT calling
+    back(), so we never pop an entry we did not push.
+    RESTORING THE SHOWN MOVE is the whole difficulty, and both halves are
+    load-bearing. Being back on the URL is NOT being back on the page: React
+    keeps the sibling's move list mounted for ~1 s while the refetch lands and
+    REUSES the very nodes (verified — element identity is no signal at all), so
+    a press issued then lands on the outgoing render and the page's own
+    navigation to move 1 silently undoes it, while our verify saw it succeed.
+    Hence (a) the wait for a composite the sibling cannot satisfy — our path,
+    our move COUNT, and a `variationMoveShown` marker, which only appears once
+    the fresh variation has rendered and navigated to its own first move — and
+    (b) `restoreShownMove`, which presses, confirms, and then requires the move
+    to STILL be shown `refreshHoldMs` later, retrying otherwise.
+  * The TRAINER cannot, and `HOSTS.review.refresh` is null. It re-reads a
+    variation only by fetching `/api/v1/getLesson`, which happens when you
+    SWITCH variation — and switching back re-QUIZZES it, i.e. costs the browse
+    state the pencil lives in. The alternatives are worse: the comment column
+    and `svg#drawings` render from the lesson plan in page state, so updating
+    them in place would need a MAIN-world write (pagestate.js is read-only by
+    design) or our nodes inside Chessable's DOM (which React would wipe). So the
+    status line says it instead: "Saved. Chessable shows it next time you open
+    this variation."
+  The popup stays in its SAVING ui through a refresh (`qe.refreshing`): the
+  loaded copy is stale by then (the read was dropped), so a second Save would
+  write it back and be refused by the driver's own staleness guard. `tick` skips
+  its not-ready close while that flag is set — the sibling's render passes
+  through a moment with no move list — and `closePopup` clears it, since Escape
+  can close the popup mid-refresh and a stuck flag would stop tick closing it
+  ever again.
   Touch has no hover, so after a TAP on a move (`pointerout` with
   `pointerType 'touch'`) the pencil lingers `touchPencilMs` (~4 s) instead of
   the 200 ms mouse hide — tap move (which also navigates the board there),
@@ -931,9 +1035,26 @@ Currently working (v0.18.x).
   absolute in DOCUMENT coordinates (never `fixed`, same reasoning as section
   11): OUR board pinned on theirs (64 of our square divs; pieces are their live
   `<svg>` nodes CLONED — `cloneNode(true)`, never innerHTML, no vendored art —
-  cached per code in `cr.pieceSvg` with a Unicode glyph fallback; geometry is
+  with a Unicode glyph fallback; geometry is
   ALL percentages, squares in an 8-col grid and pieces at 12.5% translated in
-  multiples of 100% of their own size, so a resize needs no JS), and OUR panel
+  multiples of 100% of their own size, so a resize needs no JS. All of that —
+  `fillBoardGrid`, `boardVisualPos`, `boardSquareAt`, `harvestBoardPieces`,
+  `makeBoardPiece`, `boardShapeArrow`/`boardShapeCircle`, `BOARD_SHAPE`,
+  `SHAPE_COLOR_HEX` — lives in SECTION 11c at top level, because the quick-edit
+  arrows editor (12b) draws the same board inside a popup; the functions here
+  are thin wrappers passing `boardView()`, declared as `function`s so the
+  definitions above them can call them. A shape's optional `color` is applied as
+  an inline STYLE, never a presentation attribute — `.clo-cr-shape`'s CSS
+  `stroke` outranks an attribute of the same name, so every arrow would come out
+  green — and on EXACTLY ONE property per element, matching what those classes
+  do: `stroke` for the shaft and the ring, `fill` for the arrow HEAD, which the
+  CSS also gives `stroke: none`. Colouring the head's stroke as well overrides
+  that none, and nothing sets `stroke-width` on a head, so it falls back to
+  SVG's default of 1 — which in a `viewBox="0 0 8 8"` is one whole SQUARE of
+  outline, i.e. an arrow tip several times its intended size, v0.52.1. The
+  polygon's `getBoundingClientRect()` does NOT show it: a bbox excludes stroke,
+  so this measured correct while looking wrong),
+  and OUR panel
   COVERING `SELECTORS.reviewCommentBox` — not decoration: the lines being
   quizzed are printed there, so covering them IS the quiz. Nothing of ours ever
   enters Chessable's DOM.

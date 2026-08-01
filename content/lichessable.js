@@ -131,6 +131,13 @@
     editAltAddLink:     'a[onclick^="addAltMove"]', // "Add New Alternative Move"
     editAltList:        '#altMoves',                // rendered list of this move's alternatives
     editSwalShown:      '.swal2-container.swal2-shown', // the currently OPEN SweetAlert2 dialog
+    // Arrows and circles (quick-edit arrows mode — section 12b). The edit page
+    // draws them with SVG.js into an <svg> inside #board, one element per
+    // shape, classed exactly as Chessable indexes them in page state
+    // ("arrow_d4b3" / "circle_b4") and stroked with the colour's own hex. That
+    // class + stroke pair is the whole read: an isolated-world driver cannot
+    // see allTheMoves, and does not need to.
+    editDrawings:       '#board svg [class^="arrow_"], #board svg [class^="circle_"]',
 
     // Standalone variation page (/variation/<oid>/ — second quick-edit host,
     // section 12). Wholly different markup from both the trainer and the edit
@@ -141,7 +148,13 @@
     // never contain move divs (verified on a variation with 14 comments and
     // subvariations), hence the > span > child scoping.
     variationMoves:    '#theOpeningMoves > span > .whiteMove, #theOpeningMoves > span > .blackMove',
+    variationMoveShown: '#theOpeningMoves .textMoveHighlighted', // the move the board is on
     variationEditLink: 'a[href*="/explore/edit/"]', // "Edit Variation" — rendered only with edit rights
+    // The page's own variation pager, used to make it re-read a variation we
+    // just changed (section 12c). Stable ids, so no language-dependent text
+    // matching; either one is disabled at the ends of a chapter.
+    variationPagerNext: '#variation-btn-next-variation',
+    variationPagerPrev: '#variation-btn-prev-variation',
     // BOTH quick-edit hosts render a piece move's letter as an SVG figurine
     // (span class "commentMove__piece", data-piece="knight" …) — the move
     // TEXT alone reads "c6", so the SAN letter must be prepended from this
@@ -361,6 +374,19 @@
       // stopped changing for this long (the boot navigates to move 1 itself).
       boardStableMs:    450,
       moveSelectTimeoutMs: 4000, // wait for the board to reach the clicked move
+      // Arrows tab: how long the HOST board is given to reach the move it was
+      // pressed on, when the lesson plan cannot supply the position outright.
+      boardFenTimeoutMs: 2500,
+      // Post-save refresh of the variation page (section 12c): how long its own
+      // pager is given to land on a sibling variation, and history.back() to
+      // bring ours back. Both are one SPA render plus two small API reads.
+      refreshLeaveMs: 6000,
+      refreshBackMs: 12000,
+      // …and restoring the shown move afterwards, which is pressed, verified
+      // and repeated (the page's own render navigates to move 1 underneath it).
+      refreshMoveTries: 5,
+      refreshMoveWaitMs: 1200,
+      refreshHoldMs: 700, // …and it must still be there this long afterwards
       // After the update-confirm click Chessable serialises + POSTs, and the
       // POST navigates the iframe away. If neither that navigation nor an
       // error dialog happens within this long, the driver reports the stall
@@ -4235,6 +4261,214 @@
   }
 
   // ==========================================================================
+  // 11c) Our own board: squares, cloned pieces, arrows and circles
+  //
+  // Chessable's boards accept no input of ours (the browse board is
+  // navigation-only, the variation page's the same), so every feature that
+  // needs a board the user can act on brings its own. There are two of them —
+  // the continuation/analysis/drill overlay pinned on Chessable's board
+  // (sections 18-20) and the quick-edit arrows editor inside the pencil's
+  // popup (section 12b) — and this block is what stops them drifting apart:
+  // the geometry, the piece SVGs and the shape drawing are written ONCE here
+  // and both boards call in.
+  //
+  // Geometry is ALL percentages / board units: squares in an 8-column grid,
+  // pieces at 12.5% translated in multiples of 100% of their own size, shapes
+  // in an svg whose viewBox is `0 0 8 8`. A resize therefore needs no JS at
+  // all, whatever size the host renders the board at. `view` ('w' | 'b') is
+  // the colour the board is drawn from and is passed in, never read from a
+  // module — the two boards can be facing different ways at the same time.
+  // ==========================================================================
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const svgEl = (name) => document.createElementNS(SVG_NS, name);
+
+  const BOARD_SHAPE = {
+    lineW: 0.16,    // arrow shaft width, in squares
+    headW: 0.44,    // arrow head width and length
+    headL: 0.42,
+    tailGap: 0.26,  // shaft starts this far out of the source centre
+    // …and the tip reaches this far PAST the target centre. The head's base is
+    // therefore headL - tipOver = 0.36 squares back from that centre, i.e.
+    // comfortably inside the target square. It used to stop 0.08 SHORT of the
+    // centre, which put the base at exactly 0.5 — flush with the square's own
+    // edge, where a straight arrow reads as if it stopped one square early.
+    tipOver: 0.06,
+    ringR: 0.44,    // circle radius
+    ringW: 0.09,
+  };
+
+  // Chessable's own four annotation colours and its one-letter codes for them
+  // (mapColorCodeToHexValue on the edit page, read live 2026-08-01). Used
+  // literally rather than re-styled: an arrow drawn here is meant to be the
+  // one Chessable will draw after the save, so the colours have to be theirs.
+  const SHAPE_COLOR_HEX = { g: '#77b55a', r: '#e02828', b: '#1a63c9', y: '#ffff00' };
+  const SHAPE_COLOR_NAME = { g: 'Green', r: 'Red', b: 'Blue', y: 'Yellow' };
+
+  // Fallback for a piece type that was never on a board while we were
+  // watching, so no SVG could be cloned for it. Written with textContent,
+  // like all dynamic text here.
+  const PIECE_GLYPH = {
+    wK: '♔', wQ: '♕', wR: '♖', wB: '♗', wN: '♘', wP: '♙',
+    bK: '♚', bQ: '♛', bR: '♜', bB: '♝', bN: '♞', bP: '♟',
+  };
+
+  // One <svg> template per piece code, cloned off whatever Chessable board is
+  // on the page. Module-level, so the two boards share one cache and a type
+  // seen by either is available to both.
+  const boardPieceSvg = new Map();
+
+  /**
+   * Caches piece SVGs from the live board. Cloning THEIR node (never
+   * innerHTML, never a vendored asset) is what makes our board look like
+   * theirs. Cheap and idempotent: it stops as soon as all twelve are known,
+   * and every board Chessable renders — trainer, variation page, explore —
+   * uses the same [data-piece] markup.
+   */
+  function harvestBoardPieces() {
+    if (boardPieceSvg.size >= 12) return; // every type seen; nothing left to learn
+    const board = getReviewBoard();
+    if (!board) return;
+    for (const el of board.querySelectorAll(SELECTORS.reviewPiece)) {
+      const code = el.getAttribute('data-piece');
+      if (!code || !/^[wb][PNBRQK]$/.test(code) || boardPieceSvg.has(code)) continue;
+      const svg = el.querySelector('svg');
+      if (svg) boardPieceSvg.set(code, svg.cloneNode(true));
+    }
+  }
+
+  const pieceCodeOf = (letter) =>
+    (letter === letter.toUpperCase() ? 'w' : 'b') + letter.toUpperCase();
+
+  function makeBoardPiece(letter) {
+    const el = document.createElement('div');
+    el.className = 'clo-cr-piece';
+    const code = pieceCodeOf(letter);
+    const tpl = boardPieceSvg.get(code);
+    if (tpl) {
+      el.appendChild(tpl.cloneNode(true));
+    } else {
+      el.classList.add('clo-cr-piece--glyph'); // the CSS sizes text, not an svg
+      el.textContent = PIECE_GLYPH[code] || '?';
+    }
+    return el;
+  }
+
+  /** Visual column/row of a board index (a1 = 0 … h8 = 63) for an orientation. */
+  function boardVisualPos(idx, view) {
+    const file = idx & 7, rank = idx >> 3;
+    return view === 'b' ? { col: 7 - file, row: rank } : { col: file, row: 7 - rank };
+  }
+
+  function placeBoardPiece(el, idx, view) {
+    const { col, row } = boardVisualPos(idx, view);
+    el.style.transform = 'translate(' + col * 100 + '%, ' + row * 100 + '%)';
+  }
+
+  /** Fills a grid element with 64 square divs in VISUAL order (top-left first)
+   *  for `view`, calling back with each one and its board index. */
+  function fillBoardGrid(grid, view, onSquare) {
+    while (grid.firstChild) grid.removeChild(grid.firstChild);
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        const file = view === 'b' ? 7 - col : col;
+        const rank = view === 'b' ? row : 7 - row;
+        const idx = rank * 8 + file;
+        const sq = document.createElement('div');
+        sq.className = 'clo-cr-sq' + ((file + rank) % 2 ? ' clo-cr-sq--light' : ' clo-cr-sq--dark');
+        grid.appendChild(sq);
+        if (onSquare) onSquare(sq, idx);
+      }
+    }
+  }
+
+  /** Board index under a point on a grid element, or null when off it. */
+  function boardSquareAt(grid, clientX, clientY, view) {
+    const rect = grid.getBoundingClientRect();
+    if (!rect.width) return null;
+    const cell = rect.width / 8;
+    const col = Math.floor((clientX - rect.left) / cell);
+    const row = Math.floor((clientY - rect.top) / cell);
+    if (col < 0 || col > 7 || row < 0 || row > 7) return null;
+    const file = view === 'b' ? 7 - col : col;
+    const rank = view === 'b' ? row : 7 - row;
+    return rank * 8 + file;
+  }
+
+  function boardSquareCentre(idx, view) {
+    const { col, row } = boardVisualPos(idx, view);
+    return { x: col + 0.5, y: row + 0.5 };
+  }
+
+  /** Colour is INLINE when given (the arrows editor, which must show
+   *  Chessable's own four) and left to the CSS class when not (the quiz and
+   *  analysis boards, whose shapes are single-colour scratch work). */
+  function paintShape(el, color, filled) {
+    const hex = color && SHAPE_COLOR_HEX[color];
+    if (!hex) return el;
+    // style, NOT setAttribute: a CSS `stroke`/`fill` declaration (which
+    // .clo-cr-shape carries, for the single-colour scratch marks) outranks a
+    // presentation ATTRIBUTE of the same name, so an attribute here would be
+    // silently ignored and every shape would come out green.
+    //
+    // Exactly ONE of the two, matching what the CSS classes do: the shaft and
+    // the ring are stroked and unfilled, the arrow HEAD is filled and
+    // explicitly `stroke: none`. Colouring the head's stroke as well overrides
+    // that none, and since no shape sets `stroke-width` on the head it falls
+    // back to SVG's default of 1 — which in a `viewBox="0 0 8 8"` is one whole
+    // SQUARE of outline, i.e. an arrow tip several times its intended size.
+    if (filled) el.style.fill = hex;
+    else el.style.stroke = hex;
+    return el;
+  }
+
+  function boardShapeCircle(idx, view, color) {
+    const { x, y } = boardSquareCentre(idx, view);
+    const el = svgEl('circle');
+    el.setAttribute('cx', String(x));
+    el.setAttribute('cy', String(y));
+    el.setAttribute('r', String(BOARD_SHAPE.ringR - BOARD_SHAPE.ringW / 2));
+    el.setAttribute('stroke-width', String(BOARD_SHAPE.ringW));
+    el.setAttribute('class', 'clo-cr-shape clo-cr-shape--ring');
+    return paintShape(el, color, false);
+  }
+
+  /** Straight shaft + triangular head; knight moves are drawn as one line
+   *  rather than an L, which is all an annotation layer needs. */
+  function boardShapeArrow(from, to, view, color) {
+    const a = boardSquareCentre(from, view), b = boardSquareCentre(to, view);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    const g = svgEl('g');
+    if (!len) return g;
+    const ux = dx / len, uy = dy / len;
+    const tipX = b.x + ux * BOARD_SHAPE.tipOver, tipY = b.y + uy * BOARD_SHAPE.tipOver;
+    const baseX = tipX - ux * BOARD_SHAPE.headL, baseY = tipY - uy * BOARD_SHAPE.headL;
+    const startX = a.x + ux * BOARD_SHAPE.tailGap, startY = a.y + uy * BOARD_SHAPE.tailGap;
+
+    const line = svgEl('line');
+    line.setAttribute('x1', String(startX));
+    line.setAttribute('y1', String(startY));
+    line.setAttribute('x2', String(baseX));
+    line.setAttribute('y2', String(baseY));
+    line.setAttribute('stroke-width', String(BOARD_SHAPE.lineW));
+    line.setAttribute('class', 'clo-cr-shape clo-cr-shape--line');
+
+    // Perpendicular to the shaft, so the head sits square on the target.
+    const px = -uy * (BOARD_SHAPE.headW / 2), py = ux * (BOARD_SHAPE.headW / 2);
+    const head = svgEl('polygon');
+    head.setAttribute('points', [
+      tipX + ',' + tipY,
+      (baseX + px) + ',' + (baseY + py),
+      (baseX - px) + ',' + (baseY - py),
+    ].join(' '));
+    head.setAttribute('class', 'clo-cr-shape clo-cr-shape--head');
+
+    g.append(paintShape(line, color, false), paintShape(head, color, true));
+    return g;
+  }
+
+  // ==========================================================================
   // 12) Quick-edit (review browse state ↔ background edit tab)
   //
   // In the review browse state, hovering a mainline move shows a pencil; the
@@ -4316,6 +4550,48 @@
    *  under an open editor (driveQuickEditComment). */
   const quickEditNormalizeText = (text) =>
     String(text == null ? '' : text).replace(/\r\n?/g, '\n').replace(/\s+$/, '');
+
+  // --- drawn shapes: the wire format (section 12b) ---------------------------
+  //
+  // Chessable's own vocabulary, minus the two fields its edit page derives
+  // itself: `move` (the "4b" label, computed from the board FEN at draw time)
+  // and `index` (which is exactly shapeIndex below). Keeping their words means
+  // the driver never translates — it presses squares and reads classes back.
+  //
+  //   { object: 'arrow'|'circle', start: 'd4', end: 'b3'|undefined, color: 'b' }
+
+  /** Chessable's own identity for a shape — two shapes with the same index are
+   *  the same shape, whatever their colour (their edit page REPLACES the
+   *  colour rather than adding a second one). */
+  const shapeIndex = (s) =>
+    (s.object === 'circle' ? 'circle_' + s.start : 'arrow_' + s.start + s.end);
+
+  const SQUARE_RE = /^[a-h][1-8]$/;
+
+  /** Drops anything unusable and de-duplicates on the index, keeping the LAST
+   *  of a repeated pair — the newest colour wins, as on the edit board. */
+  function normalizeShapes(list) {
+    const byIndex = new Map();
+    for (const s of Array.isArray(list) ? list : []) {
+      if (!s || (s.object !== 'arrow' && s.object !== 'circle')) continue;
+      if (!SQUARE_RE.test(String(s.start))) continue;
+      const circle = s.object === 'circle';
+      if (!circle && (!SQUARE_RE.test(String(s.end)) || s.end === s.start)) continue;
+      const color = Object.prototype.hasOwnProperty.call(SHAPE_COLOR_HEX, s.color) ? s.color : 'b';
+      const out = circle ? { object: 'circle', start: s.start, color }
+        : { object: 'arrow', start: s.start, end: s.end, color };
+      byIndex.set(shapeIndex(out), out);
+    }
+    return [...byIndex.values()];
+  }
+
+  /** Set equality, order-independent: the edit board decides the order shapes
+   *  come back in, and it is not the one we drew them in. */
+  function sameShapes(a, b) {
+    const key = (list) => normalizeShapes(list)
+      .map((s) => shapeIndex(s) + ':' + s.color).sort().join('|');
+    return key(a) === key(b);
+  }
 
   const QE_PIECE_LETTER = { king: 'K', queen: 'Q', rook: 'R', bishop: 'B', knight: 'N', pawn: '' };
 
@@ -4573,10 +4849,14 @@
       throw new Error(`move mismatch at #${job.plyIndex}: id "${moveEl.id}" vs expected ${job.san}/${job.color}`);
     }
     // A read submits NOTHING — it is over as soon as the textarea is in hand.
+    // It reports the move's SHAPES too: they are on the board this visit
+    // already selected, and the arrows tab would otherwise need a driver
+    // window of its own for something the same trip can answer.
     if (job.mode === 'load') {
-      const text = await readQuickEditComment(job, moveEl);
+      const ta = await quickEditSelectMove(job, moveEl);
       chrome.runtime.sendMessage({
-        type: 'clo-quick-edit-result', oid, mode: 'load', ok: true, canEdit: true, text,
+        type: 'clo-quick-edit-result', oid, mode: 'load', ok: true, canEdit: true,
+        text: ta.value || '', shapes: readQuickEditShapes(),
       }).catch(() => {});
       return;
     }
@@ -4592,6 +4872,8 @@
         chrome.runtime.sendMessage({ type: 'clo-quick-edit-result', oid, mode: 'alt', ok: true }).catch(() => {});
         return;
       }
+    } else if (job.mode === 'shapes') {
+      await driveQuickEditShapes(job, moveEl);
     } else {
       await driveQuickEditComment(job, moveEl);
     }
@@ -4716,6 +4998,141 @@
 
     const box = document.querySelector(SELECTORS.editVariationOnly);
     if (box && box.checked !== Boolean(job.forThisVariationOnly)) box.click();
+  }
+
+  // --- arrows and circles on the edit board (mode 'shapes', section 12b) -----
+  //
+  // Ground-truthed live 2026-08-01 on the edit page's own init(): its jQuery
+  // handlers are delegated from #board onto .square-55d63 / .piece-417db, and
+  // the whole gesture vocabulary is
+  //
+  //   right press → drag → release   add (or recolour) one shape
+  //   middle click                   clear every shape on this move
+  //   left click                     undo the last shape
+  //
+  // with the colour taken from the modifier on the same events
+  // (shift = green, ctrl = red, alt = yellow, none = blue). Plain synthetic
+  // MouseEvents on the SQUARE element drive all of it — dispatching on the
+  // square works whether or not a piece sits on it, since the square is the
+  // delegation target either way.
+  //
+  // Nothing extra has to be saved: the shapes go into `turnArray`, which
+  // saveLastMovesDetails() writes back to allTheMoves[move].drawing, which
+  // addVariation() posts as #commentsToSubmit — the SAME POST the comment
+  // driver already performs. (It is also why the comment driver has never
+  // damaged a variation's arrows: it round-trips them untouched.)
+
+  const QE_SHAPE_MOD = { g: 'shiftKey', r: 'ctrlKey', y: 'altKey', b: '' };
+  // Chessable's hexes as SVG.js writes them back into the DOM (lower case,
+  // #ff0 expanded). An unknown stroke reads as blue rather than dropping the
+  // shape: losing an arrow silently is worse than mislabelling its colour.
+  const QE_SHAPE_HEX = Object.fromEntries(
+    Object.entries(SHAPE_COLOR_HEX).map(([code, hex]) => [hex.toLowerCase(), code]));
+
+  /** The shapes currently on the edit board, read off the drawing layer. */
+  function readQuickEditShapes() {
+    const out = [];
+    for (const el of document.querySelectorAll(SELECTORS.editDrawings)) {
+      // getAttribute, not .className: on an SVG element that is an
+      // SVGAnimatedString, not a string.
+      const m = /^(arrow|circle)_([a-h][1-8])([a-h][1-8])?$/.exec(el.getAttribute('class') || '');
+      if (!m) continue;
+      const stroke = String(el.getAttribute('stroke') || '').trim().toLowerCase();
+      const color = QE_SHAPE_HEX[stroke] || 'b';
+      if (m[1] === 'circle') out.push({ object: 'circle', start: m[2], color });
+      else if (m[3]) out.push({ object: 'arrow', start: m[2], end: m[3], color });
+    }
+    return normalizeShapes(out);
+  }
+
+  function quickEditShapeEvent(el, type, mod, button) {
+    const r = el.getBoundingClientRect();
+    const init = {
+      bubbles: true, cancelable: true, view: window,
+      button, buttons: button === 2 ? 2 : button === 1 ? 4 : 1,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    };
+    if (mod) init[mod] = true;
+    el.dispatchEvent(new MouseEvent(type, init));
+  }
+
+  /**
+   * Draws — and leaves behind — one throwaway arrow, because Chessable's own
+   * drawing code has a first-time quirk that would otherwise make our
+   * verification fail every time.
+   *
+   * Its mousedown draws a preview CIRCLE on the source square, and the
+   * mousemove that follows normally wipes the preview before drawing the line
+   * — except on the very first arrow of the document's life, where the branch
+   * taken is `null == n ? l.add(line) : (l.clear(), l.add(line))`. So the
+   * preview circle survives, and the mouseup that commits the preview group
+   * moves BOTH into the drawing layer: a `circle_<from>` nobody asked for,
+   * present in the SVG but not in Chessable's own turnArray (ground-truthed
+   * live 2026-08-01 — the save is unaffected, the DOM is not).
+   *
+   * Priming with a throwaway before the clear costs three synthetic events and
+   * leaves the layer in the state every later shape assumes. The caller clears
+   * immediately afterwards, which removes the throwaway and its stray circle
+   * alike.
+   */
+  function quickEditPrimeShapes() {
+    quickEditDrawShape({ object: 'arrow', start: 'a1', end: 'h8', color: 'b' });
+  }
+
+  /** Middle click: wipes every shape on the selected move (turnArray = []).
+   *  Harmless when there are none. */
+  function quickEditClearShapes() {
+    const sq = findSquare('e4');
+    if (!sq) throw new Error('edit board squares not found');
+    quickEditShapeEvent(sq, 'mousedown', '', 1);
+    quickEditShapeEvent(sq, 'mouseup', '', 1);
+  }
+
+  /** One right-button drag. Press and release on the SAME square draws the
+   *  circle, which is Chessable's own rule, not a special case of ours. */
+  function quickEditDrawShape(shape) {
+    const from = findSquare(shape.start);
+    const to = findSquare(shape.object === 'circle' ? shape.start : shape.end);
+    if (!from || !to) throw new Error('square ' + shape.start + ' not found on the edit board');
+    const mod = QE_SHAPE_MOD[shape.color] || '';
+    quickEditShapeEvent(from, 'mousedown', mod, 2);
+    quickEditShapeEvent(to, 'mousemove', mod, 2);
+    quickEditShapeEvent(to, 'mouseup', mod, 2);
+  }
+
+  /**
+   * Replaces the selected move's shapes with `job.shapes` — cleared as a whole
+   * and redrawn, the same "edit it as a whole" model the comment Edit tab
+   * uses, and the only one Chessable's board offers (there is no per-shape
+   * delete beyond an undo of the last one).
+   *
+   * Refuses when the stored set no longer matches the one the editor was
+   * filled from, exactly as the comment write does: the read and the write are
+   * two separate visits to the edit page.
+   *
+   * The result is VERIFIED against the board before anything is submitted. A
+   * course whose edit page has arrows switched off (can_add_arrows false)
+   * would otherwise swallow every press and save an empty set over the user's
+   * annotations without a word.
+   */
+  async function driveQuickEditShapes(job, moveEl) {
+    await quickEditSelectMove(job, moveEl);
+    const before = readQuickEditShapes();
+    if (job.baseShapes && !sameShapes(before, job.baseShapes)) {
+      throw new Error('the arrows on this move changed since they were loaded — ' +
+        'close the popup and open them again');
+    }
+    const want = normalizeShapes(job.shapes);
+    // Read `before` FIRST: priming adds shapes of its own, and the guard above
+    // is about what Chessable had stored.
+    quickEditPrimeShapes();
+    quickEditClearShapes();
+    for (const shape of want) quickEditDrawShape(shape);
+    const after = readQuickEditShapes();
+    if (!sameShapes(after, want)) {
+      throw new Error('the edit board did not take the arrows (' +
+        after.length + ' of ' + want.length + ' drawn) — nothing was saved');
+    }
   }
 
   /** True when the selected move's rendered alternatives include `san`. */
@@ -4939,13 +5356,24 @@
       popupTarget: null,      // move element the open popup refers to
       hideTimer: 0,
       saving: false,
-      mode: 'comment',        // 'comment' | 'edit' | 'alt' — the active popup tab
-      // The edit tab's read: the stored comment cannot be known without a trip
-      // to the edit page, so the tab has its own little state machine.
+      mode: 'comment',        // 'comment' | 'edit' | 'arrows' | 'alt' — the active tab
+      // What the Edit and Arrows tabs are showing. Neither the stored comment
+      // nor the stored shapes can be known without a trip to the edit page, so
+      // ONE read answers both and they share this little state machine.
       // `key` is "<oid>#<plyIndex>" — the same key the cache uses.
-      load: { key: '', state: 'idle', text: '', error: '' }, // idle|loading|ready|error
-      comments: new Map(),    // "<oid>#<ply>" -> the last text READ for that ply
+      // idle | waiting (queued behind a rights probe) | loading | ready | error
+      load: { key: '', state: 'idle', text: '', shapes: [], error: '' },
+      reads: new Map(),       // "<oid>#<ply>" -> { text, shapes } as last READ
       clearArmed: false,      // an empty edit deletes the comment: needs a second press
+      // --- arrows tab (section 12b) ----------------------------------------
+      shapes: [],             // the working set, as edited on our own board
+      shapeColor: 'b',        // colour the next shape is drawn in (Chessable's codes)
+      drawing: null,          // { start, end } while the pointer is down
+      board: null,            // { key, fen, view } of the mounted board
+      boardKey: null,         // the move its position was resolved for
+      boardState: 'idle',     // idle|loading|ready|error — the POSITION, not the read
+      boardError: '',
+      refreshing: false,      // a post-save re-read of the variation page (12c)
     };
 
     // Host adapter. The two pages that offer quick-edit differ ONLY in how
@@ -4968,6 +5396,12 @@
           if (!bid) return null;
           return qe.rightsByBid.has(bid) ? qe.rightsByBid.get(bid) : null;
         },
+        // Nothing to offer: the trainer holds the variation's comment and
+        // arrows in the lesson plan it fetched when the variation started, and
+        // the only thing that re-reads it is leaving and coming back — which
+        // re-QUIZZES the variation, i.e. costs the browse state the pencil
+        // lives in. See the note in onResult.
+        refresh: null,
         // The user's colour = the board's bottom side (the trainer orients the
         // board to the course colour). Gates the alt tab: an alternative on an
         // opponent move is always a misclick.
@@ -4993,6 +5427,7 @@
         // Chessable only renders the "Edit Variation" link (Repertoire Admin
         // box) for a course you can actually edit. Never null.
         rights: () => Boolean(document.querySelector(SELECTORS.variationEditLink)),
+        refresh: () => refreshVariationPage(),
         // Same bottom-of-board signal as review; the variation page's board is
         // the standard chessboard.js one, so squares come from findSquare.
         userColor: () => boardBottomColor(findSquare('a1'), findSquare('h8')),
@@ -5022,7 +5457,8 @@
       btn.type = 'button';
       btn.id = QE_PENCIL_ID;
       btn.className = 'clo-qe-pencil';
-      btn.title = 'Comment on this move, edit its comment, or add an alternative move';
+      btn.title = 'Comment on this move, edit its comment or its arrows, ' +
+        'or add an alternative move';
       btn.textContent = '✎';
       btn.hidden = true;
       btn.addEventListener('mouseenter', cancelHide);
@@ -5051,7 +5487,8 @@
       const tabs = document.createElement('div');
       tabs.className = 'clo-qe-tabs';
       const tabButtons = {};
-      for (const [mode, label] of [['comment', 'Append'], ['edit', 'Edit'], ['alt', 'Alt move']]) {
+      for (const [mode, label] of
+        [['comment', 'Append'], ['edit', 'Edit'], ['arrows', 'Arrows'], ['alt', 'Alt move']]) {
         const tab = document.createElement('button');
         tab.type = 'button';
         tab.className = 'clo-qe-tab';
@@ -5075,6 +5512,71 @@
       editArea.rows = 6;
       editArea.hidden = true;
       editArea.addEventListener('input', disarmClear);
+
+      // --- arrows tab (section 12b) ----------------------------------------
+      // Our own board, because Chessable's drawing code lives ONLY in its edit
+      // page: the browse board and the variation page's board merely PAINT the
+      // stored shapes (a React renderer with no input path), so there is
+      // nothing there to enable. Small, static and self-contained — no
+      // legality, no piece dragging, no promotion; every press draws.
+      const arrowsArea = document.createElement('div');
+      arrowsArea.className = 'clo-qe-arrows';
+      arrowsArea.hidden = true;
+
+      const board = document.createElement('div');
+      board.className = 'clo-qe-board';
+      const grid = document.createElement('div');
+      grid.className = 'clo-cr-grid';
+      const layer = document.createElement('div');
+      layer.className = 'clo-cr-layer';
+      const shapesSvg = svgEl('svg');
+      shapesSvg.setAttribute('class', 'clo-cr-shapes');
+      shapesSvg.setAttribute('viewBox', '0 0 8 8');
+      shapesSvg.setAttribute('preserveAspectRatio', 'none');
+      board.append(grid, layer, shapesSvg);
+      board.addEventListener('contextmenu', (e) => e.preventDefault());
+      grid.addEventListener('pointerdown', onShapeDown);
+      grid.addEventListener('pointermove', onShapeMove);
+      grid.addEventListener('pointerup', onShapeUp);
+      grid.addEventListener('pointercancel', onShapeCancel);
+
+      const swatches = document.createElement('div');
+      swatches.className = 'clo-qe-swatches';
+      const swatchButtons = {};
+      // Chessable's own four, in its own order and its own colours — what is
+      // drawn here is what its board will draw after the save.
+      for (const code of ['b', 'g', 'r', 'y']) {
+        const sw = document.createElement('button');
+        sw.type = 'button';
+        sw.className = 'clo-qe-swatch';
+        sw.style.background = SHAPE_COLOR_HEX[code];
+        sw.title = SHAPE_COLOR_NAME[code] + ' — drawn with ' +
+          (code === 'b' ? 'no modifier' : code === 'g' ? 'Shift' : code === 'r' ? 'Ctrl' : 'Alt') +
+          ' on Chessable’s own edit board';
+        sw.addEventListener('click', () => { qe.shapeColor = code; syncArrowsUi(); });
+        swatches.appendChild(sw);
+        swatchButtons[code] = sw;
+      }
+      const clearShapesBtn = document.createElement('button');
+      clearShapesBtn.type = 'button';
+      clearShapesBtn.className = 'clo-qe-clearshapes';
+      clearShapesBtn.textContent = 'Clear all';
+      clearShapesBtn.title = 'Remove every arrow and circle on this move ' +
+        '(Save then deletes them from the course)';
+      clearShapesBtn.addEventListener('click', () => {
+        qe.shapes = [];
+        disarmClear();
+        renderShapeBoard();
+        syncArrowsUi();
+      });
+      swatches.appendChild(clearShapesBtn);
+
+      const arrowsHint = document.createElement('div');
+      arrowsHint.className = 'clo-qe-hint';
+      arrowsHint.textContent = 'Drag between two squares for an arrow, press one square ' +
+        'for a circle. Drawing the same one again removes it.';
+
+      arrowsArea.append(board, swatches, arrowsHint);
 
       const sanInput = document.createElement('input');
       sanInput.type = 'text';
@@ -5108,7 +5610,8 @@
       save.addEventListener('click', doSave);
       actions.append(cancel, save);
 
-      popup.append(moveLabel, tabs, textarea, editArea, sanInput, scopeLabel, status, actions);
+      popup.append(moveLabel, tabs, textarea, editArea, arrowsArea, sanInput,
+        scopeLabel, status, actions);
       // Keep the pencil alive while the pointer is inside the popup.
       popup.addEventListener('mouseenter', cancelHide);
       // MoveTrainer2 binds single-key shortcuts ("n" = next variation, space,
@@ -5127,17 +5630,27 @@
       document.body.appendChild(popup);
 
       qe.popup = popup;
-      qe.els = { moveLabel, tabButtons, textarea, editArea, sanInput, scopeBox, status, save, cancel };
+      qe.els = {
+        moveLabel, tabButtons, textarea, editArea, sanInput, scopeBox, status, save, cancel,
+        arrowsArea, board, grid, layer, shapesSvg, swatchButtons, clearShapesBtn, arrowsHint,
+      };
     }
 
-    /** Switches the popup between its append, edit and alt-move tabs. */
+    /** True for the two tabs that first have to READ what Chessable stores. */
+    const readingMode = (mode) => mode === 'edit' || mode === 'arrows';
+
+    /** Switches the popup between its append, edit, arrows and alt-move tabs. */
     function applyMode(mode) {
       qe.mode = mode;
       disarmClear();
-      const alt = mode === 'alt', edit = mode === 'edit';
-      qe.els.textarea.hidden = alt || edit;
+      const alt = mode === 'alt', edit = mode === 'edit', arrows = mode === 'arrows';
+      qe.els.textarea.hidden = alt || edit || arrows;
       qe.els.editArea.hidden = !edit;
+      qe.els.arrowsArea.hidden = !arrows;
       qe.els.sanInput.hidden = !alt;
+      // The board wants more width than the text tabs do (see the CSS).
+      qe.popup.classList.toggle('clo-qe-popup--arrows', arrows);
+      if (qe.popupTarget) placePopup(qe.popupTarget);
       for (const [m, tab] of Object.entries(qe.els.tabButtons)) {
         tab.classList.toggle('clo-qe-tab--active', m === mode);
       }
@@ -5147,15 +5660,17 @@
       const moveText = desc ? desc.san
         : qe.popupTarget ? qe.popupTarget.textContent.trim() : '';
       qe.els.moveLabel.textContent =
-        (alt ? 'Alternative to ' : edit ? 'Edit comment after ' : 'Append after ') + moveText;
-      if (edit) ensureCommentLoaded();
+        (alt ? 'Alternative to ' : edit ? 'Edit comment after '
+          : arrows ? 'Arrows on ' : 'Append after ') + moveText;
+      if (arrows) resolveShapeBoard();
+      if (readingMode(mode)) ensureMoveLoaded();
       else applyRightsToPopup();
-      if (!qe.popup.hidden) {
+      if (!qe.popup.hidden && !arrows) {
         (alt ? qe.els.sanInput : edit ? qe.els.editArea : qe.els.textarea).focus();
       }
     }
 
-    // --- the edit tab's read ------------------------------------------------
+    // --- the read behind the edit and arrows tabs ---------------------------
 
     /** Cache/state key for the popup's current target: "<oid>#<plyIndex>". */
     function editKey() {
@@ -5164,43 +5679,67 @@
       return oid && desc && Number.isInteger(desc.plyIndex) ? oid + '#' + desc.plyIndex : null;
     }
 
+    const blankLoad = (key, state, extra) =>
+      Object.assign({ key: key || '', state, text: '', shapes: [], error: '' }, extra || {});
+
     /**
-     * Makes sure the edit tab is showing the move's REAL stored comment. The
-     * only source for it is Chessable's own edit page (the review column shows
-     * a rendering, not the stored text), so this opens the driver window once
-     * per move — and, since a read reports edit rights too, it replaces the
-     * rights probe rather than racing it: the worker runs one job at a time, so
-     * firing both would get one of them refused outright.
+     * Makes sure the popup is showing what Chessable actually stores on this
+     * move: the raw comment AND its arrows. The only source for either is
+     * Chessable's own edit page — the review column shows a RENDERING of the
+     * comment, not the stored text — so this opens the driver window once per
+     * move, and one read answers both tabs (the visit has the move selected
+     * either way; a second window for the arrows would be pure cost).
+     *
+     * Since a read reports edit rights too, it replaces the rights probe rather
+     * than racing it: the worker runs one job at a time, so firing both would
+     * get one of them refused outright.
      *
      * Cached per course-variation + ply, and dropped again whenever a save
-     * lands on that ply, so re-opening the editor after a mistyped save is
-     * free but never shows a stale comment.
+     * lands on that ply, so re-opening after a mistyped save is free but never
+     * shows a stale comment.
      */
-    function ensureCommentLoaded() {
+    function ensureMoveLoaded() {
       const key = editKey();
       if (!key) {
-        qe.load = { key: '', state: 'error', text: '', error: 'Could not identify the move.' };
-        syncEditUi();
+        qe.load = blankLoad('', 'error', { error: 'Could not identify the move.' });
+        syncReadUi();
         return;
       }
       if (qe.load.key === key && (qe.load.state === 'loading' || qe.load.state === 'ready')) {
-        syncEditUi();
+        syncReadUi();
         return;
       }
-      if (qe.comments.has(key)) {
-        setLoadedText(key, qe.comments.get(key));
+      // A wait that is still justified stays put; one whose probe has finished
+      // falls through and sends.
+      if (qe.load.key === key && qe.load.state === 'waiting' &&
+          host.bid() && qe.probing.has(host.bid())) {
+        syncReadUi();
+        return;
+      }
+      if (qe.reads.has(key)) {
+        setLoaded(key, qe.reads.get(key));
         return;
       }
       // A course already known to be uneditable never gets a window opened for
-      // it; syncEditUi says so instead.
+      // it; syncReadUi says so instead.
       if (host.rights() === false) {
-        qe.load = { key, state: 'idle', text: '', error: '' };
-        syncEditUi();
+        qe.load = blankLoad(key, 'idle');
+        syncReadUi();
+        return;
+      }
+      // The worker runs ONE job at a time, so a read fired while this course's
+      // rights probe is still up would simply be REFUSED and read as a failure
+      // — and the popup opens on a non-reading tab, which is what starts that
+      // probe in the first place. Wait for it instead; onResult re-enters here
+      // the moment the probe settles, either way.
+      if (host.bid() && qe.probing.has(host.bid())) {
+        qe.load = blankLoad(key, 'waiting');
+        syncReadUi();
         return;
       }
       const desc = host.descriptor(qe.popupTarget);
-      qe.load = { key, state: 'loading', text: '', error: '' };
-      syncEditUi();
+      qe.load = blankLoad(key, 'loading');
+      syncReadUi();
       try {
         chrome.runtime.sendMessage({
           type: 'clo-quick-edit-run', mode: 'load',
@@ -5209,44 +5748,383 @@
           win: driverWindowBounds(),
         }).catch(() => {});
       } catch (err) {
-        qe.load = { key, state: 'error', text: '', error: 'Could not reach the extension worker.' };
-        syncEditUi();
+        qe.load = blankLoad(key, 'error', { error: 'Could not reach the extension worker.' });
+        syncReadUi();
       }
     }
 
-    function setLoadedText(key, text) {
-      qe.load = { key, state: 'ready', text, error: '' };
-      if (qe.els) qe.els.editArea.value = text;
-      syncEditUi();
+    function setLoaded(key, read) {
+      const shapes = normalizeShapes(read && read.shapes);
+      qe.load = blankLoad(key, 'ready', { text: String((read && read.text) || ''), shapes });
+      if (qe.els) qe.els.editArea.value = qe.load.text;
+      // The working set starts as a copy of the stored one — everything the
+      // user does on our board is an edit to what is already there.
+      qe.shapes = shapes.map((s) => ({ ...s }));
+      renderShapeBoard();
+      syncReadUi();
     }
 
-    /**
-     * The edit tab owns its own status line and Save button (the read decides
-     * both), which is why applyRightsToPopup hands over to this in edit mode
-     * instead of running its own probe.
-     */
-    function syncEditUi() {
-      if (!qe.els || qe.mode !== 'edit' || !qe.popup || qe.popup.hidden) return;
+    /** Whichever of the two reading tabs is up owns the status line and the
+     *  Save button, which is why applyRightsToPopup hands over to this. */
+    function syncReadUi() {
+      if (!qe.els || !readingMode(qe.mode) || !qe.popup || qe.popup.hidden) return;
+      const arrows = qe.mode === 'arrows';
       const rights = host.rights();
       const st = qe.load.state;
       qe.els.editArea.disabled = qe.saving || st !== 'ready';
+      if (arrows) syncArrowsUi();
       if (qe.saving) return; // doSave owns the status while a save is in flight
       if (rights === false) {
         qe.els.save.disabled = true;
         setStatus("You don't have edit rights for this course.", true);
+      } else if (st === 'waiting') {
+        qe.els.save.disabled = true;
+        setStatus('Checking edit rights…', false);
       } else if (st === 'loading') {
         qe.els.save.disabled = true;
-        setStatus('Reading the current comment from Chessable…', false);
+        setStatus(arrows ? 'Reading this move’s arrows from Chessable…'
+          : 'Reading the current comment from Chessable…', false);
       } else if (st === 'error') {
         qe.els.save.disabled = true;
-        setStatus(qe.load.error || 'Could not read the current comment.', true);
+        setStatus(qe.load.error ||
+          (arrows ? 'Could not read the current arrows.' : 'Could not read the current comment.'), true);
       } else if (st !== 'ready') {
         qe.els.save.disabled = true;
         setStatus('', false);
+      } else if (arrows) {
+        // The board is a second thing that can fail independently of the read:
+        // without a position there is nothing to draw on, and the Save would be
+        // writing shapes the user never saw placed.
+        qe.els.save.disabled = rights !== true || qe.boardState !== 'ready';
+        if (qe.boardState === 'ready') {
+          setStatus(qe.load.shapes.length ? '' : 'This move has no arrows yet.', false);
+        } else if (qe.boardState === 'loading') {
+          setStatus('Putting the board on the position after this move…', false);
+        } else {
+          setStatus(qe.boardError || 'The position for this move could not be read.', true);
+        }
       } else {
         qe.els.save.disabled = rights !== true;
         setStatus(qe.load.text.trim() ? '' : 'This move has no comment yet — saving adds one.', false);
       }
+    }
+
+    // --- refreshing the variation page after a save (section 12c) ------------
+
+    /** True while the page is showing the variation `oid`. */
+    function onVariation(oid) {
+      const m = VARIATION_PATH_RE.exec(location.pathname);
+      return Boolean(m && m[1] === String(oid));
+    }
+
+    /**
+     * Brings the variation page's own rendering back in line with what was just
+     * saved — the comment AND the arrows — WITHOUT reloading the document.
+     *
+     * The page fetches its whole chapter once, at load
+     * (`getOpeningsForBookLevelInCorrectOrder`), and never re-reads it while
+     * you navigate between moves — only user comments are fetched per position.
+     * So after a save it goes on showing the old text and the old arrows. Its
+     * own variation PAGER, though, is a real router navigation: stepping to a
+     * sibling variation refetches `getGame` and the chapter (ground-truthed
+     * live 2026-08-01, `performance.getEntriesByType('navigation').length`
+     * staying at 1 throughout — no document reload, so nothing of ours is torn
+     * down either).
+     *
+     * Coming back is `history.back()`, NOT the opposite pager button: the click
+     * we just made pushed exactly one entry, so back is guaranteed to undo it
+     * (verified — it refetches the same way), while the opposite button is
+     * disabled at the ends of a chapter and would strand us on the sibling.
+     * If the pager never navigated we return without touching history at all.
+     *
+     * Resolves false whenever it could not be done — a one-variation chapter
+     * (both pager buttons disabled) or a navigation that did not land — and the
+     * caller then says so instead of implying the page is current.
+     */
+    async function refreshVariationPage() {
+      const oid = host.oid();
+      if (!oid) return false;
+      // Which move the board is on, so it can be put back afterwards: the round
+      // trip resets it to the start of the line.
+      const shownEl = document.querySelector(SELECTORS.variationMoveShown);
+      const shownPly = shownEl ? Number(shownEl.id) : NaN;
+      const plyCount = document.querySelectorAll(SELECTORS.variationMoves).length;
+
+      const pager = [SELECTORS.variationPagerNext, SELECTORS.variationPagerPrev]
+        .map((sel) => document.querySelector(sel))
+        .find((btn) => btn && !btn.disabled);
+      if (!pager) return false; // a chapter of one: nowhere to step to
+      pager.click();
+      const left = await quickEditWaitUntil(
+        () => !onVariation(oid), CONFIG.quickEdit.refreshLeaveMs);
+      if (!left) return false; // never navigated ⇒ no history entry to undo
+
+      history.back();
+      // Being back on the URL is NOT being back on the page: React keeps the
+      // sibling's move list mounted (it even REUSES the nodes — verified, so
+      // element identity is no signal at all) for a second or so while the
+      // refetch lands. Pressing then lands on the outgoing render and the
+      // page's own navigation to move 1 silently undoes it. The composite that
+      // cannot be satisfied by the sibling: our path, our move count, and a
+      // shown-move marker — which only appears once the fresh variation has
+      // rendered and navigated itself to its first move.
+      const back = await quickEditWaitUntil(() => onVariation(oid) &&
+        document.querySelectorAll(SELECTORS.variationMoves).length === plyCount &&
+        document.querySelector(SELECTORS.variationMoveShown),
+      CONFIG.quickEdit.refreshBackMs);
+      if (!back) return false;
+
+      if (Number.isInteger(shownPly)) await restoreShownMove(shownPly);
+      log('quick-edit: variation page re-read in place after the save');
+      return true;
+    }
+
+    /**
+     * Puts the board back on the move it was showing before the refresh.
+     *
+     * VERIFIED and retried rather than pressed once: the page finishes its own
+     * render by navigating to the first move, and a press issued the moment the
+     * move list appears is simply overridden by it (seen live — the board came
+     * back on 1…c5 every time). So each press is confirmed against the shown
+     * marker and repeated while it has not taken.
+     */
+    async function restoreShownMove(plyIndex) {
+      const shownAt = () => {
+        const cur = document.querySelector(SELECTORS.variationMoveShown);
+        return cur && Number(cur.id) === plyIndex ? cur : null;
+      };
+      for (let i = 0; i < CONFIG.quickEdit.refreshMoveTries; i++) {
+        if (!shownAt()) {
+          const el = await quickEditWaitUntil(
+            () => document.querySelectorAll(SELECTORS.variationMoves)[plyIndex] || null,
+            CONFIG.quickEdit.refreshBackMs);
+          if (!el) return false;
+          // The press recipe, not a bare .click(): the same pointer sequence the
+          // rest of this file uses on Chessable's own elements.
+          pressSquare(el);
+          if (!await quickEditWaitUntil(shownAt, CONFIG.quickEdit.refreshMoveWaitMs)) continue;
+        }
+        // It has to HOLD. A press that lands while the page is still rendering
+        // reads as a success and is then overridden a beat later, which is
+        // exactly the failure this whole loop exists to catch.
+        await quickEditDelay(CONFIG.quickEdit.refreshHoldMs);
+        if (shownAt()) return true;
+      }
+      log('quick-edit: the variation page would not go back to move', plyIndex);
+      return false;
+    }
+
+    // --- the arrows tab's board (section 12b) -------------------------------
+
+    /**
+     * The position AFTER the target move, which is what the move's arrows are
+     * drawn on.
+     *
+     * Preferred source is the trainer's own lesson plan: its per-ply sourceFen
+     * is exact (castling rights, en passant, move numbers) and costs nothing —
+     * pagestate.js answers from memory, and reviewPanelTick keeps it current
+     * for the variation being browsed. `fens[i]` is the position BEFORE ply i,
+     * so the one after our ply is `fens[plyIndex + 1]`.
+     *
+     * Otherwise — the standalone variation page, or a plan we could not read —
+     * the move element is PRESSED, which navigates the host's own board there,
+     * and the FEN is read off it. That is exactly the click the user would make
+     * themselves, and on the variation page it is the only way.
+     */
+    function resolveShapeBoard() {
+      const key = editKey();
+      // Already answered, or a press is still on its way back — leaving and
+      // re-entering the tab must not press the move a second time.
+      if (qe.boardKey === key && (qe.boardState === 'ready' || qe.boardState === 'loading')) return;
+      qe.boardKey = key;
+      qe.boardState = 'idle';
+      qe.boardError = '';
+      const desc = qe.popupTarget ? host.descriptor(qe.popupTarget) : null;
+      if (!key || !desc) {
+        setShapeBoardError('Could not identify the move.');
+        return;
+      }
+      const planned = planFenAfter(desc.plyIndex);
+      if (planned) { mountShapeBoard(key, planned); return; }
+      qe.boardState = 'loading';
+      pressAndReadFen(desc).then((fen) => {
+        if (qe.boardKey !== key) return; // the popup moved on while we waited
+        if (fen) mountShapeBoard(key, fen);
+        else setShapeBoardError('Could not read the position after ' + desc.san + '.');
+      });
+    }
+
+    /** The plan's own FEN for the position after `plyIndex`, or null. */
+    function planFenAfter(plyIndex) {
+      const oid = host.oid();
+      if (!oid || String(reviewPlan.oid) !== String(oid)) return null;
+      const fens = reviewPlan.fens;
+      return Array.isArray(fens) && fens[plyIndex + 1] ? fens[plyIndex + 1] : null;
+    }
+
+    /**
+     * Navigates the host board to the move and reads its FEN. Verified the way
+     * the edit-page driver verifies its own move click — side to move is the
+     * opponent of the move's colour — rather than trusted: a press that did not
+     * land would otherwise draw the arrows on whatever position was showing.
+     */
+    function pressAndReadFen(desc) {
+      return new Promise((resolve) => {
+        try {
+          pressSquare(qe.popupTarget); // a bare .click() navigates neither host
+        } catch (err) {
+          resolve(null);
+          return;
+        }
+        const want = desc.color === 'w' ? 'b' : 'w';
+        const deadline = Date.now() + CONFIG.quickEdit.boardFenTimeoutMs;
+        const poll = () => {
+          const fen = readFen();
+          const pos = fen && CloSan.parseFen(fen);
+          if (pos && pos.side === want) { resolve(fen); return; }
+          if (Date.now() >= deadline) { resolve(null); return; }
+          setTimeout(poll, 100);
+        };
+        setTimeout(poll, 100);
+      });
+    }
+
+    function setShapeBoardError(msg) {
+      qe.board = null;
+      qe.boardState = 'error';
+      qe.boardError = msg;
+      if (qe.els) {
+        while (qe.els.layer.firstChild) qe.els.layer.removeChild(qe.els.layer.firstChild);
+        while (qe.els.grid.firstChild) qe.els.grid.removeChild(qe.els.grid.firstChild);
+        while (qe.els.shapesSvg.firstChild) qe.els.shapesSvg.removeChild(qe.els.shapesSvg.firstChild);
+      }
+      syncReadUi();
+    }
+
+    function mountShapeBoard(key, fen) {
+      // The board faces the way Chessable draws it, so an arrow lands where the
+      // user is looking. Unknown orientation (board mid-render) reads as White.
+      const view = host.userColor() || 'w';
+      qe.board = { key, fen, view };
+      qe.boardState = 'ready';
+      qe.boardError = '';
+      renderShapeBoard();
+      syncReadUi();
+    }
+
+    /** Draws the position and the working shape set. Rebuilt whole: 64 squares
+     *  and a handful of pieces, only ever on a tab switch or an edit. */
+    function renderShapeBoard() {
+      if (!qe.els) return;
+      const { grid, layer, shapesSvg } = qe.els;
+      const board = qe.board;
+      if (!board) return;
+      const pos = CloSan.parseFen(board.fen);
+      if (!pos) { setShapeBoardError('The position for this move could not be read.'); return; }
+      harvestBoardPieces();
+      fillBoardGrid(grid, board.view, (sq, idx) => { sq.dataset.sq = String(idx); });
+      while (layer.firstChild) layer.removeChild(layer.firstChild);
+      for (let idx = 0; idx < 64; idx++) {
+        const letter = pos.board[idx];
+        if (!letter) continue;
+        const el = makeBoardPiece(letter);
+        placeBoardPiece(el, idx, board.view);
+        layer.appendChild(el);
+      }
+      renderWorkingShapes();
+    }
+
+    function renderWorkingShapes() {
+      if (!qe.els) return;
+      const svg = qe.els.shapesSvg;
+      // Emptied before the board check, so dropping the board (a new move's
+      // popup) also takes the previous move's arrows off the layer.
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      if (!qe.board) return;
+      const view = qe.board.view;
+      const all = qe.drawing ? qe.shapes.concat([drawingShape()]) : qe.shapes;
+      for (const s of all) {
+        if (!s) continue;
+        svg.appendChild(s.object === 'circle'
+          ? boardShapeCircle(squareIndexOf(s.start), view, s.color)
+          : boardShapeArrow(squareIndexOf(s.start), squareIndexOf(s.end), view, s.color));
+      }
+    }
+
+    /** The shape the pointer is currently describing, in the wire format. */
+    function drawingShape() {
+      const d = qe.drawing;
+      if (!d) return null;
+      return d.start === d.end
+        ? { object: 'circle', start: d.start, color: qe.shapeColor }
+        : { object: 'arrow', start: d.start, end: d.end, color: qe.shapeColor };
+    }
+
+    const shapeSquareAt = (e) => {
+      const idx = boardSquareAt(qe.els.grid, e.clientX, e.clientY, qe.board.view);
+      return idx === null ? null : squareName(idx);
+    };
+
+    /**
+     * Every press draws. Unlike the quiz board (section 18) there is nothing
+     * else a press could mean here — no piece to pick up, no move to make — so
+     * this deliberately does NOT insist on the right mouse button: a finger has
+     * none, and the arrows tab would otherwise be unusable on a phone.
+     * The middle button is left alone (it is Chessable's own "clear all", and
+     * a browser's autoscroll).
+     */
+    function onShapeDown(e) {
+      if (qe.saving || qe.boardState !== 'ready' || e.button === 1) return;
+      const start = shapeSquareAt(e);
+      if (!start) return;
+      qe.drawing = { start, end: start };
+      // Captured on the GRID, so the release is resolved geometrically however
+      // far the pointer travelled — the same reason the quiz board does it.
+      try { qe.els.grid.setPointerCapture(e.pointerId); } catch (err) { /* not fatal */ }
+      e.preventDefault();
+      renderWorkingShapes();
+    }
+
+    function onShapeMove(e) {
+      if (!qe.drawing) return;
+      const end = shapeSquareAt(e);
+      if (!end || end === qe.drawing.end) return; // off the board: keep the last square
+      qe.drawing.end = end;
+      renderWorkingShapes();
+    }
+
+    /** Drawing an existing shape again REMOVES it; drawing it in a different
+     *  colour recolours it, which is Chessable's own rule on its edit board. */
+    function onShapeUp(e) {
+      const shape = drawingShape();
+      qe.drawing = null;
+      try { qe.els.grid.releasePointerCapture(e.pointerId); } catch (err) { /* already gone */ }
+      if (!shape) return;
+      const idx = shapeIndex(shape);
+      const at = qe.shapes.findIndex((s) => shapeIndex(s) === idx);
+      if (at < 0) qe.shapes.push(shape);
+      else if (qe.shapes[at].color === shape.color) qe.shapes.splice(at, 1);
+      else qe.shapes[at] = shape;
+      disarmClear();
+      renderWorkingShapes();
+      syncArrowsUi();
+    }
+
+    function onShapeCancel() {
+      if (!qe.drawing) return;
+      qe.drawing = null;
+      renderWorkingShapes();
+    }
+
+    /** The parts of the arrows tab that are not the status line: the active
+     *  swatch and whether there is anything to clear. */
+    function syncArrowsUi() {
+      if (!qe.els) return;
+      for (const [code, sw] of Object.entries(qe.els.swatchButtons)) {
+        sw.classList.toggle('clo-qe-swatch--on', code === qe.shapeColor);
+        sw.disabled = qe.saving;
+      }
+      qe.els.clearShapesBtn.disabled = qe.saving || !qe.shapes.length;
     }
 
     /** Cancels the "press again to delete" arming (any edit, tab switch or
@@ -5289,6 +6167,23 @@
       qe.pencil.hidden = false;
     }
 
+    /**
+     * Under the move, clamped into the viewport on BOTH axes — measured rather
+     * than assumed, because the arrows tab carries a board and is both wider
+     * and several times taller than the text tabs. Without the vertical clamp
+     * its Save button lands below the fold, which on the variation page (where
+     * the moves sit low on the page) is most of the time.
+     */
+    function placePopup(moveEl) {
+      const rect = moveEl.getBoundingClientRect();
+      const width = qe.popup.offsetWidth || 280;
+      const height = qe.popup.offsetHeight || 160;
+      qe.popup.style.left =
+        Math.round(Math.max(4, Math.min(rect.left, window.innerWidth - width - 8))) + 'px';
+      qe.popup.style.top =
+        Math.round(Math.max(4, Math.min(rect.bottom + 6, window.innerHeight - height - 8))) + 'px';
+    }
+
     function openPopup(moveEl) {
       ensureElements();
       qe.popupTarget = moveEl;
@@ -5301,13 +6196,21 @@
       // The read belongs to whichever move the popup is open on: dropping it
       // here is what makes a result for the PREVIOUS move land in a closed
       // state machine instead of in this popup (the key check in onResult).
-      qe.load = { key: '', state: 'idle', text: '', error: '' };
+      qe.load = blankLoad('', 'idle');
+      qe.shapes = [];
+      qe.drawing = null;
+      qe.board = null;
+      qe.boardKey = null;
+      qe.boardState = 'idle';
+      qe.boardError = '';
+      // The previous move's arrows are still drawn on the board element; clear
+      // them here rather than let them show for the frame before the new
+      // move's read lands.
+      renderWorkingShapes();
       setStatus('', false);
       setSavingUi(false);
-      const rect = moveEl.getBoundingClientRect();
-      qe.popup.style.left = Math.round(Math.min(rect.left, window.innerWidth - 300)) + 'px';
-      qe.popup.style.top = Math.round(rect.bottom + 6) + 'px';
       qe.popup.hidden = false;
+      placePopup(moveEl);
       qe.pencil.hidden = true;
       // An alternative on an OPPONENT move is always a misclick (the trainer
       // plays those itself), so the alt tab is disabled for them — the user's
@@ -5318,7 +6221,10 @@
       const altOk = !(desc && uc && desc.color !== uc);
       qe.els.tabButtons.alt.disabled = !altOk;
       qe.els.tabButtons.alt.title = altOk ? '' : "Opponent's move — alternatives apply to your own moves";
-      applyMode(altOk ? qe.mode : 'comment'); // keeps the last-used tab; sets the label and focus
+      // Keeps the last-used tab; only a disabled ALT tab forces a change, and
+      // only when that is the tab we would land on (an opponent move used to
+      // drop the user back to Append however they had been working).
+      applyMode(!altOk && qe.mode === 'alt' ? 'comment' : qe.mode);
       applyRightsToPopup();
     }
 
@@ -5332,9 +6238,9 @@
      */
     function applyRightsToPopup() {
       if (!qe.popup || qe.popup.hidden || qe.saving) return;
-      // On the edit tab the read owns both the status line and Save, and it
-      // reports edit rights itself — so no probe is started there at all.
-      if (qe.mode === 'edit') { syncEditUi(); return; }
+      // On the two reading tabs the read owns both the status line and Save,
+      // and it reports edit rights itself — so no probe is started there.
+      if (readingMode(qe.mode)) { syncReadUi(); return; }
       const rights = host.rights();
       qe.els.save.disabled = rights !== true;
       // A read in flight is already on its way to answering the rights
@@ -5360,7 +6266,13 @@
       qe.popupTarget = null;
       qe.saving = false;
       qe.clearArmed = false;
-      qe.load = { key: '', state: 'idle', text: '', error: '' };
+      // A refresh in flight carries on (it is Chessable's own navigation, not
+      // ours to abandon), but the flag must not outlive the popup it was
+      // protecting — Escape can close this mid-refresh, and a stuck flag would
+      // stop tick() closing the popup ever again.
+      qe.refreshing = false;
+      qe.load = blankLoad('', 'idle');
+      qe.drawing = null;
     }
 
     function setStatus(text, isError) {
@@ -5372,16 +6284,18 @@
 
     function setSavingUi(busy) {
       if (!qe.els) return;
-      // On the edit tab Save additionally waits for the read: there is nothing
-      // to overwrite until we know what is being overwritten.
+      // On the reading tabs Save additionally waits for the read: there is
+      // nothing to overwrite until we know what is being overwritten.
       qe.els.save.disabled = busy || host.rights() !== true
-        || (qe.mode === 'edit' && qe.load.state !== 'ready');
+        || (readingMode(qe.mode) && qe.load.state !== 'ready')
+        || (qe.mode === 'arrows' && qe.boardState !== 'ready');
       qe.els.cancel.disabled = busy;
       qe.els.textarea.disabled = busy;
       qe.els.editArea.disabled = busy || qe.load.state !== 'ready';
       qe.els.sanInput.disabled = busy;
       qe.els.scopeBox.disabled = busy;
       for (const tab of Object.values(qe.els.tabButtons)) tab.disabled = busy;
+      syncArrowsUi();
       if (busy || !qe.clearArmed) qe.els.save.textContent = busy ? 'Saving…' : 'Save';
     }
 
@@ -5443,6 +6357,30 @@
         // What the box was filled from: the driver refuses the write if the
         // stored comment no longer matches it.
         payload.baseText = qe.load.text;
+      } else if (qe.mode === 'arrows') {
+        if (qe.load.state !== 'ready' || qe.load.key !== editKey()) {
+          setStatus('This move’s arrows have not been read yet.', true); return;
+        }
+        if (qe.boardState !== 'ready') {
+          setStatus(qe.boardError || 'The position for this move could not be read.', true); return;
+        }
+        if (sameShapes(qe.shapes, qe.load.shapes)) {
+          setStatus('Nothing changed.', true); return;
+        }
+        // Saving an empty board DELETES every arrow on the move — the same
+        // outright destruction as an empty comment, so the same arming press.
+        if (!qe.shapes.length && !qe.clearArmed) {
+          qe.clearArmed = true;
+          qe.els.save.textContent = 'Delete arrows';
+          setStatus('This removes all ' + qe.load.shapes.length +
+            ' arrows on this move — press again to confirm.', true);
+          return;
+        }
+        payload.mode = 'shapes';
+        payload.shapes = normalizeShapes(qe.shapes);
+        // What the board was filled from: the driver refuses the write if the
+        // stored shapes no longer match it.
+        payload.baseShapes = qe.load.shapes;
       } else {
         const text = qe.els.textarea.value.trim();
         if (!text) { setStatus('Enter a comment first.', true); return; }
@@ -5479,49 +6417,81 @@
         } else if (qe.popup && !qe.popup.hidden && !qe.saving) {
           setStatus('Could not check edit rights — close and retry.', true);
         }
+        // A reading tab that stood down for this probe can go now — including
+        // after a FAILED one, where the read is the better answer anyway.
+        if (qe.load.state === 'waiting' && readingMode(qe.mode) &&
+            qe.popup && !qe.popup.hidden) ensureMoveLoaded();
         return;
       }
       if (msg.mode === 'load') {
         // A read answers the rights question exactly like a probe does, which
-        // is why the edit tab never starts one of its own.
+        // is why the reading tabs never start one of their own.
         if (msg.ok && msg.bid && typeof msg.canEdit === 'boolean') {
           qe.rightsByBid.set(msg.bid, msg.canEdit);
-          log('quick-edit rights for course', msg.bid, '=', msg.canEdit, '(learnt from a comment read)');
+          log('quick-edit rights for course', msg.bid, '=', msg.canEdit, '(learnt from a move read)');
         }
         if (msg.timing) log('quick-edit read timing:', msg.timing);
         const key = String(msg.oid) + '#' + msg.plyIndex;
-        if (msg.ok && msg.canEdit !== false) qe.comments.set(key, String(msg.text || ''));
+        if (msg.ok && msg.canEdit !== false) {
+          qe.reads.set(key, { text: String(msg.text || ''), shapes: normalizeShapes(msg.shapes) });
+        }
         // Only the popup that ASKED cares: it may have been closed, or moved
         // on to another move, while the driver window was up.
         if (qe.load.state !== 'loading' || qe.load.key !== key) return;
         if (msg.ok && msg.canEdit !== false) {
-          setLoadedText(key, qe.comments.get(key));
+          setLoaded(key, qe.reads.get(key));
         } else {
-          qe.load = {
-            key, state: 'error', text: '',
+          qe.load = blankLoad(key, 'error', {
             error: msg.canEdit === false ? "You don't have edit rights for this course."
               : msg.error === 'another quick-edit is in progress'
                 ? 'Another quick-edit is in progress — close the popup and retry in a moment.'
                 : (msg.error && msg.error !== 'timeout' ? msg.error
-                  : 'Could not read the current comment — close the popup and retry.'),
-          };
-          syncEditUi();
+                  : 'Could not read this move from Chessable — close the popup and retry.'),
+          });
+          syncReadUi();
         }
         return;
       }
       // save result
       if (msg.timing) log('quick-edit timing:', msg.timing);
-      // The stored comment on that ply is now whatever Chessable made of our
-      // write — drop the cached read rather than guess at it, so the next
-      // editor open reads the truth back.
-      if (msg.ok) qe.comments.delete(String(msg.oid) + '#' + msg.plyIndex);
+      // What Chessable stores on that ply is now whatever it made of our write
+      // — drop the cached read rather than guess at it, so the next open reads
+      // the truth back. One cache for comment and arrows alike: a shapes save
+      // resubmits the whole variation, so neither is untouched by the other.
+      if (msg.ok) qe.reads.delete(String(msg.oid) + '#' + msg.plyIndex);
       if (!qe.popup || qe.popup.hidden) return;
       qe.saving = false;
       qe.clearArmed = false;
-      setSavingUi(false);
+      // The controls stay disabled through a refresh: the popup's loaded copy
+      // is now stale (the read was dropped above), so a second Save would write
+      // it back and be refused by the driver's own staleness guard — confusing,
+      // and needless. setSavingUi(false) happens when the refresh settles.
+      if (!(msg.ok && host.refresh)) setSavingUi(false);
       if (msg.ok) {
-        setStatus('Saved.', false);
-        setTimeout(() => { if (!qe.saving) closePopup(); }, 900);
+        // Chessable is still showing what it read when the page (or, in the
+        // trainer, the variation) loaded — our write went to the server, not to
+        // its copy. The variation page can be made to re-read in place; the
+        // trainer cannot without re-quizzing the variation, so there it is said
+        // plainly rather than left to be discovered.
+        if (host.refresh) {
+          qe.refreshing = true;
+          setStatus('Saved — re-reading the variation…', false);
+          const done = (why) => {
+            qe.refreshing = false;
+            if (!qe.popup || qe.popup.hidden || qe.saving) return;
+            setSavingUi(false);
+            if (!why) { closePopup(); return; }
+            // Never imply the page is current when it is not.
+            setStatus('Saved — reload the page to see it.', false);
+            setTimeout(() => { if (!qe.saving) closePopup(); }, 2500);
+          };
+          Promise.resolve(host.refresh())
+            .then((ok) => done(ok ? '' : 'not refreshed'))
+            .catch((err) => { warn('quick-edit: refresh failed:', err); done('error'); });
+        } else {
+          setStatus('Saved. Chessable shows it next time you open this variation.', false);
+          setTimeout(() => { if (!qe.saving) closePopup(); }, 2200);
+        }
       } else if (msg.error === 'another quick-edit is in progress') {
         setStatus('Another save is in progress — try again in a moment.', true);
       } else if (msg.error && msg.error !== 'timeout') {
@@ -5574,6 +6544,10 @@
         if (!qe.probing.delete(bid)) return; // a result landed after all
         warn('quick-edit: rights probe for course', bid, 'never returned');
         applyRightsToPopup();
+        // Same release as a returning probe: a reading tab queued behind this
+        // one must not wait on it for ever (see ensureMoveLoaded).
+        if (qe.load.state === 'waiting' && readingMode(qe.mode) &&
+            qe.popup && !qe.popup.hidden) ensureMoveLoaded();
         if (altCheckProbeSettled) altCheckProbeSettled(bid, false);
       }, CONFIG.quickEdit.probeTimeoutMs));
       return true;
@@ -5583,7 +6557,10 @@
       syncHost();
       if (!host.ready()) {
         if (qe.pencil) qe.pencil.hidden = true;
-        if (qe.popup && !qe.popup.hidden) closePopup();
+        // …except while a post-save refresh is stepping through a sibling
+        // variation: that passes through a render with no move list, and
+        // closing here would drop the message explaining the flicker.
+        if (qe.popup && !qe.popup.hidden && !qe.refreshing) closePopup();
       }
     }
 
@@ -9645,14 +10622,6 @@
     }
     const C = CONFIG.continuation;
 
-    // Fallback glyphs for a piece type that was never on the board while we
-    // were watching, so no SVG could be cloned for it. Written with
-    // textContent, like all dynamic text here.
-    const CR_GLYPH = {
-      wK: '♔', wQ: '♕', wR: '♖', wB: '♗', wN: '♘', wP: '♙',
-      bK: '♚', bQ: '♛', bR: '♜', bB: '♝', bN: '♞', bP: '♟',
-    };
-
     const cr = {
       oid: null,          // variation the scanned lines belong to
       signature: '',      // DOM signature of the sub-move list we last scanned SUCCESSFULLY
@@ -9702,7 +10671,6 @@
       timer: 0,
       flashTimer: 0,
       orientation: null,  // orientation the current grid was built for
-      pieceSvg: new Map(),// 'wP' → template <svg> cloned off Chessable's board
       pieces: new Map(),  // square index → our piece element
       squares: new Map(), // square index → our square element
       boardEl: null,
@@ -10370,52 +11338,12 @@
       syncButton();
     }
 
-    // --- piece SVGs cloned off Chessable's board ------------------------------
-
-    /**
-     * Caches one <svg> template per piece code from the live trainer board.
-     * Cloning their node (never innerHTML, never a vendored asset) is what
-     * makes our board look like theirs; the cache fills over the session, and
-     * a type that never appeared falls back to a Unicode glyph.
-     */
-    function harvestPieces() {
-      if (cr.pieceSvg.size >= 12) return; // every type seen; nothing left to learn
-      const board = getReviewBoard();
-      if (!board) return;
-      for (const el of board.querySelectorAll(SELECTORS.reviewPiece)) {
-        const code = el.getAttribute('data-piece');
-        if (!code || !/^[wb][PNBRQK]$/.test(code) || cr.pieceSvg.has(code)) continue;
-        const svg = el.querySelector('svg');
-        if (svg) cr.pieceSvg.set(code, svg.cloneNode(true));
-      }
-    }
-
-    const codeOf = (letter) => (letter === letter.toUpperCase() ? 'w' : 'b') + letter.toUpperCase();
-
-    function makePiece(letter) {
-      const el = document.createElement('div');
-      el.className = 'clo-cr-piece';
-      const code = codeOf(letter);
-      const tpl = cr.pieceSvg.get(code);
-      if (tpl) {
-        el.appendChild(tpl.cloneNode(true));
-      } else {
-        el.classList.add('clo-cr-piece--glyph'); // the CSS sizes text, not an svg
-        el.textContent = CR_GLYPH[code] || '?';
-      }
-      return el;
-    }
-
     // --- our board -----------------------------------------------------------
-
-    /** Visual column/row of a board index for the current orientation. Piece
-     *  and square geometry are both percentage-based, so a resize needs no JS. */
-    function visualPos(idx) {
-      const file = idx & 7, rank = idx >> 3;
-      return boardView() === 'w'
-        ? { col: file, row: 7 - rank }
-        : { col: 7 - file, row: rank };
-    }
+    //
+    // Geometry, cloned piece SVGs and shape drawing all come from section 11c,
+    // which the quick-edit arrows editor shares — these are the thin wrappers
+    // that hand it this board's current orientation. Function declarations, not
+    // arrow consts: several of the definitions above call them.
 
     /** The colour the board is drawn from: the analysis flip if there is one,
      *  the course colour otherwise. */
@@ -10423,32 +11351,12 @@
       return cr.view || cr.userColor;
     }
 
-    function placeAt(el, idx) {
-      const { col, row } = visualPos(idx);
-      el.style.transform = 'translate(' + col * 100 + '%, ' + row * 100 + '%)';
-    }
-
-    /**
-     * Fills a grid element with 64 square divs in VISUAL order (top-left
-     * first) for the current orientation, calling back with each one. Shared by
-     * the quiz board and the heads-up mini board (section 18b) so the two can
-     * never drift apart on colours or orientation.
-     */
-    function fillGrid(grid, onSquare) {
-      while (grid.firstChild) grid.removeChild(grid.firstChild);
-      const view = boardView();
-      for (let row = 0; row < 8; row++) {
-        for (let col = 0; col < 8; col++) {
-          const file = view === 'w' ? col : 7 - col;
-          const rank = view === 'w' ? 7 - row : row;
-          const idx = rank * 8 + file;
-          const sq = document.createElement('div');
-          sq.className = 'clo-cr-sq' + ((file + rank) % 2 ? ' clo-cr-sq--light' : ' clo-cr-sq--dark');
-          grid.appendChild(sq);
-          if (onSquare) onSquare(sq, idx);
-        }
-      }
-    }
+    function harvestPieces() { harvestBoardPieces(); }
+    function codeOf(letter) { return pieceCodeOf(letter); }
+    function makePiece(letter) { return makeBoardPiece(letter); }
+    function visualPos(idx) { return boardVisualPos(idx, boardView()); }
+    function placeAt(el, idx) { placeBoardPiece(el, idx, boardView()); }
+    function fillGrid(grid, onSquare) { fillBoardGrid(grid, boardView(), onSquare); }
 
     function buildGrid() {
       cr.squares.clear();
@@ -10525,69 +11433,10 @@
     // no JS. Shapes are scratch work, not state: any left press on the board
     // clears them, and so does every move.
 
-    const SVG_NS = 'http://www.w3.org/2000/svg';
-    const SHAPE = {
-      lineW: 0.16,    // arrow shaft width, in squares
-      headW: 0.44,    // arrow head width and length
-      headL: 0.42,
-      tailGap: 0.26,  // shaft starts this far out of the source centre
-      tipGap: 0.08,   // …and stops this far short of the target centre
-      ringR: 0.44,    // circle radius
-      ringW: 0.09,
-    };
-
-    const svgEl = (name) => document.createElementNS(SVG_NS, name);
-
-    function squareCentre(idx) {
-      const { col, row } = visualPos(idx);
-      return { x: col + 0.5, y: row + 0.5 };
-    }
-
-    function shapeCircle(idx) {
-      const { x, y } = squareCentre(idx);
-      const el = svgEl('circle');
-      el.setAttribute('cx', String(x));
-      el.setAttribute('cy', String(y));
-      el.setAttribute('r', String(SHAPE.ringR - SHAPE.ringW / 2));
-      el.setAttribute('stroke-width', String(SHAPE.ringW));
-      el.setAttribute('class', 'clo-cr-shape clo-cr-shape--ring');
-      return el;
-    }
-
-    /** Straight shaft + triangular head; knight moves are drawn as one line
-     *  rather than an L, which is all a single-colour annotation layer needs. */
-    function shapeArrow(from, to) {
-      const a = squareCentre(from), b = squareCentre(to);
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const len = Math.hypot(dx, dy);
-      const g = svgEl('g');
-      if (!len) return g;
-      const ux = dx / len, uy = dy / len;
-      const tipX = b.x - ux * SHAPE.tipGap, tipY = b.y - uy * SHAPE.tipGap;
-      const baseX = tipX - ux * SHAPE.headL, baseY = tipY - uy * SHAPE.headL;
-      const startX = a.x + ux * SHAPE.tailGap, startY = a.y + uy * SHAPE.tailGap;
-
-      const line = svgEl('line');
-      line.setAttribute('x1', String(startX));
-      line.setAttribute('y1', String(startY));
-      line.setAttribute('x2', String(baseX));
-      line.setAttribute('y2', String(baseY));
-      line.setAttribute('stroke-width', String(SHAPE.lineW));
-      line.setAttribute('class', 'clo-cr-shape clo-cr-shape--line');
-
-      // Perpendicular to the shaft, so the head sits square on the target.
-      const px = -uy * (SHAPE.headW / 2), py = ux * (SHAPE.headW / 2);
-      const head = svgEl('polygon');
-      head.setAttribute('points', [
-        tipX + ',' + tipY,
-        (baseX + px) + ',' + (baseY + py),
-        (baseX - px) + ',' + (baseY - py),
-      ].join(' '));
-      head.setAttribute('class', 'clo-cr-shape clo-cr-shape--head');
-
-      g.append(line, head);
-      return g;
-    }
+    // Geometry lives in section 11c (shared with the quick-edit arrows editor);
+    // these hand it this board's orientation.
+    function shapeCircle(idx, color) { return boardShapeCircle(idx, boardView(), color); }
+    function shapeArrow(from, to, color) { return boardShapeArrow(from, to, boardView(), color); }
 
     function renderShapes() {
       const svg = cr.ui && cr.ui.shapes;
@@ -10595,7 +11444,8 @@
       while (svg.firstChild) svg.removeChild(svg.firstChild);
       const all = cr.shape ? cr.shapes.concat([cr.shape]) : cr.shapes;
       for (const s of all) {
-        svg.appendChild(s.from === s.to ? shapeCircle(s.from) : shapeArrow(s.from, s.to));
+        svg.appendChild(s.from === s.to
+          ? shapeCircle(s.from, s.color) : shapeArrow(s.from, s.to, s.color));
       }
     }
 
@@ -10830,16 +11680,7 @@
     // grid, so every move/up event targets that one element.
 
     function dragSquareAt(clientX, clientY) {
-      const rect = cr.ui.grid.getBoundingClientRect();
-      if (!rect.width) return null;
-      const cell = rect.width / 8;
-      const col = Math.floor((clientX - rect.left) / cell);
-      const row = Math.floor((clientY - rect.top) / cell);
-      if (col < 0 || col > 7 || row < 0 || row > 7) return null; // dropped off the board
-      const view = boardView();
-      const file = view === 'w' ? col : 7 - col;
-      const rank = view === 'w' ? 7 - row : row;
-      return rank * 8 + file;
+      return boardSquareAt(cr.ui.grid, clientX, clientY, boardView());
     }
 
     /** Follows the pointer: px translate, so the piece sits under the cursor

@@ -32,18 +32,18 @@
  * animations and dialogs included), which stretched a save from ~4-5 s to
  * ~13-20 s, i.e. right up against this worker's job timeout. One job at a
  * time, kept in chrome.storage.session so it survives a worker idle-restart:
- *   { type:'clo-quick-edit-run', mode:'probe'|'load'|'save'|'edit'|'alt', oid,
- *     bid, san, color, plyIndex, commentText, baseText, altSan,
- *     forThisVariationOnly, win }
+ *   { type:'clo-quick-edit-run', mode:'probe'|'load'|'save'|'edit'|'alt'|'shapes',
+ *     oid, bid, san, color, plyIndex, commentText, baseText, altSan,
+ *     shapes, baseShapes, forThisVariationOnly, win }
  *     (review tab -> worker) -> opens /explore/edit/<oid>/ in the popup
  *   { type:'clo-quick-edit-claim', oid }   (edit-tab driver -> worker)
  *       -> { claimed, mode, san, color, plyIndex, commentText, baseText,
- *            altSan, forThisVariationOnly }
+ *            altSan, shapes, baseShapes, forThisVariationOnly }
  *   { type:'clo-quick-edit-submitting', oid } (driver -> worker; marks phase)
  *   { type:'clo-quick-edit-landing', oid }    (post-POST doc -> worker)
  *       -> { isOurs }  (true = the job's submit succeeded)
- *   { type:'clo-quick-edit-result', oid, ok, canEdit?, text?, error? }
- *       (driver -> worker; `text` is the 'load' payload)
+ *   { type:'clo-quick-edit-result', oid, ok, canEdit?, text?, shapes?, error? }
+ *       (driver -> worker; `text` + `shapes` are the 'load' payload)
  *   The worker relays a clo-quick-edit-result back to the review tab via
  *   chrome.tabs.sendMessage and closes the driver window.
  *
@@ -91,7 +91,7 @@ const QUICK_EDIT_BASE = 'https://www.chessable.com/explore/edit/';
 const QUICK_EDIT_JOB_KEY = 'cloQuickEditJob'; // chrome.storage.session; one job at a time
 // Everything the driver knows how to do. Anything else falls back to 'save'
 // (append a comment), which is what the very first version of this feature did.
-const QUICK_EDIT_MODES = ['probe', 'load', 'save', 'edit', 'alt'];
+const QUICK_EDIT_MODES = ['probe', 'load', 'save', 'edit', 'alt', 'shapes'];
 // Hard cap; force-fail + close the driver window. Deliberately longer than
 // every wait the driver itself owns (boot gate + drive + post-submit watch),
 // so a stall is reported by the driver with a real reason and this blind
@@ -315,6 +315,7 @@ function relayQuickEditResult(job, result) {
     // comment editor's read, and its per-ply cache, are keyed on this).
     plyIndex: job.plyIndex,
     ok: Boolean(result.ok), canEdit: result.canEdit, text: result.text,
+    shapes: result.shapes,
     error: result.error,
     timing: quickEditTiming(job),
   }, { frameId: job.requesterFrameId }).catch(() => {});
@@ -367,6 +368,10 @@ async function startQuickEditJob(msg, sender) {
   if (await getQuickEditJob()) {
     chrome.tabs.sendMessage(sender.tab.id, {
       type: 'clo-quick-edit-result', oid, bid: msg.bid, mode: msg.mode,
+      // Echoed so the requester can match this against the move its popup is
+      // open on — a read keyed on an undefined plyIndex matches nothing, and
+      // the popup then waits on a refusal it has already been told about.
+      plyIndex: msg.plyIndex,
       ok: false, error: 'another quick-edit is in progress',
     }, { frameId: sender.frameId || 0 }).catch(() => {});
     return;
@@ -398,6 +403,7 @@ async function startQuickEditJob(msg, sender) {
     mode: QUICK_EDIT_MODES.includes(msg.mode) ? msg.mode : 'save',
     san: msg.san, color: msg.color, plyIndex: msg.plyIndex,
     commentText: msg.commentText, baseText: msg.baseText, altSan: msg.altSan,
+    shapes: msg.shapes, baseShapes: msg.baseShapes,
     forThisVariationOnly: Boolean(msg.forThisVariationOnly),
     requesterTabId: sender.tab.id, requesterFrameId: sender.frameId || 0,
     driverTabId: tab.id, phase: 'loading',
@@ -432,6 +438,7 @@ async function claimQuickEditJob(msg, sender) {
     claimed: true, mode: job.mode,
     san: job.san, color: job.color, plyIndex: job.plyIndex,
     commentText: job.commentText, baseText: job.baseText, altSan: job.altSan,
+    shapes: job.shapes, baseShapes: job.baseShapes,
     forThisVariationOnly: job.forThisVariationOnly,
   };
 }
@@ -468,7 +475,8 @@ async function finishQuickEditJob(msg) {
   const job = await getQuickEditJob();
   if (!job || String(job.oid) !== String(msg.oid)) return;
   await finalizeQuickEditJob(job, {
-    ok: msg.ok, mode: msg.mode, canEdit: msg.canEdit, text: msg.text, error: msg.error,
+    ok: msg.ok, mode: msg.mode, canEdit: msg.canEdit,
+    text: msg.text, shapes: msg.shapes, error: msg.error,
   });
 }
 
