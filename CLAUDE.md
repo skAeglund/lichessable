@@ -1178,6 +1178,61 @@ Currently working (v0.18.x).
   work is done and it sits over the gutter — or, on a phone, over the comment
   column. `armHeadsUp` already adds the group to `seen`, so the next tick cannot
   raise it again; the timer is cleared by `hideHeadsUp`.
+  "REVIEW NOW" (v0.51.0) is the panel's SECOND button and the only run that
+  lives OUTSIDE the browse state. `reviewNow` plays the SHOWN GROUP on the spot:
+  `beginRun(lines, spot=true)`, whose `spot` arm keeps everything else as it was
+  (only the played lines leave `cr.hu.armed`, `cr.autoRan` is NOT set, the
+  auto-start stays armed for the variation's other lines) and sets
+  `cr.midQuiz = spot && !reviewBrowseReady()`. That flag is what `tick` checks
+  before its "left the browse state" teardown — every OTHER active review must
+  still die there, since outside the browse gates it means the trainer moved on
+  underneath us; this one was opened over a live quiz deliberately. Mid-quiz the
+  panel placement needs no special case either: `positionOverlays` falls back
+  from `reviewCommentBox` (a live quiz renders NO `commentScrollContainer` —
+  same fact section 18b is built on) to `reviewCommentCol`, the column that
+  holds it, so the panel lands exactly where it does in the browse state.
+  THE TRAINER IS PUT ON HOLD for the duration (`holdTrainer` / `releaseTrainer`,
+  the latter called from `closeReview` on EVERY close, so a run torn down by a
+  variation change cannot leave the session paused):
+  * the session TIMER is paused, or the minute spent in a sideline is charged to
+    the card being answered. Ground-truthed live 2026-08-01: pausing is a plain
+    `.click()` on `trainerPauseButton()` (the footer control section 10 has
+    always used), while the play overlay that replaces the board
+    (`SELECTORS.trainerPlayOverlay`) needs the full `pressSquare` pointer
+    sequence — a bare `.click()` on it does NOTHING, exactly like a board
+    square. Pausing leaves the board element and every `[data-piece]` in place
+    (the pieces merely go to opacity 0), so the overlays measure and clone off
+    it as usual, and the quiz position is untouched: resuming puts the trainer
+    back exactly where it stood. A session paused by SOMEONE ELSE (section 10's
+    background-tab auto-pause) is left alone by `pauseTrainerTimer` and so never
+    becomes ours to resume.
+  * the control is NOT always on screen — Chessable empties the board footer in
+    the study/transition states between quizzes, which is exactly when the
+    heads-up can be up (seen live) — so `maintainTrainerHold()` retries once per
+    tick while the run is active instead of giving up on the one press.
+  * AUTO-PLAY is held off through `autoPlayHold(true)`: our board covers theirs
+    and the session is paused, so an injection would be a move played into a
+    board nobody can see. It gates `evaluateAutoPlay` AND `processFrame` (the
+    pause/resume repaints are Chessable's frames, not moves, and reading them
+    only costs the tracker its thread); release re-enters the loop at once.
+  `releaseTrainer` resumes the timer BEFORE releasing auto-play, for that same
+  reason. Exit reads "Back to the quiz" in this mode (`syncUi`) — leaving is not
+  "give the board back and be done" but "go back to the card I was in the middle
+  of", and the timer restarting is the half the user cannot see.
+  HIDDEN WHILE AUTO-PLAY REPLAYS (v0.51.0): `headsUpTick` returns early on
+  `autoPlayReplaying()` — during the opening replay the positions go past at
+  auto-play's own speed, so a panel raised on one of them either flashes by
+  unread or, worse, stands over a position the replay has long left. HIDDEN, not
+  dismissed: the group stays out of `seen`, so whatever is still branching where
+  auto-play hands back is raised the moment it does. The scan and the ply clock
+  keep running, so nothing is missed by waiting. The bridge answers
+  `injected || injectTimer`, else a move injected within `replayQuietMs`
+  (1.5 s) — the quiet window exists because NOTHING else marks the gap between
+  one replayed move landing and the trainer's reply, and `maybeHandback` clears
+  `vs.replayAt` so a real handback shows the panel immediately rather than
+  waiting the window out. Verified live that with auto-play merely ENABLED (the
+  common case) the panel still appears: every guard above is false until a move
+  is actually injected.
   PLACEMENT in a STACKED layout (portrait) while the quiz is LIVE stops at the
   board's own FOOTER instead of also clearing the overstudy widget and the whole
   trainer row (`coverComment` = stacked && `!reviewBrowseReady()`): down there

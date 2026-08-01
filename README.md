@@ -393,12 +393,24 @@ variation is over, by which point you have long left the position each line
 branches off. So while you are still playing, the moment Chessable prints a
 comment offering the opponent an alternative, a small panel appears next to the
 board: **The opponent can also respond with:**, the branch position on a mini
-board with an arrow for that move, and **Review on variation end**. Press it and
-the line is queued — the panel confirms it and then takes itself away a moment
-later, since it has nothing left to say and you are in the middle of a move.
+board with an arrow for that move, and two buttons: **Review on variation end**
+and **Review now**. Press the first and the line is queued — the panel confirms
+it and then takes itself away a moment later, since it has nothing left to say
+and you are in the middle of a move.
 Ignore it and it goes away on its own the moment you play
 your next move; **×** dismisses it for that position, and the end-of-variation
 button still offers everything as before.
+
+**Review now** plays the line on the spot, without waiting for the variation to
+end. Chessable's session timer is **paused** first, so the minute you spend in a
+sideline is not charged to the card you are being asked about, and auto-play is
+held back while our board is up. Nothing else is touched: the quiz behind the
+overlay stays exactly where it stood, so the panel's Exit button reads **Back to
+the quiz** — press it (or Escape, or just finish the line) and the timer starts
+again with the same position in front of you. Anything else you queued is still
+queued; only the line you just played comes off the list. If Chessable is
+between states and its pause control is not on screen at that moment, the review
+still opens and the timer is paused as soon as the control appears.
 
 On a **phone in portrait**, where Chessable stacks its comment column under the
 board, this panel sits directly under the board while you are playing — over that
@@ -1111,6 +1123,41 @@ enough not to run, the ↻ button is the only way back.
   trainer row, i.e. it covers the comment column, which at that moment holds
   nothing but "Quiz — White to play!". In the browse state that column holds the
   comment itself, so the old placement stands.
+- **Review now** — the third way in, and the only run that lives *outside* the
+  browse state (`cr.midQuiz`): `tick` tears every other active review down when
+  the browse gates go false, since that means the trainer moved on underneath
+  us, but this one was opened over a live quiz on purpose. `beginRun(lines,
+  true)` plays the one group the panel is showing and leaves everything else as
+  it found it — the rest of the queue survives, and the auto-start stays armed
+  for the variation's other lines. Placement needs no special case: the quiz
+  panel already falls back from `commentScrollContainer` (which a live quiz does
+  not render) and now tries `commentContainer`, the column that holds it, so the
+  panel lands where it always does.
+  `holdTrainer()` pauses Chessable's own session timer and holds auto-play off;
+  `releaseTrainer()`, called from `closeReview` on **every** close, resumes the
+  timer first and releases auto-play after, since the resume repaints the board
+  and those frames are Chessable's, not a move. Ground-truthed live 2026-08-01:
+  pausing is a plain `.click()` on the footer control (what section 10's
+  background auto-pause has always used), while the play overlay that replaces
+  the board needs the full `pressSquare` pointer sequence — a bare click on it
+  does nothing, exactly like a board square. Pausing leaves the board element
+  and every `[data-piece]` in place (the pieces just go to opacity 0), so the
+  overlays measure and clone off it as usual, and the quiz position is untouched.
+  A session someone else paused (the background-tab auto-pause) is left alone
+  and so never becomes ours to resume. The control is **not** always on screen —
+  Chessable empties the footer between quizzes — so `maintainTrainerHold()`
+  retries once per tick while the review is up rather than giving up on the
+  press that happened to land in one of those gaps.
+  Auto-play gets two bridges for this: `autoPlayHold(on)` (gates
+  `evaluateAutoPlay` and `processFrame` on `ap.heldOff`, stops anything in
+  flight, and re-enters the loop on release) and `autoPlayReplaying()`, which
+  the heads-up hides itself on — during a replay the positions go past at
+  auto-play's own speed, so a panel raised on one of them either flashes by
+  unread or stands over a position the replay has left. That answer is
+  `injected || injectTimer`, else a move injected within `replayQuietMs`
+  (1.5 s, wide enough to bridge our move landing plus the trainer's reply);
+  `maybeHandback` clears the stamp, so a real handback shows the panel at once
+  instead of waiting the window out.
 - **Important lines** — section 18c, and almost entirely a reading of data that
   was already there. `moveAnnotation` (DOM) and `parseCommentMove` (lesson plan)
   have always split the trailing `!`/`?` run off a clickable move and kept it on

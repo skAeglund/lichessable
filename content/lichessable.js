@@ -61,6 +61,10 @@
     // MoveTrainer2 (review/learn sessions, top document — sections 9/10):
     trainerIconBtn:   '.board-footer__icon-btn', // footer icon buttons (hint, pause, …)
     trainerPauseIcon: '.fa-pause',               // icon inside the pause-timer button
+    // Chessable's own paused UI: the board's pieces go to opacity 0 and this
+    // overlay takes its place. Its presence IS "the session is paused", and
+    // pressing it is the only way back (see resumeTrainerTimer).
+    trainerPlayOverlay: '.play-button--board',
     trainerFooter:    '.board-footer',           // Exit / nav row under the board — widget sits below it
     trainerRow:       '.row-practice',           // flex row holding board + comment column; shifted to re-center the board
     // Review drawer: an empty marker div sits INSIDE the active variation row;
@@ -99,6 +103,11 @@
     // printed in it in plain sight, so leaving it visible would spoil every
     // answer. Nothing of ours ever goes INSIDE it.
     reviewCommentBox:   '[data-testid="commentScrollContainer"]',
+    // The column that box lives in. It is there during a LIVE quiz too, where
+    // the scroll container is not (a quiz renders no comment at all) — so it is
+    // what a mid-quiz review (18b's "Review now") puts its panel over, keeping
+    // the panel in the same place it occupies in the browse state.
+    reviewCommentCol:   '[data-testid="commentContainer"]',
 
     // Explore EDIT page (quick-edit-comment feature — section 12). The edit
     // page reuses the mt1 explore iframe (/mt1/explore/edit/<oid>/), so these
@@ -422,6 +431,12 @@
       frameFallbackMs: 32,
       frameStampMaxAgeMs: 1000,
       injectVerifyMs: 2500,    // an injected move must land within this, else manual for the position
+      // How long after an injected move auto-play still counts as "replaying"
+      // for the mid-quiz heads-up (18b), which hides itself while it is. Wide
+      // enough to bridge our move landing (~440 ms) plus the trainer's answer
+      // (~480 ms), so the panel does not flash up between two replayed moves;
+      // a real handback clears it at once and does not wait this out.
+      replayQuietMs: 1500,
       pointerWindowMs: 3000,   // trusted pointer input this recent ⇒ the user played the move
       saveDebounceMs: 800,     // record writes are debounced
       statusFlashMs: 2500,     // lifetime of the transient status chips
@@ -3508,8 +3523,7 @@
     const pollTimer = setInterval(() => {
       if (!document.hidden) { clearInterval(pollTimer); return; } // user got here first
       if (Date.now() - startedAt > CONFIG.bootTimeoutMs) { clearInterval(pollTimer); return; }
-      const btn = [...document.querySelectorAll(SELECTORS.trainerIconBtn)]
-        .find((el) => el.querySelector(SELECTORS.trainerPauseIcon));
+      const btn = trainerPauseButton();
       if (!btn) return; // player still booting
       clearInterval(pollTimer);
       btn.click();
@@ -3651,6 +3665,54 @@
   function getReviewBoard() {
     const wrap = document.querySelector(SELECTORS.reviewBoardWrap);
     return (wrap || document).querySelector(SELECTORS.board);
+  }
+
+  // --- the trainer's own session timer --------------------------------------
+  //
+  // Chessable charges the seconds spent on a card against the card. Anything of
+  // ours that takes the user AWAY from the quiz for a while — 18b's "Review
+  // now", which covers their board with a sideline quiz of our own — therefore
+  // pauses their timer first and starts it again on the way out.
+  //
+  // Ground-truthed live 2026-08-01 (learn session, course 453453): pausing is a
+  // plain .click() on the footer control (that is also what section 10's
+  // background-tab auto-pause has always used), while the play overlay that
+  // replaces the board needs the full pointer+mouse sequence — a bare .click()
+  // on it does NOTHING, exactly like a board square. Pausing leaves the board
+  // element and every [data-piece] div in place (the pieces merely go to
+  // opacity 0), so our overlays measure and clone off it as usual, and the
+  // position is untouched: resuming puts the quiz back exactly where it was.
+
+  /** Chessable's pause-timer footer control, or null when the session is
+   *  already paused (they replace it) or the footer has not rendered. */
+  function trainerPauseButton() {
+    return [...document.querySelectorAll(SELECTORS.trainerIconBtn)]
+      .find((el) => el.querySelector(SELECTORS.trainerPauseIcon)) || null;
+  }
+
+  const trainerPaused = () => Boolean(document.querySelector(SELECTORS.trainerPlayOverlay));
+
+  /** Pauses the session timer. False when there was no control to press — the
+   *  caller carries on regardless; a running timer is not worth refusing over. */
+  function pauseTrainerTimer() {
+    if (trainerPaused()) return false; // already paused, and not by us — leave it alone
+    const btn = trainerPauseButton();
+    if (!btn) return false;
+    btn.click();
+    return true;
+  }
+
+  /** Presses Chessable's own play overlay, i.e. what the user would click. */
+  function resumeTrainerTimer() {
+    const play = document.querySelector(SELECTORS.trainerPlayOverlay);
+    if (!play) return false;
+    try {
+      pressSquare(play); // a plain .click() does nothing here — see above
+    } catch (err) {
+      warn('could not resume the session timer:', err);
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -5531,6 +5593,28 @@
    */
   let autoPlaySetHold = null;
 
+  /**
+   * () => boolean — assigned by initAutoPlay, read by the mid-quiz heads-up
+   * (section 18b): true while auto-play is REPLAYING this variation's opening
+   * run, i.e. from the first injected move until it hands back.
+   *
+   * The gap between one replayed move landing and the opponent's answer is
+   * covered by `replayQuietMs`, so the answer does not flicker false twice per
+   * move; the moment auto-play declines a position (maybeHandback) or is
+   * stopped, it is false again with no wait.
+   */
+  let autoPlayReplaying = null;
+
+  /**
+   * (on) => void — assigned by initAutoPlay. Stops auto-play driving
+   * Chessable's board from OUTSIDE, without touching the variation's tracking:
+   * 18b's "Review now" pauses the trainer and covers its board with ours, and
+   * an injection fired into that would be a move played into a paused session
+   * nobody can see. Released (with an immediate re-evaluation) when the review
+   * closes.
+   */
+  let autoPlayHold = null;
+
   function initAutoPlay() {
     if (typeof CloSan === 'undefined') {
       warn('auto-play disabled: CloSan (engine/san.js) not loaded');
@@ -5562,6 +5646,7 @@
       injectClassTimer: 0,     // pending removal of the html.clo-injecting gate
       holdKeys: null,          // Set of "placement side" the retry runner wants played by hand
       resumeAfterHandover: false, // …and may auto-play again after one of them (retry "Only the mistakes")
+      heldOff: false,          // an outside feature owns the board right now (autoPlayHold)
       contextDead: false,      // orphaned by an extension reload — see noteDeadContext
       pollTimer: 0,
       observer: null,
@@ -5604,6 +5689,9 @@
                              // the pointer path and the rollback path see the same refusal)
         injected: null,      // { uci, at } — our drag in flight
         injectTimer: 0,      // pending speed-delay before a drag
+        replayAt: 0,         // when a move was last injected — the heads-up asks how
+                             // long ago, since between one replayed move landing and
+                             // the opponent's answer nothing else says "still replaying"
         verifyTimer: 0,      // injected move must land before this fires
         manualHold: false,   // no auto-play until the position changes
         handedOver: false,   // the user has played a move this variation — the rest is theirs
@@ -6254,6 +6342,11 @@
     function processFrame() {
       if (ap.contextDead) return;
       if (!isTrainerPath()) return;
+      // Held off (18b's mid-quiz review): the session is paused behind another
+      // feature's board, so every frame the trainer paints — the pieces fading
+      // out and back in — is theirs, not a move. Reading them would only cost
+      // the tracker its thread.
+      if (ap.heldOff) return;
       syncVariation();
       const vs = ap.vs;
       if (!vs.oid || vs.suspended) return;
@@ -6295,6 +6388,10 @@
 
     function maybeHandback() {
       const vs = ap.vs;
+      // Whatever the reason, this position is the user's to play: the replay is
+      // over, so anything waiting on it (18b's heads-up) hears so immediately
+      // instead of sitting out the quiet window.
+      vs.replayAt = 0;
       if (vs.replayed > 0 && !vs.handbackShown) {
         vs.handbackShown = true;
         setStatus('✋ new move — your turn');
@@ -6426,6 +6523,9 @@
     function evaluateAutoPlay() {
       const vs = ap.vs;
       if (!ap.enabled || ap.contextDead || document.hidden) return;
+      // Another feature owns the board (18b's mid-quiz review, which has the
+      // session paused and our own board on top of theirs).
+      if (ap.heldOff) return;
       if (!vs.oid || !vs.bid || vs.suspended || vs.cancelled) return;
       if (vs.manualHold) { logHandback('manual hold on this position'); return; }
       // A variation the user has played in is theirs for the rest of it —
@@ -6532,8 +6632,8 @@
       const vs = ap.vs;
       // The world may have changed during the speed delay — re-verify, and
       // drop the sticky "replaying" chip if the injection is off.
-      if (!ap.enabled || document.hidden || vs.cancelled || vs.suspended || vs.manualHold ||
-          vs.lastKey !== expectKey || !vs.pos || vs.pos.side !== vs.userColor) {
+      if (!ap.enabled || ap.heldOff || document.hidden || vs.cancelled || vs.suspended ||
+          vs.manualHold || vs.lastKey !== expectKey || !vs.pos || vs.pos.side !== vs.userColor) {
         setStatus('');
         evaluateAutoPlay(); // the position may have moved on — rejoin the chain
         return;
@@ -6551,6 +6651,7 @@
       // way the injection gets closed out, but it is not the only evidence that
       // it landed — see the timer below.
       vs.injected = { uci: entry.uci, at: Date.now(), beforeKey: vs.lastKey };
+      vs.replayAt = Date.now(); // …and the heads-up's "still replaying" clock
       // Belt and braces for the two presses below: if MoveTrainer2 ever does
       // get a frame between them, this class hides what a half-made selection
       // would paint. Dropped again well before the move's own animation runs.
@@ -6611,6 +6712,7 @@
       clearTimeout(vs.verifyTimer);
       vs.verifyTimer = 0;
       vs.injected = null;
+      vs.replayAt = 0;
       clearTimeout(ap.injectClassTimer);
       document.documentElement.classList.remove('clo-injecting');
       setStatus('');
@@ -6892,6 +6994,30 @@
         if (pos) keys.add(placementFen(pos.board) + ' ' + pos.side);
       }
       ap.holdKeys = keys.size ? keys : null;
+    };
+
+    // Section 18b's bridges. `replaying` is what the heads-up hides itself on:
+    // during the opening replay the positions fly past, so a panel raised on
+    // one of them is either gone before it can be read or — worse — still up
+    // over a position the replay has long left.
+    autoPlayReplaying = () => {
+      const vs = ap.vs;
+      if (!ap.enabled || ap.contextDead) return false;
+      if (vs.cancelled || vs.suspended || vs.handedOver || vs.manualHold) return false;
+      if (vs.injected || vs.injectTimer) return true;
+      return vs.replayAt > 0 && Date.now() - vs.replayAt < C.replayQuietMs;
+    };
+
+    // "Review now" (18b) pauses the trainer and covers its board with ours;
+    // nothing may be injected into that. Releasing re-enters the loop at once
+    // rather than waiting for the next poll, so the replay resumes as promptly
+    // as it would have done.
+    autoPlayHold = (on) => {
+      const want = Boolean(on);
+      if (ap.heldOff === want) return;
+      ap.heldOff = want;
+      if (want) stopReplaying();
+      else evaluateAutoPlay();
     };
 
     // Prefs (shared across tabs via storage; off by default).
@@ -9382,6 +9508,12 @@
       // exactly as it did before — and the drill, whose cards ARE quiz lines,
       // rides that default nearly everywhere.
       mode: 'quiz',
+      // Started from the heads-up in the MIDDLE of a variation ("Review now",
+      // 18b), so this run lives outside the browse state every other one needs:
+      // the trainer's quiz is still standing behind our board, paused.
+      midQuiz: false,
+      trainerHeld: false, // auto-play is held off for this run (autoPlayHold)
+      timerPaused: false, // …and WE paused the session timer, so we resume it
       lineIdx: 0,
       line: null,
       pos: null,          // CloSan position on our board right now
@@ -11609,7 +11741,13 @@
         width: size,
         height: size,
       });
-      const box = document.querySelector(SELECTORS.reviewCommentBox);
+      // The comment's own scroll container first, exactly as before. It does not
+      // exist during a live quiz (a quiz renders no comment at all), so a
+      // mid-quiz review falls back to the COLUMN that holds it — the same spot
+      // on screen, which is what keeps "Review now" looking like every other
+      // run rather than like a panel bolted under the board.
+      const box = document.querySelector(SELECTORS.reviewCommentBox) ||
+                  document.querySelector(SELECTORS.reviewCommentCol);
       const br = box ? box.getBoundingClientRect() : null;
       if (br && br.width > 120 && br.height > 120) {
         setInlinePx(cr.panel, {
@@ -11647,6 +11785,14 @@
         syncAnalysisUi();
         return;
       }
+      // Leaving a mid-quiz review is not "give Chessable its board back and be
+      // done" but "go back to the card I was in the middle of" — and the timer
+      // starting again is the half of it the user cannot see happen.
+      cr.ui.exit.textContent = cr.midQuiz ? 'Back to the quiz' : 'Exit';
+      cr.ui.exit.title = cr.midQuiz
+        ? 'Close this and carry on with the variation where you left it — the ' +
+          'session timer starts again'
+        : 'Close the continuation review and give Chessable its board back';
       // The quiz's own rows are owned by showChooser/beginRun, not by this.
       if (!cr.line) return;
       const total = cr.queue.length;
@@ -11722,6 +11868,56 @@
       return true;
     }
 
+    /**
+     * Takes the trainer out of the way for the duration of a run: its session
+     * timer is paused (the seconds spent in a sideline are not the card's
+     * fault) and auto-play is held off (our board is on top of theirs, and an
+     * injected move would go into a board nobody can see — into a PAUSED one at
+     * that).
+     *
+     * A missing pause control is not a reason to refuse: the review is still
+     * worth having, so it only costs a log line.
+     */
+    function holdTrainer() {
+      if (cr.trainerHeld) return;
+      cr.trainerHeld = true;
+      if (autoPlayHold) autoPlayHold(true);
+      cr.timerPaused = pauseTrainerTimer();
+      if (!cr.timerPaused) log('continuation: no pause control yet — retrying while the review runs');
+    }
+
+    /**
+     * Keeps trying to pause while a held run is up.
+     *
+     * The control is NOT always there: Chessable empties the board footer
+     * during the study/transition states between quizzes (ground-truthed live
+     * 2026-08-01 — a press landing in one of those found no pause button at
+     * all), and that is precisely a moment at which the heads-up is on screen
+     * offering "Review now". One press per tick costs a querySelector and
+     * catches the control the moment it renders. A session paused by someone
+     * else — the background-tab auto-pause of section 10 — is left alone by
+     * pauseTrainerTimer, and simply never becomes ours to resume.
+     */
+    function maintainTrainerHold() {
+      if (!cr.trainerHeld || cr.timerPaused) return;
+      cr.timerPaused = pauseTrainerTimer();
+      if (cr.timerPaused) log('continuation: session timer paused');
+    }
+
+    /** Undoes holdTrainer. Only the timer WE paused is resumed — a session the
+     *  user paused themselves stays paused. */
+    function releaseTrainer() {
+      if (!cr.trainerHeld) return;
+      cr.trainerHeld = false;
+      if (cr.timerPaused) {
+        cr.timerPaused = false;
+        if (!resumeTrainerTimer()) log('continuation: no play overlay to press — timer left paused');
+      }
+      // Auto-play LAST: resuming repaints the board (Chessable dims the pieces
+      // to nothing while paused), and those frames are theirs, not a move.
+      if (autoPlayHold) autoPlayHold(false);
+    }
+
     function openReview() {
       const fresh = freshLines();
       if (!fresh.length || cr.active) return;
@@ -11793,18 +11989,35 @@
       cr.ui.chooseFinal.textContent = 'Final lines (' + finalCount + ')';
     }
 
-    function beginRun(queue) {
+    /**
+     * @param {Array} queue  the lines to play, in order
+     * @param {boolean} [spot] started from the heads-up for the ONE group it is
+     *   showing ("Review now"), rather than for the variation's whole set. Such
+     *   a run leaves everything else exactly as it found it, and — when the
+     *   variation is still being played — has to survive outside the browse
+     *   state, which is what cr.midQuiz says.
+     */
+    function beginRun(queue, spot) {
       if (!queue.length) { closeReview('nothing selected'); return; }
       cr.choosing = false;
-      // However this run started, the variation has had its review — the
-      // auto-start must not open a second one the moment this is closed.
-      cancelAutoStart();
-      cr.autoRan = cr.oid;
       cr.queue = queue;
-      // Any run consumes the queue — whether it was the queued lines or the
-      // whole set from the launcher, which contains them. The array above is
-      // already materialised, so clearing here is safe.
-      cr.hu.armed.clear();
+      cr.midQuiz = Boolean(spot) && !reviewBrowseReady();
+      if (!spot) {
+        // However this run started, the variation has had its review — the
+        // auto-start must not open a second one the moment this is closed.
+        cancelAutoStart();
+        cr.autoRan = cr.oid;
+        // Any run consumes the queue — whether it was the queued lines or the
+        // whole set from the launcher, which contains them. The array above is
+        // already materialised, so clearing here is safe.
+        cr.hu.armed.clear();
+      } else {
+        // "Review now" plays ONE group. Whatever else the user queued is for
+        // the END of the variation and must survive this — only the lines
+        // actually being played come off the queue, and the auto-start is left
+        // armed, since the variation's other lines still have not been seen.
+        for (const line of queue) cr.hu.armed.delete(lineSig(line));
+      }
       cr.ui.chooser.hidden = true;
       cr.ui.actions.hidden = false;
       cr.boardEl.hidden = false;
@@ -11918,6 +12131,11 @@
       hidePromo();
       if (cr.boardEl) cr.boardEl.hidden = true;
       if (cr.panel) cr.panel.hidden = true;
+      cr.midQuiz = false;
+      // AFTER the overlays are down, so Chessable's board is visible again as
+      // it un-dims. Called on every close, not just the tidy ones: a run torn
+      // down by a variation change must not leave the session paused either.
+      releaseTrainer();
       if (wasActive && why) {
         log(analysing ? 'analysis board:' : (wasQuiz ? 'continuation review:' : 'mistake drill:'), why);
       }
@@ -12499,20 +12717,35 @@
       moves.className = 'clo-cr-heads__moves';
       body.append(board, moves);
 
+      // Two ways to take the offer, side by side: wait for the variation to end
+      // (the original), or play the line right here. Neither is the obvious
+      // default — carrying on with the card you are being quizzed on and
+      // looking at the sideline the moment it comes up are both reasonable —
+      // so they are the same size and the same green.
+      const btns = document.createElement('div');
+      btns.className = 'clo-cr-heads__btns';
+
       const arm = document.createElement('button');
       arm.type = 'button';
       arm.className = 'clo-cr-btn clo-cr-btn--primary clo-cr-heads__arm';
       arm.textContent = 'Review on variation end';
       arm.addEventListener('click', armHeadsUp);
 
+      const now = document.createElement('button');
+      now.type = 'button';
+      now.className = 'clo-cr-btn clo-cr-btn--primary clo-cr-heads__now';
+      now.textContent = 'Review now';
+      now.addEventListener('click', reviewNow);
+      btns.append(arm, now);
+
       const note = document.createElement('div');
       note.className = 'clo-cr-heads__note';
       note.hidden = true;
 
-      el.append(head, lead, body, arm, note);
+      el.append(head, lead, body, btns, note);
       document.body.appendChild(el);
       cr.hu.el = el;
-      cr.hu.ui = { grid, layer, arrows, title, lead, moves, arm, note, off };
+      cr.hu.ui = { grid, layer, arrows, title, lead, moves, arm, now, note, off };
       disarmOff(); // also writes the button's resting label
     }
 
@@ -12554,6 +12787,13 @@
       }
       const armed = group.lines.every((l) => cr.hu.armed.has(lineSig(l)));
       ui.arm.disabled = armed;
+      ui.now.title = group.final
+        ? 'Play through ' + (group.lines.length > 1 ? 'these lines' : 'this line') +
+          ' straight away, on our own board.'
+        : 'Play through ' + (group.lines.length > 1 ? 'these lines' : 'this line') +
+          ' right here, without waiting for the variation to end. Chessable’s ' +
+          'session timer is paused while you do, and the variation carries on ' +
+          'from where it stands the moment you are done.';
       ui.note.hidden = !armed;
       if (armed) ui.note.textContent = queuedNote(group);
       // Placed while still hidden, like the quiz overlays: a panel revealed at
@@ -12662,6 +12902,38 @@
     }
 
     /**
+     * The heads-up's second way to take the offer: play the shown group's
+     * lines RIGHT HERE, in the middle of the variation, instead of waiting for
+     * its end. The panel is raised at the position the line branches from, so
+     * this is the one moment at which the sideline is worth more than it will
+     * be five moves later.
+     *
+     * The trainer is put on hold first (holdTrainer): its session timer is
+     * paused, so the seconds spent in the sideline are not charged to the card
+     * being answered, and auto-play is stopped from injecting into a board it
+     * can no longer see. Chessable's own state is otherwise untouched — our
+     * board simply covers theirs — so closing the review resumes the timer and
+     * the quiz carries on from exactly where it stood.
+     *
+     * At the FINAL position (browse state) the same press just runs the group
+     * without the wait; only the ONE group is played either way, so anything
+     * else the user queued still waits for the end of the variation.
+     */
+    function reviewNow(e) {
+      blurButton(e);
+      const group = cr.hu.shown;
+      if (!group || cr.active) return;
+      const lines = group.lines; // showOverlays hides the panel, which clears cr.hu.shown
+      cr.hu.seen.add(group.sig); // played now ⇒ never raised again in this variation
+      if (!showOverlays()) return; // warned there; the panel stays up for a retry
+      holdTrainer();
+      log('continuation review: starting', lines.length, 'line(s) now —',
+        lines.map((l) => l.label).join(' | '));
+      beginRun(lines, true);
+      syncButton(); // the queue button's count may have just dropped
+    }
+
+    /**
      * Absolute in DOCUMENT coordinates like every other widget here (never
      * fixed — see section 11). Preferred spot is the gutter LEFT of the board,
      * which during a quiz is empty: the review panel only ever shows in the
@@ -12734,6 +13006,13 @@
       // fibers to walk and the read cannot possibly succeed.
       if (!cr.hu.scanning && cr.hu.scannedOid !== cr.oid && getReviewBoard()) scanHeadsUp(cr.oid);
       pollHeadsUpPly();
+      // Auto-play is replaying the variation's opening: the positions are going
+      // past at its own speed, so a panel raised on one of them would either
+      // flash by unread or — worse — still be standing over a position the
+      // replay has already left. Hidden, NOT dismissed: whatever branches where
+      // the replay hands back is raised the moment it does. Scanning and the
+      // ply clock above keep running, so nothing is missed by waiting.
+      if (autoPlayReplaying && autoPlayReplaying()) { hideHeadsUp(); return; }
       if (!cr.hu.shown) {
         const group = headsUpGroup();
         if (group) showHeadsUp(group);
@@ -12846,16 +13125,23 @@
         if (cr.active) closeReview('variation changed');
       }
       if (!reviewBrowseReady()) {
-        // An active quiz survives nothing here: the browse state going away
-        // means the trainer moved on underneath us.
-        if (cr.active) closeReview('left the browse state');
+        // A MID-QUIZ run (18b's "Review now") is the one review that belongs
+        // out here: it was opened over a live quiz on purpose, with the
+        // trainer's timer paused behind it. Every other one is torn down —
+        // outside the browse state it means the trainer moved on underneath us.
+        if (cr.active && !cr.midQuiz) closeReview('left the browse state');
         if (cr.lines.length) { cr.lines = []; cr.signature = ''; }
         cancelAutoStart();
         hideButton();
+        // The launcher cluster is a browse-state thing, but our overlays still
+        // have to follow the board — and the heads-up must not be raised over
+        // the quiz that has replaced it.
+        if (cr.active) { maintainTrainerHold(); positionOverlays(); return; }
         headsUpTick();
         return;
       }
       if (cr.active) {
+        maintainTrainerHold();
         positionOverlays();
         return;
       }

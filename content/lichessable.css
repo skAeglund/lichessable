@@ -2246,7 +2246,20 @@ html.clo-injecting .legal-square-capture-mt2 {
   overflow-wrap: anywhere;
 }
 
-.clo-cr-heads__arm { align-self: flex-start; }
+/* The two ways to take the offer, side by side: wait for the variation to end,
+   or play the line on the spot. Wrapping rather than shrinking — the panel is
+   only as wide as the mini board plus a little, and "Review on variation end"
+   is a long label that must stay readable on a phone. */
+.clo-cr-heads__btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.clo-cr-heads__btns .clo-cr-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 
 .clo-cr-heads__note {
   color: #a5c96a;
