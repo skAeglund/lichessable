@@ -232,6 +232,7 @@
       panelMaxWidth: 420,
       stackedMinSide: 250,      // less free width than this beside the board ⇒ the comment column must have wrapped under it
       holdUpMs: 1200,           // an UPWARD move of the below-the-board panel must persist this long before it is applied (anti-bounce)
+      planMaxTries: 20,         // reads of the lesson plan per variation before the panel settles for the DOM heuristic (~10 s at pollMs)
     },
 
     // --- Continuation review (top document, section 18) ---------------------
@@ -2281,8 +2282,9 @@
   //
   // THE KEY IS PLACEMENT + SIDE TO MOVE, nothing else — NOT `cacheKey`, which
   // the explorer caches use. In review mode the panel's FEN is rebuilt from the
-  // DOM (section 11), where castling rights are a home-square heuristic and en
-  // passant is always "-", while the repertoire walk computes both exactly. Key
+  // DOM (section 11), where — off the mainline, i.e. wherever the lesson plan
+  // cannot answer — castling rights are a home-square heuristic and en passant
+  // is always "-", while the repertoire walk computes both exactly. Key
   // on all four fields there and every position after a double pawn push, and
   // most after a rook moves, would simply MISS — the badges would vanish for no
   // visible reason. Section 20's mistake holds compare on placement+side for
@@ -3544,10 +3546,15 @@
   // from the DOM: piece placement from the board squares' [data-piece] divs,
   // side to move + move number by parsing the SAN numbering around the
   // currently shown move (SELECTORS.reviewMoveShown / reviewSubMoveShown;
-  // neither present = the variation's initial position). Two approximations,
-  // both fine for explorer statistics: castling rights are inferred from king
-  // and rook standing on their home squares (over-grants after a piece moves
-  // away and back), and the en-passant field is always "-".
+  // neither present = the variation's initial position).
+  //
+  // The DOM cannot show HISTORY, and castling rights are history — so the
+  // placement read off the board is looked up in the trainer's own lesson plan
+  // (reviewPlan below), whose per-ply sourceFen carries exact rights and en
+  // passant. Every MAINLINE position therefore comes out exact. Only a position
+  // inside a comment line still falls back to the home-square heuristic, whose
+  // rights are then intersected with the mainline position that comment hangs
+  // off (boundReviewCastling), and whose en-passant field is always "-".
   //
   // Everything else — debounce, fetch, cache, 429/401 handling, rendering —
   // is the shared machinery of sections 2–8 running with IS_REVIEW branches.
@@ -3651,6 +3658,10 @@
     if (!state.panel) return;
     state.panel.hidden = false;
     positionReviewPanel();
+    // Kept up to date here rather than inside readReviewFen: the plan is read
+    // asynchronously (a page-state round trip), while the FEN read is sync and
+    // runs from other callers too (section 19's openAnalysis).
+    syncReviewPlan();
     const fen = readFen();
     if (fen && fen !== state.fen) scheduleRefresh();
   }
@@ -3926,6 +3937,10 @@
     }
     // A move animation can briefly show a piece on two squares — skip the tick.
     if (whiteKings !== 1 || blackKings !== 1) return null;
+    const placement = ranks.join('/');
+    // Exact wherever the plan can answer, i.e. anywhere on the mainline.
+    const exact = reviewPlan.byKey && reviewPlan.byKey.get(placement + ' ' + turn.side);
+    if (exact) return exact;
     let castling = '';
     if (at.e1 === 'K') {
       if (at.h1 === 'R') castling += 'K';
@@ -3935,7 +3950,8 @@
       if (at.h8 === 'r') castling += 'k';
       if (at.a8 === 'r') castling += 'q';
     }
-    return ranks.join('/') + ' ' + turn.side + ' ' + (castling || '-') + ' - 0 ' + turn.fullmove;
+    castling = boundReviewCastling(castling);
+    return placement + ' ' + turn.side + ' ' + (castling || '-') + ' - 0 ' + turn.fullmove;
   }
 
   /**
@@ -3981,6 +3997,154 @@
       return { side: ply % 2 ? 'b' : 'w', fullmove: Math.floor(ply / 2) + 1 };
     }
     return null; // no numbered move found — cannot trust a side-to-move guess
+  }
+
+  // --- exact positions, from the trainer's own lesson plan -------------------
+  //
+  // The board shows a POSITION; castling rights are HISTORY. A king that walked
+  // back home (6…Qxd1+ 7.Kxd1 O-O-O+ 8.Ke1) leaves a board indistinguishable
+  // from one it never left, so the home-square heuristic granted White "KQ" and
+  // the engine duly offered O-O-O in a position where castling is illegal —
+  // reported with a screenshot 2026-08-01, and the engine's whole line hung off
+  // it. No amount of DOM reading can fix that: the evidence is not on the board.
+  //
+  // The lesson plan is where it lives. It carries Chessable's own sourceFen per
+  // ply — exact castling rights, exact en passant, exact move numbers — so the
+  // placement read off the board is looked UP in it and the plan's FEN used
+  // verbatim on a hit. Free, too: pagestate.js answers from memory (the plan is
+  // in page state before the variation's first move animates) and nothing is
+  // fetched, parsed or simulated.
+  //
+  // Keyed on placement + side to move ONLY — everything else in that FEN is
+  // precisely what we are trying to learn. A placement occurring twice in one
+  // variation (a repetition) is usable only while both occurrences agree on the
+  // first four fields; otherwise there is no telling which one the board shows,
+  // and the entry is poisoned so the heuristic takes over again.
+  //
+  // Read once per variation from the panel tick, with a small budget: the plan
+  // swaps ~90 ms before a variation's first move, so a read can land on the
+  // wrong one, but an unreadable plan must not re-ask every 500 ms for ever.
+
+  const reviewPlan = { oid: null, fens: null, byKey: null, loading: false, tries: 0, warned: false };
+
+  function syncReviewPlan() {
+    const oid = readQuickEditOid();
+    if (oid !== reviewPlan.oid) {
+      reviewPlan.oid = oid;
+      reviewPlan.fens = null;
+      reviewPlan.byKey = null;
+      reviewPlan.tries = 0;
+      reviewPlan.warned = false;
+    }
+    if (!oid || reviewPlan.byKey || reviewPlan.loading) return;
+    if (reviewPlan.tries >= CONFIG.review.planMaxTries) {
+      // Falling back is silent from the outside — the panel just goes on
+      // showing a position whose castling rights are a guess — so say it once.
+      if (!reviewPlan.warned) {
+        reviewPlan.warned = true;
+        log('review panel: no lesson plan for variation', oid,
+          '— castling rights fall back to the home-square guess');
+      }
+      return;
+    }
+    reviewPlan.tries++;
+    reviewPlan.loading = true;
+    readLessonLine().then((plan) => {
+      reviewPlan.loading = false;
+      if (reviewPlan.oid !== oid) return; // the variation changed while we asked
+      if (!plan || plan.error || !Array.isArray(plan.plies) || !plan.plies.length) return;
+      // Another variation's positions would be worse than the heuristic, not
+      // better: they would answer confidently and wrongly.
+      if (plan.oid && String(plan.oid) !== String(oid)) return;
+      const fens = mainlineFens(plan);
+      if (!fens) return;
+      reviewPlan.fens = fens;
+      reviewPlan.byKey = indexPlanPositions(fens);
+    }).catch((err) => {
+      reviewPlan.loading = false;
+      warn('review panel: could not read the lesson plan:', err);
+    });
+  }
+
+  /** placement + side → the plan's own FEN for it; null where a repetition
+   *  makes two different positions look the same (see above). */
+  function indexPlanPositions(fens) {
+    const byKey = new Map();
+    for (const fen of fens) {
+      const parts = String(fen).trim().split(/\s+/);
+      if (parts.length < 4) continue;
+      const key = parts[0] + ' ' + parts[1];
+      if (!byKey.has(key)) { byKey.set(key, fen); continue; }
+      const prev = byKey.get(key);
+      if (prev && cacheKey(prev) !== cacheKey(fen)) byKey.set(key, null);
+    }
+    return byKey;
+  }
+
+  /**
+   * Drops the rights the plan proves are already gone, for the one position the
+   * lookup above cannot answer: a move INSIDE a comment line, which is not on
+   * the mainline at all.
+   *
+   * Castling rights only ever shrink, and a comment's line descends from the
+   * mainline position it hangs off (attachPlyOf) — so it can hold no more
+   * rights than that position does. Intersecting can only REMOVE a right the
+   * home-square heuristic invented, never grant one, which is what makes it
+   * safe without knowing where inside the line the board is standing.
+   */
+  function boundReviewCastling(castling) {
+    if (!castling || !reviewPlan.fens) return castling;
+    const shownSub = document.querySelector(SELECTORS.reviewSubMoveShown);
+    if (!shownSub) return castling;
+    const attach = attachPlyOf(shownSub, [...document.querySelectorAll(SELECTORS.reviewMoves)]);
+    const fen = reviewPlan.fens[Math.max(attach, 0)];
+    const rights = fen ? String(fen).trim().split(/\s+/)[2] : null;
+    if (!rights) return castling;
+    return [...castling].filter((c) => rights.includes(c)).join('');
+  }
+
+  /**
+   * Every mainline position of the current variation, from the lesson plan:
+   * fens[i] is the position BEFORE ply i (the plan's own exact sourceFen) and
+   * fens[n] the position after the last ply. Null if the plan cannot carry us
+   * that far.
+   *
+   * Hoisted out of the continuation module (section 18), which still owns the
+   * heaviest use of it — the panel needs the same positions for the same
+   * reason: they are the only exact ones a trainer document has.
+   */
+  function mainlineFens(plan) {
+    const fens = [];
+    for (const ply of plan.plies) {
+      if (!ply || typeof ply.sourceFen !== 'string') return null;
+      fens.push(ply.sourceFen);
+    }
+    const last = plan.plies[plan.plies.length - 1];
+    const pos = CloSan.parseFen(last.sourceFen);
+    const uci = pos && last.san ? sanToUci(pos, last.san) : null;
+    const final = uci ? fenAfterUci(last.sourceFen, uci) : null;
+    if (!final) return null;
+    fens.push(final);
+    return fens;
+  }
+
+  /**
+   * The mainline ply a comment block hangs off: the number of mainline moves
+   * printed BEFORE it in the comment column, minus one. Counted from the DOM
+   * because the sub-move id does NOT carry it — a comment on 10.Be2 (ply 18)
+   * gives its moves ids starting "0." (ground-truthed live 2026-07-26). -1 for
+   * a comment printed before the first move, where the position after the
+   * attach ply is the starting position.
+   *
+   * Hoisted out of the continuation module (section 18) alongside mainlineFens;
+   * boundReviewCastling above needs the same answer.
+   */
+  function attachPlyOf(el, moveEls) {
+    let count = 0;
+    for (const m of moveEls) {
+      if (m.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) count++;
+    }
+    return count - 1;
   }
 
   // ==========================================================================
@@ -9665,26 +9829,10 @@
         board.querySelector(SELECTORS.reviewSquare.replace('%s', 'h8')));
     }
 
-    /**
-     * Every mainline position of the current variation, from the lesson plan:
-     * fens[i] is the position BEFORE ply i (the plan's own exact sourceFen) and
-     * fens[n] the position after the last ply. Null if the plan cannot carry
-     * us that far, which sends the whole scan into its retry.
-     */
-    function mainlineFens(plan) {
-      const fens = [];
-      for (const ply of plan.plies) {
-        if (!ply || typeof ply.sourceFen !== 'string') return null;
-        fens.push(ply.sourceFen);
-      }
-      const last = plan.plies[plan.plies.length - 1];
-      const pos = CloSan.parseFen(last.sourceFen);
-      const uci = pos && last.san ? sanToUci(pos, last.san) : null;
-      const final = uci ? fenAfterUci(last.sourceFen, uci) : null;
-      if (!final) return null;
-      fens.push(final);
-      return fens;
-    }
+    // mainlineFens() — every mainline position of this variation, from the
+    // lesson plan — is top level now: the review panel reads the same positions
+    // to get castling rights the DOM cannot show (section 11). Null from it
+    // still sends the whole scan into its retry.
 
     /** True when `fen`'s side to move and fullmove number are the ones a move
      *  printed as "5." / "5..." would be played on. */
@@ -9815,21 +9963,9 @@
       return parts.length > 2 ? Number(parts[parts.length - 2]) : NaN;
     }
 
-    /**
-     * The mainline ply a comment block hangs off: the number of mainline moves
-     * printed BEFORE it in the comment column, minus one. Counted from the DOM
-     * because the sub-move id does NOT carry it — a comment on 10.Be2 (ply 18)
-     * gives its moves ids starting "0." (ground-truthed live 2026-07-26). -1
-     * for a comment printed before the first move, where the position after the
-     * attach ply is the starting position.
-     */
-    function attachPlyOf(el, moveEls) {
-      let count = 0;
-      for (const m of moveEls) {
-        if (m.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) count++;
-      }
-      return count - 1;
-    }
+    // attachPlyOf() — the mainline ply a comment block hangs off, counted from
+    // the DOM because the sub-move id does not carry it — is top level now,
+    // shared with the review panel's castling bound (section 11).
 
     /** A line group's moves, in order. Stops at the first move we cannot read
      *  (Chessable writes null moves as "18.--"): the moves before it are still
@@ -10899,12 +11035,13 @@
     // course — and, by section 18, something the extension can quiz you on next
     // time. It is the ordinary quick-edit 'save' job, unchanged.
     //
-    // The STARTING position is readReviewFen(), so it inherits that function's
-    // two documented approximations: castling rights are a home-square
-    // heuristic and en passant is always "-". Every position after it is exact
-    // (fenAfterUci → CloSan), so only an en-passant capture available on the
-    // very first move is out of reach — step one move back on Chessable's own
-    // board and it is there.
+    // The STARTING position is readReviewFen(), so it inherits whatever that
+    // function can answer: exact on the mainline (the lesson plan's own FEN),
+    // and inside a comment line still the home-square castling heuristic with
+    // en passant as "-". Every position after it is exact (fenAfterUci →
+    // CloSan), so only an en-passant capture available on the very first move
+    // of a line-internal start is out of reach — step one move back on
+    // Chessable's own board and it is there.
     // ------------------------------------------------------------------------
 
     /** A fresh analysis state. Also the reset, so a new board never inherits

@@ -84,9 +84,9 @@ uses, then walked into a position → moves index with the extension's own move
 generator, so **castling rights and en passant are exact** and a line you edited
 after adding it still matches. Nothing is ever written back. Positions are keyed
 on **placement + side to move only**: in the trainer the panel's FEN is rebuilt
-from the DOM, where castling is a home-square heuristic and en passant is always
-"-", so keying on all four fields would silently lose the badges after every
-double pawn push. The built index is cached in `chrome.storage.session`, so only
+from the DOM, where — off the mainline, i.e. wherever the lesson plan cannot
+answer — castling is a home-square heuristic and en passant is always "-", so
+keying on all four fields would silently lose the badges. The built index is cached in `chrome.storage.session`, so only
 the first page of a browser session pays for the walk.
 
 This is a *different question* from the **Repertoire coverage** panel further
@@ -754,13 +754,28 @@ enough not to run, the ↻ button is the only way back.
   squares' `[data-piece]` divs, side to move + move number by parsing the SAN
   numbering around the currently shown move (`commentMove_shownOnBoard`, or
   `commentSubMove_shownOnBoard` when a clickable subvariation move is on the
-  board; neither marker = the variation's initial position). Two deliberate
-  approximations, both fine for explorer statistics: castling rights are
-  inferred from king/rook standing on their home squares (over-grants after a
-  piece moves away and back), and the en-passant field is always `-`. Frames
+  board; neither marker = the variation's initial position). Frames
   where the board is mid-animation (a piece momentarily on two squares) are
   skipped by requiring exactly one king per side. Move rows are **not**
   clickable here — the trainer's board is not free-play.
+
+  A board shows a position, but **castling rights are history**: a king that
+  walked back home (`6…Qxd1+ 7.Kxd1 O-O-O+ 8.Ke1`) leaves a board no DOM read
+  can tell from one it never left, and the old home-square heuristic duly
+  granted White `KQ` — so the engine offered `O-O-O` in a position where
+  castling is illegal, and built its whole line on it. The placement read off
+  the board is therefore looked up in the trainer's **lesson plan**, whose
+  per-ply `sourceFen` carries exact rights, en passant and move numbers, and the
+  plan's FEN is used verbatim on a hit: every mainline position is now exact,
+  for free (the plan is in page state before the variation's first move
+  animates — nothing is fetched or simulated). The lookup is keyed on
+  **placement + side to move** only, since everything else in that FEN is what
+  it is there to supply; a placement that repeats within the variation is used
+  only while both occurrences agree on the first four fields. A position *inside
+  a comment line* is not on the mainline and still falls back to the heuristic,
+  with its rights intersected with those of the mainline position the comment
+  hangs off — rights only ever shrink, so that can remove an invented right but
+  never grant one.
 - **Variation-page panel** — the standalone variation page
   (`/variation/<id>/`) is the panel's third host (section 11b). Also a React
   top document, so the panel body-mounts absolutely in document coordinates
@@ -1198,8 +1213,9 @@ enough not to run, the ↻ button is the only way back.
   click on a database row plays that move here (the row carries no
   `dataset.uci` in a review document, so the SAN is resolved against our
   position with `sanToUci`). The starting position is `readReviewFen()`, so it
-  inherits that function's two approximations (castling by home squares, en
-  passant always "-"); every position after it is exact. Board orientation moved
+  inherits whatever that can answer — exact on the mainline (the lesson plan's
+  own FEN), the home-square castling heuristic with en passant `-` inside a
+  comment line; every position after it is exact. Board orientation moved
   from `cr.userColor` to `cr.view` so **Flip** cannot change what a quiz asks
   for. Playing writes nothing — no proofs, no rescheduling — and Chessable's own
   board is never touched, so leaving is just hiding the overlays.
@@ -1358,7 +1374,8 @@ showing.
   nothing in 6c can write to a course.
 - **Positions are keyed on placement + side to move**, not on the four-field
   `cacheKey` the explorer caches use. In the trainer the panel's FEN is rebuilt
-  from the DOM, where castling rights are a home-square heuristic and en passant
+  from the DOM, where — off the mainline, i.e. wherever the lesson plan cannot
+  answer — castling rights are a home-square heuristic and en passant
   is always `-`, while the repertoire walk computes both exactly; keying on all
   four fields would make the badges vanish after every double pawn push and most
   rook moves, for no visible reason. Section 20's mistake holds compare on the

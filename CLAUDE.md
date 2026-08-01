@@ -175,7 +175,8 @@ Currently working (v0.18.x).
   (same origin, so the same localStorage JWT). The two WRITES stayed inside
   initCoverage, behind its arming and its "is this course yours" guard.
   THE KEY IS PLACEMENT + SIDE TO MOVE (`repKey`), NOT `cacheKey`. In review the
-  panel's FEN is rebuilt from the DOM, where castling is a home-square heuristic
+  panel's FEN is rebuilt from the DOM, where — off the mainline, i.e. wherever
+  the lesson plan cannot answer — castling is a home-square heuristic
   and en passant is always "-", while the walk computes both exactly — keying on
   all four fields would silently drop the badges after every double pawn push
   and most rook moves. Section 20's holds compare on the same two fields for the
@@ -331,8 +332,27 @@ Currently working (v0.18.x).
   placement from `[data-piece]` divs in the board squares, side to move +
   fullmove parsed from the SAN numbering around the currently shown move
   (`commentMove_shownOnBoard` / `commentSubMove_shownOnBoard`; neither =
-  initial position). Castling is a home-square heuristic and en passant is
-  always "-" — accepted approximations. Mid-animation frames are skipped by
+  initial position). CASTLING RIGHTS ARE HISTORY, WHICH A BOARD CANNOT SHOW
+  (v0.51.1): a king that walked back home (6...Qxd1+ 7.Kxd1 O-O-O+ 8.Ke1) leaves
+  a placement indistinguishable from one it never left, so the home-square
+  heuristic granted White "KQ" and the ENGINE offered O-O-O in a position where
+  castling is illegal — its whole line hung off an impossible move. So the
+  placement read off the board is LOOKED UP in the trainer's own lesson plan
+  (`reviewPlan` / `syncReviewPlan`, refreshed once per variation from
+  `reviewPanelTick` since the read is async and `readReviewFen` is not), whose
+  per-ply `sourceFen` carries exact rights, en passant and move numbers, and the
+  plan's FEN is returned VERBATIM on a hit — so every MAINLINE position is exact,
+  at no cost (pagestate.js answers from memory; nothing is fetched or simulated).
+  Keyed on PLACEMENT + SIDE ONLY — the rest of that FEN is what the lookup exists
+  to supply — and a placement repeating within the variation is poisoned unless
+  both occurrences agree on the first four fields. A position INSIDE a comment
+  line is not on the mainline and still falls back to the heuristic, with its
+  rights intersected against the mainline position the comment hangs off
+  (`boundReviewCastling` + the hoisted `attachPlyOf`): rights only ever shrink,
+  so that can REMOVE an invented right and never grant one. `mainlineFens` and
+  `attachPlyOf` were hoisted out of the continuation module (section 18) for
+  this. En passant is still always "-" off the mainline.
+  Mid-animation frames are skipped by
   requiring exactly one king per side. The panel mounts on `document.body`
   (`position: absolute` in DOCUMENT coordinates — viewport rect + scroll
   offset — NEVER fixed: a fixed element anchored to scrolling content chases
@@ -1330,9 +1350,9 @@ Currently working (v0.18.x).
   would drive Chessable's board, which does not work), so the SAN is resolved
   with `sanToUci` against `cr.pos`; it stands down while the quick-edit popup is
   open, which reads the same clicks for its alt tab. The START position is
-  `readReviewFen()`, so it inherits both of that function's approximations
-  (castling from home squares, en passant always "-") — every position after it
-  is exact. `positionReviewPanel`'s below-the-board fallback now also clears
+  `readReviewFen()`, so it inherits whatever that can answer — exact on the
+  mainline (the lesson plan's own FEN), home-square castling and en passant "-"
+  inside a comment line — and every position after it is exact. `positionReviewPanel`'s below-the-board fallback now also clears
   `CR_PANEL_ID`, for the stacked layout where both park under the board.
   PLAYING writes nothing: no proofs, no rescheduling, and Chessable's board is
   never touched — so `closeReview` skips `navigateToLineEnd` in this mode and
