@@ -9639,6 +9639,36 @@
      */
     const isBlunderAnnot = (annot) => Boolean(annot) && annot[0] === '?';
 
+    /**
+     * True for an annotation that marks the move as one to take seriously:
+     * "!", "!!", "!?". Same first-character discipline as isBlunderAnnot, which
+     * is what keeps "!?" (interesting) apart from "?!" (dubious) — the two
+     * differ only in which character comes first.
+     */
+    const isStrongAnnot = (annot) => Boolean(annot) && annot[0] === '!';
+
+    /**
+     * IMPORTANT lines (section 18c): a clickable line whose FIRST move carries a
+     * "!" — "2.Nc3! Nc6 3.d4 cxd4" — is one the author is pointing at, and every
+     * host of it (the heads-up, the launcher, the quiz panel) says so.
+     *
+     * The FIRST move, deliberately, and not "any move in the line": the opening
+     * move is the one that NAMES a line — it is what the heads-up prints, what
+     * the launcher counts and what the user chooses by — while a "!" deeper in
+     * praises that move, which is an ordinary thing for an author to do about a
+     * line they consider unremarkable as a whole. Ground-truthed 2026-08-01 on
+     * course 453453: the glyph survives into BOTH readers untouched — the DOM
+     * span reads "3.c3!" (moveAnnotation) and the lesson plan's own comment JSON
+     * carries {"key":"S","val":"3.c3!"} (parseCommentMove) — so nothing has to
+     * be parsed specially for this, the annotation was already on ply 0.
+     *
+     * Drill cards (section 20) build their plies from the mistake log, which has
+     * no annotations, so they are never important; that is right, since a mistake
+     * is not a line an author marked.
+     */
+    const importantLine = (line) => Boolean(line && line.plies && line.plies[0] &&
+      isStrongAnnot(line.plies[0].annot));
+
     /** The key of the LINE a nested line was written inside: drop the trailing
      *  "<move>.<line>" pair ("0.1.7.1" → "0.1"); '' for a top-level line. */
     function parentKey(key) {
@@ -11603,6 +11633,12 @@
       // The two modes own different halves of the panel; whichever is up hides
       // the other's rows, so nothing of the quiz shows on the analysis board.
       const analysing = cr.mode === 'analysis';
+      // Section 18c. Set here rather than in startLine so every state of the
+      // panel is covered by one statement — the scope picker (no line yet), the
+      // analysis board and a drill card all have to CLEAR it, and each of those
+      // is reached by a different path.
+      cr.panel.classList.toggle('clo-cr-panel--important',
+        !analysing && cr.mode !== 'drill' && importantLine(cr.line));
       cr.ui.list.hidden = !analysing;
       cr.ui.anActions.hidden = !analysing;
       if (!analysing) { cr.ui.anStatus.hidden = true; cr.ui.anPrefix.hidden = true; }
@@ -11629,9 +11665,13 @@
         const wrong = (entry && mistakeLogApi && mistakeLogApi.wrongLabel(entry)) || '';
         cr.ui.progress.textContent = [shortDrillTitle(where), wrong].filter(Boolean).join(' · ');
       } else {
+        // The outline says "important" at a glance; the word is what says it
+        // unambiguously, and it costs nothing here — the title is one line of
+        // uppercase label with room to spare.
+        const what = importantLine(cr.line) ? 'Important continuation' : 'Continuation';
         cr.ui.title.textContent = total > 1
-          ? 'Continuation ' + (cr.lineIdx + 1) + ' of ' + total
-          : 'Continuation';
+          ? what + ' ' + (cr.lineIdx + 1) + ' of ' + total
+          : what;
         cr.ui.progress.textContent = 'Move ' + Math.min(done + 1, plies) + ' of ' + plies;
       }
 
@@ -11991,12 +12031,20 @@
           'get right first try, with no hint, comes off the list.';
       }
       if (showQueue) {
+        const big = [...cr.hu.armed.values()].filter(importantLine).length;
+        cr.queueBtn.classList.toggle('clo-cr-queue--important', big > 0);
         cr.queueBtn.textContent = queued > 1
           ? 'Review queued lines (' + queued + ')' : 'Review queued line';
         cr.queueBtn.title = 'Play through the ' + (queued > 1 ? queued + ' lines' : 'line') +
-          ' you queued while working through this variation.';
+          ' you queued while working through this variation.' + importantNote(big, queued);
       }
       if (!show) return;
+      // Section 18c: a "!" on a line's first move is the author saying "this
+      // one matters", so the launcher must say it BEFORE the user decides
+      // whether to press it — by the time the quiz panel could, the choice is
+      // already made.
+      const big = freshLines().filter(importantLine).length;
+      cr.button.classList.toggle('clo-cr-open--important', big > 0);
       // "Clickable", not "continuation": a line branching off earlier in the
       // variation continues nothing — what all of these lines have in common is
       // that Chessable printed them as clickable moves in the comment.
@@ -12007,7 +12055,21 @@
         'yours are asked for on our own board.' +
         (skipped ? ' ' + skipped + ' further line' + (skipped > 1 ? 's are' : ' is') +
           ' already in your course as a variation, so ' + (skipped > 1 ? 'they are' : 'it is') +
-          ' left out.' : '');
+          ' left out.' : '') + importantNote(big, n);
+    }
+
+    /** What a launcher says about the important lines in the set it opens.
+     *  Nothing at all when there are none — the ordinary case must not carry a
+     *  sentence about a mark the author never wrote. */
+    function importantNote(big, total) {
+      if (!big) return '';
+      if (big === total) {
+        return total > 1
+          ? ' All of them are marked important (“!” on the first move).'
+          : ' It is marked important (“!” on the first move).';
+      }
+      return ' ' + big + ' of them ' + (big > 1 ? 'are' : 'is') +
+        ' marked important (“!” on the first move).';
     }
 
     function hideButton() {
@@ -12463,7 +12525,14 @@
       }
       const ui = cr.hu.ui;
       const mine = group.lines[0].plies[0].color === cr.userColor;
-      ui.title.textContent = group.final ? 'Continuation' : 'Clickable line';
+      // Section 18c: any important line in the group lifts the WHOLE panel —
+      // the group is raised and queued as one, so a highlight on one row inside
+      // an otherwise ordinary-looking panel would be the wrong unit.
+      const important = group.lines.some(importantLine);
+      cr.hu.el.classList.toggle('clo-cr-heads--important', important);
+      ui.title.textContent = important
+        ? (group.final ? 'Important continuation' : 'Important line')
+        : (group.final ? 'Continuation' : 'Clickable line');
       ui.lead.textContent = group.final
         ? (mine ? 'You can also carry on with:' : 'From here the opponent can play:')
         : 'The opponent can also respond with:';
@@ -12476,7 +12545,10 @@
       while (ui.moves.firstChild) ui.moves.removeChild(ui.moves.firstChild);
       for (const line of group.lines) {
         const row = document.createElement('div');
-        row.className = 'clo-cr-heads__move';
+        row.className = 'clo-cr-heads__move' +
+          (importantLine(line) ? ' clo-cr-heads__move--important' : '');
+        // The annotation is printed as the author wrote it, which is also what
+        // marks the line: "2.Nc3!" needs no badge of ours beside it.
         row.textContent = line.plies[0].san + (line.plies[0].annot || '');
         ui.moves.appendChild(row);
       }

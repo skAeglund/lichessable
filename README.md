@@ -339,6 +339,22 @@ blunder. A marked move by your *opponent* is fine — that is the premise of a l
 about how to punish it — and **!?** counts as interesting rather than bad, so it
 stays.
 
+**Marking a line important.** Put a **!** on a line's *first* move — `3.c3! d5`,
+`2.Nc3! Nc6 3.d4 cxd4` — and the extension treats that line as one to pay
+attention to. Everywhere it is offered it is drawn in amber instead of the usual
+green: the **Review clickable(s)** button, the panel raised while you are still
+playing (which says **Important line**), and the quiz panel itself, whose title
+reads **Important continuation 2 of 2** while that line is the one being asked
+for. The tooltips say how many of the lines on offer are marked. Nothing else
+changes — an important line is quizzed, queued and skipped by exactly the same
+rules as any other; the mark only makes it impossible to miss.
+
+The **first** move is what counts, deliberately: it is the move that names a
+line, the one printed on the mini board and the one you decide by. A `!` deeper
+inside is praise for that move, which authors write about lines they think
+nothing special of as a whole. `!!` and `!?` count the same as `!`, the mirror of
+`?!` counting as a blunder mark — only the first character decides.
+
 **Lines you have already added are left out.** Chessable lets you add a clickable
 line to your repertoire as a real variation (right-click on the line), and once
 you have, that line gets reviewed like any other — quizzing it here as well would
@@ -1095,6 +1111,28 @@ enough not to run, the ↻ button is the only way back.
   trainer row, i.e. it covers the comment column, which at that moment holds
   nothing but "Quiz — White to play!". In the browse state that column holds the
   comment itself, so the old placement stands.
+- **Important lines** — section 18c, and almost entirely a reading of data that
+  was already there. `moveAnnotation` (DOM) and `parseCommentMove` (lesson plan)
+  have always split the trailing `!`/`?` run off a clickable move and kept it on
+  the ply, because a line asking the user for a `??` must not be quizzed — so
+  `importantLine(line)` is just `isStrongAnnot(line.plies[0].annot)`, the mirror
+  of `isBlunderAnnot`, first character only (`!?` important, `?!` blunder).
+  Ground-truthed live 2026-08-01 on course 453453 that the glyph survives into
+  **both** readers untouched: the DOM span reads `3.c3!` and the plan's comment
+  JSON carries `{"key":"S","val":"3.c3!"}`. Only the **first** ply is consulted —
+  it is the move that names a line and the one printed on the heads-up's mini
+  board, while a `!` deeper in is praise for a move, not a mark on the line.
+  Three hosts show it, all through one CSS variable (`--clo-cr-important`, amber:
+  green is this panel's ordinary accent and would vanish among the rest, red is
+  Exit and the repertoire panel's "no answer to this" warning): the launcher
+  (`clo-cr-open--important`, plus a ring on the filled queue button, both with a
+  sentence appended to the tooltip by `importantNote`), the heads-up
+  (`clo-cr-heads--important`, title **Important line**, and the row of any marked
+  line inside a mixed group), and the quiz panel (`clo-cr-panel--important`,
+  title **Important continuation *n* of *m***). The panel's class is toggled in
+  `syncUi` rather than in `startLine` so that the scope picker, the analysis
+  board and a drill card all clear it without a second statement. Nothing about
+  which lines are offered, queued or skipped changes.
 - **Analysis board** — section 19, a second *mode* of the section-18 overlays
   rather than a board of its own: `cr.mode` flips three input gates (which
   colour may move, and whether a move is checked against a line or simply

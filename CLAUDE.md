@@ -35,7 +35,9 @@ named after "continuations", since a line branching off earlier in the variation
 continues nothing — which quizzes those lines on
 OUR OWN board overlaid on Chessable's — theirs is navigation-only (section 18);
 an opt-in setting starts that review by itself, and ending it leaves THEIR board
-on the position the line reached. That same board doubles as a free-play
+on the position the line reached. A "!" on such a line's FIRST move marks it
+IMPORTANT and every host of it — launcher, mid-quiz heads-up, quiz panel — turns
+amber and says so (section 18c). That same board doubles as a free-play
 ANALYSIS board (section 19): "Analyse" on the widget lets any legal move be
 played for either side from the completed position, with the Lichess panel and
 the engine following OUR board instead of Chessable's, and "Add as line" writes
@@ -1208,6 +1210,40 @@ Currently working (v0.18.x).
   (v0.36.2). Budget is `headsUpScanTries` (~30 s at the 500 ms tick).
   Wiped by `resetHeadsUp` on every variation change and on leaving the trainer
   path.
+- Important lines (section 18c, v0.49.0): a clickable line whose FIRST move
+  carries a "!" ("3.c3! d5") is one the author is pointing at, and every host of
+  it says so. Almost no new reading: `moveAnnotation` (DOM) and
+  `parseCommentMove` (plan) have ALWAYS split the trailing `!`/`?` run off a
+  clickable move and kept it on the ply — that is how a line asking the user for
+  a "??" gets dropped — so `importantLine` is `isStrongAnnot(plies[0].annot)`,
+  the mirror of `isBlunderAnnot`, FIRST CHARACTER only ("!?" important, "?!"
+  blunder). Ground-truthed live 2026-08-01 on course 453453 that the glyph
+  survives into BOTH readers untouched: the DOM span reads "3.c3!" and the plan's
+  comment JSON carries `{"key":"S","val":"3.c3!"}`.
+  THE FIRST PLY, never "any ply in the line": the opening move is what NAMES a
+  line — it is what the heads-up prints, what the launcher counts and what the
+  user chooses by — while a "!" deeper in praises that move, an ordinary thing
+  for an author to write about a line they think nothing special of as a whole.
+  AMBER (`--clo-cr-important`), and neither of the two colours already in use:
+  green is this feature's ordinary accent (prompt, launcher, branching move), so
+  an important line drawn in green would be invisible among them, and red is Exit
+  plus the repertoire panel's "you have no answer to this". The colour is never
+  alone — every host also says the WORD "Important", since a colour-only signal
+  is the one thing a colour deficiency helps least with.
+  Three hosts: the launcher (`clo-cr-open--important`, a RING on the filled queue
+  button since an amber fill would read as a different button, and a sentence
+  from `importantNote` on both tooltips), the heads-up
+  (`clo-cr-heads--important` when ANY line of the group is marked — the group is
+  raised and queued as one unit — plus `clo-cr-heads__move--important` on the
+  marked rows inside a mixed one), and the quiz panel
+  (`clo-cr-panel--important`, title "Important continuation n of m"). The quiz
+  panel's class is toggled in `syncUi`, NOT in `startLine`: the scope picker (no
+  line yet), the analysis board and a drill card must all CLEAR it, and each is
+  reached by a different path.
+  NOTHING about which lines are offered, queued, dropped or ordered changes —
+  the mark is a highlight, not a filter. Drill cards (section 20) build plies
+  from the mistake log, which has no annotations, so they are never important;
+  that is correct, a failed move is not a line an author marked.
 - Analysis board (section 19, v0.40.0): the SAME overlay pair as section 18 in a
   second MODE (`cr.mode`), never a board of its own — the whole point is that
   the quiz already solved "Chessable's browse board accepts no input", and a

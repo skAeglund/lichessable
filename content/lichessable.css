@@ -2269,6 +2269,66 @@ html.clo-injecting .legal-square-capture-mt2 {
 /* The glyph fallback is sized for the full-size board; scale it to this one. */
 .clo-cr-mini .clo-cr-piece--glyph { font-size: 18px; }
 
+/* --- important lines (section 18c) -------------------------------------------
+   A clickable line whose FIRST move carries a "!" is one the author pointed at,
+   and the highlight is on the WHOLE panel rather than on a row inside it: the
+   heads-up raises a group as one unit and the quiz panel shows one line at a
+   time, so in both the panel IS the line.
+
+   AMBER, and neither of the two colours already in use. Green is this panel's
+   ordinary accent — the prompt, the launcher, the branching move — so an
+   important line drawn in green would be invisible among them; red belongs to
+   Exit and to the repertoire panel's "you have no answer to this" warning, and
+   an author's "!" is a recommendation, not a problem. Amber is also what a
+   chess reader already associates with an annotated move.
+
+   Border + ring rather than a background wash: these panels sit over
+   Chessable's own UI and are read as text, and tinting the surface behind a
+   comment column costs contrast for no extra signal. */
+:root {
+  --clo-cr-important: #e6b422;
+}
+
+.clo-cr-panel--important,
+.clo-cr-heads--important {
+  border-color: var(--clo-cr-important);
+  box-shadow: 0 0 0 1px var(--clo-cr-important),
+              0 0 16px rgba(230, 180, 34, 0.25);
+}
+
+/* The word "Important" in the title is what makes the outline unambiguous —
+   colour alone is the one thing a colour deficiency helps least with. */
+.clo-cr-panel--important .clo-cr-title,
+.clo-cr-heads--important .clo-cr-heads__title {
+  color: var(--clo-cr-important);
+}
+
+/* Inside a mixed group the ordinary lines stay green, so the marked one is
+   still tellable apart once the panel as a whole is amber. */
+.clo-cr-heads__move--important {
+  color: var(--clo-cr-important);
+}
+
+/* The launchers. Said BEFORE the press: by the time the quiz panel could say
+   it, the user has already chosen whether to play the lines. */
+.clo-cr-open--important {
+  border-color: var(--clo-cr-important);
+  color: var(--clo-cr-important);
+}
+
+.clo-cr-open--important:hover {
+  background: rgba(230, 180, 34, 0.22);
+  color: #fff;
+}
+
+/* The queued-lines button is FILLED green (it is the one call to action after a
+   variation ends), so it keeps its fill and takes a ring instead — an amber
+   fill would read as a different kind of button rather than the same one
+   carrying a mark. */
+.clo-cr-queue--important {
+  box-shadow: 0 0 0 2px var(--clo-cr-important);
+}
+
 /* --- repertoire coverage (section 21) ----------------------------------------
    A body-mounted, fixed panel on a course page — never inside Chessable's React
    tree — with a small launcher button in its place while it is closed. It is
