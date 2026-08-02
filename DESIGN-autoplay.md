@@ -21,8 +21,12 @@ ground-truthed live on the throwaway Testing course
 > position is parsed straight from its own `sourceFen` — so the "line does not
 > replay from a known start" and ambiguity bail-outs are gone too. The
 > DECISIONS in §1–§5 and §7–§9 (what gets recorded, position keying, the
-> conflict guard's *rule*, drag injection, hand-back behaviour) all stand
+> line check's *rule*, drag injection, hand-back behaviour) all stood
 > unchanged; only the oracle's *source* changed. See CLAUDE.md section 13.
+>
+> **v0.55.0** then made a position hold a SET of proven moves and turned the
+> old conflict guard around: the line names the move, the record only proves
+> it. §2 and §3 are rewritten for that; everything else still stands.
 
 ---
 
@@ -57,15 +61,16 @@ the fallback is dropped from scope. (A user who wants exactly that behaviour
 already has a native approximation: Key Moves + the owner-side "Automatically
 choose key moves … by common position" builder.)
 
-## 2) Keying decision, session scope, conflict guard
+## 2) Keying decision, session scope, line check
 
 ### Position-keyed (chosen)
 
-The record is keyed on the **position**, and the value is the move played:
+The record is keyed on the **position**, and the value is the **set** of moves
+proven there:
 
 ```
 key   = piece placement + side to move + castling rights   (en passant always '-')
-value = { uci, promo?, seenAt, count }
+value = { moves: { "<uci>": { uci, promo?, seenAt, count }, … } }
 ```
 
 This is the same normalization the panel's explorer cache already uses
@@ -104,23 +109,40 @@ Note: content scripts cannot read `storage.session` by default; the worker
 must call `chrome.storage.session.setAccessLevel('TRUSTED_AND_UNTRUSTED_CONTEXTS')`
 once at startup. One line in background.js, no new permissions.
 
-### Conflict guard (same position, different expected move)
+### Line check (which move does THIS variation want here?)
+
+*Superseded the "conflict guard" in v0.55.0. The rule below is stricter than
+what it replaced; only the direction of the question changed.*
 
 The one real corruption path: the record says the user answered `X` in this
-position, but the current variation's mainline expects `Y` (e.g. an updated
-repertoire where old and new lines coexist in the rotation). Auto-playing `X`
+position, but the current variation's mainline expects `Y`. Auto-playing `X`
 would register a mistake ("Incorrect", verified: piece snaps back and the
 move is scored wrong).
 
-The guard is **verification against the variation's actual line before any
-auto-play**, using the line oracle of §6: when a variation's first user-turn
-position hits the record, the extension fetches that variation's mainline
-(SAN per ply) once, and from then on only auto-plays a recorded move whose
-SAN — computed from the recorded UCI via the existing pure `engine/san.js` —
-equals the oracle's SAN at that ply. Mismatch ⇒ no auto-play, manual input,
-and the FEN is marked `conflicted` for the rest of the session so later
-variations do not retry it. The mistaken-auto-play path is therefore designed
-out, not merely detected after the fact.
+The guard is **the line, not the record, choosing the move**, using the line
+oracle of §6. On a user-turn position: locate the position in the plan's own
+line by content, resolve the mainline's SAN there to a UCI *on the plan's own
+position* (exact castling and en passant, via `sanToUci`), and auto-play it
+only if that exact move is in the position's proven set. Otherwise: no
+auto-play, manual input, retried the next time a variation passes through.
+The mistaken-auto-play path is designed out, not detected after the fact —
+the move played is by construction the one the current variation asks for.
+
+**Same position, two right answers.** A course regularly answers one position
+two ways: two variations branching at ply 4 (2...Nc6 in one, 2...Qb6 in
+another) are both correct, each in its own line. Because the question is
+"is the line's move proven?" and not "does the record's move match the line?",
+proving both makes both lines fully auto-playable, and neither disables the
+other.
+
+This is what the multi-move value in §2 buys, and it is why nothing is
+memoised as `conflicted` any more: a mismatch is no longer a verdict about
+the position (which was wrong whenever the position had a second answer), just
+a statement about one variation at one moment.
+
+Castling notation cannot bite here: both sides come from CloSan's own
+generator — the record's UCI is a board diff resolved through it — so O-O is
+`e1g1` on both, never the explorer's king-takes-rook `e1h1`.
 
 If the oracle cannot be obtained (timeout, markup change), the variation
 simply gets no auto-play. Manual play is always the failure mode — never a
@@ -133,15 +155,26 @@ blind move.
 {
   "<bid>": {                       // per course; different courses never cross
     "<posKey>": {                  // "<placement> <side> <castling>"
-      uci: "e7e6",                 // observed from the board diff, not SAN-parsed
-      promo: null,                 // "q"|"r"|"b"|"n" for promotions (see §8)
-      seenAt: 1789200000000,       // last confirmation; TTL pruning
-      count: 3,                    // times confirmed (diagnostics only)
-      conflicted: false            // true ⇒ never auto-play this position again
+      moves: {                     // EVERY move proven here, not just the last
+        "b8c6": {
+          uci: "b8c6",             // observed from the board diff, not SAN-parsed
+          promo: null,             // "q"|"r"|"b"|"n" for promotions (see §8)
+          seenAt: 1789200000000,   // last confirmation; TTL pruning, per move
+          count: 3                 // times confirmed (diagnostics only)
+        },
+        "d8b6": { … }              // a second variation branches here — also right
+      }
     }, …
   }
 }
 ```
+
+Pre-v0.55.0 entries were one move per position (`{uci, promo, seenAt, count,
+conflicted}`) directly under `<posKey>`. They live in `storage.session` and so
+outlive the build that wrote them — an extension reload mid-session must not
+cost the user their proofs — so `pruneRecordEntry` reads them as a one-move set
+on the way in, dropping the dead `conflicted` flag. An old build reading a new
+entry sees no `uci` and degrades to manual play, never to a wrong move.
 
 - **Population**: §4's move tracker watches the quiz board. A user-side move
   that the trainer accepts is recorded; acceptance is signalled by the
@@ -204,11 +237,14 @@ position with the user to move and the quiz idle:
 ```
 on user-turn position P:
   entry = record[bid][posKey(P)]
-  if !enabled or !entry or entry.conflicted        → manual (do nothing)
+  if !enabled or !entry                            → manual (do nothing)
   if oracle for this oid unknown                   → request oracle (§6), manual meanwhile
   if oracle failed                                 → manual for rest of variation
-  if san(entry.uci, P) !== oracle.sanAt(plyOf(P))  → mark conflicted, manual
-  else                                             → wait speedDelay, injectDrag(entry)
+  wanted = uciOf(oracle.sanAt(plyOf(P)), P)        → the move THIS line asks for
+  if !wanted or wanted is a promotion              → manual
+  proven = entry.moves[wanted]
+  if !proven or expired                            → manual (retried next time through)
+  else                                             → wait speedDelay, injectMove(proven)
 ```
 
 The loop naturally hands control back at the first unproven position: the
@@ -326,8 +362,8 @@ Two sources, used for different things:
    trainer's — is observed as a square diff by the tracker. This is where
    the record's UCI comes from; no SAN parsing, no move list, no API.
 2. **The line oracle** `/variation/<oid>/` (on demand, hidden tab): the
-   variation's mainline SAN + `is_key` flags, used *only* to verify a
-   candidate auto-play (conflict guard). Fetched lazily the first time a
+   variation's mainline SAN + `is_key` flags, used *only* to decide which move
+   this line wants (the line check). Fetched lazily the first time a
    variation hits the record, cached per session.
 
 Explicitly rejected: Chessable's JSON API. The trainer uses
@@ -351,12 +387,14 @@ inside Chessable's React tree — with one new cluster:
 - A small status chip while acting: `▶ replaying known moves… (click to
   stop)` — clicking it (or any user mousedown on the board) cancels
   auto-play for the current variation and hands control back instantly.
-  Also shown briefly: `✋ new move — your turn` on handback, and
-  `⚠ line differs here — manual` on a conflict. All text via
+  Also shown briefly: `✋ new move — your turn` on handback. (A `⚠ line
+  differs here — manual` chip existed for the old conflict verdict; v0.55.0
+  dropped it with the verdict — a line whose move is not proven yet is an
+  ordinary hand-back, and saying more would be noise.) All text via
   `textContent`, styles namespaced `.clo-`.
 
 States: disabled (nothing rendered beyond the toggle), armed (toggle on, no
-match yet), verifying (oracle in flight), replaying, handed-back, conflict.
+match yet), verifying (oracle in flight), replaying, handed-back.
 
 ## 8) Edge cases
 
@@ -379,8 +417,10 @@ match yet), verifying (oracle in flight), replaying, handed-back, conflict.
   feature is inert. Zero cost.
 - **Transpositions**: handled by keying; ply for the oracle check comes from
   move count, which transpositions preserve.
-- **Same position, different move**: §2 conflict guard; never auto-played,
-  marked `conflicted` for the session.
+- **Same position, more than one right move**: §2 line check. Each variation
+  replays the move its own line asks for; a position is auto-playable in as
+  many lines as the user has answered it in, and unproven answers are simply
+  handed back, never held against the position.
 - **Session end / summary screen**: drawer marker disappears (existing
   overstudy watcher already handles this state); tracker disarms.
 - **Tab hidden / occluded**: auto-play pauses while `document.hidden`

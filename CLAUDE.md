@@ -734,6 +734,18 @@ Currently working (v0.18.x).
   (placement + side + castling, en passant dropped), per course, in
   `chrome.storage.session` with a 12 h TTL — deliberately never
   `storage.local`, or stale proofs would auto-pass genuinely-due cards.
+  A POSITION HOLDS A SET OF PROVEN MOVES, not one (`{moves: {<uci>: {uci,
+  promo, seenAt, count}}}`, v0.55.0): a course regularly answers one position
+  two ways — two variations branching at ply 4, 2...Nc6 in one and 2...Qb6 in
+  another — and both are right, each in its own line. `confirmPendingRecord`
+  therefore MERGES a proof in beside the others; replacing was what made
+  proving the second cost the user the first. `pruneRecordEntry` is the single
+  door into `ap.record` (load, cross-course save prune) so everything else may
+  assume `entry.moves`, and it doubles as the upgrade path for pre-v0.55
+  single-move entries, which outlive their build in `storage.session` — an
+  extension reload mid-session must not cost the user their proofs. An OLD
+  build reading a new entry finds no `uci` and degrades to manual play, never
+  to a wrong move.
   background.js calls `chrome.storage.session.setAccessLevel` at startup so
   the content script can read that area (content sends `clo-ping` first to
   guarantee the worker has run). The tracker does NOT use `readReviewFen`:
@@ -747,14 +759,27 @@ Currently working (v0.18.x).
   genuine answer (recorded when the opponent replies or the variation
   completes, vetoed if `trainerMoveNote` reads Incorrect/Time's up); user
   colour with no pointer input ⇒ trainer-played (solution replay, Key-Moves
-  prefix) and never recorded. Before ANY injection the recorded move's SAN
-  (CloSan) must equal the variation mainline's SAN at that ply — the mainline
-  comes from the LINE ORACLE: MoveTrainer2's own `lessonPlan`, read out of
-  page state by `content/pagestate.js` (see below). Mismatch ⇒ entry marked
-  `conflicted` for the session, manual play; any other uncertainty (plan
-  unreadable, promotion recorded — trainer picker markup UNVERIFIED, drag not
-  accepted within 2.5 s, ply untrusted after losing track) also degrades to
-  manual, never a blind move. Injection CLICKS the move — `pressSquare` on
+  prefix) and never recorded. THE LINE CHOOSES THE MOVE, THE RECORD ONLY
+  PROVES IT (v0.55.0, was the other way round): `evaluateAutoPlay` locates the
+  position in the LINE ORACLE — MoveTrainer2's own `lessonPlan`, read out of
+  page state by `content/pagestate.js` (see below) — resolves the mainline's
+  SAN there to a uci through `sanToUci` ON THE PLAN'S OWN POSITION (exact
+  castling and en passant), and injects only if THAT move is in the position's
+  proven set. Asking it this way round is the whole of the multi-answer
+  support: neither branch of a shared position can disable the other, because
+  the move played comes from the variation being played and never from a
+  record that has no idea which line it is in. So there is nothing to memoise
+  as "conflicted" any more — that flag and its `⚠ line differs here` chip are
+  GONE, and an unproven line move is an ordinary hand-back, retried the next
+  time a variation passes through, rather than a verdict for the session.
+  Castling notation cannot bite: both sides are CloSan's own generator (the
+  record's uci is a board diff resolved through it), so O-O is "e1g1" on both
+  and never the explorer's "e1h1". A promoting line move is refused by
+  LENGTH (`sanToUci` appends the piece, so it could never match a stored
+  4-char uci anyway) with its own message rather than reading as unproven.
+  Any other uncertainty (plan unreadable, promotion recorded — trainer picker
+  markup UNVERIFIED, drag not accepted within 2.5 s, ply untrusted after
+  losing track) also degrades to manual, never a blind move. Injection CLICKS the move — `pressSquare` on
   the source then the target, the explore panel's recipe unchanged, both
   presses in the SAME task (an older note here claimed click-click does not
   work on the trainer board; it does, on quiet moves and captures alike, and
@@ -891,10 +916,11 @@ Currently working (v0.18.x).
     `tick`/`processFrame`/`evaluateAutoPlay`) and logs one line telling the user
     to reload the page. Reloading the extension alone never revives a tab.
   - `logHandback(reason)` prints one console line per (position, reason) pair
-    whenever auto-play declines to replay — no-record, conflicted, expired,
+    whenever auto-play declines to replay — no-record, the line's move not
+    proven yet (named in the message: "the line plays Qb6 here"), expired,
     promotion, oracle failed/pending, ply not found in the line,
-    illegal SAN — since a silent no-op is otherwise indistinguishable from a
-    bug. Debug-only DOM hook: dispatching a `clo-debug` event on `document`
+    unresolvable SAN — since a silent no-op is otherwise indistinguishable
+    from a bug. Debug-only DOM hook: dispatching a `clo-debug` event on `document`
     dumps a summary (record/cache key counts, no move data) onto
     `documentElement[data-clo-session]` — storage areas aren't otherwise
     visible from the page.

@@ -6678,7 +6678,7 @@
   //
   // The oracle is the trainer's own `lessonPlan`, lifted from page state by
   // the MAIN-world content/pagestate.js: per ply a SAN plus the full
-  // `sourceFen`, so the positions the conflict guard compares against are
+  // `sourceFen`, so the positions the line check resolves its move on are
   // Chessable's, exactly — no move list is re-parsed, no line is re-simulated,
   // and nothing is fetched (the plan is in memory before the variation's first
   // move animates). Read once per variation, in the tab auto-play runs in.
@@ -6973,6 +6973,46 @@
     const posKeyOf = (pos) => placementFen(pos.board) + ' ' + pos.side + ' ' + (pos.castling || '-');
 
     /**
+     * Drop everything expired from ONE stored record entry and return it in the
+     * current shape — `{ moves: { <uci>: {uci, promo, seenAt, count} } }` — or
+     * null when nothing is left. Every entry in `ap.record` has been through
+     * here, so the rest of the module may assume `entry.moves` exists.
+     *
+     * A position holds a SET of proven moves, not one, because a course
+     * regularly answers the same position two ways: two variations branching
+     * here (2...Nc6 in one, 2...Qb6 in another) are BOTH right, each in its own
+     * line. Which one gets played is never this record's decision — see
+     * evaluateAutoPlay, which asks the lesson plan what THIS variation wants and
+     * looks that move up. So a second proof is added beside the first rather
+     * than replacing it, and a position the user has answered both ways stays
+     * fully auto-playable in both lines.
+     *
+     * Also the upgrade path. Pre-v0.55 entries were one move per position
+     * (`{uci, promo, seenAt, count, conflicted}`) and live in storage.session
+     * with a 12 h TTL, so they outlive the build that wrote them — an extension
+     * reload mid-session must not cost the user their proofs. They are read as a
+     * one-move set; the old `conflicted` flag is dropped on the way past, since
+     * the mismatch it memoised is exactly what this shape exists to allow.
+     */
+    function pruneRecordEntry(entry, now) {
+      if (!entry) return null;
+      const src = entry.moves || (entry.uci ? { [entry.uci]: {
+        uci: entry.uci, promo: entry.promo || null, seenAt: entry.seenAt, count: entry.count || 1,
+      } } : null);
+      if (!src) return null;
+      const moves = {};
+      let kept = 0;
+      for (const [uci, mv] of Object.entries(src)) {
+        if (mv && now - mv.seenAt < C.recordTtlMs) { moves[uci] = mv; kept++; }
+      }
+      return kept ? { moves } : null;
+    }
+
+    /** Proven moves across every position of a record — for the logs only. */
+    const countProven = (rec) => Object.values(rec || {})
+      .reduce((n, entry) => n + Object.keys(entry.moves || {}).length, 0);
+
+    /**
      * Position object for a mid-game anchor. Castling is the same home-square
      * heuristic readReviewFen uses (may over-grant); en passant unknown. Both
      * are accepted approximations — and internally consistent, because every
@@ -7066,9 +7106,11 @@
         const mine = (stored[C.recordKey] || {})[bid] || {};
         const now = Date.now();
         for (const [key, entry] of Object.entries(mine)) {
-          if (entry && now - entry.seenAt < C.recordTtlMs) ap.record[key] = entry;
+          const kept = pruneRecordEntry(entry, now);
+          if (kept) ap.record[key] = kept;
         }
-        log('auto-play: loaded', Object.keys(ap.record).length, 'proven positions for course', bid);
+        log('auto-play: loaded', countProven(ap.record), 'proven moves in',
+          Object.keys(ap.record).length, 'positions for course', bid);
       } catch (err) {
         if (noteDeadContext(err)) return;
         warn('auto-play: could not read the session record:', err);
@@ -7089,13 +7131,17 @@
         const now = Date.now(); // prune expired entries of every course while we're here
         for (const bid of Object.keys(all)) {
           for (const [key, entry] of Object.entries(all[bid])) {
-            if (!entry || now - entry.seenAt >= C.recordTtlMs) delete all[bid][key];
+            // Upgrades other courses' pre-v0.55 entries in passing, which is
+            // what keeps a tab still running the old build from re-reading
+            // its own single-move shape here for the rest of the session.
+            const kept = pruneRecordEntry(entry, now);
+            if (kept) all[bid][key] = kept; else delete all[bid][key];
           }
           if (!Object.keys(all[bid]).length) delete all[bid];
         }
         await chrome.storage.session.set({ [C.recordKey]: all });
-        log('auto-play: record saved —', Object.keys(ap.record).length,
-          'positions for course', ap.recordBid);
+        log('auto-play: record saved —', countProven(ap.record), 'moves in',
+          Object.keys(ap.record).length, 'positions for course', ap.recordBid);
       } catch (err) {
         if (noteDeadContext(err)) return;
         warn('auto-play: could not save the session record:', err);
@@ -7113,7 +7159,7 @@
      */
     async function clearRecord() {
       const bid = ap.recordBid;
-      const had = ap.record ? Object.keys(ap.record).length : 0;
+      const had = countProven(ap.record);
       clearTimeout(ap.saveTimer);
       ap.saveTimer = 0;
       if (ap.record) ap.record = {};
@@ -7127,7 +7173,7 @@
         const all = stored[C.recordKey] || {};
         delete all[bid];
         await chrome.storage.session.set({ [C.recordKey]: all });
-        log('auto-play: cleared', had, 'proven positions for course', bid);
+        log('auto-play: cleared', had, 'proven moves for course', bid);
       } catch (err) {
         if (noteDeadContext(err)) return;
         warn('auto-play: could not clear the session record:', err);
@@ -7173,8 +7219,11 @@
         out = {};
         for (const [k, v] of Object.entries(all)) {
           if (k === C.recordKey) {
+            // Positions AND proven moves: a position can hold several (two
+            // variations branching here), so the two numbers differing is the
+            // only outside evidence that the multi-answer record is working.
             out[k] = Object.fromEntries(Object.entries(v).map(([bid, recs]) =>
-              [bid, Object.keys(recs).length]));
+              [bid, { positions: Object.keys(recs).length, moves: countProven(recs) }]));
           } else if (v && typeof v === 'object') {
             out[k] = Object.keys(v);
           } else {
@@ -7280,18 +7329,21 @@
         return;
       }
       if (!ap.record) return;
-      const prev = ap.record[pending.posKey];
-      ap.record[pending.posKey] = {
+      // MERGED into the position's set of proven moves, never replacing it: two
+      // variations branching here are both right, and proving the second must
+      // not cost the user the first. See pruneRecordEntry.
+      const entry = ap.record[pending.posKey] || (ap.record[pending.posKey] = { moves: {} });
+      const prev = entry.moves[pending.uci];
+      entry.moves[pending.uci] = {
         uci: pending.uci,
         promo: pending.promo,
         seenAt: Date.now(),
         count: (prev && prev.count || 0) + 1,
-        // A fresh proof of a DIFFERENT move lifts the conflict flag (the
-        // oracle check still guards every future auto-play of it).
-        conflicted: Boolean(prev && prev.conflicted && prev.uci === pending.uci),
       };
       scheduleSaveRecord();
-      log('auto-play: recorded', pending.uci, '(' + why + ')');
+      const ways = Object.keys(entry.moves).length;
+      log('auto-play: recorded', pending.uci, '(' + why + ')' +
+        (ways > 1 ? ' — this position is now answered ' + ways + ' ways' : ''));
     }
 
     function applyObservedMove(found, key) {
@@ -7328,8 +7380,8 @@
         vs.replayed++;
         vs.handbackShown = false; // a later handback (transposition resume) flashes again
         vs.trainerDrove = false;
-        const entry = ap.record && ap.record[posKeyBefore];
-        if (entry) { entry.seenAt = Date.now(); scheduleSaveRecord(); }
+        const proven = ap.record && ap.record[posKeyBefore] && ap.record[posKeyBefore].moves[uci];
+        if (proven) { proven.seenAt = Date.now(); scheduleSaveRecord(); }
       } else if (Date.now() - ap.lastPointerAt < C.pointerWindowMs) {
         // A genuine answer. Recorded once confirmed and not vetoed — and from
         // here on this variation belongs to the user: auto-play only ever
@@ -7633,8 +7685,6 @@
 
     // --- the auto-play loop --------------------------------------------------
 
-    const stripCheckGlyphs = (san) => String(san).replace(/[+#]+$/, '');
-
     function maybeHandback() {
       const vs = ap.vs;
       // Whatever the reason, this position is the user's to play: the replay is
@@ -7664,7 +7714,7 @@
 
     /**
      * Reads the trainer's own lesson plan for the CURRENT variation and turns
-     * it into the two arrays the conflict guard uses:
+     * it into the two arrays the line check uses:
      *   vs.oracle    — [{san, color}] per ply of the mainline
      *   vs.oracleSim — [{pos, key}]: the position BEFORE each ply, parsed from
      *                  the plan's own sourceFen. Exact castling and en-passant
@@ -7806,9 +7856,6 @@
       const entry = ap.record[posKeyOf(vs.pos)];
       const now = Date.now();
       if (!entry) { logHandback('no record for this position'); maybeHandback(); return; }
-      if (entry.conflicted) { logHandback('position marked conflicted'); maybeHandback(); return; }
-      if (now - entry.seenAt >= C.recordTtlMs) { logHandback('record expired'); maybeHandback(); return; }
-      if (entry.promo) { logHandback('recorded move is a promotion'); maybeHandback(); return; }
 
       if (vs.oracle === 'failed') { logHandback('line oracle failed'); return; }
       if (vs.oracle === 'pending') return; // no log — expected transient state
@@ -7817,23 +7864,51 @@
         return;
       }
 
-      // Conflict guard: locate the CURRENT position in the plan's own line by
-      // content (self-aligning — see requestOracle) and require the recorded
-      // move to be exactly what the mainline plays there. The SAN is computed
-      // on the plan's position, whose castling/en-passant state is exact.
+      // THE LINE CHOOSES THE MOVE, THE RECORD ONLY PROVES IT. Locate the
+      // CURRENT position in the plan's own line by content (self-aligning — see
+      // requestOracle), resolve what the mainline plays there to a uci on the
+      // plan's own position (exact castling and en passant), and require THAT
+      // move to be among the ones the user has already answered correctly.
+      //
+      // Asking the question this way round is what lets a position have more
+      // than one right answer: with 2...Nc6 and 2...Qb6 both proven, each
+      // variation replays its own move and neither disables the other. It also
+      // cannot mis-play — the move comes from the variation being played, not
+      // from a record that has no idea which line it is in — so there is
+      // nothing to memoise as "conflicted" any more. A position whose line
+      // move is not proven yet is an ordinary hand-back, retried the next time
+      // a variation passes through, rather than a verdict for the session.
+      //
+      // Castling notation cannot bite here: both sides are CloSan's own
+      // generator (the record's uci is a board diff resolved through it), so
+      // O-O is "e1g1" in both, never the explorer's king-takes-rook form.
       const here = placementKey(vs.pos.board) + ' ' + vs.pos.side;
       const idx = vs.oracleSim.findIndex((step) => step.key === here);
       if (idx < 0) { logHandback('position not found in the line'); maybeHandback(); return; }
       const expected = vs.oracle[idx];
-      const san = CloSan.moveToSan(vs.oracleSim[idx].pos, entry.uci);
-      if (!san) { logHandback('recorded move is illegal in the line'); maybeHandback(); return; }
-      if (stripCheckGlyphs(san) !== stripCheckGlyphs(expected.san)) {
-        entry.conflicted = true; // same position, different expected move — never retry this session
-        scheduleSaveRecord();
-        setStatus('⚠ line differs here — manual');
-        log('auto-play: conflict at line index', idx, '— recorded', san, 'vs expected', expected.san);
+      const wanted = sanToUci(vs.oracleSim[idx].pos, expected.san);
+      if (!wanted) {
+        logHandback('could not resolve the line move ' + expected.san);
+        maybeHandback();
         return;
       }
+      // sanToUci appends the promotion piece, so a promoting line never matches
+      // a stored move (recorded as {uci, promo}) — say so plainly rather than
+      // reporting it as unproven. The trainer's promotion picker is unverified;
+      // §8 of the design keeps these manual.
+      if (wanted.length > 4) {
+        logHandback('the line promotes here (' + expected.san + ')');
+        maybeHandback();
+        return;
+      }
+      const proven = entry.moves[wanted];
+      if (!proven) {
+        logHandback('the line plays ' + expected.san + ' here — not proven yet');
+        maybeHandback();
+        return;
+      }
+      if (now - proven.seenAt >= C.recordTtlMs) { logHandback('proof expired'); maybeHandback(); return; }
+      if (proven.promo) { logHandback('proven move is a promotion'); maybeHandback(); return; }
 
       // Both waits are counted from the BOARD CHANGE that made it our turn
       // (vs.lastMoveAt), never from the moment this evaluation runs — the
@@ -7871,16 +7946,17 @@
       // safe, and its two presses still share one task (so the move animates,
       // not drags). Any real pause (variation-start settle floor) still defers.
       if (delay <= 0) {
-        injectMove(entry, expectKey);
+        injectMove(proven, expectKey);
         return;
       }
       vs.injectTimer = setTimeout(() => {
         vs.injectTimer = 0;
-        injectMove(entry, expectKey);
+        injectMove(proven, expectKey);
       }, delay);
     }
 
-    function injectMove(entry, expectKey) {
+    /** `proven` is ONE move of a position's set: {uci, promo, seenAt, count}. */
+    function injectMove(proven, expectKey) {
       const vs = ap.vs;
       // The world may have changed during the speed delay — re-verify, and
       // drop the sticky "replaying" chip if the injection is off.
@@ -7891,18 +7967,18 @@
         return;
       }
       const board = getReviewBoard();
-      const fromEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', entry.uci.slice(0, 2)));
-      const toEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', entry.uci.slice(2, 4)));
+      const fromEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', proven.uci.slice(0, 2)));
+      const toEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', proven.uci.slice(2, 4)));
       if (!fromEl || !toEl) { vs.manualHold = true; return; }
       // The elapsed figure is the whole gap the user actually feels — board
       // change to injection — so an inconsistent replay can be diagnosed from
       // the log instead of by eye.
-      log('auto-play: playing', entry.uci, '(' + (Date.now() - vs.lastMoveAt) + ' ms after the board change)');
+      log('auto-play: playing', proven.uci, '(' + (Date.now() - vs.lastMoveAt) + ' ms after the board change)');
       // beforeKey is what the verify timer compares against: the placement the
       // injection is supposed to change. Observing our own move is the normal
       // way the injection gets closed out, but it is not the only evidence that
       // it landed — see the timer below.
-      vs.injected = { uci: entry.uci, at: Date.now(), beforeKey: vs.lastKey };
+      vs.injected = { uci: proven.uci, at: Date.now(), beforeKey: vs.lastKey };
       vs.replayAt = Date.now(); // …and the heads-up's "still replaying" clock
       // Belt and braces for the two presses below: if MoveTrainer2 ever does
       // get a frame between them, this class hides what a half-made selection

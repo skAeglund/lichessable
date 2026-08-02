@@ -166,10 +166,18 @@ against its **position** for the rest of the browser session (12 h cap); when
 a later variation reaches a position you've already answered — typically the
 shared prefix of the next line, but any transposition counts — the extension
 plays your recorded move for you and hands control back at the first move you
-have *not* proven yet. Before anything is auto-played the move is verified
-against that variation's actual mainline, so an updated repertoire never gets
-a wrong move replayed: on any mismatch the position is left to you (and not
-retried that session). Auto-played moves count as **normal correct answers** —
+have *not* proven yet. What gets played is always **the move that variation's
+own line asks for** — the extension looks that move up among the ones you have
+proven, rather than replaying whatever you last played here — so an updated
+repertoire never gets a wrong move replayed: if the line's move is one you
+haven't answered yet, the position is simply left to you, and tried again the
+next time a variation comes through it.
+
+That is also what makes **two answers to the same position** work. If your
+course branches — say two variations that meet 2.Nf3 with 2...Nc6 in one and
+2...Qb6 in another — play each one correctly once and both lines auto-play
+from then on: each replays its own move, and neither turns the other off.
+Auto-played moves count as **normal correct answers** —
 the move was proven earlier this session, and Chessable schedules it as
 passed. Failed or timed-out moves are never auto-played, and a move is never
 auto-played the first time it appears in a session. Once you've played a move
@@ -957,15 +965,18 @@ enough not to run, the ↻ button is the only way back.
   user-colour with no pointer input ⇒ trainer-played (solution replays,
   Key-Moves prefixes) and never recorded. The record lives in
   `chrome.storage.session` keyed on placement+side+castling per course, so
-  transpositions hit and nothing survives a browser restart. Before any
-  auto-play the recorded move is checked against the variation's mainline,
-  supplied by the **line oracle**: MoveTrainer2's own `lessonPlan`, which
-  carries each ply's SAN and full source FEN and is already in memory before
-  the variation's first move animates. React fibers are page-world state, so
+  transpositions hit and nothing survives a browser restart; a position holds
+  every move proven there, not just the last, which is what lets a course
+  branch at a position and have both lines replay. The move to play is chosen
+  by the **line oracle**, not by the record: MoveTrainer2's own `lessonPlan`,
+  which carries each ply's SAN and full source FEN and is already in memory
+  before the variation's first move animates, says what this variation wants
+  here, and that move is played only if it is among the proven ones. React
+  fibers are page-world state, so
   `content/pagestate.js` — the extension's only MAIN-world script, read-only
   and matched by shape rather than by minified component names — hands it to
   the content script over a `CustomEvent` pair. Nothing is fetched or cached.
-  Any mismatch, unreadable plan,
+  An unproven line move, an unreadable plan,
   promotion, lost board tracking or unaccepted drag degrades to manual play —
   never a blind move. The move is **clicked** — one synthetic press on the
   source square and one on the target, back to back — only after the board has
