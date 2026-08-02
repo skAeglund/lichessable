@@ -670,6 +670,7 @@
 
   const PANEL_ID = 'lichessable-panel';
   const REVIEW_WIDGET_ID = 'lichessable-review'; // overstudy widget (section 9); the review panel anchors below it
+  const REVIEW_STATUS_CLASS = 'clo-review-status'; // its status line — see reviewStatusHost()
   const QE_PENCIL_ID = 'lichessable-qe-pencil';  // quick-edit hover pencil (section 12)
   const QE_POPUP_ID  = 'lichessable-qe-popup';   // quick-edit comment popup (section 12)
   const QE_SHIELD_ID = 'lichessable-qe-shield';  // "Saving…" cover in the driver popup window (section 12)
@@ -3708,6 +3709,33 @@
     return Boolean(document.querySelector(SELECTORS.reviewProgress) &&
                    document.querySelector(SELECTORS.reviewMoves) &&
                    getReviewBoard());
+  }
+
+  /**
+   * The overstudy widget's status line, created on demand (section 9).
+   *
+   * Every module that has a message to show puts its status element in HERE
+   * rather than in its own cluster, so status text sits on its own flex line
+   * below the controls and a message changing length can never move a button —
+   * see the .clo-review-status block in the stylesheet for the measurements
+   * that motivated it.
+   *
+   * Idempotent and self-healing like everything else the poll touches: a widget
+   * that came from an older build, or one re-mounted by a React re-render,
+   * grows the row again on the next call rather than silently swallowing every
+   * status message for the rest of the session. Null only while no widget is
+   * mounted, which is exactly when the callers bail out anyway.
+   */
+  function reviewStatusHost() {
+    const widget = document.getElementById(REVIEW_WIDGET_ID);
+    if (!widget) return null;
+    let host = widget.querySelector('.' + REVIEW_STATUS_CLASS);
+    if (!host) {
+      host = document.createElement('div');
+      host.className = REVIEW_STATUS_CLASS;
+      widget.appendChild(host); // CSS `order` puts it last, whatever the DOM order
+    }
+    return host;
   }
 
   function getReviewBoard() {
@@ -8119,8 +8147,18 @@
       status.hidden = true;
       status.addEventListener('click', cancelForVariation);
 
-      root.append(toggle, speed, clear, status);
+      root.append(toggle, speed, clear);
       widget.appendChild(root);
+      // The status goes on the widget's own status line, NOT in this cluster:
+      // inline among the controls, every message re-laid-out the whole row.
+      // Dropping a stale copy first — the cluster can be rebuilt without the
+      // widget being re-mounted, and the status no longer goes away with it.
+      const statusHost = reviewStatusHost();
+      if (statusHost) {
+        const staleStatus = statusHost.querySelector('.clo-ap-status');
+        if (staleStatus) staleStatus.remove();
+        statusHost.appendChild(status);
+      }
       ap.ui = { root, toggle, speed, clear, status };
       disarmClear(); // a re-mount (React re-render) must not inherit a pending confirm
       syncUi();
@@ -10164,12 +10202,30 @@
       return items;
     }
 
+    /** Starts a retry pass. Returns false when it refused, so a caller with its
+     *  own status line (the popup) can say why — the widget's own flash sits
+     *  behind the popup and would never be seen from there. */
     async function startRun(entries) {
       const bid = mistakeLogApi && mistakeLogApi.bid();
-      if (!bid || !entries.length || rr.run) return;
+      if (!bid || !entries.length || rr.run) return false;
       if (!extensionAlive()) {
         setDone('The extension was reloaded — reload this page first.');
-        return;
+        return false;
+      }
+      // Browse state only, like the drill's own launcher (section 20). Retry is
+      // the DESTRUCTIVE sibling of the two — it switches variation, so pressing
+      // it mid-quiz abandons the card being answered — yet it was the ungated
+      // one: openDrill refuses with a sentence and this went straight through.
+      // The refusal has to SAY so; a press that silently does nothing is the
+      // one outcome the user cannot act on (v0.45.1's lesson, from the drill
+      // that started mid-quiz and was torn down leaving no board and no
+      // message). Not covered by the row collapsing mid-quiz — collapsed is not
+      // unreachable, the user can open it again.
+      if (!reviewBrowseReady()) {
+        setDone('Finish the variation first — Retry switches variations, which would ' +
+          'abandon the card you are answering.');
+        syncUi();
+        return false;
       }
       const items = buildItems(entries);
       const mode = rr.mode;
@@ -10183,7 +10239,7 @@
         prevAutoPlay = Boolean(got[CONFIG.autoPlay.enabledKey]);
         await chrome.storage.local.set({ [CONFIG.autoPlay.enabledKey]: want });
       } catch (err) {
-        if (noteDead(err)) return;
+        if (noteDead(err)) return false;
         warn('retry: could not set the auto-play toggle:', err);
       }
       rr.run = {
@@ -10203,7 +10259,13 @@
         '— replay mode:', mode);
       closePopup();
       syncUi();
-      await driveRun();
+      // The pass EXISTS from here — rr.run is set and saved — so report that
+      // before the first drive step rather than after it: a throw in the drive
+      // would otherwise read back to the caller as "it refused" and put a
+      // refusal sentence under a pass that is already running. driveRun is
+      // re-entered from the tick regardless, so nothing is lost by not waiting.
+      driveRun().catch((err) => warn('retry: first drive step failed:', err));
+      return true;
     }
 
     const summary = (run) =>
@@ -10510,8 +10572,17 @@
         if (rr.run) finishRun('Retry stopped — ' + rr.run.answered + '/' + rr.run.total + ' done');
       });
 
-      root.append(count, retry, status, skip, stop);
+      root.append(count, retry, skip, stop);
       widget.appendChild(root);
+      // As with auto-play's: the pass's "Retry 2/3 — <title>" changes on every
+      // item and used to shift Skip and Stop — the two controls most likely to
+      // be aimed at while it is running. Stale copy dropped for the same reason.
+      const statusHost = reviewStatusHost();
+      if (statusHost) {
+        const staleStatus = statusHost.querySelector('.clo-mx-status');
+        if (staleStatus) staleStatus.remove();
+        statusHost.appendChild(status);
+      }
       rr.ui = { root, count, retry, status, skip, stop };
     }
 
@@ -10631,9 +10702,23 @@
       start.type = 'button';
       start.className = 'clo-mx-start';
       start.textContent = 'Retry selected';
-      start.addEventListener('click', () => {
+      start.addEventListener('click', async () => {
         const chosen = chosenEntries();
-        if (chosen) startRun(chosen);
+        if (!chosen) return;
+        // Same shape as "Drill selected" above: the popup is reachable mid-quiz,
+        // startRun refuses there, and a press that appears to do nothing is
+        // worse than the refusal. Its own flash goes to the widget status, which
+        // is behind this popup — hence the boolean, like the continuationDrill
+        // bridge next to it.
+        let started = false;
+        try {
+          started = await startRun(chosen);
+        } catch (err) {
+          warn('retry: could not start the pass:', err);
+        }
+        if (started) return;
+        status.textContent = 'Retry needs the board — finish the variation first.';
+        status.hidden = false;
       });
       actions.append(cancel, drill, start);
 

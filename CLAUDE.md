@@ -98,6 +98,19 @@ Currently working (v0.18.x).
   `stockfish-18-lite.js` + `.wasm`, ~7 MB) — gitignored, downloaded manually
   per README.
 - `options/` — Lichess API token entry + Test button.
+- `dev/harness.html` — UI harness. Open it in any browser (no extension, no
+  Chessable, no server): it loads the REAL `content/lichessable.css` and renders
+  a static replica of every `.clo-` surface, with toggles for `html.clo-touch`,
+  backdrop and width. **Use it before touching panel/widget/popup styling** —
+  most of these surfaces are otherwise reachable only by reloading the extension,
+  loading a course and completing a variation. The replicas are hand-written
+  from the builder functions and do NOT update themselves: change markup in
+  `lichessable.js`, change it here too. Not referenced by the manifest; it does
+  ride along in a `pack-and-push` .crx (inert, a few tens of KB).
+- `DESIGN-ui-inventory.md` — every control by host and state, what competes with
+  what, the agreed visual hierarchy, and the remaining change list. Read it
+  before adding a control to the overstudy row or picking a colour for one; §3
+  is the ruling on which tier a new button belongs to.
 - `README.md` — living documentation; update it alongside functional changes.
 
 ## Hard constraints
@@ -814,6 +827,24 @@ Currently working (v0.18.x).
   was reported as jarring; only a variation's opening run ever replays. UI = a
   cluster appended to the overstudy widget (toggle `cloAutoPlayEnabled` off by
   default, speed `cloAutoPlaySpeed`, a "Clear" button, status chip).
+  THE STATUS CHIP IS NOT IN THAT CLUSTER (v0.57.0) — it is appended to the
+  widget's own `.clo-review-status` line through `reviewStatusHost()`, and so is
+  the retry pass's (section 17). Inline among the controls, every message
+  re-laid-out the row: measured, swapping one auto-play message for another moved
+  "Drill mistakes" 77px across and 32px DOWN, threw "Retry" 467px as the row
+  re-wrapped, and changed the widget's height 75→107px — which moves the Lichess
+  panel, the alt-check chip and the heads-up, since all three anchor below this
+  widget. The line is `order: 99; flex: 0 0 100%`, so it sits after every cluster
+  on a line of its own. `order`/`flex-basis` apply to flex ITEMS, i.e. direct
+  children of `.clo-review`, which is why the two elements had to be RE-PARENTED
+  rather than nudged with CSS where they sat. Its children carry an explicit
+  `line-height` because the messages are emoji-prefixed (▶ ✋ 🧹 ⚠) and the
+  differing ascents grew and shrank the line box by 2px per message, which the
+  panel below followed. `reviewStatusHost()` creates the row on demand (a widget
+  from an older build, or one re-mounted by a React re-render, grows it again
+  rather than swallowing every message for the session) and each `ensureUi` drops
+  a stale copy of ITS OWN status first — a cluster can be rebuilt without the
+  widget being re-mounted, and the status no longer goes away with it.
   `clearRecord()` drops the CURRENT course's proofs from `ap.record` and from
   `storage.session` — it must cancel `ap.saveTimer` first, or the debounced
   `saveRecord` would write the old in-memory record straight back — and calls
@@ -1017,7 +1048,17 @@ Currently working (v0.18.x).
   A /practice/ ply is therefore always 'review'; only in /learn/ does
   `startedAsOverstudy` decide. Safe because the runner only ever drives
   /learn/ (it refuses to work inside a /practice/ session — that would
-  reschedule real cards). Writes
+  reschedule real cards).
+  `startRun` ALSO refuses outside the BROWSE STATE (v0.56.0) and RETURNS FALSE
+  when it refuses, so the popup's "Retry selected" can say why in its own status
+  line — the widget's `setDone` flash sits behind that popup and would never be
+  seen from there (the same contract as the `continuationDrill` bridge next to
+  it). Retry is the DESTRUCTIVE sibling of the two mistake launchers — it
+  SWITCHES VARIATION, so a mid-quiz press abandons the card being answered — yet
+  the drill was the gated one and this went straight through. `return true` is
+  sent BEFORE the first `driveRun()` step, never after: the pass exists once
+  `rr.run` is saved, and a throw in that step must not read back to the caller
+  as a refusal and print a refusal sentence under a pass that is running. Writes
   MERGE (`mergeEntry`) — every tab shares that storage area, and a background
   overstudy tab used to be able to overwrite the review tab's log.
   The runner's queue is one item per VARIATION (target = the LAST failed move
@@ -1845,6 +1886,21 @@ python3 -c "import json; json.load(open('manifest.json'))"
 `engine/san.js` is pure and requireable from node — spot-check SAN output
 (castling, disambiguation, promotion, en passant, mate `#`) directly when
 touching it.
+
+UI/CSS changes are checkable WITHOUT a live session: open `dev/harness.html`
+and measure. It loads the real stylesheet, so computed styles and element rects
+there are the real thing — `getBoundingClientRect()` across a set of states is
+how the status-line reflow (v0.57.0) was both diagnosed and confirmed fixed.
+Prefer a measurement over an assertion; "looks fine" is not a result.
+NOTE: browsers cache the stylesheet hard over `file://` — after editing
+`lichessable.css`, bust it (`link.href = link.href.split('?')[0] + '?v=' +
+Date.now()`) or the harness will keep showing the OLD CSS and every measurement
+will be of the previous build. A plain reload is not enough.
+
+What the harness CANNOT answer: anything that depends on Chessable's own DOM,
+on trainer state, or on timing — placement/anchoring, the browse-state gates,
+board adoption, and every JS behaviour change. Those still need a live session
+and an extension reload.
 
 ## Reloading the extension (READ THIS BEFORE TESTING)
 

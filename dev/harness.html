@@ -1,0 +1,1445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiChessable — UI harness</title>
+
+<!-- THE REAL STYLESHEET. Nothing here overrides a .clo- rule except the
+     positioning neutraliser below, which is scoped to the outermost replica
+     element of each stage. If a surface looks wrong here, it looks wrong on
+     Chessable. -->
+<link rel="stylesheet" href="../content/lichessable.css">
+
+<style>
+/* ---------------------------------------------------------------------------
+   Harness chrome only. Every class here is `hx-` so it can never collide with
+   the `.clo-` namespace under test.
+   --------------------------------------------------------------------------- */
+:root {
+  --hx-bg: #262421;        /* Chessable's own page background */
+  --hx-card: #2f2c28;
+  --hx-line: #3d3a36;
+  --hx-text: #dcdcdc;
+  --hx-dim: #949494;
+  --hx-accent: #629924;
+}
+html[data-hx-bg="light"] {
+  --hx-bg: #f4f4f2;
+  --hx-card: #fff;
+  --hx-line: #d8d8d8;
+  --hx-text: #24211e;
+  --hx-dim: #6e6a63;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--hx-bg);
+  color: var(--hx-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+}
+
+.hx-bar {
+  position: sticky;
+  top: 0;
+  z-index: 500000;             /* above .clo- overlays, which sit at ~100000 */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--hx-card);
+  border-bottom: 1px solid var(--hx-line);
+}
+.hx-bar h1 { font-size: 14px; margin: 0 8px 0 0; font-weight: 600; }
+.hx-bar label { display: inline-flex; align-items: center; gap: 5px; color: var(--hx-dim); }
+.hx-bar select, .hx-bar button {
+  font: inherit;
+  font-size: 12px;
+  background: transparent;
+  color: var(--hx-text);
+  border: 1px solid var(--hx-line);
+  border-radius: 3px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.hx-jump { margin-left: auto; }
+
+.hx-wrap { padding: 20px 16px 120px; max-width: 1500px; margin: 0 auto; }
+
+.hx-sec { margin: 34px 0 0; scroll-margin-top: 60px; }
+.hx-sec > h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--hx-accent);
+  margin: 0 0 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--hx-line);
+}
+.hx-sec > p { margin: 6px 0 14px; color: var(--hx-dim); font-size: 12px; max-width: 70ch; }
+
+.hx-grid { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+
+.hx-card {
+  border: 1px solid var(--hx-line);
+  border-radius: 4px;
+  background: var(--hx-card);
+  padding: 0 0 12px;
+  min-width: 0;
+}
+.hx-card > h3 {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--hx-dim);
+  margin: 0;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--hx-line);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.hx-card > .hx-note {
+  margin: 6px 10px 0;
+  font-size: 11px;
+  color: var(--hx-dim);
+  max-width: 46ch;
+}
+
+/* The stage is the page-background patch a surface actually sits on, so the
+   replica is judged against the colour it will really meet. */
+.hx-stage { padding: 14px; background: var(--hx-bg); margin: 10px; border-radius: 3px; }
+
+/* THE ONE NEUTRALISER. Almost every surface is absolutely positioned and
+   given left/top/width inline by the content script; here they are laid out in
+   flow instead. Scoped to the OUTERMOST replica element only — no inner layout
+   is touched, so anything the eye catches inside a card is real. */
+.hx-stage > .hx-pos {
+  position: relative !important;
+  inset: auto !important;
+  margin: 0 !important;
+  max-height: none !important;
+}
+
+.hx-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.hx-hidden-note { color: var(--hx-dim); font-size: 11px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<div class="hx-bar">
+  <h1>LiChessable UI harness</h1>
+  <label><input type="checkbox" id="hx-touch"> touch sizing (<code>html.clo-touch</code>)</label>
+  <label>backdrop
+    <select id="hx-bg">
+      <option value="dark">Chessable dark</option>
+      <option value="light">light</option>
+    </select>
+  </label>
+  <label>width
+    <select id="hx-width">
+      <option value="1500">desktop</option>
+      <option value="900">narrow</option>
+      <option value="420">phone</option>
+    </select>
+  </label>
+  <span class="hx-jump">
+    <select id="hx-jump">
+      <option value="">jump to…</option>
+    </select>
+  </span>
+</div>
+
+<div class="hx-wrap" id="hx-wrap">
+
+<!-- ===================================================================== -->
+<section class="hx-sec" id="s-panel" data-title="Lichess panel">
+  <h2>Lichess panel</h2>
+  <p>Three hosts (explore iframe, analysis column, review/variation top document) share one
+     skeleton. Below: the loaded state with repertoire badges, the settings menu open, and the
+     empty/error states.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card">
+      <h3>Loaded — review host</h3>
+      <p class="hx-note">All four repertoire verdicts are on screen at once: in&nbsp;(blue),
+         transposition&nbsp;(orange ring), unprepared reply&nbsp;(red triangle), plain.</p>
+      <div class="hx-stage">
+        <div class="clo-panel clo-panel--review hx-pos" style="width:330px">
+          <div class="clo-header">
+            <span class="clo-title">Lichess Database</span>
+            <button type="button" class="clo-engine-toggle" aria-pressed="true">Engine</button>
+            <button type="button" class="clo-cog" aria-expanded="false" aria-label="Panel settings">⚙</button>
+            <button type="button" class="clo-toggle" aria-expanded="true">Hide</button>
+          </div>
+          <div class="clo-body">
+            <div class="clo-engine">
+              <div class="clo-engine-head">
+                <span class="clo-engine-eval">+0.32</span>
+                <span class="clo-engine-depth">d30</span>
+                <span class="clo-engine-note"></span>
+              </div>
+              <div class="clo-engine-line"><span class="clo-line-eval">+0.32</span><span class="clo-line-moves">5.Nf3 Nc6 6.Bb5 e6 7.O-O Bd7</span></div>
+              <div class="clo-engine-line"><span class="clo-line-eval">+0.21</span><span class="clo-line-moves">5.Nc3 a6 6.Be3 e5 7.Nb3 Be6</span></div>
+              <div class="clo-engine-line"><span class="clo-line-eval">−0.04</span><span class="clo-line-moves">5.f3 e5 6.Nb3 Be7 7.c4 O-O</span></div>
+            </div>
+            <div class="clo-opening">B22 · Sicilian Defence, Alapin Variation</div>
+            <div class="clo-rep">
+              <span class="clo-rep-name">My White Repertoire</span>
+              <span class="clo-rep-note">plays</span>
+              <span class="clo-rep-move">c3</span>
+              <span class="clo-rep-move">Nf3</span>
+            </div>
+            <div class="clo-summary">
+              <span class="clo-total">1,204,556 games</span>
+              <div class="clo-bar clo-summary-bar" data-hx-bar="38,32,30"></div>
+            </div>
+            <table class="clo-table">
+              <thead><tr>
+                <th class="clo-th-move">Move</th><th class="clo-th-pct">%</th>
+                <th class="clo-th-games">Games</th><th class="clo-th-wdb">White / Draw / Black</th>
+              </tr></thead>
+              <tbody>
+                <tr class="clo-rep-row clo-rep-row--in">
+                  <td class="clo-move" data-san="Nf3">Nf3<span class="clo-rep-badge clo-rep-badge--in" data-kind="in"></span></td>
+                  <td class="clo-pct">41%</td><td class="clo-games">498k</td>
+                  <td class="clo-wdb"><div class="clo-bar" data-hx-bar="39,33,28"></div></td>
+                </tr>
+                <tr class="clo-rep-row clo-rep-row--transposes">
+                  <td class="clo-move" data-san="c3">c3<span class="clo-rep-badge clo-rep-badge--transposes" data-kind="transposes"></span></td>
+                  <td class="clo-pct">22%</td><td class="clo-games">266k</td>
+                  <td class="clo-wdb"><div class="clo-bar" data-hx-bar="42,31,27"></div></td>
+                </tr>
+                <tr class="clo-rep-row clo-rep-row--risk">
+                  <td class="clo-move" data-san="Nc3">Nc3<span class="clo-rep-badge clo-rep-badge--risk" data-kind="risk"></span></td>
+                  <td class="clo-pct">18%</td><td class="clo-games">217k</td>
+                  <td class="clo-wdb"><div class="clo-bar" data-hx-bar="37,30,33"></div></td>
+                </tr>
+                <tr>
+                  <td class="clo-move" data-san="d4">d4</td>
+                  <td class="clo-pct">9.4%</td><td class="clo-games">113k</td>
+                  <td class="clo-wdb"><div class="clo-bar" data-hx-bar="35,34,31"></div></td>
+                </tr>
+                <tr>
+                  <td class="clo-move" data-san="Bb5+">Bb5+</td>
+                  <td class="clo-pct">4.1%</td><td class="clo-games">49k</td>
+                  <td class="clo-wdb"><div class="clo-bar" data-hx-bar="33,38,29"></div></td>
+                </tr>
+                <tr>
+                  <td class="clo-move" data-san="g3">g3</td>
+                  <td class="clo-pct">0.8%</td><td class="clo-games">9.6k</td>
+                  <td class="clo-wdb"><div class="clo-bar" data-hx-bar="30,32,38"></div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Settings menu open</h3>
+      <p class="hx-note">In-flow block at the top of <code>.clo-body</code>, not a popover —
+         the panel is <code>overflow: hidden</code>. Repertoire picker first, rule under it.</p>
+      <div class="hx-stage">
+        <div class="clo-panel clo-panel--review hx-pos" style="width:330px">
+          <div class="clo-header">
+            <span class="clo-title">Lichess Database</span>
+            <button type="button" class="clo-engine-toggle" aria-pressed="false">Engine</button>
+            <button type="button" class="clo-cog clo-cog--custom" aria-expanded="true" aria-label="Panel settings">⚙</button>
+            <button type="button" class="clo-toggle" aria-expanded="true">Hide</button>
+          </div>
+          <div class="clo-body">
+            <div class="clo-filters">
+              <div class="clo-filters-row clo-rep-menu">
+                <span class="clo-filters-label">Repertoire</span>
+                <span class="clo-rep-menu-pick">
+                  <select class="clo-rep-select">
+                    <option>My White Repertoire</option>
+                  </select>
+                  <button type="button" class="clo-rep-reload" title="Re-read the course">↻</button>
+                </span>
+                <span class="clo-rep-menu-note">312 lines · read 4 min ago</span>
+              </div>
+              <div class="clo-filters-row">
+                <span class="clo-filters-label">Time control</span>
+                <span class="clo-filters-chips clo-filters-speeds">
+                  <button type="button" class="clo-chip">bullet</button>
+                  <button type="button" class="clo-chip" aria-pressed="true">blitz</button>
+                  <button type="button" class="clo-chip" aria-pressed="true">rapid</button>
+                  <button type="button" class="clo-chip" aria-pressed="true">classical</button>
+                </span>
+              </div>
+              <div class="clo-filters-row">
+                <span class="clo-filters-label">Rating</span>
+                <span class="clo-filters-chips clo-filters-ratings">
+                  <button type="button" class="clo-chip">1600</button>
+                  <button type="button" class="clo-chip" aria-pressed="true">1800</button>
+                  <button type="button" class="clo-chip" aria-pressed="true">2000</button>
+                  <button type="button" class="clo-chip" aria-pressed="true">2200</button>
+                  <button type="button" class="clo-chip">2500</button>
+                </span>
+              </div>
+              <div class="clo-filters-foot">
+                <span class="clo-filters-note">blitz, rapid, classical · 1800+</span>
+                <button type="button" class="clo-filters-reset">Reset</button>
+              </div>
+            </div>
+            <div class="clo-opening">B22 · Sicilian Defence, Alapin Variation</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Degraded states</h3>
+      <p class="hx-note">The repertoire line sits OUTSIDE everything <code>showStatus()</code>
+         hides — a position with no games is exactly where it is the only answer left.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px">
+        <div class="clo-panel clo-panel--review hx-pos" style="width:300px">
+          <div class="clo-header">
+            <span class="clo-title">Lichess Database</span>
+            <span class="clo-stub-badge">stub data</span>
+            <button type="button" class="clo-engine-toggle">Engine</button>
+            <button type="button" class="clo-cog">⚙</button>
+            <button type="button" class="clo-toggle">Hide</button>
+          </div>
+          <div class="clo-body">
+            <div class="clo-rep">
+              <span class="clo-rep-name">My White Repertoire</span>
+              <span class="clo-rep-note clo-rep-note--out">reaches this position but stops here</span>
+            </div>
+            <div class="clo-status">No games in the database for this position.</div>
+          </div>
+        </div>
+        <div class="clo-panel clo-panel--review hx-pos" style="width:300px">
+          <div class="clo-header">
+            <span class="clo-title">Lichess Database</span>
+            <button type="button" class="clo-engine-toggle">Engine</button>
+            <button type="button" class="clo-cog">⚙</button>
+            <button type="button" class="clo-toggle">Hide</button>
+          </div>
+          <div class="clo-body">
+            <div class="clo-rep">
+              <button type="button" class="clo-rep-hint">+ link a repertoire</button>
+            </div>
+            <div class="clo-status clo-error">Lichess needs an API token — open settings to add one.
+              <button type="button" class="clo-settings-btn">Open settings</button>
+            </div>
+          </div>
+        </div>
+        <div class="clo-panel clo-panel--review hx-pos clo-busy" style="width:300px">
+          <div class="clo-header">
+            <span class="clo-title">Lichess Database</span>
+            <button type="button" class="clo-engine-toggle">Engine</button>
+            <button type="button" class="clo-cog">⚙</button>
+            <button type="button" class="clo-toggle">Hide</button>
+          </div>
+          <div class="clo-body">
+            <div class="clo-rep">
+              <span class="clo-rep-name">My White Repertoire</span>
+              <span class="clo-rep-note">reading…</span>
+            </div>
+            <div class="clo-status">Loading…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section class="hx-sec" id="s-widget" data-title="Overstudy widget + clusters">
+  <h2>Overstudy widget &amp; its clusters</h2>
+  <p>The single busiest surface, and the one most worth redesigning: four independent modules
+     append to one row. Shown as the user really meets it in the browse state, then module by
+     module.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>Everything at once — browse state, mistakes logged, lines queued</h3>
+      <p class="hx-note">Overstudy (2) + auto-play (4) + mistakes (2) + continuation (4) = twelve
+         controls, three of them green, competing for one "press me next".</p>
+      <div class="hx-stage">
+        <div class="clo-review hx-pos">
+          <span class="clo-review-title">Overstudy</span>
+          <button type="button" class="clo-review-btn">This variation</button>
+          <button type="button" class="clo-review-btn clo-review-btn--secondary">Previous variation</button>
+          <span class="clo-ap">
+            <button type="button" class="clo-ap-toggle clo-ap-toggle--on" aria-pressed="true">Auto-play</button>
+            <select class="clo-ap-speed"><option>Fast</option><option selected>Normal</option><option>Relaxed</option></select>
+            <button type="button" class="clo-ap-clear">Clear</button>
+          </span>
+          <span class="clo-mx">
+            <button type="button" class="clo-mx-btn">Mistakes (3)</button>
+            <button type="button" class="clo-mx-retry">Retry</button>
+          </span>
+          <span class="clo-cr">
+            <button type="button" class="clo-cr-queue">Review queued lines (2)</button>
+            <button type="button" class="clo-cr-analyse">Analyse</button>
+            <button type="button" class="clo-cr-drill">Drill mistakes (3)</button>
+          </span>
+          <div class="clo-review-status">
+            <button type="button" class="clo-ap-status" id="hx-demo-status">▶ replaying known moves… (click to stop)</button>
+          </div>
+        </div>
+        <p class="hx-note" style="margin:10px">Press the status text to cycle through the real
+          messages — the buttons above must not move.</p>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Auto-play cluster</h3>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px">
+        <div class="clo-review hx-pos">
+          <span class="clo-review-title">Overstudy</span>
+          <span class="clo-ap">
+            <button type="button" class="clo-ap-toggle" aria-pressed="false">Auto-play</button>
+            <select class="clo-ap-speed"><option selected>Normal</option></select>
+            <button type="button" class="clo-ap-clear">Clear</button>
+          </span>
+        </div>
+        <div class="clo-review hx-pos">
+          <span class="clo-review-title">Overstudy</span>
+          <span class="clo-ap">
+            <button type="button" class="clo-ap-toggle clo-ap-toggle--on" aria-pressed="true">Auto-play</button>
+            <select class="clo-ap-speed"><option selected>Normal</option></select>
+            <button type="button" class="clo-ap-clear clo-ap-clear--armed">Clear — sure?</button>
+          </span>
+          <div class="clo-review-status">
+            <button type="button" class="clo-ap-status">✋ new move — your turn</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Retry pass — running</h3>
+      <div class="hx-stage">
+        <div class="clo-review hx-pos">
+          <span class="clo-review-title">Overstudy</span>
+          <span class="clo-mx">
+            <button type="button" class="clo-mx-btn">Mistakes (3)</button>
+            <button type="button" class="clo-mx-retry">Retry</button>
+            <button type="button" class="clo-mx-mini">Skip</button>
+            <button type="button" class="clo-mx-mini">Stop</button>
+          </span>
+          <div class="clo-review-status">
+            <button type="button" class="clo-ap-status">▶ replaying known moves…</button>
+            <span class="clo-mx-status">Retry 2/3 — Sicilian: Alapin, 2…d5</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Continuation cluster — important line present</h3>
+      <p class="hx-note">Amber ring, never an amber fill: a filled amber button reads as a
+         different button rather than the same one flagged.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px">
+        <div class="clo-review hx-pos">
+          <span class="clo-review-title">Overstudy</span>
+          <span class="clo-cr">
+            <button type="button" class="clo-cr-open clo-cr-open--important">Review clickables (3)</button>
+            <button type="button" class="clo-cr-analyse">Analyse</button>
+            <button type="button" class="clo-cr-drill">Drill mistakes (3)</button>
+          </span>
+        </div>
+        <div class="clo-review hx-pos">
+          <span class="clo-review-title">Overstudy</span>
+          <span class="clo-cr">
+            <button type="button" class="clo-cr-queue clo-cr-queue--important">Review queued lines (2)</button>
+            <button type="button" class="clo-cr-analyse">Analyse</button>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Chapter sort widget</h3>
+      <p class="hx-note">Course/chapter pages — the one widget outside the trainer.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px">
+        <div class="clo-chapter hx-pos">
+          <span class="clo-chapter-title">LiChessable</span>
+          <button type="button" class="clo-chapter-btn">Sort by popularity</button>
+        </div>
+        <div class="clo-chapter hx-pos">
+          <span class="clo-chapter-title">LiChessable</span>
+          <button type="button" class="clo-chapter-btn clo-chapter-btn--cancel">Cancel</button>
+          <span class="clo-chapter-status clo-chapter-status--warn">reading 34/77…</span>
+        </div>
+        <div class="clo-chapter hx-pos">
+          <span class="clo-chapter-title">LiChessable</span>
+          <button type="button" class="clo-chapter-btn">Sort by popularity</button>
+          <span class="clo-chapter-status clo-chapter-status--ok">77 variations reordered</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section class="hx-sec" id="s-qe" data-title="Quick-edit">
+  <h2>Quick-edit popup</h2>
+  <p>Four tabs behind one pencil. Shown at its real width; the arrows tab carries our own board
+     because Chessable's drawing code exists only on its edit page.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card">
+      <h3>Pencil</h3>
+      <div class="hx-stage"><button type="button" class="clo-qe-pencil hx-pos">✏</button></div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Append tab</h3>
+      <div class="hx-stage">
+        <div class="clo-qe-popup hx-pos">
+          <div class="clo-qe-move">After 12.Be3 — Sicilian: Alapin, 2…d5</div>
+          <div class="clo-qe-tabs">
+            <button type="button" class="clo-qe-tab clo-qe-tab--active">Append</button>
+            <button type="button" class="clo-qe-tab">Edit</button>
+            <button type="button" class="clo-qe-tab">Arrows</button>
+            <button type="button" class="clo-qe-tab">Alt move</button>
+          </div>
+          <textarea class="clo-qe-text" rows="3" placeholder="Comment after this move…">Stops …Ng4 for good.</textarea>
+          <label class="clo-qe-scope"><input type="checkbox"> For this variation only</label>
+          <div class="clo-qe-actions">
+            <button type="button" class="clo-qe-cancel">Cancel</button>
+            <button type="button" class="clo-qe-save">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Edit tab — reading, then loaded</h3>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px">
+        <div class="clo-qe-popup hx-pos">
+          <div class="clo-qe-move">After 12.Be3</div>
+          <div class="clo-qe-tabs">
+            <button type="button" class="clo-qe-tab">Append</button>
+            <button type="button" class="clo-qe-tab clo-qe-tab--active">Edit</button>
+            <button type="button" class="clo-qe-tab">Arrows</button>
+            <button type="button" class="clo-qe-tab">Alt move</button>
+          </div>
+          <textarea class="clo-qe-text clo-qe-text--edit" rows="6" disabled></textarea>
+          <div class="clo-qe-status">Reading the stored comment…</div>
+          <div class="clo-qe-actions">
+            <button type="button" class="clo-qe-cancel">Cancel</button>
+            <button type="button" class="clo-qe-save" disabled>Save</button>
+          </div>
+        </div>
+        <div class="clo-qe-popup hx-pos">
+          <div class="clo-qe-move">After 12.Be3</div>
+          <div class="clo-qe-tabs">
+            <button type="button" class="clo-qe-tab">Append</button>
+            <button type="button" class="clo-qe-tab clo-qe-tab--active">Edit</button>
+            <button type="button" class="clo-qe-tab">Arrows</button>
+            <button type="button" class="clo-qe-tab">Alt move</button>
+          </div>
+          <textarea class="clo-qe-text clo-qe-text--edit" rows="6">Stops …Ng4 for good. A useful alternative: (12.Nc3 Rb7 13.a4)</textarea>
+          <div class="clo-qe-status clo-error">Saved elsewhere since it was read — reopen the tab.</div>
+          <div class="clo-qe-actions">
+            <button type="button" class="clo-qe-cancel">Cancel</button>
+            <button type="button" class="clo-qe-save">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Arrows tab</h3>
+      <p class="hx-note">Chessable's own four colours, in its own order.</p>
+      <div class="hx-stage">
+        <div class="clo-qe-popup clo-qe-popup--arrows hx-pos">
+          <div class="clo-qe-move">After 12.Be3</div>
+          <div class="clo-qe-tabs">
+            <button type="button" class="clo-qe-tab">Append</button>
+            <button type="button" class="clo-qe-tab">Edit</button>
+            <button type="button" class="clo-qe-tab clo-qe-tab--active">Arrows</button>
+            <button type="button" class="clo-qe-tab">Alt move</button>
+          </div>
+          <div class="clo-qe-arrows">
+            <div class="clo-qe-board" data-hx-board="r1bq1rk1/pp2bppp/2n1pn2/3p4/3P4/2NBPN2/PP3PPP/R1BQ1RK1 w"
+                 data-hx-shapes="arrow:d3:h7:r|circle:e6:g|arrow:c3:e2:b"></div>
+            <div class="clo-qe-swatches">
+              <button type="button" class="clo-qe-swatch" style="background:#1a63c9"></button>
+              <button type="button" class="clo-qe-swatch clo-qe-swatch--on" style="background:#77b55a"></button>
+              <button type="button" class="clo-qe-swatch" style="background:#e02828"></button>
+              <button type="button" class="clo-qe-swatch" style="background:#ffff00"></button>
+              <button type="button" class="clo-qe-clearshapes">Clear all</button>
+            </div>
+            <div class="clo-qe-hint">Drag between two squares for an arrow, press one square for a
+              circle. Drawing the same one again removes it.</div>
+          </div>
+          <div class="clo-qe-actions">
+            <button type="button" class="clo-qe-cancel">Cancel</button>
+            <button type="button" class="clo-qe-save">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Alt-move tab</h3>
+      <div class="hx-stage">
+        <div class="clo-qe-popup hx-pos">
+          <div class="clo-qe-move">After 12.Be3</div>
+          <div class="clo-qe-tabs">
+            <button type="button" class="clo-qe-tab">Append</button>
+            <button type="button" class="clo-qe-tab">Edit</button>
+            <button type="button" class="clo-qe-tab">Arrows</button>
+            <button type="button" class="clo-qe-tab clo-qe-tab--active">Alt move</button>
+          </div>
+          <input type="text" class="clo-qe-san" placeholder="e.g. Nf6 — or click a move in the Lichess panel" value="Nb4">
+          <label class="clo-qe-scope"><input type="checkbox" checked> For this variation only</label>
+          <div class="clo-qe-status">Checking edit rights…</div>
+          <div class="clo-qe-actions">
+            <button type="button" class="clo-qe-cancel">Cancel</button>
+            <button type="button" class="clo-qe-save" disabled>Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Driver-window shield</h3>
+      <p class="hx-note">Covers the popup window Chessable's edit page is being driven in.</p>
+      <div class="hx-stage" style="min-height:170px;position:relative">
+        <div class="clo-qe-shield hx-pos" style="height:150px">
+          <div class="clo-qe-shield-box">
+            <div class="clo-qe-shield-spinner"></div>
+            <div class="clo-qe-shield-label">Saving…</div>
+            <div class="clo-qe-shield-sub">LiChessable is driving this page. It closes by itself.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section class="hx-sec" id="s-ac" data-title="Wrong-guess alt check">
+  <h2>Wrong-guess alt check</h2>
+  <p>Chip under the board after a refused move; popup compares the guess against the course move
+     on both the engine and the Lichess database. Three verdict bands.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card">
+      <h3>Chip</h3>
+      <div class="hx-stage">
+        <button type="button" class="clo-ac-chip hx-pos">
+          <span class="clo-ac-chip-label">Check Nb4 as alternative?</span>
+          <span class="clo-ac-chip-x">×</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Analyzing</h3>
+      <div class="hx-stage">
+        <div class="clo-ac-popup hx-pos">
+          <div class="clo-ac-title">Nb4 instead of Nc6?</div>
+          <div class="clo-ac-row">
+            <span class="clo-ac-row-label">Course move</span>
+            <span class="clo-ac-row-db">54% · 1.2k</span>
+            <span class="clo-ac-row-eval">+0.24</span>
+            <span class="clo-ac-row-depth">d22</span>
+          </div>
+          <div class="clo-ac-row">
+            <span class="clo-ac-row-label">Your move</span>
+            <span class="clo-ac-row-db">48% · 96</span>
+            <span class="clo-ac-row-eval">—</span>
+            <span class="clo-ac-row-depth"></span>
+          </div>
+          <div class="clo-ac-status">Analyzing…</div>
+          <label class="clo-ac-scope"><input type="checkbox"> For this variation only</label>
+          <div class="clo-ac-actions">
+            <button type="button" class="clo-ac-cancel">Close</button>
+            <button type="button" class="clo-ac-add" disabled>Add alternative</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Three verdicts</h3>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px">
+        <div class="clo-ac-popup hx-pos">
+          <div class="clo-ac-title">Nf6 instead of Nc6?</div>
+          <div class="clo-ac-row"><span class="clo-ac-row-label">Course move</span><span class="clo-ac-row-db">54% · 1.2k</span><span class="clo-ac-row-eval">+0.24</span><span class="clo-ac-row-depth">d22</span></div>
+          <div class="clo-ac-row"><span class="clo-ac-row-label">Your move</span><span class="clo-ac-row-db">53% · 810</span><span class="clo-ac-row-eval">+0.19</span><span class="clo-ac-row-depth">d22</span></div>
+          <div class="clo-ac-verdict clo-ac-verdict--green">As good as the course move.</div>
+          <label class="clo-ac-scope"><input type="checkbox"> For this variation only</label>
+          <div class="clo-ac-actions">
+            <button type="button" class="clo-ac-cancel">Close</button>
+            <button type="button" class="clo-ac-add clo-ac-add--green">Add alternative</button>
+          </div>
+        </div>
+        <div class="clo-ac-popup hx-pos">
+          <div class="clo-ac-title">Be7 instead of Nc6?</div>
+          <div class="clo-ac-row"><span class="clo-ac-row-label">Course move</span><span class="clo-ac-row-db">54% · 1.2k</span><span class="clo-ac-row-eval">+0.24</span><span class="clo-ac-row-depth">d22</span></div>
+          <div class="clo-ac-row"><span class="clo-ac-row-label">Your move</span><span class="clo-ac-row-db">49% · 210</span><span class="clo-ac-row-eval">+0.55</span><span class="clo-ac-row-depth">d22</span></div>
+          <div class="clo-ac-verdict clo-ac-verdict--yellow">0.31 pawns worse than the course move.</div>
+          <label class="clo-ac-scope"><input type="checkbox"> For this variation only</label>
+          <div class="clo-ac-actions">
+            <button type="button" class="clo-ac-cancel">Close</button>
+            <button type="button" class="clo-ac-add clo-ac-add--yellow">Add alternative</button>
+          </div>
+        </div>
+        <div class="clo-ac-popup hx-pos">
+          <div class="clo-ac-title">Nb4 instead of Nc6?</div>
+          <div class="clo-ac-row"><span class="clo-ac-row-label">Course move</span><span class="clo-ac-row-db">54% · 1.2k</span><span class="clo-ac-row-eval">+0.24</span><span class="clo-ac-row-depth">d22</span></div>
+          <div class="clo-ac-row"><span class="clo-ac-row-label">Your move</span><span class="clo-ac-row-db">41% · 96</span><span class="clo-ac-row-eval">+1.86</span><span class="clo-ac-row-depth">d22</span></div>
+          <div class="clo-ac-verdict clo-ac-verdict--red">1.62 pawns worse than the course move.</div>
+          <label class="clo-ac-scope"><input type="checkbox"> For this variation only</label>
+          <div class="clo-ac-actions">
+            <button type="button" class="clo-ac-cancel">Close</button>
+            <button type="button" class="clo-ac-add clo-ac-add--red">Add anyway</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section class="hx-sec" id="s-cr" data-title="Continuation quiz board">
+  <h2>Continuation quiz — board &amp; panel</h2>
+  <p>Our board pinned over Chessable's, our panel covering the comment column. The same pair
+     serves the quiz, the analysis board and the mistake drill.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card">
+      <h3>Board — square states</h3>
+      <p class="hx-note">Selection, legal dot, capture ring, last-move tint and a drawn arrow, all
+         at once. Glyph pieces here; on Chessable these are its own cloned SVGs.</p>
+      <div class="hx-stage">
+        <div class="hx-pos" data-hx-board="r1bq1rk1/pp2bppp/2n1pn2/3p4/3P4/2NBPN2/PP3PPP/R1BQ1RK1 w"
+             data-hx-size="340"
+             data-hx-sq="e2:sel|e4:target|d5:target,capture|f3:last|c6:hint"
+             data-hx-shapes="arrow:d3:h7:"></div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Board — answer feedback + promotion picker</h3>
+      <div class="hx-stage hx-row">
+        <div class="hx-pos" data-hx-board="8/5P2/8/8/8/8/2k5/4K3 w" data-hx-size="220"
+             data-hx-sq="f7:ok"></div>
+        <div class="hx-pos" data-hx-board="8/5P2/8/8/8/8/2k5/4K3 w" data-hx-size="220"
+             data-hx-sq="f7:bad" data-hx-promo="1"></div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Quiz panel — prompt states</h3>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px">
+        <div class="clo-cr-panel hx-pos" style="width:280px">
+          <div class="clo-cr-title">Continuation 1 of 3</div>
+          <div class="clo-cr-prompt">Black to play</div>
+          <div class="clo-cr-progress">1…d5 2.exd5</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Hint</button>
+            <button type="button" class="clo-cr-btn">Skip line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+        <div class="clo-cr-panel hx-pos" style="width:280px">
+          <div class="clo-cr-title">Continuation 2 of 3</div>
+          <div class="clo-cr-prompt clo-cr-prompt--bad">Not that one — try again</div>
+          <div class="clo-cr-progress">1…d5 2.exd5 Nf6</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Hint</button>
+            <button type="button" class="clo-cr-btn">Skip line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+        <div class="clo-cr-panel clo-cr-panel--important hx-pos" style="width:280px">
+          <div class="clo-cr-title">Important continuation 3 of 3</div>
+          <div class="clo-cr-prompt clo-cr-prompt--ok">Line complete</div>
+          <div class="clo-cr-progress">3.c3! d5 4.exd5 Qxd5</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Hint</button>
+            <button type="button" class="clo-cr-btn">Skip line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Scope chooser</h3>
+      <p class="hx-note">Shown instead of starting when a variation has both kinds of line. The
+         board stays hidden behind it — there is no single position to preview.</p>
+      <div class="hx-stage">
+        <div class="clo-cr-panel hx-pos" style="width:280px">
+          <div class="clo-cr-title">Which continuations?</div>
+          <div class="clo-cr-chooser">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">All continuations (5)</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Final continuations (2)</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Empty</h3>
+      <div class="hx-stage">
+        <div class="clo-cr-panel hx-pos" style="width:280px">
+          <div class="clo-cr-title">Continuation review</div>
+          <div class="clo-cr-empty">Nothing to quiz here — the clickable lines in this comment are
+            already in your course.</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section class="hx-sec" id="s-heads" data-title="Mid-quiz heads-up">
+  <h2>Mid-quiz heads-up</h2>
+  <p>Raised while a variation is being played, the moment the comment column offers a line
+     branching where the user is standing. Only the branching ply is printed — the rest is what
+     the review would ask for.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card">
+      <h3>Ordinary</h3>
+      <div class="hx-stage">
+        <div class="clo-cr-heads hx-pos">
+          <div class="clo-cr-heads__head">
+            <span class="clo-cr-heads__title">Clickable line</span>
+            <button type="button" class="clo-cr-heads__off">Turn off</button>
+            <button type="button" class="clo-cr-heads__x">×</button>
+          </div>
+          <div class="clo-cr-heads__lead">The opponent can also respond with:</div>
+          <div class="clo-cr-heads__body">
+            <div class="clo-cr-mini hx-mini" style="width:140px;height:140px"
+                 data-hx-board="rnbqkb1r/pp2pppp/5n2/3p4/3P4/5N2/PP2PPPP/RNBQKB1R w"
+                 data-hx-shapes="arrow:c1:g5:|arrow:f3:e5:"></div>
+            <div class="clo-cr-heads__moves">
+              <div class="clo-cr-heads__move">5.Bg5</div>
+              <div class="clo-cr-heads__move">5.Ne5</div>
+            </div>
+          </div>
+          <div class="clo-cr-heads__btns">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__arm">Review on variation end</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__now">Review now</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Important line in the group</h3>
+      <p class="hx-note">Panel turns amber and the marked row with it; the word "Important" is
+         always present, never the colour alone.</p>
+      <div class="hx-stage">
+        <div class="clo-cr-heads clo-cr-heads--important hx-pos">
+          <div class="clo-cr-heads__head">
+            <span class="clo-cr-heads__title">Important line</span>
+            <button type="button" class="clo-cr-heads__off clo-cr-heads__off--armed">Turn off — sure?</button>
+            <button type="button" class="clo-cr-heads__x">×</button>
+          </div>
+          <div class="clo-cr-heads__lead">From here the opponent can play:</div>
+          <div class="clo-cr-heads__body">
+            <div class="clo-cr-mini hx-mini" style="width:140px;height:140px"
+                 data-hx-board="rnbqkb1r/pp2pppp/5n2/3p4/3P4/5N2/PP2PPPP/RNBQKB1R w"
+                 data-hx-shapes="arrow:c2:c3:"></div>
+            <div class="clo-cr-heads__moves">
+              <div class="clo-cr-heads__move clo-cr-heads__move--important">3.c3!</div>
+              <div class="clo-cr-heads__move">3.d3</div>
+            </div>
+          </div>
+          <div class="clo-cr-heads__btns">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__arm">Review on variation end</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__now">Review now</button>
+          </div>
+          <div class="clo-cr-heads__note">Queued — it runs when the variation ends.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section class="hx-sec" id="s-an" data-title="Analysis board panel">
+  <h2>Analysis board panel</h2>
+  <p>Same overlay pair, second mode: free play from the completed position, with the Lichess panel
+     and engine following our board instead of Chessable's.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card">
+      <h3>Move list + controls, save idle (preview showing)</h3>
+      <div class="hx-stage">
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Analysis</div>
+          <div class="clo-cr-list">
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">12.</span>
+              <button type="button" class="clo-cr-mv" data-ply="1">Be3</button>
+              <button type="button" class="clo-cr-mv" data-ply="2">Rb7</button>
+            </div>
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">13.</span>
+              <button type="button" class="clo-cr-mv" data-ply="3">Nc3</button>
+              <button type="button" class="clo-cr-mv clo-cr-mv--on" data-ply="4">a4</button>
+            </div>
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">14.</span>
+              <button type="button" class="clo-cr-mv clo-cr-mv--gap" data-ply="5">Qd2</button>
+            </div>
+          </div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">⏮</button>
+            <button type="button" class="clo-cr-btn">◀</button>
+            <button type="button" class="clo-cr-btn">▶</button>
+            <button type="button" class="clo-cr-btn">Remove from here</button>
+          </div>
+          <input type="text" class="clo-cr-anprefix" placeholder="lead-in, e.g. “An example continuation:”" value="An example continuation:">
+          <div class="clo-cr-anstatus">Appends to 12.Be3: An example continuation: (12.Be3 Rb7 13.Nc3 a4 14.Qd2)</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as line</button>
+            <button type="button" class="clo-cr-btn">Flip</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Refused entry point</h3>
+      <p class="hx-note">A greyed button with no reason is the one outcome a user cannot act on —
+         so every refusal carries its sentence.</p>
+      <div class="hx-stage">
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Analysis</div>
+          <div class="clo-cr-list">
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">12…</span>
+              <button type="button" class="clo-cr-mv clo-cr-mv--on" data-ply="1">Rb7</button>
+            </div>
+          </div>
+          <div class="clo-cr-anstatus clo-cr-anstatus--bad">The board was on a move inside a comment
+            line, so there is no mainline move to append this to.</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary" disabled>Add as line</button>
+            <button type="button" class="clo-cr-btn">Flip</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section class="hx-sec" id="s-mx" data-title="Mistake popup &amp; shield">
+  <h2>Mistake popup &amp; retry shield</h2>
+
+  <div class="hx-grid">
+    <div class="hx-card">
+      <h3>Popup</h3>
+      <div class="hx-stage">
+        <div class="clo-mx-popup hx-pos">
+          <div class="clo-mx-title">3 moves failed this session</div>
+          <div class="clo-mx-list">
+            <label class="clo-mx-item">
+              <input type="checkbox" checked>
+              <span class="clo-mx-item-move">8…Nc6</span>
+              <span class="clo-mx-item-title">Alapin: 2…d5 main line</span>
+              <span class="clo-mx-item-wrong">played Nb4</span>
+            </label>
+            <label class="clo-mx-item">
+              <input type="checkbox" checked>
+              <span class="clo-mx-item-move">12…Rb7</span>
+              <span class="clo-mx-item-title">Alapin: 2…d5 main line</span>
+              <span class="clo-mx-item-wrong">timed out</span>
+            </label>
+            <label class="clo-mx-item">
+              <input type="checkbox">
+              <span class="clo-mx-item-move">6.Be2</span>
+              <span class="clo-mx-item-title">Alapin: 2…Nf6, 5.d4</span>
+              <span class="clo-mx-item-wrong">played Bd3</span>
+            </label>
+          </div>
+          <label class="clo-mx-opt">You play:
+            <select class="clo-mx-mode">
+              <option>Whole variation</option>
+              <option selected>From the mistake</option>
+              <option>Only the mistakes</option>
+            </select>
+          </label>
+          <div class="clo-mx-note">Auto-play replays what you already answered and hands over at
+            each failed move.</div>
+          <div class="clo-mx-actions">
+            <button type="button" class="clo-mx-cancel">Close</button>
+            <button type="button" class="clo-mx-drill">Drill selected</button>
+            <button type="button" class="clo-mx-start">Retry selected</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Empty</h3>
+      <div class="hx-stage">
+        <div class="clo-mx-popup hx-pos">
+          <div class="clo-mx-title">No mistakes yet</div>
+          <div class="clo-mx-empty">Every move you have been asked for this session was answered
+            correctly.</div>
+          <div class="clo-mx-actions">
+            <button type="button" class="clo-mx-cancel">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Transition shield — stage 1, then stage 2</h3>
+      <p class="hx-note">Deliberately transparent: the opponent's reply plays underneath and stays
+         visible. Stage 1 only glows at the edge; stage 2 claims the answer was correct.</p>
+      <div class="hx-stage hx-row">
+        <div style="position:relative;width:220px;height:220px">
+          <div data-hx-board="r1bq1rk1/pp2bppp/2n1pn2/3p4/3P4/2NBPN2/PP3PPP/R1BQ1RK1 w" data-hx-size="220"></div>
+          <div class="clo-mx-shield" style="position:absolute;inset:0"></div>
+        </div>
+        <div style="position:relative;width:220px;height:220px">
+          <div data-hx-board="r1bq1rk1/pp2bppp/2n1pn2/3p4/3P4/2NBPN2/PP3PPP/R1BQ1RK1 w" data-hx-size="220"></div>
+          <div class="clo-mx-shield clo-mx-shield--done" style="position:absolute;inset:0">
+            <div class="clo-mx-shield-pill">Correct move!</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section class="hx-sec" id="s-cov" data-title="Repertoire coverage">
+  <h2>Repertoire coverage panel</h2>
+  <p>Course pages. Every term of the ranking is its own column so the sort is auditable.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>Report</h3>
+      <div class="hx-stage">
+        <div class="clo-cov hx-pos" style="width:min(760px,100%)">
+          <div class="clo-cov-head">
+            <span class="clo-cov-title">Repertoire coverage</span>
+            <button type="button" class="clo-cov-x">×</button>
+          </div>
+          <div class="clo-cov-body">
+            <div class="clo-cov-pick">
+              <label class="clo-cov-label">Repertoire</label>
+              <select class="clo-cov-select"><option>My White Repertoire</option></select>
+              <button type="button" class="clo-cov-btn">Check coverage</button>
+            </div>
+            <div class="clo-cov-summary">
+              <div class="clo-cov-summary-line">61 of 77 lines present · 16 missing · 3 duplicated</div>
+              <div class="clo-cov-clash">This course is for Black and the selected repertoire is for
+                White — every line diverges at your own first move.</div>
+            </div>
+            <div class="clo-cov-controls">
+              <select class="clo-cov-select clo-cov-select--small">
+                <option>sort: score</option><option>sort: probability</option>
+                <option>sort: depth</option><option>sort: severity</option>
+              </select>
+              <label class="clo-cov-depth">D <input type="number" class="clo-cov-depth-input" value="16"></label>
+            </div>
+            <div class="clo-cov-list-head">
+              <span>line</span><span>P(cond)</span><span>P(abs)</span><span>depth</span><span>score</span>
+            </div>
+            <div class="clo-cov-row-gap">
+              <input type="checkbox" class="clo-cov-check" checked>
+              <div class="clo-cov-gap-main">
+                <div class="clo-cov-line">
+                  <span class="clo-cov-num">1.</span><span class="clo-cov-san">e4</span>
+                  <span class="clo-cov-san">c5</span>
+                  <span class="clo-cov-num">2.</span><span class="clo-cov-san">Nf3</span>
+                  <span class="clo-cov-san clo-cov-san--div">d6</span>
+                  <span class="clo-cov-more">…</span>
+                </div>
+                <div class="clo-cov-meta">
+                  <span class="clo-cov-badge clo-cov-badge--unmet">not branched on</span>
+                  <span class="clo-cov-num-cell">31.4%</span>
+                  <span class="clo-cov-num-cell clo-cov-dim">3.9%</span>
+                  <span class="clo-cov-num-cell">ply 4</span>
+                  <span class="clo-cov-num-cell clo-cov-score">0.2445</span>
+                  <a class="clo-cov-link" href="#">Sicilian: Najdorf, 6.Bg5</a>
+                </div>
+              </div>
+            </div>
+            <div class="clo-cov-row-gap">
+              <input type="checkbox" class="clo-cov-check" checked>
+              <div class="clo-cov-gap-main">
+                <div class="clo-cov-line">
+                  <span class="clo-cov-num">1.</span><span class="clo-cov-san">e4</span>
+                  <span class="clo-cov-san">e5</span>
+                  <span class="clo-cov-num">2.</span><span class="clo-cov-san">Nf3</span>
+                  <span class="clo-cov-san">Nc6</span>
+                  <span class="clo-cov-num">3.</span><span class="clo-cov-san clo-cov-san--div">Bc4</span>
+                </div>
+                <div class="clo-cov-meta">
+                  <span class="clo-cov-badge clo-cov-badge--hole">no answer</span>
+                  <span class="clo-cov-num-cell">~12.1%</span>
+                  <span class="clo-cov-num-cell clo-cov-dim">~1.5%</span>
+                  <span class="clo-cov-num-cell">ply 5</span>
+                  <span class="clo-cov-num-cell clo-cov-score">0.0886</span>
+                  <a class="clo-cov-link" href="#">Italian: Two Knights</a>
+                </div>
+              </div>
+            </div>
+            <div class="clo-cov-row-gap">
+              <input type="checkbox" class="clo-cov-check">
+              <div class="clo-cov-gap-main">
+                <div class="clo-cov-line">
+                  <span class="clo-cov-num">1.</span><span class="clo-cov-san">e4</span>
+                  <span class="clo-cov-san">c6</span>
+                  <span class="clo-cov-num">2.</span><span class="clo-cov-san clo-cov-san--div">d4</span>
+                </div>
+                <div class="clo-cov-meta">
+                  <span class="clo-cov-badge clo-cov-badge--ends">stops here</span>
+                  <span class="clo-cov-num-cell">8.7%</span>
+                  <span class="clo-cov-num-cell clo-cov-dim">1.1%</span>
+                  <span class="clo-cov-num-cell">ply 3</span>
+                  <span class="clo-cov-num-cell clo-cov-score">0.0719</span>
+                  <a class="clo-cov-link" href="#">Caro-Kann: Advance</a>
+                </div>
+              </div>
+            </div>
+            <div class="clo-cov-row-gap">
+              <input type="checkbox" class="clo-cov-check">
+              <div class="clo-cov-gap-main">
+                <div class="clo-cov-line">
+                  <span class="clo-cov-num">24…</span><span class="clo-cov-san clo-cov-san--div">Rxh2+</span>
+                </div>
+                <div class="clo-cov-meta">
+                  <span class="clo-cov-badge clo-cov-badge--unreachable">not reached</span>
+                  <span class="clo-cov-num-cell">—</span>
+                  <span class="clo-cov-num-cell clo-cov-dim">—</span>
+                  <span class="clo-cov-num-cell">ply 1</span>
+                  <span class="clo-cov-num-cell clo-cov-score">—</span>
+                  <a class="clo-cov-link" href="#">Tactic: deflection #14</a>
+                </div>
+              </div>
+            </div>
+
+            <div class="clo-cov-dupes">
+              <div class="clo-cov-sub-title">Duplicated in your repertoire</div>
+              <div class="clo-cov-dupe">
+                <span class="clo-cov-dupe-name">Sicilian: Alapin, 2…d5</span>
+                <span class="clo-cov-dupe-count">×3</span>
+                <span class="clo-cov-dupe-plies">14 plies</span>
+              </div>
+              <div class="clo-cov-dupe">
+                <span class="clo-cov-dupe-name">French: Tarrasch, 3…Nf6</span>
+                <span class="clo-cov-dupe-count">×2</span>
+                <span class="clo-cov-dupe-plies">11 plies</span>
+              </div>
+              <div class="clo-cov-del-row">
+                <input type="text" class="clo-cov-del-input" placeholder="type delete to confirm">
+                <button type="button" class="clo-cov-del">Remove 3 surplus copies</button>
+              </div>
+            </div>
+
+            <div class="clo-cov-status clo-cov-status--ok">Read 77 lines · 41 positions from Lichess</div>
+            <div class="clo-cov-actions">
+              <input type="text" class="clo-cov-chapter" placeholder="chapter name" value="Gaps from Sicilian Vol.1">
+              <button type="button" class="clo-cov-add clo-cov-armed">Add 2 lines — press again</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Launcher · empty · busy</h3>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px">
+        <button type="button" class="clo-cov-launch hx-pos">Repertoire coverage</button>
+        <div class="clo-cov hx-pos" style="width:330px">
+          <div class="clo-cov-head">
+            <span class="clo-cov-title">Repertoire coverage</span>
+            <button type="button" class="clo-cov-x">×</button>
+          </div>
+          <div class="clo-cov-body">
+            <div class="clo-cov-pick">
+              <label class="clo-cov-label">Repertoire</label>
+              <select class="clo-cov-select"><option>My White Repertoire</option></select>
+              <button type="button" class="clo-cov-btn clo-cov-btn--cancel">Cancel</button>
+            </div>
+            <div class="clo-cov-status clo-cov-status--warn">Walking 34/77 lines…</div>
+            <div class="clo-cov-empty">Nothing missing — every line of this course is already
+              answered by your repertoire.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div><!-- /hx-wrap -->
+
+<script>
+/* ---------------------------------------------------------------------------
+   Harness runtime. Renders boards and win/draw/loss bars from data- attributes
+   using the SAME geometry as content/lichessable.js (section 11c): squares in
+   an 8-col grid, pieces at 12.5% translated in whole multiples of their own
+   size, shapes in board units on a viewBox="0 0 8 8" svg. If this drifts from
+   the real helpers the boards here stop being evidence — keep them in step.
+   --------------------------------------------------------------------------- */
+(function () {
+  'use strict';
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var GLYPH = {
+    wK: '♔', wQ: '♕', wR: '♖', wB: '♗', wN: '♘', wP: '♙',
+    bK: '♚', bQ: '♛', bR: '♜', bB: '♝', bN: '♞', bP: '♟'
+  };
+  // Mirrors BOARD_SHAPE in content/lichessable.js.
+  var SHAPE = { lineW: 0.16, headW: 0.44, headL: 0.42, tailGap: 0.26, tipOver: 0.06 };
+
+  function svgEl(name) { return document.createElementNS(SVG_NS, name); }
+
+  /** "e4" -> 28 (a1 = 0 … h8 = 63). */
+  function sqIndex(name) {
+    return (name.charCodeAt(1) - 49) * 8 + (name.charCodeAt(0) - 97);
+  }
+  function visualPos(idx, view) {
+    var file = idx & 7, rank = idx >> 3;
+    return view === 'b' ? { col: 7 - file, row: rank } : { col: file, row: 7 - rank };
+  }
+  function squareCentre(idx, view) {
+    var p = visualPos(idx, view);
+    return { x: p.col + 0.5, y: p.row + 0.5 };
+  }
+
+  function parseFen(fen) {
+    var rows = fen.split(' ')[0].split('/');
+    var out = {};
+    for (var r = 0; r < 8; r++) {
+      var file = 0;
+      var row = rows[r];
+      for (var i = 0; i < row.length; i++) {
+        var ch = row[i];
+        if (ch >= '1' && ch <= '8') { file += Number(ch); continue; }
+        var code = (ch === ch.toUpperCase() ? 'w' : 'b') + ch.toUpperCase();
+        out[(7 - r) * 8 + file] = code;
+        file++;
+      }
+    }
+    return out;
+  }
+
+  function arrowGroup(from, to, view, color) {
+    var a = squareCentre(from, view), b = squareCentre(to, view);
+    var dx = b.x - a.x, dy = b.y - a.y;
+    var len = Math.hypot(dx, dy);
+    var g = svgEl('g');
+    if (!len) return g;
+    var ux = dx / len, uy = dy / len;
+    var tipX = b.x + ux * SHAPE.tipOver, tipY = b.y + uy * SHAPE.tipOver;
+    var baseX = tipX - ux * SHAPE.headL, baseY = tipY - uy * SHAPE.headL;
+    var startX = a.x + ux * SHAPE.tailGap, startY = a.y + uy * SHAPE.tailGap;
+
+    var line = svgEl('line');
+    line.setAttribute('x1', startX); line.setAttribute('y1', startY);
+    line.setAttribute('x2', baseX);  line.setAttribute('y2', baseY);
+    line.setAttribute('stroke-width', SHAPE.lineW);
+    line.setAttribute('class', 'clo-cr-shape clo-cr-shape--line');
+    // One property per element, exactly as the real code does: `stroke` on the
+    // shaft, `fill` on the head. Colouring the head's stroke too would override
+    // the class's `stroke: none` and draw a one-square-wide outline.
+    if (color) line.style.stroke = color;
+
+    var px = -uy * (SHAPE.headW / 2), py = ux * (SHAPE.headW / 2);
+    var head = svgEl('polygon');
+    head.setAttribute('points', [
+      tipX + ',' + tipY,
+      (baseX + px) + ',' + (baseY + py),
+      (baseX - px) + ',' + (baseY - py)
+    ].join(' '));
+    head.setAttribute('class', 'clo-cr-shape clo-cr-shape--head');
+    if (color) head.style.fill = color;
+
+    g.append(line, head);
+    return g;
+  }
+
+  function circleShape(idx, view, color) {
+    var c = squareCentre(idx, view);
+    var el = svgEl('circle');
+    el.setAttribute('cx', c.x);
+    el.setAttribute('cy', c.y);
+    el.setAttribute('r', 0.42);
+    el.setAttribute('stroke-width', SHAPE.lineW);
+    el.setAttribute('class', 'clo-cr-shape');
+    if (color) el.style.stroke = color;
+    return el;
+  }
+
+  function renderBoard(host) {
+    var fen = host.dataset.hxBoard;
+    var view = host.dataset.hxView === 'b' ? 'b' : 'w';
+    var size = Number(host.dataset.hxSize || 0);
+
+    // Always render IN PLACE — the host may already carry a board class of its
+    // own (.clo-cr-mini on the heads-up board, .clo-qe-board in the arrows tab),
+    // and replacing the node would strip the very class being reviewed. Only a
+    // bare placeholder is promoted to the quiz board, which is position:absolute
+    // and sized inline by its caller; the .hx-pos neutraliser puts it in flow.
+    var board = host;
+    var styled = host.classList.contains('clo-cr-mini') ||
+                 host.classList.contains('clo-qe-board');
+    if (!styled) {
+      board.className = 'clo-cr-board hx-pos';
+      if (size) { board.style.width = size + 'px'; board.style.height = size + 'px'; }
+    }
+
+    var grid = board.querySelector('.clo-cr-grid') || document.createElement('div');
+    grid.className = 'clo-cr-grid';
+    grid.textContent = '';
+    var layer = board.querySelector('.clo-cr-layer') || document.createElement('div');
+    layer.className = 'clo-cr-layer';
+    layer.textContent = '';
+    var shapes = board.querySelector('.clo-cr-shapes') || svgEl('svg');
+    shapes.setAttribute('class', 'clo-cr-shapes');
+    shapes.setAttribute('viewBox', '0 0 8 8');
+    shapes.setAttribute('preserveAspectRatio', 'none');
+    shapes.textContent = '';
+
+    // Square states: "e2:sel|d5:target,capture"
+    var states = {};
+    (host.dataset.hxSq || board.dataset.hxSq || '').split('|').filter(Boolean).forEach(function (spec) {
+      var parts = spec.split(':');
+      states[sqIndex(parts[0])] = (parts[1] || '').split(',').filter(Boolean);
+    });
+
+    var byIndex = {};
+    for (var row = 0; row < 8; row++) {
+      for (var col = 0; col < 8; col++) {
+        var file = view === 'b' ? 7 - col : col;
+        var rank = view === 'b' ? row : 7 - row;
+        var idx = rank * 8 + file;
+        var sq = document.createElement('div');
+        sq.className = 'clo-cr-sq' + ((file + rank) % 2 ? ' clo-cr-sq--light' : ' clo-cr-sq--dark');
+        (states[idx] || []).forEach(function (s) { sq.classList.add('clo-cr-sq--' + s); });
+        sq.dataset.sq = idx;
+        grid.appendChild(sq);
+        byIndex[idx] = sq;
+      }
+    }
+
+    var placement = parseFen(fen);
+    Object.keys(placement).forEach(function (idx) {
+      var piece = document.createElement('div');
+      piece.className = 'clo-cr-piece clo-cr-piece--glyph';
+      piece.textContent = GLYPH[placement[idx]] || '?';
+      var p = visualPos(Number(idx), view);
+      piece.style.transform = 'translate(' + p.col * 100 + '%, ' + p.row * 100 + '%)';
+      layer.appendChild(piece);
+    });
+
+    (host.dataset.hxShapes || board.dataset.hxShapes || '').split('|').filter(Boolean)
+      .forEach(function (spec) {
+        var f = spec.split(':');
+        var color = f[3] || '';
+        if (f[0] === 'circle') shapes.appendChild(circleShape(sqIndex(f[1]), view, color));
+        else shapes.appendChild(arrowGroup(sqIndex(f[1]), sqIndex(f[2]), view, color));
+      });
+
+    board.append(grid, layer, shapes);
+
+    if (host.dataset.hxPromo || board.dataset.hxPromo) {
+      var promo = document.createElement('div');
+      promo.className = 'clo-cr-promo';
+      ['♕', '♖', '♗', '♘'].forEach(function (g) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'clo-cr-promo-btn';
+        b.textContent = g;
+        promo.appendChild(b);
+      });
+      board.appendChild(promo);
+    }
+  }
+
+  /** White/draw/black segments, mirroring buildBar. */
+  function renderBar(el) {
+    var parts = el.dataset.hxBar.split(',').map(Number);
+    var names = ['white', 'draw', 'black'];
+    parts.forEach(function (pct, i) {
+      var seg = document.createElement('div');
+      seg.className = 'clo-seg clo-seg-' + names[i];
+      seg.style.width = pct + '%';
+      if (pct >= 12) seg.textContent = pct + '%';
+      el.appendChild(seg);
+    });
+  }
+
+  document.querySelectorAll('[data-hx-board]').forEach(renderBoard);
+  document.querySelectorAll('[data-hx-bar]').forEach(renderBar);
+
+  // --- toolbar -------------------------------------------------------------
+  var touch = document.getElementById('hx-touch');
+  touch.addEventListener('change', function () {
+    document.documentElement.classList.toggle('clo-touch', touch.checked);
+  });
+
+  var bg = document.getElementById('hx-bg');
+  bg.addEventListener('change', function () {
+    document.documentElement.dataset.hxBg = bg.value;
+  });
+
+  var width = document.getElementById('hx-width');
+  width.addEventListener('change', function () {
+    document.getElementById('hx-wrap').style.maxWidth = width.value + 'px';
+  });
+
+  // The status line's whole point is that these do not move the buttons. Cycles
+  // the real strings from lichessable.js so it can be checked by eye, and logs
+  // the measured travel of the button most likely to be aimed at.
+  var demo = document.getElementById('hx-demo-status');
+  if (demo) {
+    var msgs = [
+      '▶ replaying known moves… (click to stop)',
+      '✋ new move — your turn',
+      '🧹 cleared 14 recorded moves',
+      '… checking the line',
+      '⚠ could not clear the record'
+    ];
+    var at = 0;
+    demo.addEventListener('click', function () {
+      var drill = document.querySelector('.clo-review .clo-cr-drill');
+      var before = drill.getBoundingClientRect();
+      at = (at + 1) % msgs.length;
+      demo.textContent = msgs[at];
+      var after = drill.getBoundingClientRect();
+      console.log('[harness] status →', JSON.stringify(msgs[at]),
+        '· "Drill mistakes" moved',
+        Math.round(after.left - before.left) + 'px across,',
+        Math.round(after.top - before.top) + 'px down');
+    });
+  }
+
+  var jump = document.getElementById('hx-jump');
+  document.querySelectorAll('.hx-sec').forEach(function (sec) {
+    var opt = document.createElement('option');
+    opt.value = sec.id;
+    opt.textContent = sec.dataset.title;
+    jump.appendChild(opt);
+  });
+  jump.addEventListener('change', function () {
+    if (!jump.value) return;
+    document.getElementById(jump.value).scrollIntoView({ behavior: 'smooth' });
+    jump.value = '';
+  });
+})();
+</script>
+</body>
+</html>

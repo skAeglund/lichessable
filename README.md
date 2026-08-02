@@ -262,6 +262,12 @@ nothing is rescheduled — it is a plain "do those again", not an SRS operation
 (Chessable's own in-session re-ask is separate; this is optional, after the
 fact, and repeatable).
 
+Retry only starts **once the variation on screen is finished** (v0.56.0). It
+switches variation to do its work, so starting one mid-quiz would abandon the
+card you are in the middle of answering; pressed there it says so instead —
+from the widget and from the popup alike — and waits. Drill has always been
+gated this way; Retry, the one that actually navigates, was not.
+
 How much of each line you play yourself is a setting in the popup (**You
 play**), and auto-play does the rest — switched on (or, for the first mode,
 off) for the duration and put back the way you had it afterwards:
@@ -618,8 +624,65 @@ lichessable/
 │   ├── icon16.png           Simple generated placeholder icons —
 │   ├── icon48.png           feel free to replace or delete them
 │   └── icon128.png          (remove the "icons" block from the manifest if deleted)
+├── dev/
+│   └── harness.html         UI harness — every panel, widget, popup and board
+│                            on one page, styled by the REAL lichessable.css.
+│                            Not referenced by the manifest; see below.
 └── README.md
 ```
+
+## UI harness (dev only)
+
+Open `dev/harness.html` in any browser — no extension, no Chessable, no server.
+It loads `content/lichessable.css` directly and renders a static replica of
+every `.clo-` surface: the Lichess panel in each of its states, the overstudy
+widget with all four clusters attached, the quick-edit popup's four tabs, the
+alt-check chip and its three verdict bands, the continuation quiz board and
+panel, the mid-quiz heads-up, the analysis panel, the mistake popup and retry
+shield, and the coverage report.
+
+It exists because most of these surfaces are otherwise reachable only by
+reloading the extension, loading a course and completing a variation — minutes
+per look. Here a restyle is a browser refresh.
+
+Toolbar: **touch sizing** toggles `html.clo-touch` (the same class
+`applyTouchUiClass()` sets, so the mobile type/tap-target rules are exercised
+for real), **backdrop** switches between Chessable's page colour and a light
+one, **width** narrows the page to check wrapping.
+
+Because it loads the real stylesheet, computed styles and element rectangles in
+the harness are the real thing — `getBoundingClientRect()` across a set of
+states is how the v0.57.0 status-line reflow was both found and confirmed fixed.
+
+**The stylesheet caches hard over `file://`.** After editing
+`content/lichessable.css`, a plain page reload will often keep serving the OLD
+CSS. Bust it from the console:
+
+```js
+const l = document.querySelector('link[rel=stylesheet]');
+l.href = l.href.split('?')[0] + '?v=' + Date.now();
+```
+
+Two things to know:
+
+- **The replicas are hand-written**, derived from the builder functions in
+  `content/lichessable.js`. Nothing imports them — those functions are wired
+  to `chrome.*`, Chessable's DOM and module state. So markup changes in the
+  content script do **not** reach the harness by themselves; update it
+  alongside. The board renderer in the page deliberately mirrors section 11c's
+  geometry (percentage squares, pieces translated in multiples of their own
+  size, shapes in board units on a `viewBox="0 0 8 8"`) and pieces fall back to
+  Unicode glyphs, since the real ones are cloned off Chessable's live board.
+- **One CSS override exists**, `.hx-stage > .hx-pos`, which neutralises the
+  absolute/fixed positioning the content script sets inline so surfaces lay out
+  in flow. It is scoped to the outermost element of each replica — no inner
+  layout is touched, so anything that looks wrong inside a card is wrong for
+  real. Everything else in the harness is namespaced `hx-` and cannot collide
+  with `.clo-`.
+
+`pack-and-push.ps1` packs the whole extension directory, so this file rides
+along in the `.crx`. It is inert (nothing references it, no permissions, no
+`chrome.*`) and a few tens of KB; delete `dev/` before packing if that matters.
 
 ## Install (load unpacked)
 

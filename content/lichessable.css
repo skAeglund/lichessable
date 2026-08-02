@@ -861,6 +861,54 @@
   display: none;
 }
 
+/* STATUS TEXT NEVER SHARES A LINE WITH A BUTTON (v0.57.0).
+   Both status elements used to sit inline among the controls — auto-play's
+   inside .clo-ap, the retry pass's inside .clo-mx — so every message rewrote
+   the row's layout. Measured: swapping "▶ replaying known moves… (click to
+   stop)" for "✋ new move — your turn" moved "Drill mistakes" 77px across and
+   32px down, threw "Retry" 467px as the row re-wrapped, and changed the
+   widget's own height 75px → 107px. That last one reaches past the widget —
+   the Lichess panel, the alt-check chip and the heads-up all anchor below it —
+   so a status message moved the panel too.
+
+   `order` and `flex-basis` only work on FLEX ITEMS, i.e. direct children of
+   .clo-review, which is why the two status elements had to be re-parented here
+   in the JS rather than nudged with CSS where they were.
+
+   The row is only as tall as its visible children, and collapses away entirely
+   when both are hidden (:has, so no cross-module class juggling is needed —
+   without it the fallback is a stray 8px gap, not a broken layout). A status
+   APPEARING therefore still changes the widget's height once; a status
+   CHANGING, which is the frequent case and the one that was distracting, now
+   cannot move anything at all. */
+.clo-review-status {
+  order: 99;             /* after every cluster, whatever order they mounted in */
+  flex: 0 0 100%;        /* …and on a line of its own */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;          /* let the ellipsis below actually engage */
+  overflow: hidden;
+}
+
+.clo-review-status:not(:has(> *:not([hidden]))) {
+  display: none;
+}
+
+/* One line, always: a message long enough to wrap would change the height it
+   was just stopped from changing.
+
+   The explicit line-height is not cosmetic. These strings are prefixed with
+   emoji — ▶ ✋ 🧹 ⚠ — whose ascent and descent differ from each other and from
+   the text, so an auto line box grew and shrank by 2px as the message changed,
+   and the panel anchored below the widget followed it. Pinning the line box is
+   what makes "a message can move nothing at all" literally true. */
+.clo-review-status > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.5;
+}
+
 .clo-review-title {
   color: #949494;
   font-weight: 500;
@@ -869,11 +917,18 @@
   letter-spacing: 0.5px;
 }
 
-/* Same lichess-green accent as .clo-settings-btn. */
+/* NEUTRAL, both of them (DESIGN-ui-inventory §5.1). These were filled green
+   because they were the only buttons here when the widget was written — that is
+   seniority, not importance. Overstudying a variation is the escape hatch for "I
+   want this line again regardless"; it is not the next thing to do, and once
+   Retry existed it stopped being the most valuable thing on the row. Filled, it
+   competed with Retry and the queued-lines button for the one primary slot, and
+   it put a call to action on screen after a clean variation — where the honest
+   answer to "what next?" is nothing at all. */
 .clo-review-btn {
-  border: 1px solid #629924;
-  background: #629924;
-  color: #fff;
+  border: 1px solid #3d3a36;
+  background: transparent;
+  color: #bababa;
   padding: 4px 12px;
   border-radius: 3px;
   cursor: pointer;
@@ -882,20 +937,19 @@
 }
 
 .clo-review-btn:hover {
-  background: #71ad2a;
-  border-color: #71ad2a;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: #6e6a63;
+  color: #fff;
 }
 
-/* "Previous variation" is the quieter, outlined sibling. */
+/* "Previous variation" stays the quieter of the two — same weight, dimmer text,
+   since which of them is current is still worth seeing at a glance. */
 .clo-review-btn--secondary {
-  background: transparent;
-  color: #a5c96a;
+  color: #8a8a8a;
 }
 
 .clo-review-btn--secondary:hover {
-  background: rgba(98, 153, 36, 0.25);
-  border-color: #71ad2a;
-  color: #fff;
+  color: #dcdcdc;
 }
 
 /* --- auto-play cluster (section 13) -----------------------------------------
@@ -910,11 +964,25 @@
   border-left: 1px solid #3d3a36;
 }
 
-/* Off state mirrors the outlined secondary button; on state fills green. */
+/* A SWITCH, not a call to action (DESIGN-ui-inventory F1). The on state used to
+   fill green — the same treatment "This variation", "Retry" and the queued-lines
+   button wear — so auto-play, which is normally left on, shouted as loudly as
+   the actions beside it. It is a persistent SETTING: it must say what it is,
+   not ask to be pressed. So the button keeps ONE weight in both states and the
+   state moves into a switch drawn in ::before.
+
+   The knob is a radial-gradient stop rather than a second element or an inset
+   shadow: a pseudo-element cannot hold another pseudo-element, and an absolutely
+   positioned ::after would have to know the button's padding, which the
+   html.clo-touch block changes. Everything here is in em, so that same block's
+   font bump scales the switch with the text and needs no override of its own. */
 .clo-ap-toggle {
-  border: 1px solid #629924;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #3d3a36;
   background: transparent;
-  color: #a5c96a;
+  color: #949494;
   padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
@@ -922,14 +990,35 @@
   font-family: inherit;
 }
 
-.clo-ap-toggle:hover {
-  background: rgba(98, 153, 36, 0.25);
-  color: #fff;
+.clo-ap-toggle::before {
+  content: '';
+  flex: none;
+  width: 1.75em;
+  height: 1em;
+  border-radius: 1em;
+  background-color: #3d3a36;
+  background-image: radial-gradient(circle at 0.5em 50%, #8a8a8a 0.32em, transparent 0.33em);
+  transition: background-color 120ms ease;
 }
 
-.clo-ap-toggle--on,
+.clo-ap-toggle:hover {
+  border-color: #6e6a63;
+  color: #dcdcdc;
+}
+
+/* On: the accent lives in the switch and the outline, never in a fill. */
+.clo-ap-toggle--on {
+  border-color: #629924;
+  color: #a5c96a;
+}
+
+.clo-ap-toggle--on::before {
+  background-color: #629924;
+  background-image: radial-gradient(circle at 1.25em 50%, #fff 0.32em, transparent 0.33em);
+}
+
 .clo-ap-toggle--on:hover {
-  background: #629924;
+  background: rgba(98, 153, 36, 0.18);
   color: #fff;
 }
 
