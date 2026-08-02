@@ -7523,6 +7523,39 @@
       evaluateAutoPlay();
     }
 
+    /**
+     * The LINE-ENDING move, read once at the completion transition.
+     *
+     * processFrame bails on reviewBrowseReady() — browse navigation is not
+     * play — but the frame carrying the variation's last move arrives with the
+     * completion block ALREADY rendered (MoveTrainer2 answers the final move
+     * and completes the lesson in one state transition, and our mutation
+     * callback runs after that commit). So that move was never observed, never
+     * became a pendingRecord, and confirmPendingRecord('variation completed')
+     * — written for exactly this move, since no opponent reply follows it —
+     * had nothing to confirm. The last move of a line therefore never earned a
+     * proof, which only shows when a session plays the same line twice: a
+     * retry pass replayed the whole variation and then handed back on its very
+     * last move, every time.
+     *
+     * Only the observation: no evaluateAutoPlay (the caller suspends the
+     * tracker on the next line) and no wrong-guess capture (the variation is
+     * over). A frame that is not exactly one legal move on is left alone — the
+     * browse board may already have been navigated.
+     */
+    function observeFinalFrame() {
+      const vs = ap.vs;
+      if (!vs.oid || vs.suspended || !vs.pos) return;
+      const snap = readBoardSnapshot();
+      if (!snap) return;
+      const key = placementKey(snap);
+      if (key === vs.lastKey) return;
+      const found = findSingleMove(vs.pos, snap);
+      if (!found) return;
+      applyObservedMove(found, key);
+      vs.lastKey = key;
+    }
+
     // --- the auto-play loop --------------------------------------------------
 
     const stripCheckGlyphs = (san) => String(san).replace(/[+#]+$/, '');
@@ -8102,10 +8135,12 @@
       syncVariation();
       ensureObserver();
       if (reviewBrowseReady()) {
-        // Post-completion browse state: confirm the final answer (there is no
-        // opponent reply after a line-ending move) and freeze the tracker —
-        // browse navigation is not play.
+        // Post-completion browse state: observe the line-ending move (the one
+        // frame processFrame cannot take — see observeFinalFrame), confirm the
+        // final answer (there is no opponent reply after it) and freeze the
+        // tracker — browse navigation is not play.
         if (!ap.vs.suspended) {
+          observeFinalFrame();
           confirmPendingRecord('variation completed');
           ap.vs.suspended = true;
           stopReplaying();
@@ -9639,6 +9674,9 @@
           plies: res.plies,
           studyMode: res.studyMode || null,
           variationName: res.variationName || null,
+          // The position the trainer itself considers current — the runner's
+          // "has this move been answered yet" clock (see passedPly).
+          fen: typeof res.fen === 'string' ? res.fen : null,
           at: Date.now(),
         };
         ingest(ml.sample);
@@ -9719,6 +9757,53 @@
         if (!s || String(s.oid) !== String(oid)) return null;
         const ply = s.plies.find((p) => plyKey(p) === mkey);
         return (ply && ply.progress) || null;
+      },
+      /**
+       * Has the trainer moved PAST the failed move whose pre-move position is
+       * `targetFen`? The retry runner's "this variation is done" signal
+       * (section 17): a quiz cannot be left behind without being answered, so
+       * standing on a LATER ply of the same line means the move has been played
+       * correctly — or the trainer gave the solution after a repeated failure,
+       * which releases the pass just as well (the re-failure is logged with a
+       * newer ts, and markRetried spares those).
+       *
+       * The clock is the plan's own `fen`, Chessable's current position, NOT a
+       * quiz counter: `quizCorrectTotal` is a per-lesson tally whose growth the
+       * runner could only read against a baseline taken on arrival, and one
+       * reading of that baseline off the previous lesson's plan is enough to
+       * make the comparison never fire — which left a pass playing out the
+       * whole tail of every line. Same source and same four-field compare as
+       * the mid-quiz heads-up's ply clock (section 18b), for the same reason: a
+       * placement read off the board DOM is not trustworthy. Ground-truthed
+       * there that after ply p is played the clock reads p+1, i.e. it names the
+       * ply being ASKED for — so standing on the failed move reads as its own
+       * index, not one past it.
+       *
+       * BOTH SIDES ARE POSITIONS, never `mkey` (v0.53.4). `plyKey` is
+       * `'m' + mid`, and `mid` numbers the USER's moves, not the plies (hence
+       * the runner's own `mid * 2` fallback) — so looking the target up by key
+       * could land on an earlier ply, and "past it" then went true exactly as
+       * the trainer ARRIVED at the failed move: the pass advanced, the runner
+       * dropped its holds, and auto-play played the mistake the user was being
+       * asked for. Matching `targetFen` against the plies' own `sourceFen`s
+       * makes both indices come from the same kind of lookup.
+       *
+       * Standing ON the target is answered explicitly rather than left to the
+       * index compare, so a position repeating inside one variation (where
+       * findIndex resolves to the FIRST occurrence) still cannot read as
+       * "past it". The LAST position of a variation is nobody's sourceFen, so
+       * reaching the end reads as "off the line" and the browse state is what
+       * ends the visit there.
+       */
+      passedPly(oid, targetFen) {
+        const s = ml.sample;
+        if (!s || !s.fen || !targetFen || String(s.oid) !== String(oid)) return false;
+        const key = cacheKey(s.fen);
+        if (key === cacheKey(targetFen)) return false; // still being asked for
+        const target = s.plies.findIndex((p) => cacheKey(p.sourceFen) === cacheKey(targetFen));
+        if (target < 0) return false;
+        const at = s.plies.findIndex((p) => cacheKey(p.sourceFen) === key);
+        return at > target;
       },
     };
 
@@ -9878,6 +9963,9 @@
           lid: target.lid || '',
           title: target.title || '#' + oid,
           mkey: target.mkey,
+          // The target's own pre-move position — what `passedPly` compares the
+          // trainer's clock against. A key would not do: see passedPly.
+          targetFen: target.sourceFen || '',
           label: list.map((e) => mistakeLogApi.moveLabel(e)).join(', '),
           moves: list.length,
           // Every failed move of the line, as the position before it: auto-play
@@ -10120,17 +10208,28 @@
         return;
       }
 
-      // Done with this variation when its LAST failed move has been answered
-      // CORRECTLY (the baseline is what guards against a seeded counter), or
-      // when the variation ends — which is also how a move the user keeps
-      // failing releases the pass: the trainer shows the solution and
-      // completes, and the re-failed move stays in the list for a next pass.
-      // "Whole variation" mode waits for the end either way.
+      // Done with this variation when its LAST failed move has been LEFT
+      // BEHIND — the trainer standing on a later ply of the line, which it
+      // only ever does once that move has been answered — or when the
+      // variation ends, which is also how a move the user keeps failing
+      // releases the pass: the trainer shows the solution and completes, and
+      // the re-failed move stays in the list for a next pass. "Whole
+      // variation" mode waits for the end either way.
+      //
+      // `passedPly` is the primary signal and the counter comparison is kept
+      // only as a second one: nothing else about the pass depends on
+      // quizCorrectTotal, and a baseline read a beat too early (off the
+      // outgoing lesson's plan, one arrival tick before the overstudy's own
+      // counters are in place) leaves it one short for ever — the pass then
+      // never moves on early and the user plays out the whole tail of the
+      // line, mistakes or not. That is the bug this pair fixes; either signal
+      // alone ends the visit.
       const completed = reviewBrowseReady();
       let answered = false;
       if (run.mode !== 'whole' && !completed) {
         const prog = mistakeLogApi.progressFor(item.oid, item.mkey);
-        answered = Boolean(prog && prog.quizCorrectTotal > run.visit.baseCorrect);
+        answered = mistakeLogApi.passedPly(item.oid, item.targetFen) ||
+          Boolean(prog && prog.quizCorrectTotal > run.visit.baseCorrect);
       }
       if (!completed && !answered) return;
       const marked = mistakeLogApi
@@ -10428,10 +10527,21 @@
     function applyHold() {
       if (!autoPlaySetHold) return;
       const run = rr.run;
-      const item = run && run.owner === MY_ID ? run.items[run.index] : null;
-      const oid = item && isTrainerPath() ? readQuickEditOid() : null;
-      const here = item && oid && String(oid) === String(item.oid);
-      autoPlaySetHold(here ? item.holds : null, here && run.mode === 'only');
+      const mine = run && run.owner === MY_ID;
+      const oid = mine && isTrainerPath() ? readQuickEditOid() : null;
+      // Keyed on the variation ON SCREEN, not on the queue cursor (v0.53.4).
+      // Auto-playing a move the user is being asked to retry is the one
+      // outcome this feature must never produce, and hanging the hold off
+      // `run.index` made every reason the cursor can move on early — a clock
+      // that reads a beat ahead, the switch to the next item not having landed
+      // yet — lift the hold with the trainer still sitting on the failed move.
+      // Whatever the cursor says: while a variation this pass knows about is
+      // up, its failed moves are the user's to play.
+      const item = oid ? run.items.find((it) => String(it.oid) === String(oid)) : null;
+      // …but taking the board BACK after one is only for the item being
+      // driven, in the mode that asks for it.
+      const current = Boolean(item) && item === run.items[run.index];
+      autoPlaySetHold(item ? item.holds : null, current && run.mode === 'only');
     }
 
     async function tick() {

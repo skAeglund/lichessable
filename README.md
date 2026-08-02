@@ -946,7 +946,14 @@ enough not to run, the ↻ button is the only way back.
   opponent-colour ⇒ the trainer's; user-colour injected by us ⇒ bookkeeping;
   user-colour with recent *trusted* pointer input on the board ⇒ a genuine
   answer, recorded once the opponent replies or the variation completes
-  (vetoed if the move notification reads "Incorrect"/"Time's up");
+  (vetoed if the move notification reads "Incorrect"/"Time's up"). A
+  **line-ending** move needs one extra read at the completion transition
+  (`observeFinalFrame`, v0.53.3): Chessable answers it and completes the lesson
+  in a single state transition, so the board frame carrying it arrives with the
+  completion block already up — where the frame reader stands down, browse
+  navigation not being play. Without that read the last move of a line never
+  earned a proof, which showed up as auto-play replaying a whole variation on a
+  retry pass and then handing the board back for its very final move;
   user-colour with no pointer input ⇒ trainer-played (solution replays,
   Key-Moves prefixes) and never recorded. The record lives in
   `chrome.storage.session` keyed on placement+side+castling per course, so
@@ -1066,11 +1073,22 @@ enough not to run, the ↻ button is the only way back.
   owner ends its own pass on `pagehide`, on leaving the trainer inside the SPA,
   or — as a backstop for a tab that died — when nobody has beaten on the record
   for ten minutes. Ending a pass always restores the auto-play setting it
-  borrowed. A variation is done when the failed move's `quizCorrectTotal` grows
-  past the value read on arrival (a baseline, not a zero test — a seeded
-  counter would otherwise race the whole queue through) or when the variation
-  completes, which is also how a move the user keeps failing releases the pass.
-  Auto-play is told to hold on the failed positions (`autoPlaySetHold`,
+  borrowed. A variation is done when the trainer is standing on a **later ply
+  of the line than the failed move** (`passedPly`, v0.53.3 — a quiz cannot be
+  left behind without being answered; the clock is the lesson plan's own `fen`,
+  the same one the mid-quiz heads-up uses, and both sides of the comparison are
+  positions rather than move ids, without which it read "past it" the moment
+  the trainer *arrived* at the failed move) or when the variation completes,
+  which is also how a move the user keeps failing releases the pass. The failed
+  move's `quizCorrectTotal` growing past the value read on arrival (a baseline,
+  not a zero test — a seeded counter would otherwise race the whole queue
+  through) is kept as a second signal: on its own it could be left one short
+  for good by a baseline read a beat too early, and the pass then never moved
+  on until the line had been played out to its end.
+  Auto-play is told to hold on the failed positions of the variation **on
+  screen** — not of whichever queue item the runner has its cursor on, so that
+  no timing slip anywhere else in the pass can let a move you are being asked
+  to retry be auto-played (`autoPlaySetHold`,
   compared on placement + side): a move failed early and answered correctly
   later in the session *is* proven, and replaying it would skip the very move
   the retry exists for. The same bridge carries the replay mode: **Only the

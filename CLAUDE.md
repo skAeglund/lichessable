@@ -867,6 +867,22 @@ Currently working (v0.18.x).
     unreadable) board means the move went through untracked: clear
     `vs.injected`, no `manualHold`, re-enter `evaluateAutoPlay()`. Keeping the
     still-identical case strict is what stops a refused drag from looping.
+  - THE LINE-ENDING MOVE NEEDS ITS OWN READ (`observeFinalFrame`, v0.53.3).
+    `processFrame` bails on `reviewBrowseReady()` — browse navigation is not
+    play — but the frame carrying a variation's LAST move arrives with the
+    completion block already rendered (MoveTrainer2 answers that move and
+    completes the lesson in one state transition; our mutation callback runs
+    after that commit), so the move was never observed, never became a
+    `pendingRecord`, and `confirmPendingRecord('variation completed')` — which
+    exists for exactly this move, since no opponent reply follows it — had
+    nothing to confirm. The last move of a line therefore never earned a proof.
+    Invisible until a session plays the same line TWICE, which is what a retry
+    pass does: auto-play replayed the whole variation and then handed back on
+    its very last move, every time. So `tick`'s browse branch takes one board
+    read before suspending. Observation only — no `evaluateAutoPlay` (the
+    tracker is suspended on the next line) and no wrong-guess capture (the
+    variation is over) — and a frame that is not exactly one legal move on is
+    left alone, since the browse board may already have been navigated.
   - `noteDeadContext(err)`: after an extension reload, every `chrome.*` call in
     the still-running content script throws "Extension context invalidated".
     Such an orphan holds a record it can neither refresh nor save and could
@@ -1001,15 +1017,46 @@ Currently working (v0.18.x).
   `ownerStaleMs`, and the owner ends its own pass on `pagehide` (unless
   `rr.handingOver`), after `awayStopMs` off the trainer path inside the SPA,
   or via the `runAbandonMs` sweep for a tab that died — always restoring
-  `cloAutoPlayEnabled` to `run.prevAutoPlay`. Advance = the target's
-  `quizCorrectTotal` growing past the value read ON ARRIVAL (a BASELINE, not
-  `> 0`: a seeded counter would race the whole queue through) or the variation
-  completing; `markRetried(oid, visit.at)` deliberately spares entries whose
+  `cloAutoPlayEnabled` to `run.prevAutoPlay`. ADVANCE = THE TRAINER STANDING
+  ON A LATER PLY OF THE LINE THAN THE TARGET (`mistakeLogApi.passedPly`,
+  v0.53.3), or the variation completing; `quizCorrectTotal` growing past the
+  value read ON ARRIVAL (a BASELINE, not `> 0`: a seeded counter would race the
+  whole queue through) is kept only as a second signal. The clock is the lesson
+  plan's own `fen` — Chessable's current position — located among the plies'
+  `sourceFen`s on the four-field key, i.e. section 18b's ply clock, and a quiz
+  cannot be left behind without being answered. BOTH SIDES OF THAT COMPARE ARE
+  POSITIONS (the item carries the target's own `sourceFen` as `targetFen`),
+  never `mkey`: `plyKey` is `'m' + mid` and `mid` numbers the USER's moves, not
+  the plies — hence the runner's own `mid * 2` fallback — so a key lookup could
+  resolve to an EARLIER ply, and "past it" then went true exactly as the trainer
+  ARRIVED at the failed move. The pass advanced, `applyHold` dropped its holds,
+  and auto-play played the very mistake the user was being asked for: a brief
+  pause, then the move (v0.53.4). Standing ON the target is answered explicitly
+  rather than left to the index compare, so a position repeating inside a
+  variation — where `findIndex` resolves to the FIRST occurrence — still cannot
+  read as "past it". The counter alone was NOT
+  enough: its baseline is read on the first arrival tick, and one reading taken
+  a beat early (off the outgoing lesson's plan, before the overstudy's own
+  counters are in place) leaves the comparison one short FOR EVER, so the pass
+  never moved on early and the user played out the whole tail of every line —
+  in "Only the mistakes" that is the one thing the mode promises not to ask
+  for. The last position of a variation is nobody's `sourceFen`, so a target
+  that IS the final ply reads as "not past it" and the browse state ends that
+  visit instead; a repeated position resolves to its first occurrence, which
+  can only err towards "not yet". `markRetried(oid, visit.at)` deliberately spares entries whose
   ts is NEWER than the visit, which is what keeps a re-failed move in the
   list. Auto-play is told to hold on ALL of the item's failed positions
   (`autoPlaySetHold`, compared on placement+side only because the tracker's
   castling can be the home-square heuristic) — a move failed early and
   answered correctly later IS proven, and would otherwise be replayed past.
+  `applyHold` picks that item by the oid ON SCREEN, NOT by `run.index`
+  (v0.53.4): auto-playing a move the user is being asked to retry is the one
+  outcome this feature must never produce, and hanging the hold off the queue
+  cursor made every reason the cursor can move on early — a clock reading a beat
+  ahead, the switch to the next item not having landed yet — lift the hold with
+  the trainer still sitting on the failed move. The RESUME flag stays tied to
+  the cursor: holding is about the variation on screen, taking the board back
+  after a mistake is about the item being driven.
   `cloRetryMode` (storage.local, default 'from') decides how much of a line the
   user plays: 'whole' forces `cloAutoPlayEnabled` OFF for the pass and advances
   only on completion; 'from' is the plain hold; 'only' ALSO passes
