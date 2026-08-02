@@ -536,6 +536,16 @@
       // session, one navigation); either way the trainer needs a moment before
       // the new oid is readable, so retries are spaced.
       switchRetryMs:   1800,
+      // …and, separately, the beat between a CONFIRMED advance and the switch
+      // to the next variation. switchRetryMs used to do both jobs; with the
+      // transition shield covering the board (section 17) the only thing this
+      // has to be long enough for is reading the "Correct move!" pill.
+      advanceHoldMs:   700,
+      // Hard lifetime of that shield, enforced by the 500 ms tick. A stuck
+      // shield is far worse than the gap it closes, so nothing about the
+      // teardown may depend on the confirm path having run: a failed retry
+      // raises stage 1, never reaches stage 2, and expires here.
+      shieldMaxMs:     3000,
       switchMaxTries:  4,   // clicks before falling back to a navigation
       planWaitMs:      20000, // on the right variation but no readable plan ⇒ skip it
       // A browse state on the item's OWN variation is normally the previous
@@ -668,6 +678,7 @@
   const AC_POPUP_ID = 'lichessable-ac-popup'; // wrong-guess check popup (section 15)
   const MX_CLUSTER_ID = 'lichessable-mx';       // "Mistakes (N)" / Retry cluster (section 17)
   const MX_POPUP_ID   = 'lichessable-mx-popup'; // the mistake list popup (section 17)
+  const MX_SHIELD_ID  = 'lichessable-mx-shield'; // the retry transition shield (section 17)
   const CR_CLUSTER_ID = 'lichessable-cr';       // "Review clickables" cluster (section 18)
   const CR_BOARD_ID   = 'lichessable-cr-board'; // our quiz board, overlaid on Chessable's (section 18)
   const CR_PANEL_ID   = 'lichessable-cr-panel'; // prompt/controls, covering the comment column (section 18)
@@ -6731,8 +6742,29 @@
    * precisely a request for it: replay, hand over at a failed move, take back
    * over, hand over at the next one. It applies only while a pass is driving the
    * variation on screen; a call with a null hold clears it too.
+   *
+   * `targetFen` is the ONE held position whose answer ADVANCES the pass — the
+   * item's last failed move. Auto-play calls `retryNoteTargetPlayed` when a
+   * user-colour move is observed from exactly it, which is what raises the
+   * runner's transition shield. Strictly the target, never every hold: with
+   * mistakes at moves 8 and 12, answering 8 must leave the board alone so the
+   * replay of 9-11 stays visible.
    */
   let autoPlaySetHold = null;
+
+  /**
+   * (on) => void — assigned by initAutoPlay, called by the retry runner while
+   * its transition shield is up.
+   *
+   * A SECOND flag rather than autoPlayHold's `heldOff`, deliberately. That one
+   * means "an outside feature owns the board" (18b's mid-quiz review, a drill),
+   * and two owners on one boolean lose eventually: this shield self-clears on a
+   * watchdog, and a "Review now" holding at that moment would have its hold
+   * lifted with its own board still sitting over Chessable's — an injection
+   * into a board nobody can see, which is exactly what `heldOff` exists to
+   * prevent. The two are ORed in one place (see `held`).
+   */
+  let autoPlayRetryHold = null;
 
   /**
    * () => boolean — assigned by initAutoPlay, read by the mid-quiz heads-up
@@ -6787,7 +6819,9 @@
       injectClassTimer: 0,     // pending removal of the html.clo-injecting gate
       holdKeys: null,          // Set of "placement side" the retry runner wants played by hand
       resumeAfterHandover: false, // …and may auto-play again after one of them (retry "Only the mistakes")
+      targetKey: null,         // …and THE one of them whose answer advances the pass (see autoPlaySetHold)
       heldOff: false,          // an outside feature owns the board right now (autoPlayHold)
+      retryHeld: false,        // …and the retry runner's transition shield (autoPlayRetryHold)
       contextDead: false,      // orphaned by an extension reload — see noteDeadContext
       pollTimer: 0,
       observer: null,
@@ -6799,6 +6833,17 @@
       vs: null,                // per-variation state, see freshVariationState
     };
     ap.vs = freshVariationState(null, null);
+
+    /**
+     * "Something outside auto-play owns Chessable's board right now." The two
+     * reasons are independent and owned by different features (see
+     * autoPlayHold / autoPlayRetryHold), so they are ORed here rather than
+     * sharing a flag — a third one later is a one-line change, and every read
+     * site keeps agreeing by construction.
+     */
+    function held() {
+      return ap.heldOff || ap.retryHeld;
+    }
 
     function freshVariationState(oid, bid) {
       return {
@@ -7255,6 +7300,10 @@
       const move = found.move;
       const uci = squareName(move.from) + squareName(move.to);
       const posKeyBefore = posKeyOf(vs.pos);
+      // Placement + side only, the same normalisation holdKeys uses: this key
+      // is compared against one built from Chessable's own FEN, while vs.pos
+      // may carry the home-square castling heuristic.
+      const holdKeyBefore = placementFen(vs.pos.board) + ' ' + vs.pos.side;
 
       let kind;
       if (mover !== vs.userColor) {
@@ -7297,6 +7346,22 @@
         // the trainer room before our next injection.
         kind = 'trainer';
         vs.trainerDrove = true;
+      }
+
+      // A retry pass's TARGET move — the item's last failed one, whose answer
+      // advances the pass — has just been played. Told at mutation speed,
+      // because the runner's confirm arrives up to a tick later and Chessable
+      // has the board asking for the next move of the line ~440 ms from now.
+      // Fire-and-forget and null-safe: `targetKey` is null outside a pass, and
+      // outside the item being driven (see applyHold), so this cannot fire
+      // where the board is legitimately the user's to go on playing.
+      //
+      // Any user-colour mover, not just kind 'user': the trainer demonstrating
+      // the solution after a repeated failure releases the pass just as well,
+      // and an injected one cannot happen here (the hold is what stops it).
+      if (mover === vs.userColor && ap.targetKey && holdKeyBefore === ap.targetKey &&
+          retryNoteTargetPlayed) {
+        retryNoteTargetPlayed();
       }
 
       vs.pos = found.next;
@@ -7487,6 +7552,16 @@
       // feature's board, so every frame the trainer paints — the pieces fading
       // out and back in — is theirs, not a move. Reading them would only cost
       // the tracker its thread.
+      //
+      // Deliberately `ap.heldOff` and NOT `held()`: the retry runner's shield
+      // is TRANSPARENT and the session underneath keeps playing, so its frames
+      // are real moves and reading them is exactly right. The opponent's reply
+      // to the move that raised the shield is what CONFIRMS that answer
+      // (confirmPendingRecord) — skipping it would cost the user the proof for
+      // the very move they just got right — and a shield raised on a REFUSED
+      // move still needs the wrong-guess capture below. Nothing can be injected
+      // meanwhile: evaluateAutoPlay and injectMove are the two gates that ask
+      // held().
       if (ap.heldOff) return;
       syncVariation();
       const vs = ap.vs;
@@ -7697,9 +7772,12 @@
     function evaluateAutoPlay() {
       const vs = ap.vs;
       if (!ap.enabled || ap.contextDead || document.hidden) return;
-      // Another feature owns the board (18b's mid-quiz review, which has the
-      // session paused and our own board on top of theirs).
-      if (ap.heldOff) return;
+      // Another feature owns the board: 18b's mid-quiz review (session paused,
+      // our own board on top of theirs), or the retry runner's transition
+      // shield — where the board is live but dead to input, and `only` mode's
+      // resumeAfterHandover is still true, so without this the next proven move
+      // of the line would be replayed into a board nobody can play on.
+      if (held()) return;
       if (!vs.oid || !vs.bid || vs.suspended || vs.cancelled) return;
       if (vs.manualHold) { logHandback('manual hold on this position'); return; }
       // A variation the user has played in is theirs for the rest of it —
@@ -7806,7 +7884,7 @@
       const vs = ap.vs;
       // The world may have changed during the speed delay — re-verify, and
       // drop the sticky "replaying" chip if the injection is off.
-      if (!ap.enabled || ap.heldOff || document.hidden || vs.cancelled || vs.suspended ||
+      if (!ap.enabled || held() || document.hidden || vs.cancelled || vs.suspended ||
           vs.manualHold || vs.lastKey !== expectKey || !vs.pos || vs.pos.side !== vs.userColor) {
         setStatus('');
         evaluateAutoPlay(); // the position may have moved on — rejoin the chain
@@ -8158,8 +8236,14 @@
 
     // The retry runner's bridge (section 17). Positions are keyed on
     // placement + side to move; a null/empty list clears the hold.
-    autoPlaySetHold = (fens, resumeAfterHandover) => {
+    autoPlaySetHold = (fens, resumeAfterHandover, targetFen) => {
       ap.resumeAfterHandover = Boolean(resumeAfterHandover);
+      // The one hold whose answer advances the pass (see the doc comment on
+      // this bridge). Same key shape as holdKeys, and cleared by every call
+      // that does not name one — a stale target would fire the shield on a
+      // move that no longer ends anything.
+      const target = targetFen ? CloSan.parseFen(targetFen) : null;
+      ap.targetKey = target ? placementFen(target.board) + ' ' + target.side : null;
       if (!Array.isArray(fens) || !fens.length) {
         if (ap.holdKeys) ap.holdKeys = null;
         return;
@@ -8192,6 +8276,18 @@
       const want = Boolean(on);
       if (ap.heldOff === want) return;
       ap.heldOff = want;
+      if (want) stopReplaying();
+      else evaluateAutoPlay();
+    };
+
+    // Section 17's transition shield. Its own flag, never heldOff's — see the
+    // bridge's doc comment. Same shape otherwise: a pending injection is
+    // dropped on the way in, and releasing re-enters the loop at once (usually
+    // moot, since the pass has switched variation by then).
+    autoPlayRetryHold = (on) => {
+      const want = Boolean(on);
+      if (ap.retryHeld === want) return;
+      ap.retryHeld = want;
       if (want) stopReplaying();
       else evaluateAutoPlay();
     };
@@ -9856,6 +9952,15 @@
   // straight down again. Assigned by initRetryRunner; null-safe.
   let retryRunActive = null;
 
+  /**
+   * () => void — assigned by initRetryRunner, called by auto-play the instant
+   * it observes a user-colour move played from the position a retry pass named
+   * as its TARGET (see autoPlaySetHold). Raises the pass's transition shield.
+   * Fire-and-forget: it claims nothing about whether the move was correct, and
+   * everything it starts is torn down by a watchdog regardless.
+   */
+  let retryNoteTargetPlayed = null;
+
   function initRetryRunner() {
     const C = CONFIG.retry;
     const MY_ID = 'r' + Math.random().toString(36).slice(2, 10);
@@ -9879,9 +9984,11 @@
       doneAt: 0,
       ticking: false,     // the whole tick is async — never overlap two
       dead: false,
+      shield: null,       // the transition shield's nodes + state, see raiseShield
     };
 
     retryRunActive = () => Boolean(rr.run && rr.run.owner === MY_ID);
+    retryNoteTargetPlayed = () => raiseShield();
 
     // What each replay mode does, in the popup's own words.
     const MODE_NOTES = {
@@ -9903,6 +10010,9 @@
       if (rr.dead) return true;
       rr.dead = true;
       rr.run = null;
+      // tick() returns on rr.dead ABOVE its try/finally, so the watchdog will
+      // never run again — the shield has to come down here or not at all.
+      dropShield('extension reloaded');
       warn('retry: the extension was reloaded — this tab is running an orphaned content ' +
         'script. Reload the page to run a retry pass.');
       return true;
@@ -10008,7 +10118,8 @@
         visit: null,      // { oid, at, baseCorrect } once the quiz is live
         tries: 0,         // drawer clicks for the current item
         navs: 0,          // navigations for the current item
-        lastSwitchAt: 0,
+        lastSwitchAt: 0,     // spacing between switch ATTEMPTS (switchRetryMs)
+        switchNotBefore: 0,  // …and the beat an answer gets on screen (see nextItem)
         answered: 0, skipped: 0,
       };
       await saveRun();
@@ -10031,6 +10142,12 @@
     async function finishRun(text) {
       const run = rr.run;
       rr.run = null;
+      // Before the awaits below, not on the next tick: "Stop" pressed with the
+      // shield up must give the board back at once. The exception is a shield
+      // that has just been CONFIRMED — the last item of a pass ends the run in
+      // the same task the pill goes up, and dropping here would flash it (see
+      // confirmShield). The watchdog takes it from there.
+      if (!rr.shield || Date.now() >= (rr.shield.holdUntil || 0)) dropShield('pass ended');
       if (!run) return;
       try {
         await chrome.storage.local.set({ [CONFIG.autoPlay.enabledKey]: run.prevAutoPlay });
@@ -10059,6 +10176,11 @@
     async function maybeSwitch(item) {
       const run = rr.run;
       const now = Date.now();
+      // Two unrelated jobs, split (v0.54.0). This one is the beat the answer
+      // that just landed gets on screen before the board changes under the
+      // user's hand — set by nextItem, and short when the shield is carrying it.
+      if (now < (run.switchNotBefore || 0)) return;
+      // …and this one is the spacing between retried switch ATTEMPTS.
       if (now - (run.lastSwitchAt || 0) < C.switchRetryMs) return;
       run.lastSwitchAt = now;
       const inLearn = location.pathname.startsWith(CONFIG.review.learnPrefix);
@@ -10104,12 +10226,22 @@
       else location.href = url;
     }
 
-    async function advanceItem(why, marked) {
+    async function advanceItem(why, marked, completed) {
       const run = rr.run;
       const item = run.items[run.index];
       log('retry:', item.oid, 'done (' + why + ');', marked, 'mistake(s) cleared');
       run.answered++;
-      await nextItem();
+      // The shield is up exactly when this advance followed the item's last
+      // failed move being played mid-line — so it is also the signal for how
+      // long the beat before the switch needs to be: with the board dead
+      // underneath and the pill saying so, there is nothing else left to serve.
+      // A COMPLETED variation is not that case even with the shield still up:
+      // the browse state drops it in this very tick's watchdog, and what the
+      // beat then holds on screen is the finished line, which deserves the old
+      // one.
+      const shielded = Boolean(rr.shield && rr.shield.at) && !completed;
+      if (shielded) confirmShield();
+      await nextItem(shielded ? C.advanceHoldMs : C.switchRetryMs);
       if (rr.run) await driveRun();
     }
 
@@ -10122,18 +10254,25 @@
       if (rr.run) await driveRun();
     }
 
-    /** Step the cursor and reset the per-item bookkeeping (or finish). */
-    async function nextItem() {
+    /**
+     * Step the cursor and reset the per-item bookkeeping (or finish).
+     *
+     * `holdMs` is how long the answer that just landed stays on screen before
+     * the switch. It used to be switchRetryMs, borrowed — the same constant
+     * that spaces retried switch attempts, doing a second job it was never
+     * named for. Now the caller says: a shielded advance needs only long
+     * enough to read the pill (advanceHoldMs), everything else keeps the old
+     * beat. Pressing Retry itself is not delayed — startRun leaves both at 0.
+     */
+    async function nextItem(holdMs) {
       const run = rr.run;
       run.index++;
       run.visit = null;
       run.tries = 0;
       run.navs = 0;
-      // Not 0: the next variation is one switchRetryMs away, so the answer that
-      // just landed (or the trainer's reply to it) stays on screen for a beat
-      // instead of the board changing under the user's hand. Pressing Retry
-      // itself is not delayed — startRun sets this to 0.
-      run.lastSwitchAt = Date.now();
+      run.lastSwitchAt = 0;
+      run.switchNotBefore = Date.now() +
+        (typeof holdMs === 'number' ? holdMs : C.switchRetryMs);
       rr.waits = 0;
       rr.waitOid = null;
       rr.browseTicks = 0;
@@ -10234,7 +10373,8 @@
       if (!completed && !answered) return;
       const marked = mistakeLogApi
         ? mistakeLogApi.markRetried(item.oid, run.visit.at) : 0;
-      await advanceItem(completed ? 'variation completed' : 'failed move answered', marked);
+      await advanceItem(completed ? 'variation completed' : 'failed move answered',
+        marked, completed);
     }
 
     // --- UI: cluster on the overstudy widget --------------------------------
@@ -10516,6 +10656,181 @@
       if (rr.popup) rr.popup.hidden = true;
     }
 
+    // --- the transition shield ------------------------------------------------
+    //
+    // THE PROBLEM. In "From the mistake" and "Only the mistakes" a pass moves
+    // on when the item's LAST failed move is answered (`passedPly` in
+    // driveRun). But the trainer knows nothing about that: the correct move
+    // lands, ~440 ms later Chessable glides the opponent's reply in, and the
+    // board is live and asking for the NEXT move of the line — while the pass
+    // spends a tick noticing and then a beat before the switch. That is ~2.3 s
+    // of interactive board on which the trainer asks for exactly the moves
+    // these two modes promise not to ask for, and a wrong move played there is
+    // logged as a new mistake, refilling the queue the pass is draining. A
+    // correctness hole, not polish. ("Whole variation" is unaffected: it
+    // advances from the browse state, where the board is not live.)
+    //
+    // THE FIX. Cover Chessable's board for the transition, raised at mutation
+    // speed by auto-play's bridge and held through the confirm-and-switch.
+    //
+    // TRANSPARENT, deliberately: the opponent's reply plays underneath and
+    // stays visible — it is the confirmation that the move was accepted, and
+    // hiding it buys nothing once input is blocked. `cursor: default`, not
+    // `not-allowed`: this follows a CORRECT answer, so nothing here is a
+    // refusal.
+    //
+    // TWO STAGES, because the answer is not confirmed when the shield goes up.
+    // Stage 1 claims nothing and only glows at the board's edge — half a second
+    // of a silently dead board with no cue at all reads as a freeze. Stage 2
+    // is the confirmed advance and says so.
+    //
+    // FAIL-OPEN, unconditionally: a stuck shield is far worse than the gap it
+    // closes, so no part of the teardown may depend on the confirm path having
+    // run. `syncShield` drops it on a hard lifetime cap, on the variation
+    // changing, on the browse state, on a hidden tab, on leaving the session
+    // and on the pass ending — and it runs from tick's `finally`, so every one
+    // of tick's early returns still passes through it. A FAILED retry (a wrong
+    // move from the target position) therefore raises stage 1, never reaches
+    // stage 2, and expires, with Chessable's own "Incorrect" note readable
+    // through the shield the whole time.
+    //
+    // Accepted edge case, deliberately unguarded: a piece already picked up
+    // when the shield mounts keeps its pointer capture and can still be
+    // dropped. Guarding it would mean reaching into MoveTrainer2's selection.
+
+    function ensureShield() {
+      if (rr.shield && rr.shield.el.isConnected) return rr.shield;
+      const stale = document.getElementById(MX_SHIELD_ID);
+      if (stale) stale.remove();
+      const el = document.createElement('div');
+      el.id = MX_SHIELD_ID;
+      el.className = 'clo-mx-shield';
+      el.hidden = true;
+      const pill = document.createElement('div');
+      pill.className = 'clo-mx-shield-pill';
+      pill.textContent = 'Correct move!';
+      pill.hidden = true;
+      el.appendChild(pill);
+      // Everything the board would otherwise receive. The element is on top, so
+      // nothing below it can be reached anyway — this is for the compatibility
+      // events a captured pointer would still deliver, and for the context menu.
+      for (const type of ['pointerdown', 'pointerup', 'pointermove', 'mousedown',
+        'mouseup', 'click', 'dblclick', 'contextmenu', 'touchstart', 'touchmove']) {
+        el.addEventListener(type, (ev) => {
+          if (ev.cancelable) ev.preventDefault();
+          ev.stopPropagation();
+        }, true);
+      }
+      document.body.appendChild(el);
+      rr.shield = { el, pill, at: 0, oid: '', stage: 0, holdUntil: 0 };
+      return rr.shield;
+    }
+
+    /**
+     * Pin the shield over Chessable's board — absolute in DOCUMENT coordinates
+     * (viewport rect + scroll offset), the same scheme as every other overlay
+     * here, never `fixed`. False while the board is mid-render or gone.
+     */
+    function positionShield() {
+      const sh = rr.shield;
+      if (!sh) return false;
+      const board = getReviewBoard();
+      const rect = board ? board.getBoundingClientRect() : null;
+      if (!rect || rect.width < CONFIG.continuation.minBoardPx) return false;
+      const size = Math.min(rect.width, rect.height);
+      setInlinePx(sh.el, {
+        left: rect.left + window.scrollX,
+        top: rect.top + window.scrollY,
+        width: size,
+        height: size,
+      });
+      return true;
+    }
+
+    /** Stage 1 — auto-play saw the target move played. Nothing is claimed yet. */
+    function raiseShield() {
+      const run = rr.run;
+      if (!run || run.owner !== MY_ID || rr.dead) return;
+      if (!isTrainerPath() || document.hidden) return;
+      // The line-ending move arrives with the completion block already
+      // rendered, and auto-play reads it from the browse branch of its own tick
+      // (observeFinalFrame) — so this bridge can fire there. Nothing to shield:
+      // the browse board is navigation-only, there is no live quiz to protect
+      // from, and syncShield would drop it on the next tick anyway.
+      if (reviewBrowseReady()) return;
+      const sh = ensureShield();
+      if (sh.at) return; // already up
+      sh.at = Date.now();
+      sh.oid = String(readQuickEditOid() || '');
+      sh.stage = 1;
+      sh.pill.hidden = true;
+      sh.el.classList.remove('clo-mx-shield--done');
+      // Placed BEFORE it is shown, or the first frame paints it at 0,0.
+      if (!positionShield()) { sh.at = 0; sh.stage = 0; return; }
+      sh.el.hidden = false;
+      if (autoPlayRetryHold) autoPlayRetryHold(true);
+      log('retry: shielding the board for the transition');
+    }
+
+    /**
+     * Stage 2 — driveRun has confirmed the advance.
+     *
+     * `holdUntil` is the ONE exemption in the watchdog, and it exists for the
+     * pass's LAST item: there the advance ends the run in the same tick, so
+     * "pass ended" would drop the shield in the same task the pill went up and
+     * the user's final correct answer would be acknowledged by a ~100 ms flash
+     * (seen live, v0.54.0). Every OTHER teardown reason still fires through it,
+     * the lifetime cap included — this only ever delays the end of a pass, and
+     * only by the beat the pill needs.
+     */
+    function confirmShield() {
+      const sh = rr.shield;
+      if (!sh || !sh.at || sh.stage >= 2) return;
+      sh.stage = 2;
+      sh.holdUntil = Date.now() + C.advanceHoldMs;
+      sh.pill.hidden = false;
+      sh.el.classList.add('clo-mx-shield--done');
+    }
+
+    function dropShield(why) {
+      const sh = rr.shield;
+      if (!sh || !sh.at) return;
+      sh.at = 0;
+      sh.stage = 0;
+      sh.holdUntil = 0;
+      sh.el.hidden = true;
+      sh.pill.hidden = true;
+      sh.el.classList.remove('clo-mx-shield--done');
+      // Released even if the bridge has gone (an orphaned document): the flag
+      // lives in the same document, so there is nothing to leak to.
+      if (autoPlayRetryHold) autoPlayRetryHold(false);
+      log('retry: shield down (' + why + ')');
+    }
+
+    /**
+     * The watchdog, run from tick's `finally` — see the fail-open paragraph
+     * above. Every condition here is a reason the shield has outlived its job,
+     * and none of them is the confirm path.
+     */
+    function syncShield() {
+      const sh = rr.shield;
+      if (!sh || !sh.at) return;
+      const run = rr.run;
+      // The cap is checked FIRST so nothing below — the confirm hold included —
+      // can extend the shield's life past it.
+      if (rr.dead) return dropShield('extension reloaded');
+      if (Date.now() - sh.at > C.shieldMaxMs) return dropShield('lifetime cap');
+      if (!isTrainerPath()) return dropShield('left the session');
+      if (document.hidden) return dropShield('tab hidden');
+      // The one reason a confirmed shield outlives: see confirmShield.
+      if ((!run || run.owner !== MY_ID) && Date.now() >= (sh.holdUntil || 0)) {
+        return dropShield('pass ended');
+      }
+      if (reviewBrowseReady()) return dropShield('variation completed');
+      if (String(readQuickEditOid() || '') !== sh.oid) return dropShield('variation changed');
+      positionShield(); // the board moves with the page; keep the last good spot otherwise
+    }
+
     // --- lifecycle -----------------------------------------------------------
 
     /**
@@ -10541,7 +10856,17 @@
       // …but taking the board BACK after one is only for the item being
       // driven, in the mode that asks for it.
       const current = Boolean(item) && item === run.items[run.index];
-      autoPlaySetHold(item ? item.holds : null, current && run.mode === 'only');
+      // The transition shield fires on ONE of those holds — the target, whose
+      // answer advances the pass — and only for the item being driven, the same
+      // gating as resumeAfterHandover: holding is about the variation on
+      // screen, advancing is about the item the cursor is on.
+      //
+      // "Whole variation" is excluded because it does not advance on a move at
+      // all: it waits for the line to END, so the board after the last failed
+      // move is legitimately the user's to go on playing and shielding it would
+      // block the rest of the variation for the cap's three seconds.
+      const target = current && run.mode !== 'whole' ? item.targetFen : null;
+      autoPlaySetHold(item ? item.holds : null, current && run.mode === 'only', target);
     }
 
     async function tick() {
@@ -10602,6 +10927,10 @@
         // another tab — a hold left behind would stop auto-play on those
         // positions for the rest of the page's life.
         applyHold();
+        // Same reasoning, and the reason this is the shield's watchdog: every
+        // early return above passes through here, so there is no path out of
+        // tick that leaves a shield standing.
+        syncShield();
         syncUi();
         rr.ticking = false;
       }
@@ -10621,6 +10950,10 @@
     const pollTimer = setInterval(tick, CONFIG.review.pollMs);
     window.addEventListener('pagehide', () => {
       clearInterval(pollTimer);
+      // The poll is the shield's watchdog, so it must not outlive it — and a
+      // document restored from the bfcache would otherwise come back with a
+      // dead board under a shield nothing is left to drop.
+      dropShield('page unloading');
       // This document is going away. If it was driving a pass and is NOT
       // handing it over across the runner's own navigation, the pass ends here
       // — best effort, fire and forget: an unload cannot await storage, and a

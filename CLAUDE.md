@@ -1056,7 +1056,84 @@ Currently working (v0.18.x).
   ahead, the switch to the next item not having landed yet — lift the hold with
   the trainer still sitting on the failed move. The RESUME flag stays tied to
   the cursor: holding is about the variation on screen, taking the board back
-  after a mistake is about the item being driven.
+  after a mistake is about the item being driven. So is the SHIELD TARGET.
+  THE TRANSITION IS SHIELDED (v0.54.0), and this is a correctness hole, not
+  polish. Advancing on an answered move is the RUNNER'S decision and the trainer
+  knows nothing about it: the correct move lands, ~440 ms later Chessable glides
+  the opponent's reply in, and the board is live and asking for the NEXT move of
+  the line while the pass spends up to a tick noticing and then a beat
+  switching. In 'from'/'only' that is ~2.3 s on which the trainer asks for
+  exactly the moves the mode promises not to ask for, and a wrong move played
+  there is logged as a NEW MISTAKE — refilling the queue the pass is draining.
+  ('whole' is unaffected: it advances from the browse state, where the board is
+  not live, so `applyHold` passes NO target in that mode — shielding there would
+  block the rest of the variation, which is legitimately the user's to play.)
+  So a body-mounted div is pinned over `getReviewBoard()` (absolute in DOCUMENT
+  coordinates like every overlay here) and swallows input in CAPTURE phase.
+  * TRIGGER = `retryNoteTargetPlayed`, fired from `applyObservedMove` at
+    MUTATION speed when a user-colour move is observed from `ap.targetKey` —
+    the ONE hold whose answer advances the pass, carried by
+    `autoPlaySetHold`'s third argument. Never every hold: with mistakes at
+    moves 8 and 12, answering 8 must leave the board alone so the replay of
+    9-11 stays fully VISIBLE. That is the behaviour most likely to be got
+    wrong. The key is placement+side, `holdKeys`' own normalisation (the
+    tracker's castling can be the home-square heuristic).
+  * TWO STAGES, because the answer is not confirmed when the shield goes up:
+    stage 1 claims nothing and only glows at the board edge (half a second of a
+    silently dead board with no cue reads as a FREEZE); stage 2, from
+    `driveRun`'s existing `passedPly` path via `confirmShield`, is a green
+    "Correct move!" pill. The shield is TRANSPARENT — the reply plays
+    underneath and stays visible, which is the confirmation the move was
+    accepted, and hiding it buys nothing once input is blocked — so the pill
+    carries its own background and a full-surface tint is out. `cursor:
+    default`, not `not-allowed`: this follows a CORRECT answer.
+  * FAILS OPEN, unconditionally — a stuck shield is far worse than the gap it
+    closes. `syncShield` runs from `tick`'s FINALLY (so every early return
+    passes through it) and drops on a `shieldMaxMs` cap, oid change, browse
+    state, `document.hidden`, off-path and pass end; `noteDead` drops it too,
+    since `tick` returns on `rr.dead` ABOVE its try/finally. A failed retry
+    therefore raises stage 1, never reaches stage 2, and expires, with
+    Chessable's "Incorrect" note readable through the shield throughout.
+    Accepted and deliberately unguarded: a piece already picked up when the
+    shield mounts keeps its pointer capture and can still be dropped.
+  * `confirmShield` sets a `holdUntil` (= `advanceHoldMs`), the ONE exemption in
+    that watchdog, and it exists for the pass's LAST item: there `advanceItem`
+    → `nextItem` → `finishRun` all run in the same task, so "pass ended" fired
+    in the same task the pill went up and the user's final correct answer was
+    acknowledged by a ~100 ms flash (measured live, v0.54.0). The exemption is
+    scoped to that one reason — the cap is checked FIRST, so nothing can outlive
+    it — and `finishRun`'s own eager drop (there so "Stop" gives the board back
+    at once) skips a shield inside its hold.
+  * GROUND-TRUTHED END TO END 2026-08-02 on course 453453, mode 'only': a
+    non-target failed move raises NOTHING; the target raises stage 1 at mutation
+    speed (transparent, `rgba(0,0,0,0)`, board-sized to the pixel, hit test at
+    the board centre returns the shield) with stage 2 ~750 ms later — i.e. the
+    two-stage split is load-bearing, that gap is real; the switch follows
+    `advanceHoldMs` later and the shield goes down on 'variation changed'; the
+    last item holds the pill ~890 ms then 'pass ended'; a wrong answer at the
+    target gets stage 1 only and 'lifetime cap' at ~3.3 s with the pass NOT
+    advanced.
+  * `processFrame` keeps reading frames while the shield is up (`ap.heldOff`,
+    NOT `held()`): the session underneath is really playing, and the opponent's
+    reply is what CONFIRMS the user's answer as a proof — skipping it would
+    cost them the record for the very move they just got right. Only
+    `evaluateAutoPlay` and `injectMove` ask `held()`.
+  * AUTO-PLAY IS HELD BY ITS OWN FLAG, `ap.retryHeld` via `autoPlayRetryHold` —
+    never `ap.heldOff`, which means "an outside feature owns the board" (18b's
+    review, a drill). Two owners on one boolean lose eventually: this shield
+    self-clears on a watchdog, and a "Review now" holding at that moment would
+    have its hold lifted with its own board still over Chessable's. The two are
+    ORed in ONE predicate, `held()`. The hold matters most in 'only' mode,
+    where `resumeAfterHandover` is still true between the move landing and
+    `advanceItem`, so auto-play would otherwise inject the next proven move
+    into the transition.
+  * THE SWITCH TIMING IS SPLIT. `switchRetryMs` (1800) was doing two unrelated
+    jobs — spacing retried switch ATTEMPTS, and giving the answer a beat on
+    screen. `nextItem(holdMs)` now sets `run.switchNotBefore` and `maybeSwitch`
+    gates on it separately; a shielded mid-line advance passes
+    `advanceHoldMs` (700, long enough to read the pill), everything else
+    (skips, completions — including a completion with the shield up, which the
+    same tick's watchdog is about to drop) keeps the old beat.
   `cloRetryMode` (storage.local, default 'from') decides how much of a line the
   user plays: 'whole' forces `cloAutoPlayEnabled` OFF for the pass and advances
   only on completion; 'from' is the plain hold; 'only' ALSO passes
@@ -1403,6 +1480,10 @@ Currently working (v0.18.x).
     board nobody can see. It gates `evaluateAutoPlay` AND `processFrame` (the
     pause/resume repaints are Chessable's frames, not moves, and reading them
     only costs the tracker its thread); release re-enters the loop at once.
+    `ap.heldOff` is THIS reason only — section 17's transition shield has its
+    own flag and the two are ORed in `held()`, so neither can release the
+    other's hold. `processFrame` reads `ap.heldOff` DIRECTLY for that reason:
+    under the shield the trainer really is playing.
   `releaseTrainer` resumes the timer BEFORE releasing auto-play, for that same
   reason. Exit reads "Back to the quiz" in this mode (`syncUi`) — leaving is not
   "give the board back and be done" but "go back to the card I was in the middle

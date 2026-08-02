@@ -1098,6 +1098,34 @@ enough not to run, the ↻ button is the only way back.
   this mode asks for — and **Whole variation** forces the toggle *off* instead
   of on and waits for the line to complete. The lift is scoped to the
   variation a pass is driving, so ordinary sessions behave as before.
+  **The transition is shielded** (v0.54.0). Advancing on an answered move is a
+  decision only the runner makes: the trainer knows nothing about it, so it
+  glides the opponent's reply in ~440 ms later and goes on asking for the next
+  move of the line while the pass spends a tick noticing and a beat switching.
+  Those two-odd seconds of live board are the moves *From the mistake* and
+  *Only the mistakes* promise not to ask for, and a wrong move played there is
+  logged as a fresh mistake — refilling the queue the pass is draining. So
+  Chessable's board is covered for the transition, raised at mutation speed the
+  moment auto-play observes the item's **last** failed move being played (an
+  earlier one leaves the board alone, or the replay of the moves between them
+  would happen behind a shield). The cover is transparent: the reply plays
+  underneath and stays visible, because that is the confirmation the move was
+  accepted, and hiding it buys nothing once input is blocked. It goes up
+  claiming nothing — a faint edge glow, since the answer is not confirmed yet
+  and a board that silently stops responding reads as a freeze — and turns into
+  a green "Correct move!" when the pass confirms. Everything about it fails
+  open: a three-second cap, the variation changing, the browse state, a hidden
+  tab, leaving the session and the pass ending each drop it, none of which is
+  the confirm path, so a *failed* retry simply shows the glow until it expires
+  with Chessable's own "Incorrect" note readable through it the whole time.
+  The single exception is the pass's last variation, where the advance ends the
+  run in the same breath — there the pill is held for its beat rather than
+  flashing, which is the one thing the watchdog waits for and never longer than
+  the cap.
+  Auto-play is held off by a flag of its own rather than the one meaning "an
+  outside feature owns the board", so two owners can never lift each other's
+  hold. **Whole variation** raises nothing: it advances when the line ends, so
+  the board after the last mistake really is yours to play on.
 - **Mistake drill** — section 20, and deliberately not a feature of its own: a
   card is built in exactly the line shape the clickable-line quiz already plays
   (opponent plies auto-played, user plies asked for), so it is a third *mode*
@@ -1247,7 +1275,10 @@ enough not to run, the ↻ button is the only way back.
   press that happened to land in one of those gaps.
   Auto-play gets two bridges for this: `autoPlayHold(on)` (gates
   `evaluateAutoPlay` and `processFrame` on `ap.heldOff`, stops anything in
-  flight, and re-enters the loop on release) and `autoPlayReplaying()`, which
+  flight, and re-enters the loop on release — the retry shield's
+  `autoPlayRetryHold` is deliberately a *separate* flag, ORed with this one in
+  a single `held()` predicate, so neither feature can release the other's hold)
+  and `autoPlayReplaying()`, which
   the heads-up hides itself on — during a replay the positions go past at
   auto-play's own speed, so a panel raised on one of them either flashes by
   unread or stands over a position the replay has left. That answer is

@@ -1649,6 +1649,63 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-mx-cancel:hover { color: #fff; }
 
+/* --- retry transition shield (section 17) ------------------------------------
+   Covers Chessable's board between the item's last failed move being answered
+   and the switch to the next variation, so the trainer cannot ask for the moves
+   the pass exists to skip. Absolute in DOCUMENT coordinates, positioned by
+   positionShield.
+
+   TRANSPARENT on purpose — the opponent's reply plays underneath and stays
+   visible, which is the confirmation that the move was accepted. So the pill
+   below needs a background of its own: it has pieces to carry itself over, and
+   a full-surface tint is the one thing this must not do.
+
+   `cursor: default`, not `not-allowed`: this follows a CORRECT answer, and a
+   refusal cursor would say the opposite. `touch-action: none` so a finger on
+   the dead board does not scroll the page instead.
+
+   z-index sits BELOW the continuation overlays (100000): if one of those is up,
+   its board is the one the user is playing on and must win. */
+.clo-mx-shield {
+  position: absolute;
+  z-index: 99998;
+  box-sizing: border-box;
+  border-radius: 3px;
+  cursor: default;
+  touch-action: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Stage 1: the answer is not confirmed yet, so the shield claims nothing —
+     but half a second of a board that has silently stopped responding reads as
+     a freeze, so the edge says something is happening. */
+  box-shadow: inset 0 0 0 3px rgba(148, 148, 148, 0.55);
+  transition: box-shadow 120ms ease-out;
+}
+
+.clo-mx-shield[hidden] { display: none; }
+
+/* Stage 2: the pass has confirmed the advance. */
+.clo-mx-shield--done {
+  box-shadow: inset 0 0 0 3px rgba(129, 182, 76, 0.85);
+}
+
+.clo-mx-shield-pill {
+  padding: 6px 14px;
+  border-radius: 14px;
+  background: rgba(38, 36, 33, 0.92);
+  border: 1px solid #81b64c;
+  color: #cbe8a6;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.clo-mx-shield-pill[hidden] { display: none; }
+
 /* --- chapter "Sort variations" widget (section 14) ---------------------------
    Body-mounted and merely anchored to Chessable's toolbar (never inside their
    React tree). initChapterSort/positionWidget parks it in the empty gutter left

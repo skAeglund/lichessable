@@ -232,6 +232,38 @@ isolation, and is the natural home for the Difficult Moves data.
   ("replay → answer the mistake → next"). A setting can make it finish the
   variation instead. This deliberately does not touch auto-play's
   `handedOver` rule (no resuming mid-line — it was reported as jarring).
+
+  > **"Straight away" is not straight away, and the gap is a correctness hole
+  > (found and closed in v0.54.0).** Advancing on an answered move is a decision
+  > only the runner makes; the trainer knows nothing about it. So the correct
+  > move lands at t=0, Chessable finishes gliding the opponent's reply in at
+  > t≈440 ms, and the board is then **live and asking for the next move of the
+  > line** while the pass spends up to a tick noticing (`passedPly`, sampled at
+  > `pollMs`) and then a beat before the drawer click. That is ~2.3 s on which
+  > the trainer asks for exactly the moves "From the mistake" and "Only the
+  > mistakes" promise not to ask for — and a wrong move played there is logged
+  > as a new mistake, refilling the queue the pass is draining.
+  >
+  > The fix is to cover Chessable's board for the transition rather than to
+  > chase the latency: a transparent, body-mounted shield over
+  > `getReviewBoard()`, raised at *mutation* speed by an auto-play bridge
+  > (`retryNoteTargetPlayed`, fired from `applyObservedMove` when a user-colour
+  > move is played from the item's **last** failed position — never an earlier
+  > one, or the replay of the moves between two mistakes would happen behind
+  > it). Transparent because the opponent's reply underneath is the
+  > confirmation that the move was accepted. Two stages, since the answer is
+  > not confirmed when the shield goes up: an edge glow first (a silently dead
+  > board with no cue reads as a freeze), a green "Correct move!" when
+  > `driveRun` confirms. Auto-play is held off by a flag of its own
+  > (`ap.retryHeld`, ORed with `ap.heldOff` in one `held()` predicate) because
+  > in "Only the mistakes" `resumeAfterHandover` is still true through the gap.
+  > Everything fails open on a watchdog run from the tick's `finally`: a stuck
+  > shield is far worse than the gap it closes, and a *failed* retry must show
+  > the glow, never the pill, and expire.
+  >
+  > "Whole variation" never raises it — that mode advances from the browse
+  > state, where the board is not live, so the moves after the last mistake are
+  > legitimately the user's to play.
 * Status chip: `Retry 2/5 — <variation>` with `Skip` / `Stop`; Stop restores the
   auto-play setting and leaves the user in the current overstudy.
 * Failure paths, all degrading to plain overstudy rather than to a wrong board
