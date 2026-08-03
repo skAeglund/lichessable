@@ -42,6 +42,27 @@
     the README's "Local engine" section.
   </p>
 
+  <label for="touchUi">Interface size</label>
+  <select id="touchUi">
+    <option value="auto">Auto (recommended)</option>
+    <option value="touch">Touch — always phone/tablet sizing</option>
+    <option value="desktop">Desktop — never phone/tablet sizing</option>
+  </select>
+
+  <p class="fineprint" id="touchUiState"></p>
+
+  <p class="fineprint" id="touchUiNote">
+    Phones and tablets get larger type and roomier tap targets in every panel
+    and widget this extension adds. Auto works it out from the pointer: the
+    first finger on the screen (or a device with no mouse at all) is
+    <strong>remembered for this browser</strong> and never forgotten, so
+    driving the phone from a PC — <code>scrcpy</code>, a USB or Bluetooth
+    mouse, DeX — keeps the mobile sizing instead of shrinking back to desktop
+    the moment the mouse moves. Pick <strong>Touch</strong> for a phone this
+    browser has genuinely never been touched on, and <strong>Desktop</strong>
+    for a touchscreen laptop that was tapped once and stayed large.
+  </p>
+
   <label class="inline"><input type="checkbox" id="headsUp"> Point out clickable lines while playing a variation</label>
 
   <p class="fineprint">

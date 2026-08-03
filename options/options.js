@@ -12,6 +12,13 @@ const HEADS_UP_KEY = 'cloLineHeadsUp';
 // must match CONFIG.continuation.autoKey in content/lichessable.js. Opt-IN,
 // the other way round: only an explicit true starts a review by itself.
 const AUTO_REVIEW_KEY = 'cloAutoReviewClickables';
+// must match CONFIG.touch.modeKey / CONFIG.touch.deviceKey in
+// content/lichessable.js. The MODE is the user's override ('auto' unless they
+// say otherwise); the DEVICE flag is the content script's own latch — it writes
+// it the first time this browser proves it is running on a touch device and
+// never clears it, so this page only ever reads it back.
+const TOUCH_KEY = 'cloTouchUi';
+const TOUCH_DEVICE_KEY = 'cloTouchDevice';
 const $ = (id) => document.getElementById(id);
 
 // NOTE: there is deliberately no reload hook on this page. An options page
@@ -29,12 +36,19 @@ function setStatus(text, isError) {
 async function init() {
   $('loadedVersion').textContent = chrome.runtime.getManifest().version;
   const stored = await chrome.storage.local.get(
-    [TOKEN_KEY, BUILD_KEY, HEADS_UP_KEY, AUTO_REVIEW_KEY]);
+    [TOKEN_KEY, BUILD_KEY, HEADS_UP_KEY, AUTO_REVIEW_KEY, TOUCH_KEY, TOUCH_DEVICE_KEY]);
   if (stored[TOKEN_KEY]) $('token').value = stored[TOKEN_KEY];
   const build = stored[BUILD_KEY];
   $('engineBuild').value = build === 'full' || build === 'lite' ? build : 'auto';
   $('headsUp').checked = stored[HEADS_UP_KEY] !== false;
   $('autoReview').checked = stored[AUTO_REVIEW_KEY] === true;
+  const touch = stored[TOUCH_KEY];
+  $('touchUi').value = touch === 'touch' || touch === 'desktop' ? touch : 'auto';
+  // Worth stating: it is the answer to "why is this still/not large?", and the
+  // only way to see the latch at all.
+  $('touchUiState').textContent = stored[TOUCH_DEVICE_KEY] === true
+    ? 'This browser is remembered as running on a touch device.'
+    : 'This browser has not been detected as a touch device yet.';
 }
 
 $('autoReview').addEventListener('change', async () => {
@@ -53,6 +67,15 @@ $('headsUp').addEventListener('change', async () => {
   setStatus($('headsUp').checked
     ? 'Clickable-line heads-up on.'
     : 'Clickable-line heads-up off.');
+});
+
+$('touchUi').addEventListener('change', async () => {
+  // Saved immediately; the content script's storage listener resizes every open
+  // Chessable document (top and mt1 iframe alike), no reload needed.
+  await chrome.storage.local.set({ [TOUCH_KEY]: $('touchUi').value });
+  setStatus($('touchUi').value === 'auto'
+    ? 'Interface size back to automatic.'
+    : 'Interface size forced to ' + $('touchUi').value + '.');
 });
 
 $('engineBuild').addEventListener('change', async () => {

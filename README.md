@@ -880,9 +880,25 @@ enough not to run, the ↻ button is the only way back.
   Input capability is *not* spoofed, so the opening guess is
   `(pointer: coarse)` — the primary pointer, so a touchscreen laptop being
   driven with a mouse still counts as fine — and the human's own trusted
-  `pointerType` corrects it for good on their first tap or click. That is the
-  same ground truth `useTouchInput()` uses to pick the event flavour for
-  injected moves, and it was verified on Android in Desktop site mode.
+  `pointerType` corrects it on their first tap or click. That was verified on
+  Android in Desktop site mode.
+  **Once a touch device, always a touch device.** Both of those signals are
+  about the pointer *in use*, and driving a phone from a PC — `scrcpy`, a USB
+  or Bluetooth mouse, DeX — gives Android a real mouse: hover events that say
+  `mouse`, and a primary pointer that is no longer coarse. Both then read
+  "desktop" while you are looking at a five-inch screen, so the whole interface
+  used to shrink the moment the mouse moved. The device has not changed, so the
+  answer no longer does either: the first proof of touch — a finger on the
+  screen, a coarse primary pointer, or touch points with no fine pointer at all
+  — is **remembered for that browser** (`cloTouchDevice` in
+  `chrome.storage.local`, which is per browser profile, so the phone's browser
+  and the PC's cannot affect each other) and is never forgotten. A phone has
+  nearly always produced one of those long before a PC is plugged into it.
+  The options page's **Interface size** (Auto / Touch / Desktop) covers what
+  detection cannot: **Touch** for a phone whose browser has genuinely never
+  been touched, because the mouse was attached before its first page load, and
+  **Desktop** for a touchscreen laptop that was tapped once and stayed large.
+  Both apply to open tabs immediately, no reload.
 - **Trainer overstudy widget** — trainer sessions (`/practice/…` and
   `/learn/…`, which render the identical MoveTrainer2 markup) run in the
   top document (no mt1 iframe, no `#inputFEN`). The session URL
@@ -1581,10 +1597,18 @@ enough not to run, the ↻ button is the only way back.
   real finger tap — pointer(touch) + touch events + the compatibility click —
   since the board's live handlers there are the touch ones and a mouse-only
   sequence reaches nothing. Which flavour is used comes from the human's own
-  trusted pointer events (`pointerType`), NOT from `navigator.maxTouchPoints`:
+  trusted **presses** (`pointerType` on pointerdown/pointerup), NOT from
+  `navigator.maxTouchPoints`:
   a touchscreen laptop is touch-capable while being driven with a mouse, and
   tapping such a board leaves the trainer with a stale selection (the piece of
-  the last injected move then cannot be picked up). Before any pointer event is
+  the last injected move then cannot be picked up). Hovers are deliberately
+  ignored here — a phone can be hovered by a mouse while its taps still arrive
+  as touch (that is how `scrcpy`'s sdk mouse mode behaves, and a stylus over a
+  tablet too), and a hover deciding this would send our taps down a path those
+  handlers never listen on. Unlike the interface-size question above, this one
+  is *not* remembered: it asks what the board's live handlers want right now,
+  and a phone genuinely driven by a mouse really does answer its mouse ones.
+  Before any press is
   seen the fallback is "touch points but no fine pointer at all". The move
   injection used by auto-play shares this helper, so it works on mobile too.
 - **Stale responses** — each fetch carries a sequence number; responses for

@@ -369,6 +369,19 @@
       addRightsWaitMs: 50000, // …and one for a rights probe (quickEdit.probeTimeoutMs + slack)
     },
 
+    // --- Touch-sized UI (section 6, applyTouchUiClass) ----------------------
+    touch: {
+      // chrome.storage.local; 'auto' | 'touch' | 'desktop' (options page). The
+      // manual answer for the two cases auto detection cannot reach — see
+      // wantsTouchUi().
+      modeKey:   'cloTouchUi',
+      // chrome.storage.local; set to true the first time this browser proves it
+      // is running on a touch device, and NEVER cleared automatically. Storage
+      // is per browser profile, so "this browser is on a phone" cannot leak to
+      // the desktop's own browser.
+      deviceKey: 'cloTouchDevice',
+    },
+
     // --- Optional local Stockfish (offscreen document, section 5b) ----------
     engine: {
       enabledKey: 'cloEngineEnabled', // chrome.storage.local; off by default
@@ -2012,22 +2025,41 @@
   // longer be picked up. Ask the pointer events instead: they carry the real
   // device, and any tap/click anywhere in this frame (the auto-play toggle, a
   // move, the page itself) settles it long before an injection runs.
-  let observedPointerType = null; // 'mouse' | 'pen' | 'touch'
+  //
+  // TWO ANSWERS, because they are two questions (v0.64.0). A PRESS is what
+  // pressSquare synthesises, so only a press may decide which flavour it
+  // synthesises: a phone can be HOVERED by a mouse while its taps still arrive
+  // as touch (scrcpy's sdk mouse mode injects clicks into the touchscreen but
+  // forwards hover as a mouse; a stylus hovering over a tablet is the same
+  // shape), and a hover that set the injection flavour would send our taps down
+  // the mouse path, which that board's live handlers never hear. Any pointer
+  // event at all is still evidence for the UI-size question below, which asks
+  // about the DEVICE rather than about this press.
+  let observedPressType = null;   // 'mouse' | 'pen' | 'touch' — from a press only
+  let observedPointerType = null; // …and from any pointer event, hovers included
 
-  for (const type of ['pointerdown', 'pointermove']) {
+  for (const type of ['pointerdown', 'pointerup', 'pointermove']) {
     document.addEventListener(type, (e) => {
-      if (e.isTrusted && e.pointerType && e.pointerType !== observedPointerType) {
-        observedPointerType = e.pointerType;
-        applyTouchUiClass(); // the human's first real input can flip the opening guess
-      }
+      if (!e.isTrusted || !e.pointerType) return;
+      if (type !== 'pointermove') observedPressType = e.pointerType;
+      if (e.pointerType === observedPointerType) return;
+      observedPointerType = e.pointerType;
+      // A finger on the glass is proof of the device, not just of this press.
+      if (e.pointerType === 'touch') noteTouchDevice('a finger on the screen');
+      applyTouchUiClass(); // the human's own input can flip the opening guess
     }, { capture: true, passive: true });
   }
 
   /** True when a synthesised finger TAP — not a mouse click — is what this
-   *  board's live handlers are listening for (see pressSquareTouch). */
+   *  board's live handlers are listening for (see pressSquareTouch).
+   *  DELIBERATELY NOT LATCHED, unlike wantsTouchUi(): this one is about the
+   *  events the board is listening for right now, and a phone genuinely being
+   *  driven by a mouse (scrcpy, OTG, DeX) really does answer its mouse ones —
+   *  it is the human's own presses that prove which, whichever device they
+   *  arrive from. */
   function useTouchInput() {
-    if (observedPointerType) return observedPointerType === 'touch';
-    // Nothing observed yet: a device with touch and no fine pointer at all is
+    if (observedPressType) return observedPressType === 'touch';
+    // No press seen yet: a device with touch and no fine pointer at all is
     // a phone/tablet; anything with a mouse available keeps the desktop path.
     return Boolean(navigator.maxTouchPoints) && !matchMedia('(any-pointer: fine)').matches;
   }
@@ -2059,7 +2091,36 @@
   // Both frames matter: the panel lives in the mt1 iframe, the review widgets
   // in the top document, and each runs its own copy of this script — so each
   // sets the class on its OWN <html>.
+  //
+  // ONCE A TOUCH DEVICE, ALWAYS A TOUCH DEVICE (v0.64.0). A phone driven from a
+  // PC — scrcpy, an OTG or Bluetooth mouse, Samsung DeX — reports that mouse as
+  // the real thing it is: `pointerType 'mouse'` on every hover, and a primary
+  // pointer that is no longer coarse. BOTH signals above then say "desktop"
+  // while the user is looking at a five-inch screen, so the type shrank and the
+  // tap targets with it the moment the mouse moved. The device has not changed,
+  // so the answer must not either: touch evidence LATCHES into `touchDevice`,
+  // which is remembered in chrome.storage.local and never cleared automatically.
+  // Storage is per browser profile and the phone's browser is not the PC's, so
+  // "this browser runs on a phone" cannot leak from one machine to the other.
+  // Evidence is anything that can only be true of a touch device: a trusted
+  // touch pointer event, a coarse PRIMARY pointer, or touch points with no fine
+  // pointer available at all. A phone has almost always produced one of those
+  // long before a PC is ever plugged into it.
+  // Two cases auto detection cannot reach, both answered by `cloTouchUi`
+  // (options page, auto/touch/desktop, watched live below):
+  //   * a false latch — a touchscreen laptop poked once with a finger keeps the
+  //     larger type until told otherwise. That is the price of the latch, and
+  //     'desktop' is the way back.
+  //   * a phone whose browser profile has genuinely never been touched, because
+  //     the mouse was attached before its very first page load. Nothing
+  //     observable distinguishes it from a desktop, so 'touch' says it outright.
+  let touchUiMode = 'auto'; // cloTouchUi override; 'auto' means the latch decides
+  let touchDevice = false;  // cloTouchDevice: latched proof, see above
+
   function wantsTouchUi() {
+    if (touchUiMode === 'touch') return true;
+    if (touchUiMode === 'desktop') return false;
+    if (touchDevice) return true;
     if (observedPointerType) return observedPointerType === 'touch';
     return matchMedia('(pointer: coarse)').matches;
   }
@@ -2069,10 +2130,79 @@
     if (root) root.classList.toggle('clo-touch', wantsTouchUi());
   }
 
+  /** Latch, once, on evidence this browser is running on a touch device. */
+  function noteTouchDevice(why) {
+    if (touchDevice) return;
+    touchDevice = true;
+    log('touch device (' + why + ') — remembered for this browser');
+    applyTouchUiClass();
+    try {
+      chrome.storage.local.set({ [CONFIG.touch.deviceKey]: true })
+        .catch((err) => warn('storage write failed:', err));
+    } catch (err) {
+      // Orphaned content script (extension reloaded underneath us): the latch
+      // still holds in memory for this document, which is all it can do.
+      warn('storage unavailable:', err);
+    }
+  }
+
+  /** Evidence readable without waiting for the user to touch anything. */
+  function noteTouchCapability() {
+    if (matchMedia('(pointer: coarse)').matches) {
+      noteTouchDevice('a coarse primary pointer');
+    } else if (navigator.maxTouchPoints > 0 &&
+               !matchMedia('(any-pointer: fine)').matches) {
+      noteTouchDevice('touch points and no fine pointer');
+    }
+  }
+
+  async function loadTouchPrefs() {
+    let res;
+    try {
+      res = await chrome.storage.local.get([CONFIG.touch.modeKey, CONFIG.touch.deviceKey]);
+    } catch (err) {
+      warn('storage read failed:', err);
+      return;
+    }
+    touchUiMode = normalizeTouchMode(res && res[CONFIG.touch.modeKey]);
+    if (res && res[CONFIG.touch.deviceKey] === true) touchDevice = true;
+    applyTouchUiClass();
+  }
+
+  function normalizeTouchMode(value) {
+    return value === 'touch' || value === 'desktop' ? value : 'auto';
+  }
+
   applyTouchUiClass();
+  noteTouchCapability();
+  loadTouchPrefs();
   // A mouse plugged into a tablet (or unplugged from one) changes the primary
-  // pointer without any input from the user; re-evaluate rather than wait.
-  matchMedia('(pointer: coarse)').addEventListener('change', applyTouchUiClass);
+  // pointer without any input from the user; re-evaluate rather than wait. The
+  // UNPLUGGING direction is also fresh evidence — a device that goes back to a
+  // coarse primary pointer was a touch device all along.
+  matchMedia('(pointer: coarse)').addEventListener('change', () => {
+    noteTouchCapability();
+    applyTouchUiClass();
+  });
+  // The options-page override and the latch are both storage; either landing in
+  // another document (or in this one, from the options page) applies here at
+  // once — the panel is in the mt1 iframe and the widgets in the top document,
+  // and neither should need a reload to resize.
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') return;
+      if (!changes[CONFIG.touch.modeKey] && !changes[CONFIG.touch.deviceKey]) return;
+      if (changes[CONFIG.touch.modeKey]) {
+        touchUiMode = normalizeTouchMode(changes[CONFIG.touch.modeKey].newValue);
+      }
+      if (changes[CONFIG.touch.deviceKey]) {
+        touchDevice = changes[CONFIG.touch.deviceKey].newValue === true;
+      }
+      applyTouchUiClass();
+    });
+  } catch (err) {
+    warn('storage unavailable:', err);
+  }
 
   function pressSquare(el) {
     const rect = el.getBoundingClientRect();

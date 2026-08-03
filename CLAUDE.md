@@ -436,6 +436,35 @@ Currently working (v0.18.x).
   the human's own trusted `pointerType`, which settles it on their first tap.
   Only type sizes and padding change; nothing here touches a dimension the JS
   measures.
+  ONCE A TOUCH DEVICE, ALWAYS A TOUCH DEVICE (v0.64.0). Both signals above are
+  about the pointer IN USE, and a phone driven from a PC — scrcpy, an OTG or
+  Bluetooth mouse, DeX — hands Android a REAL mouse: hover events with
+  `pointerType 'mouse'` and a primary pointer that is no longer coarse. So both
+  said "desktop" while the user was looking at a five-inch screen, and the whole
+  UI shrank the moment the mouse moved. The device has not changed, so the
+  answer must not either: touch evidence LATCHES into `touchDevice`, persisted
+  as `cloTouchDevice` in `chrome.storage.local` and NEVER cleared automatically.
+  Evidence is anything that can only be true of a touch device — a trusted touch
+  pointer event, a coarse PRIMARY pointer, or touch points with no fine pointer
+  available at all — and a phone has almost always produced one of those long
+  before a PC is ever plugged into it. Storage is per browser PROFILE, and the
+  phone's browser is not the PC's, so the latch cannot leak between machines.
+  `cloTouchUi` (options page, `auto`/`touch`/`desktop`, same shape as
+  `cloEngineBuild`) answers the two cases detection cannot: a false latch (a
+  touchscreen laptop poked once with a finger stays large — the price of the
+  latch, and 'desktop' is the way back) and a phone whose profile has genuinely
+  never been touched, because the mouse was attached before its first page load.
+  Both keys are watched through `chrome.storage.onChanged` in every document,
+  since the panel is in the mt1 iframe and the widgets in the top one.
+  `useTouchInput()` is deliberately NOT latched: it asks which events the board's
+  live handlers are listening for, and a phone genuinely being driven by a mouse
+  really does answer its mouse ones. It does now learn from PRESSES ONLY
+  (`observedPressType`, set by pointerdown/pointerup; `observedPointerType` still
+  takes hovers, for the UI question) — a phone can be HOVERED by a mouse while
+  its taps still arrive as touch (scrcpy's sdk mouse mode injects clicks into the
+  touchscreen but forwards hover as a mouse; a stylus over a tablet is the same
+  shape), and a hover deciding the injection flavour would send our synthesised
+  taps down the mouse path, which those handlers never hear.
 - Engine (section 5b in lichessable.js): Stockfish runs in the offscreen
   document; the SERVICE WORKER is the mandatory hub — an offscreen document's
   `runtime.sendMessage` never reaches content scripts, so replies are relayed
