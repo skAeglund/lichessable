@@ -1841,6 +1841,22 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: #fff;
 }
 
+/* …which is exactly why it drops the amber once nothing is outstanding
+   (v0.61.0). The button now outlives the queue — the session's mistake history
+   stays reachable after a pass has been through them — and "0 of 7" in
+   attention colours would claim work that is done. Neutral outline: an action
+   away from the main task, the row's fourth vocabulary (§3.2), the same one
+   Analyse and Overstudy wear. */
+.clo-mx-btn--quiet {
+  border-color: var(--clo-line);
+  color: var(--clo-text-dim);
+}
+
+.clo-mx-btn--quiet:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
 /* Retry RESTS as an ordinary green-outline action and is filled only when
    reviewRowPrimary() names it (v0.58.0) — which it does in the browse state
    with mistakes outstanding and no clickable lines to play first (§3.1). It
@@ -1915,6 +1931,77 @@ html.clo-injecting .legal-square-capture-mt2 {
   margin-bottom: 6px;
 }
 
+/* --- one chapter of the history (v0.61.0) ------------------------------------
+   The list holds the whole session now, retried moves included, so it needs
+   structure a flat run of rows cannot give it: chapters, foldable, each saying
+   how much of it is still outstanding. The header is two buttons — fold, and
+   tick/untick the chapter — because ticking a whole chapter is what makes
+   "go through these again" one gesture instead of one click per move. */
+.clo-mx-group + .clo-mx-group { margin-top: 4px; }
+
+.clo-mx-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--clo-line);
+}
+
+.clo-mx-group-fold {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--clo-text);
+  padding: 3px 0;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+}
+
+.clo-mx-group-fold:hover { color: var(--clo-text-bright); }
+
+.clo-mx-group-caret {
+  width: 10px;
+  flex: none;
+  color: var(--clo-text-dim);
+}
+
+/* Enough weight to read as a section head against the rows under it — they are
+   the same 12px, and the border alone was not doing the job. */
+.clo-mx-group-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clo-mx-group-count {
+  flex: none;
+  color: var(--clo-text-dim);
+  font-size: 11px;
+}
+
+/* "All"/"None" is three letters, so its own text is nowhere near a target —
+   the padding is the target. */
+.clo-mx-group-pick {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.clo-mx-group-pick:hover { color: #fff; }
+
+.clo-mx-group-body { padding: 2px 0 2px 10px; }
+
 .clo-mx-item {
   display: flex;
   align-items: baseline;
@@ -1922,6 +2009,16 @@ html.clo-injecting .legal-square-capture-mt2 {
   padding: 2px 0;
   font-size: 12px;
   cursor: pointer;
+}
+
+/* Already gone through — or failed inside an overstudy, which never counted as
+   outstanding. Still listed and still tickable: dimmed, never removed. */
+.clo-mx-item--done { opacity: 0.62; }
+
+.clo-mx-item-done {
+  flex: none;
+  color: var(--clo-text-dim);
+  font-size: 11px;
 }
 
 .clo-mx-item-move { color: var(--clo-text-bright); font-weight: 600; white-space: nowrap; }
@@ -1976,8 +2073,17 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-mx-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* Both buttons act on the ticked rows, which are now spread over foldable
+   chapters and can be scrolled out of sight — so the count says how many. */
+.clo-mx-chosen {
+  margin-right: auto;
+  color: var(--clo-text-dim);
+  font-size: 11px;
 }
 
 .clo-mx-start {
@@ -3656,6 +3762,24 @@ html.clo-touch .clo-mx-mode {
 
 html.clo-touch .clo-mx-item-wrong,
 html.clo-touch .clo-mx-note {
+  font-size: 13px;
+}
+
+/* The history's chapter headers: both are real controls, so both get a tap
+   target — the fold in particular is the full width of the row. */
+html.clo-touch .clo-mx-group-fold {
+  font-size: 15px;
+  padding: 9px 0;
+}
+
+html.clo-touch .clo-mx-group-pick {
+  font-size: 14px;
+  padding: 9px 12px;
+}
+
+html.clo-touch .clo-mx-group-count,
+html.clo-touch .clo-mx-item-done,
+html.clo-touch .clo-mx-chosen {
   font-size: 13px;
 }
 

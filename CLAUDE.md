@@ -30,7 +30,10 @@ trainer's own per-move quiz record (section 16) and a "Retry" button walks
 those variations again as overstudy, with auto-play covering the moves already
 answered (section 17); "Drill mistakes" is the fast alternative to that pass —
 the same failed moves asked for on OUR OWN board, one card each, with no
-navigation and nothing rescheduled (section 20). A completed variation whose comment holds clickable
+navigation and nothing rescheduled (section 20). The "Mistakes" list behind both
+is the WHOLE session's history, grouped by chapter and foldable: a move already
+gone through stays in it, dimmed and unticked, and can be retried or drilled as
+often as the session lasts. A completed variation whose comment holds clickable
 subvariation lines offers "Review clickable(s)" — the button is deliberately not
 named after "continuations", since a line branching off earlier in the variation
 continues nothing — which quizzes those lines on
@@ -1190,6 +1193,39 @@ Currently working (v0.18.x).
   as a refusal and print a refusal sentence under a pass that is running. Writes
   MERGE (`mergeEntry`) — every tab shares that storage area, and a background
   overstudy tab used to be able to overwrite the review tab's log.
+  THE LOG IS A HISTORY, AND SINCE v0.61.0 THE POPUP SHOWS IT AS ONE. Nothing was
+  ever deleted from `ml.log` short of the TTL — `retried` is a flag — so
+  `pending()` (not retried, not overstudy-mode; now expressed as
+  `allEntries().filter(isPending)`) and `all()` are two VIEWS of one store. The
+  count, `reviewRowPrimary`, the row's Retry and section 20's launcher keep
+  reading `pending()`; only the popup reads `all()`. What that fixes: a finished
+  pass emptied `pending()`, `syncUi` hid the whole cluster on `!pending.length`,
+  and the session's mistakes became unreachable — the data was there and the
+  door was gone. Now `root`/`count` hide on `!history.length`, the count says
+  `Mistakes (0 of 7)` (it always means OUTSTANDING — never a bare "(0)", which
+  reads like an empty button) and wears `clo-mx-btn--quiet`, since AMBER MEANS
+  "N OUTSTANDING" (§3.2) and must not claim work that is done. Retry itself
+  still goes: it acts on the outstanding set, and a second pass is a choice made
+  in the popup.
+  GROUPED BY CHAPTER, foldable, via `mistakeLogApi.byChapter` — the name comes
+  off the entry's own `chapter` field (captured at ingest beside `title`, from
+  the drawer BLOCK the active row sits in: `SELECTORS.reviewDrawerBlock` +
+  `reviewDrawerChapter`, ground-truthed 2026-08-03 on course 453453, whose two
+  chapters are two `.mt-drawer-content` blocks, both fully rendered with the
+  drawer CLOSED), falling back to a live `chapterNames()` scan for entries an
+  older build logged, then to `Chapter <lid>`. Section order follows the DRAWER,
+  so the popup reads the way the course does. Grouping on `lid` is exact — every
+  row of a block carries its chapter's lid.
+  SELECTION IS DERIVED, NOT OWNED BY THE DOM (`isChecked` = `reselected` ∪
+  (default ∖ `deselected`), default = `isPending`). Two sets rather than one
+  list of what is ticked, because that is what KEEPS the original property — a
+  mistake logged while the popup is open joins the pass by itself — now that the
+  default differs per row. It is also why `renderList`'s signature includes the
+  tick and `retried` state: a pass finishing under an open popup flips rows to
+  "already gone through", and the list has to follow. Folds survive an open
+  (`rr.collapsed`); ticks do not — every open starts from "the outstanding ones".
+  A group's All/None is the point of the whole feature: going through a chapter
+  again must be one gesture, not one click per move.
   The runner's queue is one item per VARIATION (target = the LAST failed move
   of the line; the earlier ones are met on the way) and lives in
   `chrome.storage.session.cloRetryRun` because the FIRST switch is a real

@@ -293,6 +293,20 @@ nothing is rescheduled — it is a plain "do those again", not an SRS operation
 (Chessable's own in-session re-ask is separate; this is optional, after the
 fact, and repeatable).
 
+That list is the whole session's history, not just what is outstanding
+(v0.61.0). It is grouped **by chapter**, each section foldable and headed with
+how much of it is still to do (`2 of 3`, or `3 done`), and a move you have
+already been through stays in it — dimmed, marked ✓, and unticked rather than
+gone. Tick it (or press **All** on a chapter) and Retry or Drill takes it again,
+as many times as you like; nothing is dropped until the session ends. So the
+`Mistakes` button no longer disappears when the last one is retried: it goes
+quiet and reads `Mistakes (0 of 7)` — the count always means *outstanding* —
+and still opens the list. `Retry` on the widget row goes, because it acts on
+the outstanding set; going through them again is a choice you make in the
+popup. A `↻` instead of a ✓ marks a move failed *inside* an overstudy or a
+retry pass: those never count as outstanding (or a pass would keep refilling
+its own queue), but they are still listed and still tickable.
+
 Retry only starts **once the variation on screen is finished** (v0.56.0). It
 switches variation to do its work, so starting one mid-quiz would abandon the
 card you are in the middle of answering; pressed there it says so instead —
@@ -1189,7 +1203,15 @@ enough not to run, the ↻ button is the only way back.
   the next variation ~90 ms before its first move animates. Each entry also
   keeps the handful of plies *before* the failed one (`lead`) — free at logging
   time, since the whole plan is in hand, and unobtainable afterwards without
-  loading that variation, which is the cost the drill exists to avoid.
+  loading that variation, which is the cost the drill exists to avoid — and,
+  since v0.61.0, its **chapter name**, read off the drawer block the active row
+  sits in (`SELECTORS.reviewDrawerBlock` / `reviewDrawerChapter`) exactly as the
+  variation title is. Kept on the entry rather than looked up when the popup
+  opens, for the same reason the title is: a mistake outlives the session state
+  it was made in. Nothing is ever deleted from the log short of the TTL, so
+  `pending()` (not retried, not overstudy-mode) and `all()` are two views of one
+  store — the count and a plain Retry walk the first, the popup lists the
+  second.
 - **Retry runner** — section 17. A pass is a queue of one item per *variation*
   (targeting the last failed move of the line, so the earlier ones are met on
   the way) held in `chrome.storage.session`, because the first switch is a real

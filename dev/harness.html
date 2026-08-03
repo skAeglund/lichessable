@@ -570,6 +570,30 @@ body {
     </div>
 
     <div class="hx-card">
+      <h3>Mistakes, all gone through (v0.61.0)</h3>
+      <p class="hx-note">The list button outlives the queue — the session's history stays
+         reachable after a pass — so it drops the amber once nothing is outstanding.
+         <code>.clo-mx-btn--quiet</code> is the row's neutral vocabulary (§3.2): an action away
+         from the main task. Retry goes, because there is nothing outstanding for it to walk;
+         going through them again is a choice made in the popup.</p>
+      <div class="hx-stage">
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-mx">
+            <button type="button" class="clo-mx-btn clo-mx-btn--quiet">Mistakes (0 of 7)</button>
+            <button type="button" class="clo-mx-retry" hidden>Retry</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+          <span class="clo-review-grp clo-ap">
+            <button type="button" class="clo-ap-cog clo-ap-cog--on" aria-expanded="false">⚙</button>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
       <h3>Retry pass — running</h3>
       <p class="hx-note">The count and Retry are hidden while a pass runs; Stop takes the primary
          slot, because the pass drives through live quizzes and ending it must never be a hunt.
@@ -1116,29 +1140,56 @@ body {
 
   <div class="hx-grid">
     <div class="hx-card">
-      <h3>Popup</h3>
+      <h3>Popup — the session history (v0.61.0)</h3>
+      <p class="hx-note">The whole session, not just what is outstanding: grouped by chapter,
+         each section foldable and headed with how much of it is left. An already-retried move
+         stays in the list — dimmed, ✓, unticked — and can be taken again. <strong>All/None</strong>
+         per chapter is what makes "go through these again" one gesture.</p>
       <div class="hx-stage">
         <div class="clo-mx-popup hx-pos">
-          <div class="clo-mx-title">3 moves failed this session</div>
+          <div class="clo-mx-title">Mistakes this session — 2 of 4 outstanding</div>
           <div class="clo-mx-list">
-            <label class="clo-mx-item">
-              <input type="checkbox" checked>
-              <span class="clo-mx-item-move">8…Nc6</span>
-              <span class="clo-mx-item-title">Alapin: 2…d5 main line</span>
-              <span class="clo-mx-item-wrong">played Nb4</span>
-            </label>
-            <label class="clo-mx-item">
-              <input type="checkbox" checked>
-              <span class="clo-mx-item-move">12…Rb7</span>
-              <span class="clo-mx-item-title">Alapin: 2…d5 main line</span>
-              <span class="clo-mx-item-wrong">timed out</span>
-            </label>
-            <label class="clo-mx-item">
-              <input type="checkbox">
-              <span class="clo-mx-item-move">6.Be2</span>
-              <span class="clo-mx-item-title">Alapin: 2…Nf6, 5.d4</span>
-              <span class="clo-mx-item-wrong">played Bd3</span>
-            </label>
+            <div class="clo-mx-group">
+              <div class="clo-mx-group-head">
+                <button type="button" class="clo-mx-group-fold" aria-expanded="true">
+                  <span class="clo-mx-group-caret">▾</span>
+                  <span class="clo-mx-group-name">Alapin: the 2…d5 files</span>
+                  <span class="clo-mx-group-count">2 of 3</span>
+                </button>
+                <button type="button" class="clo-mx-group-pick">All</button>
+              </div>
+              <div class="clo-mx-group-body">
+                <label class="clo-mx-item">
+                  <input type="checkbox" checked>
+                  <span class="clo-mx-item-move">8…Nc6</span>
+                  <span class="clo-mx-item-title">Alapin: 2…d5 main line</span>
+                  <span class="clo-mx-item-wrong">played Nb4</span>
+                </label>
+                <label class="clo-mx-item">
+                  <input type="checkbox" checked>
+                  <span class="clo-mx-item-move">12…Rb7</span>
+                  <span class="clo-mx-item-title">Alapin: 2…d5 main line</span>
+                  <span class="clo-mx-item-wrong">timed out</span>
+                </label>
+                <label class="clo-mx-item clo-mx-item--done">
+                  <input type="checkbox">
+                  <span class="clo-mx-item-move">6.Be2</span>
+                  <span class="clo-mx-item-title">Alapin: 2…Nf6, 5.d4</span>
+                  <span class="clo-mx-item-wrong">played Bd3</span>
+                  <span class="clo-mx-item-done">✓</span>
+                </label>
+              </div>
+            </div>
+            <div class="clo-mx-group">
+              <div class="clo-mx-group-head">
+                <button type="button" class="clo-mx-group-fold" aria-expanded="false">
+                  <span class="clo-mx-group-caret">▸</span>
+                  <span class="clo-mx-group-name">Anti-Sicilians</span>
+                  <span class="clo-mx-group-count">1 done</span>
+                </button>
+                <button type="button" class="clo-mx-group-pick">All</button>
+              </div>
+            </div>
           </div>
           <label class="clo-mx-opt">You play:
             <select class="clo-mx-mode">
@@ -1150,6 +1201,7 @@ body {
           <div class="clo-mx-note">Auto-play replays what you already answered and hands over at
             each failed move.</div>
           <div class="clo-mx-actions">
+            <span class="clo-mx-chosen">2 selected</span>
             <button type="button" class="clo-mx-cancel">Close</button>
             <button type="button" class="clo-mx-drill">Drill selected</button>
             <button type="button" class="clo-mx-start">Retry selected</button>

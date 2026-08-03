@@ -368,3 +368,60 @@ move and can add it as an alternative.
 * Soft fail (`useSoftFail` / `softFail`): decide whether a soft-failed move
   counts as a mistake for the queue. `quizIncorrectAttempts` appears to be the
   authority either way.
+
+---
+
+## 6. The list as a session history (v0.61.0, implemented)
+
+**Ask:** "I want the past mistakes to continue to be available during the
+session, even after Retry — save the history in an expandable menu, by chapter,
+and let me retry them as many times as I want."
+
+**Nothing had to be stored that was not already stored.** `retried` was always a
+flag and `ml.log` never deletes below the 12 h TTL, so the whole session was in
+`chrome.storage.session` the entire time — what was missing was a way back to
+it. `pending()` (the queue: not retried, not overstudy-mode) and `all()` are now
+two views of one store, and the split of readers is the whole safety argument:
+
+| Reader | View | Why |
+|---|---|---|
+| `Mistakes (N)` count, `reviewRowPrimary`, row `Retry`, `Drill mistakes (N)` | `pending()` | "outstanding" must keep meaning outstanding, or a pass refills its own queue |
+| the popup's list, `Retry selected`, `Drill selected` | `all()` | an explicit tick is the user saying "again" |
+
+**Three things had to change, and each was a real hole:**
+
+1. **The door disappeared with the queue.** `syncUi` hid the cluster on
+   `!pending.length`, so the moment a pass finished, the data was still there
+   and nothing on screen could reach it. Now the cluster and the count live on
+   `!history.length`; only `Retry` (which acts on the outstanding set) goes.
+2. **The count could not just keep counting.** Amber outline means "you have N
+   outstanding items" (DESIGN-ui-inventory §3.2). `Mistakes (0)` in attention
+   colours claims work that is done, so with nothing outstanding the button
+   reads `Mistakes (0 of 7)` and drops to the neutral outline
+   (`.clo-mx-btn--quiet`) — the row's "an action away from the main task" tier.
+3. **The default tick had to become per-row.** Checked = outstanding; an
+   already-retried move is offered, never re-imposed. Keeping the original
+   "only what the user changed is remembered" property (so a mistake logged
+   while the popup is open joins the pass by itself) then needs TWO sets —
+   `deselected` and `reselected` — over a derived default, not one list of what
+   is ticked. It is also why `renderList`'s signature now includes each row's
+   tick and `retried` state: a pass finishing under an open popup flips rows,
+   and the list has to follow.
+
+**Chapters.** Ground-truthed 2026-08-03 on course 453453: the trainer drawer is
+one `.mt-drawer-content` block per chapter — an `<h3>` with the name, then the
+rows, every row carrying that chapter's `lid` — and the whole thing is rendered
+with the drawer CLOSED. So the name is captured at ingest beside `title`
+(`readCurrentMeta` → `entry.chapter`), with a live `chapterNames()` scan as the
+fallback for entries an older build logged and `Chapter <lid>` as the last
+resort. Sections are ordered by the drawer, so the popup reads the way the
+course does. Folding is per chapter and survives a close/open; a group's
+**All/None** is what makes "go through this chapter again" one gesture, which
+was the point of the request.
+
+**Not built:** persisting history past the session (the TTL is deliberate —
+§3.1's "a stale list would drill another day's moves"), and any change to what
+a pass does with an entry it has already marked. Re-retrying is just `startRun`
+over entries whose `retried` flag stays set; `markRetried` spares them because
+they are already marked, and the pass advances on `passedPly`, which never
+consulted the log.

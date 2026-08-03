@@ -78,6 +78,14 @@
     // with no page load — and in a /learn/ session the drawer lists the whole
     // course, so any variation is one click away.
     reviewDrawerRow:     '.mt-drawer-content__variations__link',
+    // The drawer is one BLOCK per chapter: a header carrying the chapter's name
+    // in an <h3>, then the rows of that chapter (all sharing its `lid`).
+    // Ground-truthed 2026-08-03 on course 453453, whose two chapters give two
+    // blocks — "Main Level" (lid 0, 15 rows) and "sicil test" (lid 1, 64) —
+    // both fully rendered with the drawer CLOSED, which is what lets the
+    // mistake history read chapter names without opening anything.
+    reviewDrawerBlock:   '.mt-drawer-content',
+    reviewDrawerChapter: '.mt-drawer-content__chapter h3',
     // Fallback: the panel header's variation name links to /variation/<oid>/.
     reviewTitleLink: '.practice-header__title a[href^="/variation/"]',
 
@@ -10165,7 +10173,9 @@
 
     /** List id and name of the variation on the board, from the drawer row
      *  (per-variation, so it is the right chapter's lid) with the session URL
-     *  as fallback. */
+     *  as fallback. The chapter NAME comes from the block that row sits in —
+     *  captured here, beside the title, because it is what the history groups
+     *  by and the drawer is not readable from every state the popup is. */
     function readCurrentMeta() {
       const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
       const row = marker && marker.parentElement;
@@ -10173,7 +10183,32 @@
       return {
         lid: (row && row.getAttribute(SELECTORS.reviewRowListAttr)) || (m && m[3]) || '',
         title: (row && row.getAttribute('title')) || '',
+        chapter: chapterNameOf(row),
       };
+    }
+
+    /** The chapter name of a drawer row: the <h3> of the block it belongs to. */
+    function chapterNameOf(row) {
+      const block = row && row.closest(SELECTORS.reviewDrawerBlock);
+      const head = block && block.querySelector(SELECTORS.reviewDrawerChapter);
+      return (head && head.textContent.trim()) || '';
+    }
+
+    /**
+     * lid → chapter name, read off the whole drawer. The fallback for entries
+     * logged before this build (or by a tab whose drawer was mid-render), and
+     * cheap enough to redo per popup render: the drawer holds the entire course
+     * in a /learn/ session and is in the DOM whether it is open or not.
+     */
+    function chapterNames() {
+      const map = new Map();
+      for (const row of document.querySelectorAll(SELECTORS.reviewDrawerRow)) {
+        const lid = row.getAttribute(SELECTORS.reviewRowListAttr) || '';
+        if (map.has(lid)) continue;
+        const name = chapterNameOf(row);
+        if (name) map.set(lid, name);
+      }
+      return map;
     }
 
     // --- storage (chrome.storage.session) -----------------------------------
@@ -10281,7 +10316,7 @@
       // is mid-swap and the plan we just read is another one, take neither its
       // lid nor its title (an existing entry's, or the plan's own name, then).
       const onBoard = String(readQuickEditOid() || '') === String(sample.oid);
-      const meta = onBoard ? readCurrentMeta() : { lid: '', title: '' };
+      const meta = onBoard ? readCurrentMeta() : { lid: '', title: '', chapter: '' };
       const now = Date.now();
       let dirty = false;
       for (let i = 0; i < sample.plies.length; i++) {
@@ -10326,6 +10361,11 @@
             .map((p) => ({ san: p.san, color: p.color, sourceFen: p.sourceFen })),
           num: fullmoveOf(ply.sourceFen),
           title: meta.title || sample.variationName || (existing && existing.title) || '',
+          // What the history groups by. Kept on the entry rather than looked up
+          // when the popup opens, for the same reason `title` is: the drawer
+          // belongs to the session that is running, and a mistake outlives the
+          // variation it was made in.
+          chapter: meta.chapter || (existing && existing.chapter) || '',
           wrong: attempts.slice(-C.maxWrongKept),
           fails: attempts.length,
           // An entry keeps the mode it was FIRST seen in — a move failed in
@@ -10374,10 +10414,30 @@
 
     /** Sorted by when they were failed — the queue's order is mistake order. */
     function pendingEntries() {
+      return allEntries().filter(isPending);
+    }
+
+    /**
+     * What "Mistakes (N)" counts and what a plain Retry pass walks: a mistake
+     * that has not been dealt with this session yet. An overstudy-mode entry is
+     * the retry pass's OWN failure and is excluded, or a pass would keep
+     * refilling the queue it is draining — but it is still real history, so it
+     * is in `allEntries` and the popup can retry it on request.
+     */
+    const isPending = (e) => !e.retried && e.mode !== 'overstudy';
+
+    /**
+     * EVERY mistake of the session, retried ones included — the history the
+     * popup lists (section 17). Nothing is ever removed from the log short of
+     * the 12 h TTL, so "already retried" is a flag on an entry and never a
+     * deletion: a move can be gone through again as often as the user likes for
+     * as long as the session lasts.
+     */
+    function allEntries() {
       if (!ml.log) return [];
       const now = Date.now();
       return Object.values(ml.log)
-        .filter((e) => e && !e.retried && e.mode !== 'overstudy' && now - e.ts < C.logTtlMs)
+        .filter((e) => e && now - e.ts < C.logTtlMs)
         .sort((a, b) => a.ts - b.ts);
     }
 
@@ -10430,10 +10490,39 @@
     mistakeLogApi = {
       bid: () => ml.bid,
       pending: pendingEntries,
+      all: allEntries,
+      isPending,
       markRetried,
       markDone,
       moveLabel,
       wrongLabel,
+      /**
+       * Groups the history by chapter, in drawer order where the drawer can be
+       * read (so the sections read the way the course does) and by first
+       * mistake otherwise. Returns [{ lid, name, entries }].
+       */
+      byChapter(entries) {
+        const live = chapterNames();
+        const groups = new Map();
+        for (const entry of entries) {
+          const lid = String(entry.lid || '');
+          if (!groups.has(lid)) {
+            groups.set(lid, {
+              lid,
+              name: entry.chapter || live.get(lid) || (lid ? 'Chapter ' + lid : 'This course'),
+              entries: [],
+            });
+          }
+          groups.get(lid).entries.push(entry);
+        }
+        const order = [...live.keys()];
+        return [...groups.values()].sort((a, b) => {
+          const ia = order.indexOf(a.lid), ib = order.indexOf(b.lid);
+          if (ia >= 0 && ib >= 0) return ia - ib;
+          if (ia >= 0 || ib >= 0) return ia >= 0 ? -1 : 1;
+          return a.entries[0].ts - b.entries[0].ts;
+        });
+      },
       /** The current variation's live record for one logged move, or null when
        *  the latest sample is for another variation (trainer mid-swap). */
       progressFor(oid, mkey) {
@@ -10558,7 +10647,15 @@
       ui: null,           // { root, count, retry, status, skip, stop }
       popup: null,
       els: null,          // cached popup child refs
-      unselected: new Set(), // entry keys the user UNCHECKED (everything else is in)
+      // Selection over the SESSION HISTORY, which holds both outstanding
+      // mistakes and ones already gone through. Two sets rather than one list
+      // of what is ticked, so a mistake logged while the popup is open still
+      // joins the pass by itself (the original property) even though the
+      // default now differs per row: outstanding ⇒ ticked, already retried ⇒
+      // not. Only what the user actually changed is remembered.
+      deselected: new Set(), // keys the user unticked
+      reselected: new Set(), // keys the user ticked that were not ticked by default
+      collapsed: new Set(),  // chapter lids the user folded away
       listSig: '',        // signature of the rendered list (re-render only on change)
       mode: C.defaultMode, // 'whole' | 'from' | 'only' (persisted)
       lastBeatAt: 0,
@@ -11006,7 +11103,6 @@
       const count = document.createElement('button');
       count.type = 'button';
       count.className = 'clo-mx-btn';
-      count.title = 'The moves you failed in this session — click for the list';
       count.addEventListener('click', () => { // no inline handlers
         if (rr.popup && !rr.popup.hidden) closePopup();
         else openPopup();
@@ -11066,12 +11162,31 @@
       if (!rr.ui) return;
       const run = rr.run;
       const running = Boolean(run);
-      const pending = (mistakeLogApi && mistakeLogApi.pending()) || [];
+      const history = historyEntries();
+      const pending = history.filter(defaultChecked); // null-safe: see its own guard
       const doneFresh = Boolean(rr.doneMsg) && Date.now() - rr.doneAt < C.doneFlashMs;
       if (!doneFresh) rr.doneMsg = '';
-      rr.ui.root.hidden = !isTrainerPath() || (!running && !pending.length && !doneFresh);
-      rr.ui.count.hidden = running || !pending.length;
-      rr.ui.count.textContent = 'Mistakes (' + pending.length + ')';
+      // The list button outlives the queue (v0.61.0): once a pass has been
+      // through them the session's mistakes are still worth a second look, and
+      // a button that vanishes the moment the last one is retried takes the
+      // whole history with it. "Retry", which acts on the outstanding set, goes
+      // as before — going through them again is a choice made in the popup.
+      rr.ui.root.hidden = !isTrainerPath() || (!running && !history.length && !doneFresh);
+      rr.ui.count.hidden = running || !history.length;
+      // The count always means OUTSTANDING; when there is none left it says so
+      // against the session's total rather than dropping to a bare "(0)", which
+      // reads like a button with nothing behind it.
+      rr.ui.count.textContent = pending.length
+        ? 'Mistakes (' + pending.length + ')'
+        : 'Mistakes (0 of ' + history.length + ')';
+      rr.ui.count.title = pending.length
+        ? 'The moves you failed in this session — click for the list'
+        : 'Every mistake this session has been gone through — click for the list, ' +
+          'which keeps them all until the session ends';
+      // Amber outline means "you have N outstanding items" (DESIGN-ui-inventory
+      // §3.2), so with none left this is an ordinary way in to the history and
+      // must stop wearing it.
+      rr.ui.count.classList.toggle('clo-mx-btn--quiet', !pending.length);
       rr.ui.retry.hidden = running || !pending.length;
       rr.ui.skip.hidden = !running;
       rr.ui.stop.hidden = !running;
@@ -11093,7 +11208,7 @@
         rr.ui.status.textContent = rr.doneMsg;
         rr.ui.status.hidden = !doneFresh;
       }
-      if (rr.popup && !rr.popup.hidden) renderList(pending);
+      if (rr.popup && !rr.popup.hidden) renderList(history);
     }
 
     // --- UI: the mistake list popup -----------------------------------------
@@ -11146,6 +11261,8 @@
 
       const actions = document.createElement('div');
       actions.className = 'clo-mx-actions';
+      const chosen = document.createElement('span');
+      chosen.className = 'clo-mx-chosen';
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.className = 'clo-mx-cancel';
@@ -11153,8 +11270,7 @@
       cancel.addEventListener('click', closePopup);
       /** The ticked rows, or null after saying why there are none. */
       const chosenEntries = () => {
-        const pending = (mistakeLogApi && mistakeLogApi.pending()) || [];
-        const chosen = pending.filter((e) => !rr.unselected.has(entryKey(e)));
+        const chosen = historyEntries().filter(isChecked);
         if (chosen.length) return chosen;
         status.textContent = 'Nothing selected.';
         status.hidden = false;
@@ -11203,7 +11319,7 @@
         status.textContent = 'Retry needs the board — finish the variation first.';
         status.hidden = false;
       });
-      actions.append(cancel, drill, start);
+      actions.append(chosen, cancel, drill, start);
 
       popup.append(title, list, modeLabel, note, status, actions);
       // Same key discipline as the other popups: MoveTrainer2 binds single-key
@@ -11217,8 +11333,40 @@
       }
       document.body.appendChild(popup);
       rr.popup = popup;
-      rr.els = { title, list, modeSelect, note, status };
+      rr.els = { title, list, modeSelect, note, status, chosen };
       syncModeUi();
+    }
+
+    // --- the history and its selection ----------------------------------------
+    //
+    // The popup lists EVERY move failed this session, not just the outstanding
+    // ones: a mistake gone through once is exactly the move worth coming back
+    // to, and until v0.61.0 a finished pass took the whole list off the screen
+    // with it. Nothing is deleted from the log short of its 12 h TTL, so this
+    // is a display of what was always there.
+    //
+    // Chapters are the grouping because that is how the user thinks about a
+    // course and how the drawer is laid out; a section is collapsible so a long
+    // session stays readable.
+
+    const historyEntries = () => (mistakeLogApi && mistakeLogApi.all()) || [];
+
+    /** Ticked by default: the outstanding set, i.e. exactly what "Retry" on the
+     *  row would walk. An already-retried move is offered, never re-imposed. */
+    const defaultChecked = (entry) =>
+      Boolean(mistakeLogApi && mistakeLogApi.isPending(entry));
+
+    function isChecked(entry) {
+      const key = entryKey(entry);
+      if (rr.reselected.has(key)) return true;
+      if (rr.deselected.has(key)) return false;
+      return defaultChecked(entry);
+    }
+
+    function setChecked(entry, on) {
+      const key = entryKey(entry);
+      if (on) { rr.reselected.add(key); rr.deselected.delete(key); }
+      else { rr.deselected.add(key); rr.reselected.delete(key); }
     }
 
     /** The mode select and the sentence explaining what it will do. */
@@ -11229,55 +11377,159 @@
         ' Retried as Overstudy, so nothing is rescheduled.';
     }
 
-    /** Rebuilt only when the pending set actually changes, so the checkboxes
-     *  survive the 500 ms tick. */
-    function renderList(pending) {
-      const sig = pending.map((e) => entryKey(e) + ':' + e.ts).join('|');
+    /**
+     * Rebuilt only when the history, the ticks or the folds actually change, so
+     * a checkbox is not yanked out from under the pointer by the 500 ms tick.
+     * The selection is part of the signature because a row's tick is now
+     * derived (defaultChecked + the two sets) rather than owned by the DOM: a
+     * pass finishing while the popup is open flips rows to "already retried",
+     * and the list has to follow.
+     */
+    function renderList(history) {
+      const groups = mistakeLogApi ? mistakeLogApi.byChapter(history) : [];
+      const sig = groups.map((g) => g.lid + '/' + g.name +
+        (rr.collapsed.has(g.lid) ? '<' : '>') +
+        g.entries.map((e) => entryKey(e) + ':' + e.ts + (isChecked(e) ? '+' : '-') +
+          (e.retried ? 'r' : '')).join(',')).join('|');
       if (sig === rr.listSig) return;
       rr.listSig = sig;
+      // A tick rebuilds the whole list (the header counts and All/None follow
+      // from it), so the row the user just clicked is destroyed and remade —
+      // and a scroll container reset to 0 by every click halfway down a long
+      // session's history is the one thing that would make it unusable.
+      const scroll = rr.els.list.scrollTop;
       rr.els.list.textContent = '';
-      rr.els.title.textContent = 'Mistakes this session (' + pending.length + ')';
-      for (const entry of pending) {
-        const key = entryKey(entry);
-        const row = document.createElement('label');
-        row.className = 'clo-mx-item';
-        const box = document.createElement('input');
-        box.type = 'checkbox';
-        // Checked by default — the list is "everything still to retry", and
-        // only what the user takes out is remembered, so a mistake logged
-        // while the popup is open joins the pass rather than being dropped.
-        box.checked = !rr.unselected.has(key);
-        box.addEventListener('change', () => {
-          if (box.checked) rr.unselected.delete(key);
-          else rr.unselected.add(key);
-        });
-        const move = document.createElement('span');
-        move.className = 'clo-mx-item-move';
-        move.textContent = mistakeLogApi.moveLabel(entry);
-        const name = document.createElement('span');
-        name.className = 'clo-mx-item-title';
-        name.textContent = entry.title || '#' + entry.oid;
-        const wrong = document.createElement('span');
-        wrong.className = 'clo-mx-item-wrong';
-        wrong.textContent = mistakeLogApi.wrongLabel(entry);
-        row.append(box, move, name, wrong);
-        rr.els.list.appendChild(row);
-      }
-      if (!pending.length) {
+      const pending = history.filter(defaultChecked);
+      rr.els.title.textContent = pending.length
+        ? 'Mistakes this session — ' + pending.length + ' of ' + history.length + ' outstanding'
+        : 'Mistakes this session (' + history.length + ')';
+      for (const group of groups) rr.els.list.appendChild(buildGroup(group));
+      if (!history.length) {
         const empty = document.createElement('div');
         empty.className = 'clo-mx-empty';
         empty.textContent = 'No failed moves logged in this session.';
         rr.els.list.appendChild(empty);
       }
+      rr.els.list.scrollTop = scroll;
+      syncChosenCount();
+    }
+
+    /** One chapter: a foldable header and its mistakes, oldest first. */
+    function buildGroup(group) {
+      const root = document.createElement('div');
+      root.className = 'clo-mx-group';
+      const open = !rr.collapsed.has(group.lid);
+      const left = group.entries.filter(defaultChecked).length;
+
+      const head = document.createElement('div');
+      head.className = 'clo-mx-group-head';
+
+      const fold = document.createElement('button');
+      fold.type = 'button';
+      fold.className = 'clo-mx-group-fold';
+      fold.setAttribute('aria-expanded', open ? 'true' : 'false');
+      const caret = document.createElement('span');
+      caret.className = 'clo-mx-group-caret';
+      caret.textContent = open ? '▾' : '▸';
+      const name = document.createElement('span');
+      name.className = 'clo-mx-group-name';
+      name.textContent = group.name;
+      const tally = document.createElement('span');
+      tally.className = 'clo-mx-group-count';
+      tally.textContent = left
+        ? left + ' of ' + group.entries.length
+        : group.entries.length + ' done';
+      fold.append(caret, name, tally);
+      fold.addEventListener('click', () => {
+        if (open) rr.collapsed.add(group.lid); else rr.collapsed.delete(group.lid);
+        rr.listSig = '';
+        renderList(historyEntries());
+      });
+
+      // Ticking a whole chapter at once is what makes "go through these again"
+      // a single gesture rather than one click per move — the point of keeping
+      // the history around.
+      const allOn = group.entries.every(isChecked);
+      const pick = document.createElement('button');
+      pick.type = 'button';
+      pick.className = 'clo-mx-group-pick';
+      pick.textContent = allOn ? 'None' : 'All';
+      pick.title = allOn
+        ? 'Untick every move in this chapter'
+        : 'Tick every move in this chapter, retried ones included';
+      pick.addEventListener('click', () => {
+        for (const entry of group.entries) setChecked(entry, !allOn);
+        rr.listSig = '';
+        renderList(historyEntries());
+      });
+
+      head.append(fold, pick);
+      root.appendChild(head);
+      if (!open) return root;
+
+      const body = document.createElement('div');
+      body.className = 'clo-mx-group-body';
+      for (const entry of group.entries) body.appendChild(buildItem(entry));
+      root.appendChild(body);
+      return root;
+    }
+
+    /** One failed move. A retried one keeps its place, dimmed and marked. */
+    function buildItem(entry) {
+      const row = document.createElement('label');
+      row.className = 'clo-mx-item' + (defaultChecked(entry) ? '' : ' clo-mx-item--done');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = isChecked(entry);
+      box.addEventListener('change', () => {
+        setChecked(entry, box.checked);
+        rr.listSig = '';
+        renderList(historyEntries());
+      });
+      const move = document.createElement('span');
+      move.className = 'clo-mx-item-move';
+      move.textContent = mistakeLogApi.moveLabel(entry);
+      const name = document.createElement('span');
+      name.className = 'clo-mx-item-title';
+      name.textContent = entry.title || '#' + entry.oid;
+      const wrong = document.createElement('span');
+      wrong.className = 'clo-mx-item-wrong';
+      wrong.textContent = mistakeLogApi.wrongLabel(entry);
+      row.append(box, move, name, wrong);
+      if (!defaultChecked(entry)) {
+        const mark = document.createElement('span');
+        mark.className = 'clo-mx-item-done';
+        // An overstudy-mode entry was failed INSIDE a pass (or a manual
+        // overstudy tab), which is why it never counted as outstanding — a
+        // different fact from "you have been through this one".
+        mark.textContent = entry.retried ? '✓' : '↻';
+        mark.title = entry.retried
+          ? 'Already gone through this session — tick it to do it again'
+          : 'Failed during an overstudy, so it is not counted as outstanding — ' +
+            'tick it to go through it';
+        row.appendChild(mark);
+      }
+      return row;
+    }
+
+    /** "n selected" under the list — the one number both buttons act on. */
+    function syncChosenCount() {
+      if (!rr.els || !rr.els.chosen) return;
+      const n = historyEntries().filter(isChecked).length;
+      rr.els.chosen.textContent = n ? n + ' selected' : 'Nothing selected';
     }
 
     function openPopup() {
       if (!rr.popup || !rr.popup.isConnected) buildPopup();
       rr.els.status.hidden = true;
       syncModeUi();
-      rr.unselected.clear(); // every open starts from "retry all of them"
+      // Every open starts from the default: the outstanding mistakes ticked,
+      // the ones already gone through listed but not imposed. Folds are NOT
+      // reset — a user who closed a chapter meant it.
+      rr.deselected.clear();
+      rr.reselected.clear();
       rr.listSig = '';       // force a rebuild
-      renderList((mistakeLogApi && mistakeLogApi.pending()) || []);
+      renderList(historyEntries());
       // Below the cluster, flipping ABOVE it when there is no room — the widget
       // is anchored under the board, so "below" is often off-screen, and this
       // popup's height depends on how many mistakes there are. position:fixed

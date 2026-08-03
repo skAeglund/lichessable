@@ -42,7 +42,7 @@ section 9 (overstudy), 13 (auto-play), 16/17 (mistakes/retry), 18–20
 | 5 | speed | `.clo-ap-speed` | select | `hidden = !ap.enabled` | setting |
 | 6 | Clear | `.clo-ap-clear` | grey outline | `hidden = !ap.enabled` | destructive, 2-click arm |
 | 7 | status | `.clo-ap-status` | amber text | replaying / cancelled | status **and** action (cancels) |
-| 8 | Mistakes (N) | `.clo-mx-btn` | amber outline | `running \|\| !pending.length` → hidden | disclosure → popup |
+| 8 | Mistakes (N) / (0 of M) | `.clo-mx-btn`, `--quiet` when none outstanding | amber outline / neutral outline | `running \|\| !history.length` → hidden | disclosure → popup |
 | 9 | Retry | `.clo-mx-retry` | **filled #629924** | `running \|\| !pending.length` → hidden | action → **navigates away** |
 | 10 | Retry n/m — title | `.clo-mx-status` | amber text | `!running` → hidden | status |
 | 11 | Skip | `.clo-mx-mini` | bare text | `!running` → hidden | action |
@@ -109,6 +109,7 @@ Resolved by giving each meaning a treatment it does not share:
 | Meaning | Now |
 |---|---|
 | "you have N outstanding items" | amber **outline**, `.clo-mx-btn` alone |
+| …and when none are outstanding | `.clo-mx-btn--quiet`, neutral outline (v0.61.0) |
 | "this launches practice" | green outline, joining `.clo-cr-open`/`.clo-cr-queue` |
 | "an author marked this important" | amber **ring**, never an outline |
 | "something is happening" | amber **text**, on the status line, no border |
