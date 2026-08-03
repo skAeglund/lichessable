@@ -2900,8 +2900,10 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-cr-mini .clo-cr-sq { cursor: default; }
 .clo-cr-mini .clo-cr-piece { transition: none; }
-/* The glyph fallback is sized for the full-size board; scale it to this one. */
-.clo-cr-mini .clo-cr-piece--glyph { font-size: 18px; }
+/* The glyph fallback is sized for the full-size board; scale it to this one —
+   whose edge VARIES (fitHeadsUpMini grows it into a comment box it covers), so
+   the size rides on the board element itself rather than being fixed here. */
+.clo-cr-mini .clo-cr-piece--glyph { font-size: inherit; }
 
 /* --- important lines (section 18c) -------------------------------------------
    A clickable line whose FIRST move carries a "!" is one the author pointed at,

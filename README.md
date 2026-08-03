@@ -489,14 +489,19 @@ still opens and the timer is paused as soon as the control appears.
 
 On a **phone in portrait**, where Chessable stacks its comment column under the
 board, this panel sits directly under the board while you are playing — over that
-column, which says nothing but "Quiz — White to play!" at that point.
+column, which says nothing but "Quiz — White to play!" at that point. A stacked
+column too short to hold the panel keeps that placement; a tall one is covered
+like any other.
 
 The same panel appears once more when the variation **ends**, for the lines that
 carry on from the final position — those branch exactly where the variation
-stops, so there is no earlier moment at which to show them. There the button
-reads **Add to review queue**, and because the variation is already over, a
-continuation of your *own* colour is offered too (there is nothing left to give
-away).
+stops, so there is no earlier moment at which to show them. Because the variation
+is already over, a continuation of your *own* colour is offered too (there is
+nothing left to give away). The only button there is **Review now**: with nothing
+in the review queue there is nothing to add to, so **Add to review queue** would
+buy you nothing but a second button to go and find, right beside the one that
+does the same thing immediately. Queue something and it comes back — adding to a
+queue you will play in one go is a real choice (v0.63.0).
 
 **Once the variation is over the panel covers Chessable's comment** (v0.60.0),
 which is the same thing the quiz board itself does and for the same reason: the
@@ -505,9 +510,24 @@ regularly spells the whole line out — *"If white goes for the doubled pawns:
 7.Bxc6+! bxc6 8.O-O Bg4 9.h3 Bh5 10.d3 Rg8 11.Bf4 Qd5"* — so a panel that offers
 to quiz that line while leaving it on screen has already given you every answer.
 It covers the comment box entirely, because those lines are usually the *last*
-thing in it. While you are still playing nothing changes: a quiz renders no
-comment at all, so there is nothing to hide and the panel stays beside the board
-where it was. Press **×** if you want to read the comment instead.
+thing in it. Press **×** if you want to read the comment instead.
+
+**While you are still playing it takes that column too** (v0.63.0). A live quiz
+renders no comment at all: the whole column says *"Quiz — Black to play!"* and is
+then empty for the rest of the card, while the panel was squeezed into the gutter
+beside the board. So the panel goes where the room is — the same spot the quiz
+board itself uses when you press **Review now**. Nothing is being hidden there
+(the board already tells you whose move it is), so unlike the browse-state
+version it keeps its own height rather than filling the column, and **×** gives
+the column back.
+
+The room is what the **mini board grows into**, rather than floating at its usual
+size in a lot of empty surface. Measured: a 176px board becomes 261px on a
+506x385 comment box, and 317px over a 455px-wide comment column. It is measured,
+never estimated — the lead sentence, the number of branching moves and the
+buttons all vary in height, and the board takes exactly what is left. The
+branching moves stay in the column beside it; dropping them under the board looks
+tidier but costs the board 54px of edge.
 
 Nothing starts on its own. When anything is queued, a filled **Review queued
 lines (n)** button appears once the variation is over — being dropped into a quiz

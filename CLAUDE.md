@@ -1787,27 +1787,69 @@ Currently working (v0.18.x).
   anything. `placeHeadsUp` therefore prefers `SELECTORS.reviewCommentBox` —
   the comment's own SCROLL CONTAINER, which a live quiz does not render at all
   (18b is built on that fact) — so the rule is self-limiting: container present
-  ⇒ browse ⇒ cover it; absent ⇒ mid-quiz ⇒ placement UNCHANGED. The whole
-  container, not its top: the clickable lines are usually the LAST thing in a
-  long comment. The COLUMN is deliberately not a fallback here, which is where
-  this differs from `positionOverlays` — that one is a quiz the user asked for
-  and can be opened mid-quiz ("Review now"), so it wants one spot in both
-  states; this one is unsolicited, and mid-quiz Chessable's own "Quiz — White to
-  play!" is worth leaving readable. This also retired the old preference, the
+  ⇒ browse ⇒ cover it. The whole container, not its top: the clickable lines are
+  usually the LAST thing in a long comment.
+  MID-QUIZ IT NOW FALLS BACK TO THE COLUMN (v0.63.0) — `reviewCommentCol`, the
+  same chain `positionOverlays` has always used for "Review now". CLAUDE.md used
+  to refuse this on the grounds that Chessable's own "Quiz — White to play!" was
+  worth leaving readable, this panel being unsolicited where "Review now" is
+  asked for. Overruled on the evidence: that column prints ONE sentence and is
+  then empty for the whole card, the board says whose move it is anyway, and the
+  room is what the mini board grows into — 176px in the gutter against 317px over
+  a 455px column. TWO DIFFERENCES from the spoiler branch, both deliberate:
+  * the column is SIZE-GATED (`headsUpCoverMinPx`, 300) and the box is not.
+    Covering the box is a SPOILER decision — the answers are printed in it, so it
+    is taken at any size, overflow and all. Covering the column buys room and
+    hides nothing, so a column too short to hold the panel is not worth taking:
+    the content-sized placements below it are better.
+  * the panel keeps its CONTENT HEIGHT over a column, and is stretched to the
+    box. Over a column it is the WIDTH that limits the board (a trainer column
+    runs 600px+), so a fixed height would leave the panel half empty for nothing
+    — where over the comment box filling it IS the point.
+  This also retired the old preference, the
   gutter LEFT of the board, whose comment read "which during a quiz is empty:
   the review panel only ever shows in the browse state" — true when written, and
   falsified by v0.37.0 extending this panel INTO the browse state, where the
   review panel is in that gutter: it covered the Lichess move table (which
   spoils nothing) and left the comment showing (which spoils everything).
   Ground-truthed live 2026-08-03: mid-quiz `[406,113,300,304]` content-sized and
-  no scroll container; browse `[1226,161,506,385]` against a comment box of
-  exactly `[1226,161,506,385]`, opaque, with the Lichess panel at `[286,113,420]`
-  no longer overlapped.
+  no scroll container (the placement v0.63.0 replaced); browse `[1226,161,506,385]`
+  against a comment box of exactly `[1226,161,506,385]`, opaque, with the Lichess
+  panel at `[286,113,420]` no longer overlapped.
   In a STACKED layout (portrait) while the quiz is LIVE placement stops at the
   board's own FOOTER instead of also clearing the overstudy widget and the whole
   trainer row (`coverComment` = stacked && `!reviewBrowseReady()`): down there
   Chessable prints nothing but "Quiz — White to play!", while our panel would
-  otherwise be a scroll away from the board it is talking about.
+  otherwise be a scroll away from the board it is talking about. Since v0.63.0
+  that is the SHORT-column case only — a stacked column tall enough is covered
+  like any other.
+  COVERING ALSO SIZES THE MINI BOARD (`fitHeadsUpMini`, v0.63.0). Everywhere else
+  the panel wraps around a `headsUpMiniPx` board; over the comment box the panel
+  has a BOX (~506x385 live), and a 176px board in that leaves the only thing
+  worth looking at as the smallest part of the panel. So the board takes whatever
+  the rest leaves — MEASURED, never estimated (the lead sentence, the number of
+  move rows, the queued note and the arm button's presence all vary in height,
+  and this must never push the buttons out of a panel that cannot scroll):
+  collapse the board, let the panel size to content for one synchronous read,
+  restore. The BODY's height comes back off (`rest` is everything OUTSIDE it) —
+  the move rows sit BESIDE the board and are absorbed by it, only
+  `headsUpMovesColPx` of WIDTH is theirs. That is not a detail: counting them as
+  height instead (i.e. dropping them below the board, which at that width looks
+  like the tidier layout) measured 207px of edge against 261 in the harness.
+  `headsUpMiniPx` is the FLOOR, so a box too small to fit the fit is left exactly
+  as it was. Measured in the harness: 261px over a 506x385 comment box (height-
+  bound), 317px over a 455px-wide column (width-bound). The measurement needs a laid-out panel, so it bails while
+  `hidden` and `showHeadsUp` calls again after unhiding, and it is cached against
+  everything that can change the answer because `placeHeadsUp` runs on every
+  scroll event and this forces two reflows. The glyph piece fallback is the one
+  thing on that board NOT sized in percentages, so `sizeHeadsUpMini` sets a
+  font-size on the board element and the stylesheet inherits it.
+  AT THE FINAL POSITION WITH AN EMPTY QUEUE THERE IS NO ARM BUTTON (v0.63.0):
+  "Add to review queue" beside "Review now" then offers a second button to go and
+  find in exchange for nothing — the variation is over, so the wait it names has
+  already happened. `cr.hu.armed.size` is the test, not `group.final` alone:
+  once anything IS queued, adding to a set that will be played in one go is a
+  real choice and the button comes back. Mid-variation it always stands.
   Unlike the quiz panel this one must NOT
   swallow keys — the user is still playing on Chessable's board and needs
   MoveTrainer2's shortcuts — so its buttons `blur()` themselves after a press

@@ -1015,7 +1015,7 @@ body {
           </div>
           <div class="clo-cr-heads__lead">The opponent can also respond with:</div>
           <div class="clo-cr-heads__body">
-            <div class="clo-cr-mini hx-mini" style="width:140px;height:140px"
+            <div class="clo-cr-mini hx-mini" style="width:140px;height:140px;font-size:14px"
                  data-hx-board="rnbqkb1r/pp2pppp/5n2/3p4/3P4/5N2/PP2PPPP/RNBQKB1R w"
                  data-hx-shapes="arrow:c1:g5:|arrow:f3:e5:"></div>
             <div class="clo-cr-heads__moves">
@@ -1044,7 +1044,7 @@ body {
           </div>
           <div class="clo-cr-heads__lead">From here the opponent can play:</div>
           <div class="clo-cr-heads__body">
-            <div class="clo-cr-mini hx-mini" style="width:140px;height:140px"
+            <div class="clo-cr-mini hx-mini" style="width:140px;height:140px;font-size:14px"
                  data-hx-board="rnbqkb1r/pp2pppp/5n2/3p4/3P4/5N2/PP2PPPP/RNBQKB1R w"
                  data-hx-shapes="arrow:c2:c3:"></div>
             <div class="clo-cr-heads__moves">
@@ -1057,6 +1057,68 @@ body {
             <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__now">Review now</button>
           </div>
           <div class="clo-cr-heads__note">Queued — it runs when the variation ends.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Browse state — covering the comment box</h3>
+      <p class="hx-note">Sized to the comment box it hides (506x385, measured live on course
+         453453). The board grows into whatever the rest of the panel leaves — the fit here runs
+         the same measurement as fitHeadsUpMini. With the review queue empty there is nothing to
+         add to, so the end-of-variation panel offers only "Review now".</p>
+      <div class="hx-stage">
+        <div class="clo-cr-heads hx-pos hx-fit" style="width:506px;height:385px">
+          <div class="clo-cr-heads__head">
+            <span class="clo-cr-heads__title">Continuation</span>
+            <button type="button" class="clo-cr-heads__off">Turn off</button>
+            <button type="button" class="clo-cr-heads__x">×</button>
+          </div>
+          <div class="clo-cr-heads__lead">From here the opponent can play:</div>
+          <div class="clo-cr-heads__body">
+            <div class="clo-cr-mini hx-mini"
+                 data-hx-board="rnbqkb1r/pp2pppp/5n2/3p4/3P4/5N2/PP2PPPP/RNBQKB1R w"
+                 data-hx-shapes="arrow:c1:g5:|arrow:f3:e5:"></div>
+            <div class="clo-cr-heads__moves">
+              <div class="clo-cr-heads__move">cxb4</div>
+              <div class="clo-cr-heads__move">Qb3</div>
+            </div>
+          </div>
+          <div class="clo-cr-heads__btns">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__arm" hidden>Add to review queue</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__now">Review now</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Mid-quiz — over the comment column</h3>
+      <p class="hx-note">A live quiz renders no comment, so the column holding it is empty but for
+         "Quiz — Black to play!". The panel takes its width (455 here) but keeps its CONTENT height:
+         over a column it is the width that limits the board, and a fixed height would leave the
+         panel half empty. Both buttons stand — the variation is still running, so waiting for its
+         end is a real choice.</p>
+      <div class="hx-stage">
+        <div class="clo-cr-heads hx-pos hx-fit" style="width:455px" data-hx-fit-cap="610">
+          <div class="clo-cr-heads__head">
+            <span class="clo-cr-heads__title">Clickable line</span>
+            <button type="button" class="clo-cr-heads__off">Turn off</button>
+            <button type="button" class="clo-cr-heads__x">×</button>
+          </div>
+          <div class="clo-cr-heads__lead">The opponent can also respond with:</div>
+          <div class="clo-cr-heads__body">
+            <div class="clo-cr-mini hx-mini"
+                 data-hx-board="rnbqkb1r/pp2pppp/5n2/3p4/3P4/5N2/PP2PPPP/RNBQKB1R w"
+                 data-hx-shapes="arrow:c1:g5:"></div>
+            <div class="clo-cr-heads__moves">
+              <div class="clo-cr-heads__move">Bxc7</div>
+            </div>
+          </div>
+          <div class="clo-cr-heads__btns">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__arm">Review on variation end</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__now">Review now</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1608,6 +1670,25 @@ body {
 
   document.querySelectorAll('[data-hx-board]').forEach(renderBoard);
   document.querySelectorAll('[data-hx-bar]').forEach(renderBar);
+
+  /** Mirrors fitHeadsUpMini: with the panel sized to the comment box it covers,
+   *  the mini board takes whatever height the rest of the panel leaves. */
+  document.querySelectorAll('.hx-fit').forEach(function (el) {
+    var board = el.querySelector('.clo-cr-mini');
+    var body = el.querySelector('.clo-cr-heads__body');
+    if (!board || !body) return;
+    // The box being covered: its own height where the panel is sized to it (the
+    // browse-state spoiler), the column's where the panel keeps content height.
+    var full = Number(el.dataset.hxFitCap) || el.offsetHeight;
+    board.style.width = board.style.height = '0px';
+    var fixed = el.style.height;
+    el.style.height = 'auto';
+    var rest = el.offsetHeight - body.offsetHeight; // the move rows sit BESIDE the board
+    el.style.height = fixed;
+    var size = Math.max(176, Math.min(body.clientWidth - 108, Math.floor(full - rest)));
+    board.style.width = board.style.height = size + 'px';
+    board.style.fontSize = Math.round(size / 10) + 'px'; // the glyph fallback, as sizeHeadsUpMini does
+  });
 
   // --- toolbar -------------------------------------------------------------
   var touch = document.getElementById('hx-touch');

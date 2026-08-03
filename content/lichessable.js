@@ -333,7 +333,15 @@
       // variation. Opt-OUT (a heads-up nobody uses is just noise), hence the
       // stored flag.
       headsUpKey: 'cloLineHeadsUp', // chrome.storage.local; ON unless set to false
-      headsUpMiniPx: 176,   // mini-board edge; the panel sizes itself around it
+      headsUpMiniPx: 176,   // mini-board edge; the panel sizes itself around it,
+                            // and it is the FLOOR when the board grows into a
+                            // comment box it covers (fitHeadsUpMini)
+      headsUpMovesColPx: 108, // …kept clear beside it for the branching moves, gap included
+      // Mid-quiz the panel covers the comment COLUMN, which hides nothing — so
+      // it only bothers when the column is tall enough to hold the panel. (The
+      // browse state's comment box is covered at ANY size: there the point is
+      // the spoiler, not the room.)
+      headsUpCoverMinPx: 300,
       headsUpMinBoardPx: 200, // below this the trainer board is mid-render — don't place
       headsUpOffArmMs: 4000,  // how long the panel's "Turn off" stays armed for its second click
       // Once a line is queued the panel has said everything it has to say, and
@@ -12227,6 +12235,8 @@
         offArmed: false,  // "Turn off" is waiting for its confirming second click
         offTimer: 0,
         hideTimer: 0,     // the panel taking itself away after a line was queued
+        coverRect: null,  // the comment box we are covering, if any (placeHeadsUp)
+        fit: '',          // signature of the layout fitHeadsUpMini last measured
       },
     };
 
@@ -15206,7 +15216,8 @@
       const board = document.createElement('div');
       board.className = 'clo-cr-mini';
       // Sized from CONFIG so the mini board has one source of truth, like the
-      // quiz overlay (which takes its size off Chessable's own board).
+      // quiz overlay (which takes its size off Chessable's own board). That is
+      // the resting size; covering the comment box grows it (fitHeadsUpMini).
       board.style.width = C.headsUpMiniPx + 'px';
       board.style.height = C.headsUpMiniPx + 'px';
       const grid = document.createElement('div');
@@ -15251,7 +15262,7 @@
       el.append(head, lead, body, btns, note);
       document.body.appendChild(el);
       cr.hu.el = el;
-      cr.hu.ui = { grid, layer, arrows, title, lead, moves, arm, now, note, off };
+      cr.hu.ui = { grid, layer, arrows, title, lead, body, board, moves, arm, now, note, off };
       disarmOff(); // also writes the button's resting label
     }
 
@@ -15276,8 +15287,15 @@
         ? (mine ? 'You can also carry on with:' : 'From here the opponent can play:')
         : 'The opponent can also respond with:';
       // At the final position the variation has already ended, so there is
-      // nothing to wait for — the queue is simply added to.
+      // nothing to wait for — the queue is simply added to. And with that queue
+      // EMPTY there is nothing to add to either: the press would buy nothing but
+      // a second button to go and find, right beside the one that does the same
+      // thing now. So at the end of a variation with an empty queue the offer is
+      // just "Review now". Mid-variation it always stands (the wait is the whole
+      // point), and once anything IS queued it comes back, since adding to a
+      // queue that will be played in one go is a real choice.
       ui.arm.textContent = group.final ? 'Add to review queue' : 'Review on variation end';
+      ui.arm.hidden = group.final && cr.hu.armed.size === 0;
       // ONLY the branching move. The rest of the line is what the review will
       // ask for, and half of it is the user's OWN moves — printing it here
       // would answer the quiz this panel exists to offer.
@@ -15308,6 +15326,10 @@
       if (!placeHeadsUp()) return;
       cr.hu.shown = group;
       cr.hu.el.hidden = false;
+      // The board can only be fitted against a laid-out panel, and everything
+      // above ran on a display:none one — so the measuring pass is here, once
+      // the panel is really up.
+      fitHeadsUpMini();
     }
 
     function dismissHeadsUp(e) {
@@ -15464,15 +15486,83 @@
      *
      * `reviewCommentBox` is the comment's own SCROLL CONTAINER, which a live
      * quiz does not render at all (a quiz prints no comment) — so preferring it
-     * is precisely "cover it in the browse state", and mid-quiz placement is
-     * untouched: the gutter really is free then, and Chessable's own
-     * "Quiz — White to play!" prompt stays readable. The column is deliberately
-     * NOT used as a fallback here, which is where this differs from
-     * positionOverlays: that one is a quiz the user asked for and may be opened
-     * mid-quiz ("Review now"), this one is unsolicited.
+     * is precisely "cover it in the browse state".
+     *
+     * MID-QUIZ THE COLUMN THAT HOLDS IT IS TAKEN INSTEAD (v0.63.0), which is
+     * what positionOverlays has always done for "Review now". This used to be
+     * refused on the grounds that Chessable's "Quiz — White to play!" prompt was
+     * worth leaving readable — it is one sentence, and the board already says
+     * whose move it is, while the column is otherwise EMPTY for the whole quiz.
+     * That room is what the mini board grows into (fitHeadsUpMini), and it beats
+     * a 176px board squeezed into the gutter; × gives the column back.
      */
     function positionHeadsUp() {
       if (cr.hu.el && !cr.hu.el.hidden) placeHeadsUp();
+    }
+
+    /**
+     * Sizes the mini board.
+     *
+     * Resting size is CONFIG's edge and the panel wraps around it. But when the
+     * panel COVERS the comment box (the browse state) it has a box of its own —
+     * regularly ~500x385 — and a 176px board floating in that leaves the one
+     * thing worth looking at as the smallest part of the panel. So there it
+     * grows into whatever the rest of the panel leaves.
+     *
+     * MEASURED, never estimated: the lead sentence, the number of move rows, the
+     * queued note and — since the arm button can be hidden — the button row all
+     * vary in height, and the one thing this must not do is push the buttons out
+     * of a panel that cannot scroll. The measurement needs a laid-out panel, so
+     * it bails while hidden and showHeadsUp calls again once the panel is up.
+     * Cached against everything that can change the answer, because placeHeadsUp
+     * runs on every scroll event and this forces two reflows.
+     *
+     * The BODY's own height is taken back off (`rest` is everything OUTSIDE it):
+     * the move rows sit BESIDE the board, so their height is absorbed by it —
+     * the floor alone is four rows tall — and only the width they need comes
+     * off. Measured in the harness on a 506x385 comment box: counting them as
+     * height instead (i.e. dropping them below the board, which at that width
+     * looks like the tidier layout) costs the board 261px of edge for 207.
+     *
+     * The floor is the old fixed size, so this can only ever GROW the board: a
+     * comment box too small to fit one is left looking exactly as it did.
+     */
+    function fitHeadsUpMini() {
+      const ui = cr.hu.ui;
+      const el = cr.hu.el;
+      if (!el || !ui) return;
+      const box = cr.hu.coverRect;
+      if (!box) {
+        cr.hu.fit = '';
+        sizeHeadsUpMini(C.headsUpMiniPx);
+        return;
+      }
+      if (el.hidden) return; // nothing to measure yet — showHeadsUp comes back
+      const sig = [Math.round(box.width), Math.round(box.height),
+        ui.moves.childElementCount, ui.note.hidden ? 0 : 1, ui.arm.hidden ? 0 : 1].join('|');
+      if (cr.hu.fit === sig) return;
+      cr.hu.fit = sig;
+      // What everything else needs: the board collapsed, the panel briefly back
+      // to sizing itself to its content.
+      sizeHeadsUpMini(0);
+      const fixed = el.style.height;
+      el.style.height = 'auto';
+      const rest = el.offsetHeight - ui.body.offsetHeight;
+      el.style.height = fixed;
+      sizeHeadsUpMini(Math.max(C.headsUpMiniPx, Math.min(
+        Math.floor(ui.body.clientWidth - C.headsUpMovesColPx),
+        Math.floor(box.height - rest))));
+    }
+
+    function sizeHeadsUpMini(px) {
+      const board = cr.hu.ui && cr.hu.ui.board;
+      if (!board) return;
+      board.style.width = px + 'px';
+      board.style.height = px + 'px';
+      // The glyph fallback is the one thing on this board that is NOT sized in
+      // percentages, so it needs telling; a tenth of the edge is the 18px the
+      // stylesheet used to hard-code for the resting size.
+      board.style.fontSize = Math.round(px / 10) + 'px';
     }
 
     function placeHeadsUp() {
@@ -15486,21 +15576,45 @@
       const sx = window.scrollX, sy = window.scrollY;
       const width = Math.min(Math.max(C.headsUpMiniPx + 120, 300), window.innerWidth - gap * 2);
 
-      // The spoiler, when there is one. Sized to the whole container: the
+      const usable = (sel, minH) => {
+        const node = document.querySelector(sel);
+        const r = node ? node.getBoundingClientRect() : null;
+        return r && r.width > 120 && r.height >= minH ? r : null;
+      };
+      // THE SPOILER, when there is one. Sized to the whole container: the
       // clickable lines are usually the LAST thing in a long comment, so a
-      // panel merely parked at the top of it would leave them showing.
-      const box = document.querySelector(SELECTORS.reviewCommentBox);
-      const br = box ? box.getBoundingClientRect() : null;
-      if (br && br.width > 120 && br.height > 120) {
-        setInlinePx(el, {
-          left: br.left + sx, top: br.top + sy, width: br.width, height: br.height,
-        });
+      // panel merely parked at the top of it would leave them showing. Taken at
+      // whatever size it comes in — hiding the answers beats looking tidy.
+      const spoiler = usable(SELECTORS.reviewCommentBox, 120);
+      // A LIVE QUIZ renders no scroll container at all, and the column that
+      // holds it says nothing but "Quiz — Black to play!" — the board already
+      // says whose move it is. So mid-quiz the panel takes that column too
+      // (v0.63.0), exactly as positionOverlays does for "Review now": the room
+      // it buys the mini board is worth more than the sentence, and × gives it
+      // back. Size-gated, unlike the spoiler above: nothing is being hidden
+      // here, so a column too short to hold the panel is simply not worth
+      // covering — the content-sized placements below are better.
+      const column = spoiler ? null : usable(SELECTORS.reviewCommentCol, C.headsUpCoverMinPx);
+      const cover = spoiler || column;
+      if (cover) {
+        const at = { left: cover.left + sx, top: cover.top + sy, width: cover.width };
+        // The spoiler is covered ENTIRELY; the column is not. Down there nothing
+        // needs hiding, so the panel keeps its content height and simply takes
+        // the room at the top — a fixed height would leave it half empty, since
+        // over a column it is the WIDTH that limits the board.
+        if (spoiler) at.height = cover.height;
+        else if (el.style.height) el.style.height = '';
+        setInlinePx(el, at);
+        cr.hu.coverRect = cover;
+        fitHeadsUpMini();
         return true;
       }
       // Every path below sizes to content, so drop a height left over from a
       // previous cover — otherwise the panel keeps the comment's dimensions
       // wherever it lands next.
       if (el.style.height) el.style.height = '';
+      cr.hu.coverRect = null;
+      fitHeadsUpMini();
 
       const gutter = rect.left - gap * 2;
       if (gutter >= width) {
@@ -15519,6 +15633,8 @@
       // panel takes its place instead, directly under the board. In the browse
       // state it is the comment itself down there — the clickable lines
       // included — so the panel keeps out of the way as before.
+      // Since v0.63.0 a mid-quiz column that is TALL enough has already been
+      // covered above; this is the short one, where the panel would overflow.
       const coverComment = stackedTrainerLayout(rect) && !reviewBrowseReady();
       if (!coverComment) {
         const widget = document.getElementById(REVIEW_WIDGET_ID);
