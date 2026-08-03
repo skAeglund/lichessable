@@ -242,9 +242,13 @@ dragging between two squares (an arrow) or pressing one square (a circle), in
 Chessable's own four colours — drawing the same one again removes it, and
 drawing it in another colour recolours it. "Clear all" empties the board, and
 saving an empty board deletes the move's arrows (that one takes a second
-press). **Alt move** registers an alternative move the
-trainer should also accept in place of that move — type its notation (`Nf6`,
+press). **Alt move** registers alternative moves the
+trainer should also accept in place of that move — type the notation (`Nf6`,
 `Qxd5`, `O-O`), or just click a move row in the Lichess panel to fill it in.
+Several at once is fine: separate them with commas or spaces (`Nc6, d5, a6`),
+and clicking further panel rows adds to the list. They are all added in the
+same visit to Chessable's edit page and saved together; if one of them is
+refused, none of them are saved and the popup says which one and why.
 The tab is only available on your own moves (your colour is the side at the
 bottom of the board) — an alternative to an opponent move would be a misclick,
 since the trainer plays those itself.
@@ -980,7 +984,12 @@ enough not to run, the ↻ button is the only way back.
   everywhere else. Chessable itself validates the move (only a board-legal
   move reaches its handler; duplicates and the mainline move raise its own
   dialogs, whose text is relayed to the popup) and lists it under
-  "Alternative Moves", which is the success signal. Either way the driver then
+  "Alternative Moves", which is the success signal. A list of alternatives runs
+  that flow once per move on the same board: because each alternative leaves the
+  board on its own position, the next round re-clicks the mainline move and
+  waits for exactly the FEN it started from before arming again. Nothing is
+  written until the single submit at the end, so a move that is refused halfway
+  through leaves the variation untouched. Either way the driver then
   clicks "Update variation" and
   confirms Chessable's SweetAlert dialog — which is what actually submits the
   full-variation form. Success is detected when the POST lands the iframe on
@@ -1068,7 +1077,16 @@ enough not to run, the ↻ button is the only way back.
   you back on the variation you were reading. Earlier builds gave up and left
   you standing on the neighbour while the popup said the save had gone through,
   which is why a save could occasionally end on a completely different
-  variation. There are now three routes home, tried in order: `history.back()`
+  variation. It also **waits for the neighbour to actually arrive** before
+  stepping back (v0.62.1): the address changes the instant the click is handled,
+  while the data it navigated for is still loading, and coming back on the
+  address alone left that half-finished navigation to complete a moment later —
+  putting you on the neighbour with the one step home already used up. Measured
+  live, the old code came back 158 ms after the address changed and 634 ms
+  before the neighbour's data arrived. It now waits for that request (capped, so
+  a neighbour served from cache costs nothing), which is also the request the
+  whole round trip exists to trigger. There are three routes home, tried in
+  order: `history.back()`
   (only if the pager really pushed a history entry — some routers replace, and
   then Back would take you a step *further* away), then the opposite pager
   button, then, as a last resort, a plain reload of the variation you started

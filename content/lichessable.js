@@ -390,6 +390,18 @@
       // bring ours back. Both are one SPA render plus two small API reads.
       refreshLeaveMs: 6000,
       refreshBackMs: 12000,
+      // …and how long the SIBLING is then given to actually LAND before we step
+      // back off it. The URL flips synchronously on the router's pushState,
+      // while the data it navigated for is still in flight — going home on the
+      // URL alone left an in-flight route to commit AFTER our step back, which
+      // is how a save could end on a different variation (measured live: the
+      // return fired 158 ms after the flip, with `getGame` finishing 260 ms
+      // later still). The wait ends on that request completing, or on this cap
+      // when nothing was fetched at all (a cached sibling).
+      refreshSettleMs: 3000,
+      refreshGameApi: '/api/v1/getGame', // …the request that IS the sibling landing
+      refreshLandMs: 250, // …and a frame or two for the router to commit it
+
       // …and how long each individual route home (history.back(), then the
       // opposite pager) is given to put the URL back on our own variation,
       // before the next route is tried. Short on purpose: this is a URL flip,
@@ -419,6 +431,9 @@
       // either lists the move in #altMoves or raises an error dialog.
       altStepBackTimeoutMs: 4000, // wait for the board to reach the pre-move position
       altResultTimeoutMs:   5000, // wait for #altMoves to list the move (or an error swal)
+      // …and how long the move's EXISTING alternatives are given to render
+      // before they are read (see quickEditAwaitAltList).
+      altListRenderMs:      1500,
       // Touch has no hover: a tap fires pointerover (pencil shows) and the
       // finger lifting fires pointerout right after, whose 200 ms hide made
       // the pencil unhittable. After a TAP it stays up this long instead.
@@ -4764,7 +4779,7 @@
   // popup window; the driver below (in that window's mt1 edit iframe) clicks the target
   // move, then either appends to the "Comments After" textarea (mode 'save')
   // or runs Chessable's add-alternative flow (mode 'alt' — see
-  // driveQuickEditAltMove: the "Add New Alternative Move" link arms a
+  // driveQuickEditAltMoves: the "Add New Alternative Move" link arms a
   // next-board-move capture behind a SweetAlert confirm, the board steps BACK
   // one move, and the alternative is PLAYED on the edit board with the
   // standard pressSquare recipe; Chessable itself validates legality — only a
@@ -4772,7 +4787,15 @@
   // same-as-mainline, stores the SAN on the move's alt_white/alt_black list in
   // its page state, honouring the #specificAltMove checkbox read at store
   // time, and lists it in #altMoves, which is the isolated-world success
-  // signal). Both modes end the same way: click "Update variation" and confirm
+  // signal). SEVERAL alternatives ("Nc6, d5, a6") are added in ONE visit under
+  // ONE submit: the flow is per move, so each one is armed, played and
+  // dismissed in turn, and since every alternative leaves the board on its own
+  // position, the next round re-clicks the mainline move and requires the
+  // byte-identical FEN back before arming again (side to move alone cannot tell
+  // an alternative's position from the mainline's). A failure anywhere throws
+  // and NOTHING is saved — the adds live in the edit page's state until the
+  // POST, which then never happens. Both modes end the same way: click
+  // "Update variation" and confirm
   // Chessable's SweetAlert dialog — which is what actually submits the
   // full-variation form. Success is detected when the form's POST lands the
   // iframe on /mt1/explore/?edit=<oid>. The alt SAN's legality is resolved
@@ -4780,7 +4803,8 @@
   // tactics lines included), so the popup ships a bare SAN string and never
   // reconstructs a position. Promotion alternatives are refused (the edit
   // board's promotion picker is unverified). While the popup's alt tab is
-  // open, clicking a Lichess panel move row prefills the SAN input.
+  // open, clicking a Lichess panel move row APPENDS it to the SAN list, so
+  // three clicks are three alternatives.
   //
   // EDITING an existing comment takes TWO visits to the edit page, and that is
   // not an implementation detail that could be optimised away: the comment as
@@ -5147,10 +5171,10 @@
     if (job.mode === 'alt') {
       // The alt flow does its own move click (after the shared board-ready
       // gate) and its own settling — a fixed delay here would only add a ~1 s
-      // clamped timer. 'already' = the alternative was saved on a previous
+      // clamped timer. 'already' = every alternative was saved on a previous
       // visit (the form renders stored alternatives on selection): nothing to
       // change, success without touching the variation at all.
-      const outcome = await driveQuickEditAltMove(job, moveEl);
+      const outcome = await driveQuickEditAltMoves(job, moveEl);
       if (outcome === 'already') {
         chrome.runtime.sendMessage({ type: 'clo-quick-edit-result', oid, mode: 'alt', ok: true }).catch(() => {});
         return;
@@ -5425,18 +5449,51 @@
   }
 
   /**
-   * Adds job.altSan as an alternative to the currently selected move by
-   * driving Chessable's own add-alternative flow (ground-truthed live):
-   * the add link arms the capture ("The next move you make on the board will
-   * be added as an alternative"), confirming steps the board BACK one move,
-   * and the next board move is recorded by doAddAltMove — which validates
-   * duplicates and same-as-mainline itself and reports either in a dialog.
-   * The move is played with the same pressSquare click recipe as everywhere
-   * else; the edit board carries the standard square markup. Returns 'already'
-   * when the alternative was stored on a previous visit (nothing to submit);
-   * otherwise the caller submits the form normally.
+   * Waits for the selected move's stored alternatives to be on screen, so the
+   * "already listed" check reads them rather than an empty list that has not
+   * rendered yet.
+   *
+   * An empty `#altMoves` means BOTH "this move has no alternatives" and "they
+   * are one render away", and nothing on the page tells the two apart — so the
+   * wait is for the first entry, capped, and a move that genuinely has none
+   * simply pays the cap once per job. Reading it too early is not cosmetic:
+   * the move is then offered to Chessable again, which refuses it with "It's
+   * there already" — an error that, for a LIST of alternatives, fails all of
+   * them (observed live 2026-08-03).
    */
-  async function driveQuickEditAltMove(job, moveEl) {
+  const quickEditAwaitAltList = () => quickEditWaitUntil(
+    () => document.querySelector(SELECTORS.editAltList + ' span'),
+    CONFIG.quickEdit.altListRenderMs);
+
+  /** The alternatives a job asks for. `altSans` is the wire field; `altSan`
+   *  is the pre-v0.62 single-move form, kept only so a job already stored in
+   *  chrome.storage.session when the extension reloads still drives. */
+  function quickEditAltSans(job) {
+    if (Array.isArray(job.altSans)) return job.altSans.filter(Boolean);
+    return job.altSan ? [job.altSan] : [];
+  }
+
+  /**
+   * Adds every SAN in the job as an alternative to the currently selected
+   * move, in one visit and under one submit — the form POSTs the whole
+   * variation, so a second alternative costs another arm-and-play round on
+   * this board and nothing more.
+   *
+   * Chessable's flow is per move: the add link arms the capture, its dialog
+   * steps the board BACK one move, and the next board move is captured. So
+   * each alternative leaves the board on ITS OWN position, and the next one
+   * has to put the mainline move back first — required to be the byte-identical
+   * FEN we started from, since an alternative reaches a different position with
+   * the same side to move.
+   *
+   * Returns 'already' when every alternative was stored on a previous visit
+   * (nothing to submit); otherwise the caller submits the form normally.
+   * A failure anywhere throws, and nothing is saved at all: the adds live in
+   * the edit page's own state until the POST, which then never happens.
+   */
+  async function driveQuickEditAltMoves(job, moveEl) {
+    const sans = quickEditAltSans(job);
+    if (!sans.length) throw new Error('no alternative move given');
     const fenInput = document.querySelector(SELECTORS.fenInput);
     if (!fenInput) throw new Error('edit-page FEN input not found');
 
@@ -5456,10 +5513,56 @@
     }, CONFIG.quickEdit.moveSelectTimeoutMs);
     if (!fenBefore) throw new Error('edit board did not reach the selected move');
 
-    // Selecting the move rendered its stored alternatives — already listed
-    // means already saved.
-    if (quickEditAltListed(job.altSan)) return 'already';
+    // Selecting the move renders its stored alternatives — but a beat later
+    // than the board reaches it, so they are waited for once, here, before
+    // anything is read from them.
+    await quickEditAwaitAltList();
 
+    let added = 0;
+    for (const altSan of sans) {
+      // Already listed means already saved (on an earlier visit, or by an
+      // earlier SAN in this very list that Chessable normalised to the same
+      // move).
+      if (quickEditAltListed(altSan)) continue;
+
+      if (added) {
+        // The previous alternative left the board on its own position. Put the
+        // mainline move back and require the SAME fen: side to move alone
+        // cannot tell the two apart.
+        moveEl.click();
+        const back = await quickEditWaitUntil(
+          () => (fenInput.value === fenBefore ? fenBefore : null),
+          CONFIG.quickEdit.moveSelectTimeoutMs);
+        if (!back) {
+          throw new Error('the edit board did not come back to ' + job.san +
+            ' after the previous alternative — nothing was saved');
+        }
+      }
+
+      try {
+        await addOneQuickEditAltMove(job, altSan, fenInput, fenBefore);
+      } catch (err) {
+        const reason = String((err && err.message) || err);
+        // With one alternative the driver's own message is the whole story;
+        // with several, say plainly that the earlier ones went nowhere either.
+        throw new Error(sans.length > 1
+          ? reason + ' — none of the alternatives were saved' : reason);
+      }
+      added++;
+    }
+    return added ? 'added' : 'already';
+  }
+
+  /**
+   * One alternative, from the position after the target move (the board is
+   * already there, showing `fenBefore`): arm the capture ("The next move you
+   * make on the board will be added as an alternative"), let the dialog step
+   * the board back, then PLAY the move with the same pressSquare click recipe
+   * as everywhere else — the edit board carries the standard square markup.
+   * Chessable validates legality, duplicates and same-as-mainline itself and
+   * reports either in a dialog.
+   */
+  async function addOneQuickEditAltMove(job, altSan, fenInput, fenBefore) {
     const addLink = document.querySelector(SELECTORS.editAltAddLink);
     if (!addLink) throw new Error('add-alternative link not found');
     addLink.click();
@@ -5494,8 +5597,8 @@
 
     const pos = CloSan.parseFen(fenNow);
     if (!pos) throw new Error('could not read the edit board position');
-    const mv = quickEditResolveSan(pos, job.altSan);
-    if (!mv) throw new Error(job.altSan + ' is not a legal move in that position');
+    const mv = quickEditResolveSan(pos, altSan);
+    if (!mv) throw new Error(altSan + ' is not a legal move in that position');
     if (mv.promo) throw new Error('promotion alternatives are not supported yet');
 
     const fromEl = findSquare(squareName(mv.from));
@@ -5508,11 +5611,11 @@
     // (if any) carries Chessable's own reason — relay it instead of a bare
     // timeout so the popup can show something actionable.
     const listed = await quickEditWaitUntil(
-      () => quickEditAltListed(job.altSan), CONFIG.quickEdit.altResultTimeoutMs);
+      () => quickEditAltListed(altSan), CONFIG.quickEdit.altResultTimeoutMs);
     if (!listed) {
       const dialog = document.querySelector(SELECTORS.editSwalShown);
       const reason = dialog ? dialog.textContent.trim().replace(/\s+/g, ' ').slice(0, 160) : '';
-      throw new Error(reason || ('the board did not accept ' + job.altSan));
+      throw new Error(reason || ('the board did not accept ' + altSan));
     }
 
     // Dismiss the "Done, you added …" dialog — WAIT for it first (the list can
@@ -5865,7 +5968,7 @@
       const sanInput = document.createElement('input');
       sanInput.type = 'text';
       sanInput.className = 'clo-qe-san';
-      sanInput.placeholder = 'e.g. Nf6 — or click a move in the Lichess panel';
+      sanInput.placeholder = 'e.g. Nf6, or Nc6, d5 — or click moves in the Lichess panel';
       sanInput.spellcheck = false;
       sanInput.hidden = true;
 
@@ -5944,7 +6047,7 @@
       const moveText = desc ? desc.san
         : qe.popupTarget ? qe.popupTarget.textContent.trim() : '';
       qe.els.moveLabel.textContent =
-        (alt ? 'Alternative to ' : edit ? 'Edit comment after '
+        (alt ? 'Alternatives to ' : edit ? 'Edit comment after '
           : arrows ? 'Arrows on ' : 'Append after ') + moveText;
       if (arrows) resolveShapeBoard();
       if (readingMode(mode)) ensureMoveLoaded();
@@ -6117,6 +6220,40 @@
     }
 
     /**
+     * Watches for the request a variation navigation makes for its data
+     * (`getGame`), so the step back can wait for the sibling to have actually
+     * LANDED rather than merely for its URL to have appeared.
+     *
+     * Resource timing, not a fetch hook: `window.fetch` belongs to the page
+     * world, which an isolated content script cannot patch — but the document's
+     * performance timeline is shared, and an entry appears when the response is
+     * COMPLETE, which is exactly the moment being waited for.
+     */
+    function watchVariationFetch() {
+      let landed = false, obs = null;
+      try {
+        obs = new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) {
+            if (String(e.name).includes(CONFIG.quickEdit.refreshGameApi)) landed = true;
+          }
+        });
+        obs.observe({ type: 'resource', buffered: false });
+      } catch (err) { obs = null; } // no observer: fall back to the plain cap
+      return {
+        stop: () => { if (obs) { try { obs.disconnect(); } catch (e) { /* gone */ } } },
+        /** Resolves once the sibling's data has landed, or the cap runs out. */
+        settle: async () => {
+          if (obs) {
+            await quickEditWaitUntil(() => landed || null, CONFIG.quickEdit.refreshSettleMs);
+          } else {
+            await quickEditDelay(CONFIG.quickEdit.refreshSettleMs);
+          }
+          await quickEditDelay(CONFIG.quickEdit.refreshLandMs);
+        },
+      };
+    }
+
+    /**
      * Brings the variation page's own rendering back in line with what was just
      * saved — the comment AND the arrows — WITHOUT reloading the document.
      *
@@ -6161,6 +6298,7 @@
       const plyCount = document.querySelectorAll(SELECTORS.variationMoves).length;
       let stepped = false, backSel = '', pushed = false, homeTried = false;
       let watching = false; // a late-departure watch has taken over the guard
+      const fetchWatch = watchVariationFetch(); // armed BEFORE the click
       try {
         const pagers = [SELECTORS.variationPagerNext, SELECTORS.variationPagerPrev]
           .map((sel) => document.querySelector(sel));
@@ -6193,9 +6331,19 @@
           // save used to end on the sibling variation. So a watch outlives the
           // refresh, and keeps the re-entrancy guard with it.
           watching = true;
-          watchLateDeparture(oid, home, backSel, histBefore);
+          watchLateDeparture(oid, home, backSel, histBefore, fetchWatch);
           return false;
         }
+
+        // LET THE SIBLING LAND. The URL flipped the instant the router called
+        // pushState, with the navigation it made still in flight — stepping
+        // back on that alone leaves a route to commit AFTERWARDS, putting the
+        // user on the sibling with our one repair already spent (and the
+        // `homeTried` exemption below stopping the finally from making
+        // another). It is also what makes the refresh WORTH anything: the
+        // chapter refetch this whole round trip exists for is the request being
+        // waited for here.
+        await fetchWatch.settle();
 
         homeTried = true;
         if (!await returnToVariation(oid, home, backSel, pushed)) return false;
@@ -6234,7 +6382,8 @@
         if (stepped && !homeTried && !watching && siblingVariation(oid)) {
           await returnToVariation(oid, home, backSel, pushed);
         }
-        if (!watching) qe.refreshBusy = false;
+        // The late watch takes both of these over with the guard (see below).
+        if (!watching) { fetchWatch.stop(); qe.refreshBusy = false; }
       }
     }
 
@@ -6247,15 +6396,17 @@
      * is purely "do not leave them on someone else's variation", and that has
      * no reason to hold the save's status line open.
      */
-    function watchLateDeparture(oid, home, backSel, histBefore) {
+    function watchLateDeparture(oid, home, backSel, histBefore, fetchWatch) {
       quickEditWaitUntil(() => siblingVariation(oid), CONFIG.quickEdit.refreshLateMs)
-        .then((late) => {
+        .then(async (late) => {
           if (!late) return false;
           warn('quick-edit: the variation pager landed late — stepping back to', oid);
+          // Same reason as on the timely path: the URL is not the landing.
+          await fetchWatch.settle();
           return returnToVariation(oid, home, backSel, history.length > histBefore);
         })
         .catch((err) => warn('quick-edit: late-departure watch failed:', err))
-        .then(() => { qe.refreshBusy = false; });
+        .then(() => { fetchWatch.stop(); qe.refreshBusy = false; });
     }
 
     /**
@@ -6732,23 +6883,39 @@
         win: driverWindowBounds(),
       };
       if (qe.mode === 'alt') {
-        // Light checks only — legality is decided by the DRIVER against the
-        // edit board's own FEN, which is exact for any position. Zero-notation
-        // castling ("0-0") is normalised to the letter form SAN uses.
-        const raw = qe.els.sanInput.value.trim()
-          .replace(/^0-0-0/, 'O-O-O').replace(/^0-0/, 'O-O');
-        const altSan = quickEditSan(raw);
-        if (!altSan) { setStatus('Not a valid move (e.g. Nf6, Qxd5, O-O).', true); return; }
-        if (altSan.includes('=')) { setStatus('Promotion alternatives are not supported yet.', true); return; }
-        if (quickEditBareSan(altSan) === quickEditBareSan(desc.san)) {
-          setStatus('That is the main move itself.', true); return;
+        // Several moves at once ("Nc6, d5, a6"): one driver window, one submit.
+        // SAN never contains a space or a comma, so splitting on either is
+        // unambiguous. Light checks only — legality is decided by the DRIVER
+        // against the edit board's own FEN, which is exact for any position.
+        // A detached move number ("3. Nc6", pasted from a comment) is a token
+        // of its own once split — drop it rather than call it an invalid move.
+        const raws = qe.els.sanInput.value.split(/[\s,;]+/)
+          .filter((t) => t && !/^\d*\.{0,3}$/.test(t));
+        if (!raws.length) { setStatus('Enter a move first (e.g. Nf6, or Nc6, d5).', true); return; }
+        const altSans = [];
+        for (const part of raws) {
+          // Zero-notation castling ("0-0") is normalised to the letter form.
+          const altSan = quickEditSan(part.replace(/^0-0-0/, 'O-O-O').replace(/^0-0/, 'O-O'));
+          if (!altSan) {
+            setStatus('“' + part + '” is not a valid move (e.g. Nf6, Qxd5, O-O).', true); return;
+          }
+          if (altSan.includes('=')) {
+            setStatus('Promotion alternatives are not supported yet.', true); return;
+          }
+          if (quickEditBareSan(altSan) === quickEditBareSan(desc.san)) {
+            setStatus(altSan + ' is the main move itself.', true); return;
+          }
+          if (altSans.some((s) => quickEditBareSan(s) === quickEditBareSan(altSan))) {
+            setStatus(altSan + ' is listed twice.', true); return;
+          }
+          altSans.push(altSan);
         }
         const uc = host.userColor();
         if (uc && desc.color !== uc) {
           setStatus("That is the opponent's move — alternatives apply to your own moves.", true); return;
         }
         payload.mode = 'alt';
-        payload.altSan = altSan;
+        payload.altSans = altSans;
       } else if (qe.mode === 'edit') {
         if (qe.load.state !== 'ready' || qe.load.key !== editKey()) {
           setStatus('The current comment has not been read yet.', true); return;
@@ -7008,9 +7175,11 @@
     }, { capture: true, passive: true });
 
     // While the popup is open on its alt-move tab, clicking a move row in the
-    // Lichess panel prefills the SAN input. Both quick-edit hosts are review
-    // documents where panel rows are otherwise non-clickable (no dataset.uci),
-    // so this never competes with the explore click-to-play handler.
+    // Lichess panel ADDS it to the SAN input — the field takes a list, so
+    // clicking three rows is how three alternatives get entered without typing.
+    // Both quick-edit hosts are review documents where panel rows are otherwise
+    // non-clickable (no dataset.uci), so this never competes with the explore
+    // click-to-play handler.
     document.addEventListener('click', (e) => {
       if (!qe.popup || qe.popup.hidden || qe.mode !== 'alt' || qe.saving) return;
       const cell = e.target.closest && e.target.closest('#' + PANEL_ID + ' td.clo-move');
@@ -7019,7 +7188,11 @@
       // badge (section 6c), which would ride along into the SAN input.
       const san = quickEditSan(cell.dataset.san || cell.textContent);
       if (!san) return;
-      qe.els.sanInput.value = san;
+      const have = qe.els.sanInput.value.split(/[\s,;]+/).filter(Boolean);
+      if (!have.some((s) => quickEditBareSan(s) === quickEditBareSan(san))) {
+        have.push(san);
+      }
+      qe.els.sanInput.value = have.join(', ');
       setStatus('', false);
     });
 
@@ -9997,7 +10170,7 @@
           type: 'clo-quick-edit-run', mode: 'alt',
           oid: ac.job.oid, bid: ac.job.bid || '',
           san, color: ac.job.mainlineColor, plyIndex: ac.job.plyIndex,
-          altSan,
+          altSans: [altSan], // the driver takes a list; this offer is always one move
           forThisVariationOnly: ac.els.scopeBox.checked,
           win: popupDriverBounds(ac.popup),
         }).catch(() => {});

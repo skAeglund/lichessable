@@ -461,8 +461,8 @@ Currently working (v0.18.x).
   list) whose popup has FOUR TABS: append a PGN comment to the variation
   (mode 'save'), EDIT that comment as a whole (mode 'edit', v0.39.0 — see the
   own paragraph below), edit the move's ARROWS (mode 'shapes', v0.52.0 —
-  section 12b below), or add an ALTERNATIVE MOVE the trainer should also accept
-  (mode 'alt'). TWO host pages,
+  section 12b below), or add ALTERNATIVE MOVES the trainer should also accept
+  (mode 'alt'; a LIST, added in one visit — see below). TWO host pages,
   behind a `HOSTS` adapter in `initQuickEditUi`; they differ ONLY in move
   lookup, ply mapping, oid source and rights signal — popup, save round-trip and
   the entire edit-page driver are shared:
@@ -660,6 +660,25 @@ Currently working (v0.18.x).
       home have not already been walked, it walks them. Every timeout and every
       throw passes through it. FALSE NOW MEANS "not refreshed", NEVER "not where
       you were".
+    - THE URL FLIP IS NOT THE LANDING (v0.62.1, and the last way this stranded
+      people). The router calls `pushState` SYNCHRONOUSLY on the click and only
+      then fetches what it navigated for, so `siblingVariation(oid)` goes true
+      within a millisecond or two — and the old code went straight home on it.
+      Measured live 2026-08-03: pushState at t+0, our `history.back()` at
+      t+158 ms, the sibling's `/api/v1/getGame` finishing at t+792 ms — i.e. we
+      reliably stepped back off a route that had not resolved yet, leaving it to
+      commit AFTERWARDS with our one repair already spent and the `homeTried`
+      exemption below stopping the finally from making another. It is also what
+      the round trip EXISTS for: that fetch is the chapter re-read. So
+      `watchVariationFetch()` (a PerformanceObserver on 'resource', armed BEFORE
+      the click — `window.fetch` belongs to the page world and an isolated
+      content script cannot patch it, but the performance timeline is shared and
+      an entry means the response is COMPLETE) gates the step back on
+      `refreshGameApi` landing, capped at `refreshSettleMs` for a sibling served
+      from cache, plus `refreshLandMs` for the router to commit. Same wait on the
+      late-departure path, which owns the observer once it takes over the guard.
+      After the fix: flip at t+0, sibling `getGame` at t+792 ms, home at
+      t+2.1 s, our own `getGame` at t+2.6 s.
     - the departure test is `siblingVariation(oid)` — a DIFFERENT VARIATION page
       — never `!onVariation(oid)`. A pager click can land nowhere else, so any
       other route is one the USER took while we waited (a link, their own Back),
@@ -731,7 +750,7 @@ Currently working (v0.18.x).
   has focus, so without this, typing a comment drives the trainer. Bubble phase
   is enough (verified live); the default action still inserts the character, and
   Escape closes the popup.
-  ALT-MOVE mode (`driveQuickEditAltMove`; ground-truthed live 2026-07-22):
+  ALT-MOVE mode (`driveQuickEditAltMoves`; ground-truthed live 2026-07-22):
   Chessable stores alternatives per move as `alt_white`/`alt_black` SAN arrays
   (plus parallel `specific_alt_*` booleans) in its page-state `allTheMoves`,
   keyed by the SAME `{san}_{w|b}_{n}` ids as `#interactivePGN` — but the driver
@@ -747,7 +766,32 @@ Currently working (v0.18.x).
   everything itself — board legality, duplicate, same-as-mainline — and lists
   the move in `#altMoves` (`quickEditAltListed` = the isolated-world success
   check; on timeout the open dialog's text is relayed as the error). An alt
-  already listed on arrival short-circuits to success (it was saved before).
+  already listed on arrival short-circuits to success (it was saved before) —
+  but that list RENDERS A BEAT AFTER the board reaches the move, so it is waited
+  for once per job (`quickEditAwaitAltList`, capped at `altListRenderMs`) before
+  anything is read from it. An empty `#altMoves` means both "no alternatives"
+  and "not rendered yet" and nothing distinguishes them, so a move with none
+  pays the cap; reading it too early offers the move to Chessable again and gets
+  "It's there already", which for a LIST fails every move in it (observed live
+  2026-08-03).
+  SEVERAL ALTERNATIVES AT ONCE (v0.62.0): the wire field is `altSans`, a LIST
+  ("Nc6, d5, a6" in the popup, split on whitespace/commas; a bare move number
+  token is dropped so a pasted "3. Nc6" works), and the driver adds them in ONE
+  visit under ONE submit — the form POSTs the whole variation, so the second
+  alternative costs another arm-and-play round and nothing more.
+  `driveQuickEditAltMoves` owns the board-ready gate, the ONE move selection and
+  the loop; `addOneQuickEditAltMove` is the unchanged per-move flow. THE ONE NEW
+  FACT: Chessable's flow leaves the board on the ALTERNATIVE'S OWN POSITION, so
+  every round after the first re-clicks the mainline move and requires the
+  BYTE-IDENTICAL `fenBefore` back — side to move cannot tell the two apart, both
+  being the opponent's. Nothing is written until the submit, so a refusal
+  halfway through leaves the variation untouched, and the error says so ("…
+  — none of the alternatives were saved"). The worker's blind cap grows with the
+  list (`quickEditJobCap`, +8 s per extra move): force-failing a job whose
+  driver is still working, and closing its window, is the one thing that cap
+  must never do. `altSan` (singular) survives ONLY as `quickEditAltSans`'
+  fallback, for a job already in `storage.session` when the extension reloads;
+  the alt check (section 15) sends `altSans: [san]` like everything else.
   Dialog waits go through `quickEditOpenConfirm` (scoped to
   `.swal2-container.swal2-shown`) because several SweetAlerts open and close in
   one alt job — a stale hidden confirm button must never be clicked; submit and

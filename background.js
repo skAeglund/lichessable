@@ -21,8 +21,9 @@
  * small FOCUSED popup window to append a PGN comment (mode 'save'), REPLACE
  * one wholesale (mode 'edit'; baseText = the text the popup was filled from,
  * which the driver refuses to clobber if it has changed since) or add
- * an alternative move (mode 'alt'; altSan = the SAN the trainer should also
- * accept). Mode 'load' is the read half of an edit: it selects the move,
+ * alternative moves (mode 'alt'; altSans = the SANs the trainer should also
+ * accept — several are added in one visit, under one submit). Mode 'load' is
+ * the read half of an edit: it selects the move,
  * reports the raw "Comments After" text and submits NOTHING — the rendered
  * comment in the review column is not the stored text, so this round trip is
  * the only way to fill the editor with something safe to save back. Like
@@ -33,12 +34,12 @@
  * ~13-20 s, i.e. right up against this worker's job timeout. One job at a
  * time, kept in chrome.storage.session so it survives a worker idle-restart:
  *   { type:'clo-quick-edit-run', mode:'probe'|'load'|'save'|'edit'|'alt'|'shapes',
- *     oid, bid, san, color, plyIndex, commentText, baseText, altSan,
+ *     oid, bid, san, color, plyIndex, commentText, baseText, altSans,
  *     shapes, baseShapes, forThisVariationOnly, win }
  *     (review tab -> worker) -> opens /explore/edit/<oid>/ in the popup
  *   { type:'clo-quick-edit-claim', oid }   (edit-tab driver -> worker)
  *       -> { claimed, mode, san, color, plyIndex, commentText, baseText,
- *            altSan, shapes, baseShapes, forThisVariationOnly }
+ *            altSans, shapes, baseShapes, forThisVariationOnly }
  *   { type:'clo-quick-edit-submitting', oid } (driver -> worker; marks phase)
  *   { type:'clo-quick-edit-landing', oid }    (post-POST doc -> worker)
  *       -> { isOurs }  (true = the job's submit succeeded)
@@ -97,6 +98,16 @@ const QUICK_EDIT_MODES = ['probe', 'load', 'save', 'edit', 'alt', 'shapes'];
 // so a stall is reported by the driver with a real reason and this blind
 // timeout only ever catches a driver that never ran at all.
 const QUICK_EDIT_TIMEOUT_MS = 35000;
+// …but an 'alt' job adds its alternatives ONE AT A TIME on the same board
+// (arm → step back → play → dismiss, ~2 s each), so the cap grows with the
+// list. Without this a five-move list could be force-failed mid-run and have
+// its window closed while the driver was still working — the one thing this
+// blind cap must never do.
+const QUICK_EDIT_ALT_EXTRA_MS = 8000;
+function quickEditJobCap(job) {
+  const extra = job && Array.isArray(job.altSans) ? Math.max(0, job.altSans.length - 1) : 0;
+  return QUICK_EDIT_TIMEOUT_MS + extra * QUICK_EDIT_ALT_EXTRA_MS;
+}
 let quickEditTimer = null;
 
 
@@ -287,15 +298,15 @@ async function getQuickEditJob() {
   } catch (err) { return null; }
   if (!job) return null;
   const age = job.t0 ? Date.now() - job.t0 : 0;
-  if (age > QUICK_EDIT_TIMEOUT_MS * 2) {
+  const cap = quickEditJobCap(job);
+  if (age > cap * 2) {
     console.warn('[CLO] discarding a stale quick-edit job for variation', job.oid);
     if (job.driverTabId != null) chrome.tabs.remove(job.driverTabId).catch(() => {});
     await clearQuickEditJob();
     return null;
   }
   if (!quickEditTimer) {
-    quickEditTimer = setTimeout(() => failQuickEditJob('timeout'),
-      Math.max(1000, QUICK_EDIT_TIMEOUT_MS - age));
+    quickEditTimer = setTimeout(() => failQuickEditJob('timeout'), Math.max(1000, cap - age));
   }
   return job;
 }
@@ -402,7 +413,7 @@ async function startQuickEditJob(msg, sender) {
     oid, bid: msg.bid || '',
     mode: QUICK_EDIT_MODES.includes(msg.mode) ? msg.mode : 'save',
     san: msg.san, color: msg.color, plyIndex: msg.plyIndex,
-    commentText: msg.commentText, baseText: msg.baseText, altSan: msg.altSan,
+    commentText: msg.commentText, baseText: msg.baseText, altSans: msg.altSans,
     shapes: msg.shapes, baseShapes: msg.baseShapes,
     forThisVariationOnly: Boolean(msg.forThisVariationOnly),
     requesterTabId: sender.tab.id, requesterFrameId: sender.frameId || 0,
@@ -411,7 +422,7 @@ async function startQuickEditJob(msg, sender) {
   };
   await setQuickEditJob(job);
   clearTimeout(quickEditTimer);
-  quickEditTimer = setTimeout(() => failQuickEditJob('timeout'), QUICK_EDIT_TIMEOUT_MS);
+  quickEditTimer = setTimeout(() => failQuickEditJob('timeout'), quickEditJobCap(job));
 }
 
 /**
@@ -437,7 +448,7 @@ async function claimQuickEditJob(msg, sender) {
   return {
     claimed: true, mode: job.mode,
     san: job.san, color: job.color, plyIndex: job.plyIndex,
-    commentText: job.commentText, baseText: job.baseText, altSan: job.altSan,
+    commentText: job.commentText, baseText: job.baseText, altSans: job.altSans,
     shapes: job.shapes, baseShapes: job.baseShapes,
     forThisVariationOnly: job.forThisVariationOnly,
   };
