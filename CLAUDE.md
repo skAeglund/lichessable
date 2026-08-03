@@ -643,14 +643,52 @@ Currently working (v0.18.x).
     refetches `getGame` + the chapter. Step to a sibling, then `history.back()`.
     Ground-truthed 2026-08-01 that `performance.getEntriesByType('navigation')
     .length` stays at 1 throughout: no document reload, so nothing of ours is
-    torn down either. Coming back is `history.back()` and NOT the opposite pager
-    button: the click just pushed exactly one entry, so back is guaranteed to
-    undo it (verified to refetch the same way), while the opposite button is
-    DISABLED at the ends of a chapter and would strand the user on the sibling.
-    A chapter of one has both buttons disabled — `refreshVariationPage` returns
-    false and the popup says "reload the page to see it" rather than implying
-    the page is current. If the pager never navigated we return WITHOUT calling
-    back(), so we never pop an entry we did not push.
+    torn down either. A chapter of one has both buttons disabled —
+    `refreshVariationPage` returns false and the popup says "reload the page to
+    see it" rather than implying the page is current.
+    COMING BACK IS THE WHOLE RISK OF THIS FEATURE, and v0.60.1 rewrote it after
+    saves were reported to sometimes leave the user on a completely different
+    variation. Once the pager is clicked we are COMMITTED to a navigation, and
+    the original code returned false on every unhappy path — leaving the user
+    standing on the SIBLING while the popup said "Saved — reload the page to see
+    it", i.e. reading a stranger's variation and being told it was theirs. So:
+    - `refreshVariationPage` is a try/**finally**, and the finally is the one
+      unconditional step: if the page is on a sibling variation and the routes
+      home have not already been walked, it walks them. Every timeout and every
+      throw passes through it. FALSE NOW MEANS "not refreshed", NEVER "not where
+      you were".
+    - the departure test is `siblingVariation(oid)` — a DIFFERENT VARIATION page
+      — never `!onVariation(oid)`. A pager click can land nowhere else, so any
+      other route is one the USER took while we waited (a link, their own Back),
+      and firing `history.back()` on top of that dragged them out of wherever
+      they had just gone. That was the second way to end up somewhere else.
+    - `returnToVariation` has THREE routes, cheapest first. (1) `history.back()`
+      — but ONLY when the click really pushed, tested with `history.length`
+      before/after: on a router that REPLACED instead, back() takes the user a
+      step further away rather than home. (`history.length` saturates at 50 in
+      Chrome, where a push stops growing it; that reads as "replaced" and simply
+      takes route 2, which works either way.) (2) The OPPOSITE pager button.
+      CLAUDE.md used to reject it outright because it is disabled at the ends of
+      a chapter — true in general, and irrelevant here: on the sibling we just
+      stepped to, our own variation is on the other side of that button, so it
+      is always enabled. (3) `location.assign` back to the URL we started on. It
+      costs a document load, and so the popup — but the user lands on their own
+      variation with the save showing, which beats every alternative left.
+    - a click that misses `refreshLeaveMs` has NOT been cancelled — a slow
+      chapter fetch just lands later, by which time the function, its finally
+      and the popup's status line have all settled. That is the plainest way
+      this used to strand the user, and the finally cannot see it. So
+      `watchLateDeparture` outlives the refresh (`refreshLateMs`, 10 s) and is
+      deliberately NOT awaited: the popup has already been told, truthfully,
+      that the refresh did not happen, and "do not leave them on someone else's
+      variation" has no business holding that status line open.
+    - `qe.refreshBusy` makes it non-reentrant: two round trips would each step
+      the pager and each undo one entry, which does not compose. The late watch
+      KEEPS that flag (the refresh's own finally skips clearing it when
+      `watching`) and clears it when it settles.
+    - `refreshHomeMs` (5 s) is per ROUTE, deliberately short — a URL flip, not a
+      render. Three `refreshBackMs`-length waits in a row would leave the user
+      on a stranger's variation for the best part of a minute.
     RESTORING THE SHOWN MOVE is the whole difficulty, and both halves are
     load-bearing. Being back on the URL is NOT being back on the page: React
     keeps the sibling's move list mounted for ~1 s while the refetch lands and

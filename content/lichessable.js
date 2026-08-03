@@ -382,6 +382,15 @@
       // bring ours back. Both are one SPA render plus two small API reads.
       refreshLeaveMs: 6000,
       refreshBackMs: 12000,
+      // …and how long each individual route home (history.back(), then the
+      // opposite pager) is given to put the URL back on our own variation,
+      // before the next route is tried. Short on purpose: this is a URL flip,
+      // not a render, and three long waits in a row would leave the user
+      // sitting on a stranger's variation for the best part of a minute.
+      refreshHomeMs: 5000,
+      // …and how much longer a pager click that missed `refreshLeaveMs` is
+      // watched for, since it was never cancelled and can still land.
+      refreshLateMs: 10000,
       // …and restoring the shown move afterwards, which is pressed, verified
       // and repeated (the page's own render navigates to move 1 underneath it).
       refreshMoveTries: 5,
@@ -5640,6 +5649,7 @@
       boardState: 'idle',     // idle|loading|ready|error — the POSITION, not the read
       boardError: '',
       refreshing: false,      // a post-save re-read of the variation page (12c)
+      refreshBusy: false,     // …and that round trip's own re-entrancy guard
     };
 
     // Host adapter. The two pages that offer quick-edit differ ONLY in how
@@ -6084,6 +6094,21 @@
     }
 
     /**
+     * The oid of a DIFFERENT variation page we are standing on, else null.
+     *
+     * "We have left our variation" is NOT the same question as "the pager
+     * landed on the sibling", and conflating the two is what let this refresh
+     * fire `history.back()` on top of a navigation the USER made (a link, the
+     * pager, their own Back) in the same second — dragging them backwards out
+     * of wherever they had just gone. Only a real sibling VARIATION page is
+     * evidence that our own click is what moved the page.
+     */
+    function siblingVariation(oid) {
+      const m = VARIATION_PATH_RE.exec(location.pathname);
+      return m && m[1] !== String(oid) ? m[1] : null;
+    }
+
+    /**
      * Brings the variation page's own rendering back in line with what was just
      * saved — the comment AND the arrows — WITHOUT reloading the document.
      *
@@ -6097,52 +6122,167 @@
      * staying at 1 throughout — no document reload, so nothing of ours is torn
      * down either).
      *
-     * Coming back is `history.back()`, NOT the opposite pager button: the click
-     * we just made pushed exactly one entry, so back is guaranteed to undo it
-     * (verified — it refetches the same way), while the opposite button is
-     * disabled at the ends of a chapter and would strand us on the sibling.
-     * If the pager never navigated we return without touching history at all.
+     * Coming back is `returnToVariation`, and it is the whole reason this
+     * function is written as a try/finally: once the pager has been clicked we
+     * are COMMITTED to a navigation, so every exit — timeout, unexpected route,
+     * a throw — must still put the user back on the variation they were reading.
+     * Returning false and leaving them on the sibling is the one outcome this
+     * feature must never produce, and it is what made a save occasionally end
+     * on a completely different variation.
      *
-     * Resolves false whenever it could not be done — a one-variation chapter
-     * (both pager buttons disabled) or a navigation that did not land — and the
-     * caller then says so instead of implying the page is current.
+     * Resolves false whenever the re-read could not be done — a one-variation
+     * chapter (both pager buttons disabled), or a round trip that did not land
+     * — and the caller then says so instead of implying the page is current.
+     * False means "not refreshed", never "not where you were".
      */
     async function refreshVariationPage() {
       const oid = host.oid();
       if (!oid) return false;
+      // One round trip at a time. Two overlapping ones would each step the
+      // pager and each undo one entry, which does not compose.
+      if (qe.refreshBusy) return false;
+      qe.refreshBusy = true;
+      // Where the user was, for the last-resort route home. The hash is the
+      // page's own move pointer (#/<move>/<side>), so it restores the shown
+      // move for free if it ever comes to that.
+      const home = location.pathname + location.search + location.hash;
       // Which move the board is on, so it can be put back afterwards: the round
       // trip resets it to the start of the line.
       const shownEl = document.querySelector(SELECTORS.variationMoveShown);
       const shownPly = shownEl ? Number(shownEl.id) : NaN;
       const plyCount = document.querySelectorAll(SELECTORS.variationMoves).length;
+      let stepped = false, backSel = '', pushed = false, homeTried = false;
+      let watching = false; // a late-departure watch has taken over the guard
+      try {
+        const pagers = [SELECTORS.variationPagerNext, SELECTORS.variationPagerPrev]
+          .map((sel) => document.querySelector(sel));
+        const out = pagers.findIndex((btn) => btn && !btn.disabled);
+        if (out < 0) return false; // a chapter of one: nowhere to step to
+        // The button that steps back the way we came. On the sibling we are
+        // about to land on it is ALWAYS enabled — our own variation is on the
+        // other side of it — so the usual objection to the opposite pager
+        // (disabled at the ends of a chapter) does not apply to this one use.
+        backSel = out === 0 ? SELECTORS.variationPagerPrev : SELECTORS.variationPagerNext;
 
-      const pager = [SELECTORS.variationPagerNext, SELECTORS.variationPagerPrev]
-        .map((sel) => document.querySelector(sel))
-        .find((btn) => btn && !btn.disabled);
-      if (!pager) return false; // a chapter of one: nowhere to step to
-      pager.click();
-      const left = await quickEditWaitUntil(
-        () => !onVariation(oid), CONFIG.quickEdit.refreshLeaveMs);
-      if (!left) return false; // never navigated ⇒ no history entry to undo
+        const histBefore = history.length;
+        pagers[out].click();
+        stepped = true;
+        // Wait for a SIBLING VARIATION, never merely for "not ours any more":
+        // see siblingVariation(). A pager click that never navigates leaves us
+        // exactly where we were, with no history entry to undo.
+        const gone = await quickEditWaitUntil(
+          () => siblingVariation(oid), CONFIG.quickEdit.refreshLeaveMs);
+        // Whether the router PUSHED or replaced decides whether back() is the
+        // way home at all. (history.length saturates at 50 in Chrome, where a
+        // push stops growing it — that reads as "replaced" and simply takes
+        // the pager route home instead, which works either way.)
+        pushed = history.length > histBefore;
+        if (!gone) {
+          // NOT "nothing happened". A click that has not landed within the
+          // timeout has not been cancelled either — a slow chapter fetch simply
+          // arrives later, by which time this function, its finally and the
+          // popup's status line have all settled. That is the plainest way a
+          // save used to end on the sibling variation. So a watch outlives the
+          // refresh, and keeps the re-entrancy guard with it.
+          watching = true;
+          watchLateDeparture(oid, home, backSel, histBefore);
+          return false;
+        }
 
-      history.back();
-      // Being back on the URL is NOT being back on the page: React keeps the
-      // sibling's move list mounted (it even REUSES the nodes — verified, so
-      // element identity is no signal at all) for a second or so while the
-      // refetch lands. Pressing then lands on the outgoing render and the
-      // page's own navigation to move 1 silently undoes it. The composite that
-      // cannot be satisfied by the sibling: our path, our move count, and a
-      // shown-move marker — which only appears once the fresh variation has
-      // rendered and navigated itself to its first move.
-      const back = await quickEditWaitUntil(() => onVariation(oid) &&
-        document.querySelectorAll(SELECTORS.variationMoves).length === plyCount &&
-        document.querySelector(SELECTORS.variationMoveShown),
-      CONFIG.quickEdit.refreshBackMs);
-      if (!back) return false;
+        homeTried = true;
+        if (!await returnToVariation(oid, home, backSel, pushed)) return false;
 
-      if (Number.isInteger(shownPly)) await restoreShownMove(shownPly);
-      log('quick-edit: variation page re-read in place after the save');
-      return true;
+        // Being back on the URL is NOT being back on the page: React keeps the
+        // sibling's move list mounted (it even REUSES the nodes — verified, so
+        // element identity is no signal at all) for a second or so while the
+        // refetch lands. Pressing then lands on the outgoing render and the
+        // page's own navigation to move 1 silently undoes it. The composite
+        // that the sibling cannot satisfy: our path, our move count, and a
+        // shown-move marker — which only appears once the fresh variation has
+        // rendered and navigated itself to its first move.
+        const back = await quickEditWaitUntil(() => onVariation(oid) &&
+          document.querySelectorAll(SELECTORS.variationMoves).length === plyCount &&
+          document.querySelector(SELECTORS.variationMoveShown),
+        CONFIG.quickEdit.refreshBackMs);
+        if (!back) return false;
+
+        if (Number.isInteger(shownPly)) await restoreShownMove(shownPly);
+        log('quick-edit: variation page re-read in place after the save');
+        return true;
+      } catch (err) {
+        warn('quick-edit: variation refresh failed:', err);
+        return false;
+      } finally {
+        // THE ONE UNCONDITIONAL STEP. Every path above — the back-wait timeout
+        // and any throw included — passes through here, so a click we made can
+        // never be left standing.
+        // The test is a SIBLING VARIATION, not "not ours": a pager click can
+        // land nowhere else, so any other route is one the USER took while we
+        // were waiting, and dragging them back out of it would be its own bug.
+        // Two exemptions, both meaning someone else already owns the repair:
+        // `homeTried` (the routes below have run, and their last resort is a
+        // navigation still in flight here — a second history.back() on top of
+        // it would undo the very repair) and `watching` (the late watch).
+        if (stepped && !homeTried && !watching && siblingVariation(oid)) {
+          await returnToVariation(oid, home, backSel, pushed);
+        }
+        if (!watching) qe.refreshBusy = false;
+      }
+    }
+
+    /**
+     * Watches for a pager navigation that lands after we have stopped waiting
+     * for it, and brings the page home when it does.
+     *
+     * Deliberately NOT awaited: the popup has already been told the refresh did
+     * not happen, which is true and is the message the user needs. What is left
+     * is purely "do not leave them on someone else's variation", and that has
+     * no reason to hold the save's status line open.
+     */
+    function watchLateDeparture(oid, home, backSel, histBefore) {
+      quickEditWaitUntil(() => siblingVariation(oid), CONFIG.quickEdit.refreshLateMs)
+        .then((late) => {
+          if (!late) return false;
+          warn('quick-edit: the variation pager landed late — stepping back to', oid);
+          return returnToVariation(oid, home, backSel, history.length > histBefore);
+        })
+        .catch((err) => warn('quick-edit: late-departure watch failed:', err))
+        .then(() => { qe.refreshBusy = false; });
+    }
+
+    /**
+     * Puts the page back on the variation the refresh stepped away from. The
+     * one thing in section 12c that must never be left undone: everything else
+     * here is a nicety over "reload the page yourself", while ending up on
+     * someone else's variation is a bug the user cannot even see happening.
+     *
+     * Three routes, cheapest first:
+     *  1. `history.back()`, but ONLY when the pager really pushed an entry —
+     *     on a router that replaced instead, back() would take the user one
+     *     step further away, out of the chapter entirely.
+     *  2. the pager button that steps back the way we came, which on the
+     *     sibling is always enabled (see the caller).
+     *  3. a real navigation to the URL we started on. It costs a document load
+     *     — and so the popup and its status line — but the user lands on their
+     *     own variation with the save showing, which beats every alternative
+     *     at this point.
+     */
+    async function returnToVariation(oid, home, backSel, pushed) {
+      if (onVariation(oid)) return true;
+      const landed = () => quickEditWaitUntil(
+        () => onVariation(oid), CONFIG.quickEdit.refreshHomeMs);
+      if (pushed) {
+        history.back();
+        if (await landed()) return true;
+      }
+      const btn = backSel && document.querySelector(backSel);
+      if (btn && !btn.disabled) {
+        btn.click();
+        if (await landed()) return true;
+      }
+      warn('quick-edit: could not step back to variation', oid, '— reloading', home);
+      location.assign(home);
+      return false;
     }
 
     /**

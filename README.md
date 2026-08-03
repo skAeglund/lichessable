@@ -1041,14 +1041,26 @@ enough not to run, the ↻ button is the only way back.
   the page fetches its whole chapter once at load and never again while you
   move through it, but its own variation pager *is* a real router navigation
   that refetches, so after a save the extension steps to a neighbouring
-  variation, comes straight back with `history.back()`, and puts the board back
+  variation, comes straight back, and puts the board back
   on the move you were on. No document reload happens — verified live, the
   page's `navigation` entry count stays at 1 — so nothing of the extension's own
-  state is lost either. Coming back uses `history.back()` rather than the
-  opposite pager button, which is disabled at the ends of a chapter and would
-  strand you on the neighbour; a chapter with only one variation has no
+  state is lost either. A chapter with only one variation has no
   neighbour to step to, and the popup then says "reload the page to see it"
-  instead of pretending. Putting the shown move back is verified and retried,
+  instead of pretending.
+
+  **Coming back is guaranteed** (v0.60.1). Once that step to the neighbour has
+  been made the extension is committed to it, so every way the round trip can go
+  wrong — a slow chapter fetch, an unexpected route, an error — still ends with
+  you back on the variation you were reading. Earlier builds gave up and left
+  you standing on the neighbour while the popup said the save had gone through,
+  which is why a save could occasionally end on a completely different
+  variation. There are now three routes home, tried in order: `history.back()`
+  (only if the pager really pushed a history entry — some routers replace, and
+  then Back would take you a step *further* away), then the opposite pager
+  button, then, as a last resort, a plain reload of the variation you started
+  on. The extension also only ever tries to come back from a *neighbouring
+  variation*: if you navigated somewhere yourself while the refresh was running,
+  it leaves you where you went. Putting the shown move back is verified and retried,
   because the press has to beat the page's own render, which navigates to the
   first move as it finishes. In a **trainer session** none of this is possible:
   the trainer only re-reads a variation when you switch to it (`getLesson`), and
