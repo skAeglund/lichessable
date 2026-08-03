@@ -9,12 +9,54 @@
  * that UI rather than a Chessable-themed bolt-on.
  */
 
+/* ==========================================================================
+   COLOUR TOKENS (v0.59.0, DESIGN-ui-inventory change #4)
+   ==========================================================================
+   The colours that REPEAT and carry a role. Sixty-two distinct hex literals
+   appear in this file; these sixteen account for about three quarters of the
+   407 occurrences, and they are the ones where "change this" means "change it
+   everywhere". The long tail — board squares, engine bars, coverage badges —
+   stays literal on purpose: a token used once is a rename, not a system, and
+   it costs a reader one indirection to learn nothing.
+
+   Named by ROLE, never by appearance. `--clo-accent` rather than `--clo-green`,
+   because what it means is "lichess green, the primary fill and every green
+   border", and a rule that says `border-color: var(--clo-accent)` is making a
+   claim a maintainer can check. That is the whole return on this change: the
+   three decisions §3 of the design doc rules on — the primary fill, the
+   practice green, the attention amber — become one line each instead of 71
+   scattered literals that have to be grepped to be reasoned about.
+
+   Two token sets deliberately live NEXT TO THEIR FEATURE instead of here:
+   --clo-rep-* (section 6c) and --clo-cr-important (section 18c). Both carry
+   several paragraphs of argument about why that exact colour and no other, and
+   the argument has to be where the rules are. CLAUDE.md points at both
+   locations by name. */
+:root {
+  --clo-bg:              #262421;  /* panel / widget / popup surface */
+  --clo-bg-sunken:       #1b1a17;  /* their page black: outer borders, inset fields */
+  --clo-bg-raised:       #3a3630;  /* header and table-header bands */
+  --clo-line:            #3d3a36;  /* the neutral rule — group separators, quiet outlines */
+  --clo-line-hover:      #6e6a63;  /* …and the same rule under the pointer */
+  --clo-text:            #bababa;  /* body text */
+  --clo-text-dim:        #949494;  /* labels, secondary text, bare-text buttons */
+  --clo-text-faint:      #8a8a8a;  /* the quietest readable step */
+  --clo-text-bright:     #dcdcdc;  /* emphasis short of white */
+  --clo-accent:          #629924;  /* lichess green: the primary fill and every green border */
+  --clo-accent-hover:    #71ad2a;  /* …under the pointer */
+  --clo-accent-text:     #a5c96a;  /* green as TEXT, on an outlined control */
+  --clo-attention:       #d9a942;  /* amber: 'you have N outstanding', and status text */
+  --clo-attention-line:  #7a6a2e;  /* …as a border */
+  --clo-danger:          #d85c5c;  /* destructive / 'you have no answer to this' */
+  --clo-danger-text:     #e08a8a;  /* …as text */
+}
+
 .clo-panel {
   margin-top: 10px;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
-  background: #262421;
-  color: #bababa;
+  background: var(--clo-bg);
+  color: var(--clo-text);
   font-size: 13px;
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
   overflow: hidden;
@@ -27,14 +69,14 @@
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  background: #262421;
-  border-bottom: 1px solid #3a3630;
+  background: var(--clo-bg);
+  border-bottom: 1px solid var(--clo-bg-raised);
 }
 
 .clo-title {
   flex: 1;
   font-weight: 500;
-  color: #dcdcdc;
+  color: var(--clo-text-bright);
 }
 
 /* Yellow badge shown while fetchLichessData is still the stub. */
@@ -53,7 +95,7 @@
 .clo-toggle {
   border: none;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 2px 4px;
   cursor: pointer;
   font-size: 12px;
@@ -70,7 +112,7 @@
 .clo-cog {
   border: none;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 2px 4px;
   cursor: pointer;
   font-size: 13px;
@@ -83,11 +125,11 @@
 }
 
 .clo-cog[aria-expanded="true"] {
-  color: #dcdcdc;
+  color: var(--clo-text-bright);
 }
 
 .clo-cog--custom {
-  color: #a5c96a;
+  color: var(--clo-accent-text);
 }
 
 /* --- settings menu: database filters (section 6b) --------------------------
@@ -96,7 +138,7 @@
    so an in-flow block can never be clipped or overflow the panel's box. */
 
 .clo-filters {
-  border-bottom: 1px solid #3a3630;
+  border-bottom: 1px solid var(--clo-bg-raised);
   margin-bottom: 8px;
   padding-bottom: 8px;
 }
@@ -111,7 +153,7 @@
 .clo-filters-label {
   display: block;
   margin-bottom: 4px;
-  color: #949494;
+  color: var(--clo-text-dim);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -124,10 +166,10 @@
 }
 
 .clo-chip {
-  border: 1px solid #3a3630;
+  border: 1px solid var(--clo-bg-raised);
   border-radius: 3px;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 2px 7px;
   cursor: pointer;
   font-size: 11px;
@@ -141,13 +183,13 @@
 
 .clo-chip[aria-pressed="true"] {
   color: #111;
-  background: #629924;
-  border-color: #629924;
+  background: var(--clo-accent);
+  border-color: var(--clo-accent);
 }
 
 .clo-chip[aria-pressed="true"]:hover {
-  background: #71ad2a;
-  border-color: #71ad2a;
+  background: var(--clo-accent-hover);
+  border-color: var(--clo-accent-hover);
 }
 
 /* Repertoire picker (section 6c). First row of the menu, with a rule under it:
@@ -167,10 +209,10 @@
 .clo-rep-select {
   flex: 1;
   min-width: 0; /* a long course name must shrink, not stretch the panel */
-  border: 1px solid #3a3630;
+  border: 1px solid var(--clo-bg-raised);
   border-radius: 3px;
-  background: #262421;
-  color: #bababa;
+  background: var(--clo-bg);
+  color: var(--clo-text);
   padding: 2px 4px;
   font-size: 11px;
   font-family: inherit;
@@ -178,10 +220,10 @@
 
 .clo-rep-reload {
   flex: none;
-  border: 1px solid #3a3630;
+  border: 1px solid var(--clo-bg-raised);
   border-radius: 3px;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 2px 6px;
   cursor: pointer;
   font-size: 11px;
@@ -202,7 +244,7 @@
 .clo-rep-menu-note {
   display: block;
   margin-top: 4px;
-  color: #949494;
+  color: var(--clo-text-dim);
   font-size: 11px;
 }
 
@@ -228,7 +270,7 @@
   margin-left: auto;
   border: none;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 2px 4px;
   cursor: pointer;
   font-size: 11px;
@@ -254,7 +296,7 @@
 
 /* Opening name / ECO code for the current position. */
 .clo-opening {
-  color: #949494;
+  color: var(--clo-text-dim);
   font-style: italic;
   margin-bottom: 6px;
 }
@@ -290,7 +332,7 @@
 }
 
 .clo-rep-name {
-  color: #bababa;
+  color: var(--clo-text);
   max-width: 14em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -298,7 +340,7 @@
 }
 
 .clo-rep-note {
-  color: #949494;
+  color: var(--clo-text-dim);
 }
 
 .clo-rep-note--out {
@@ -331,10 +373,10 @@
 /* "Link a repertoire" — the whole feature is invisible until a course is
    nominated, and the cogwheel is not where anyone looks for "my repertoire". */
 .clo-rep-hint {
-  border: 1px dashed #3a3630;
+  border: 1px dashed var(--clo-bg-raised);
   border-radius: 3px;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 0 6px;
   cursor: pointer;
   font-size: 11px;
@@ -437,7 +479,7 @@
 
 .clo-total {
   white-space: nowrap;
-  color: #bababa;
+  color: var(--clo-text);
 }
 
 .clo-summary .clo-bar {
@@ -446,13 +488,13 @@
 
 /* Loading / empty / error one-liners. */
 .clo-status {
-  color: #949494;
+  color: var(--clo-text-dim);
   font-style: italic;
   padding: 4px 0;
 }
 
 .clo-status.clo-error {
-  color: #d85c5c;
+  color: var(--clo-danger);
 }
 
 /* Button shown in the 401 state to open the extension's options page.
@@ -460,8 +502,8 @@
    explorer panel's active-tab underline: rgb(98,153,36)). */
 .clo-settings-btn {
   margin-top: 8px;
-  border: 1px solid #629924;
-  background: #629924;
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
   color: #fff;
   padding: 3px 12px;
   border-radius: 3px;
@@ -472,8 +514,8 @@
 }
 
 .clo-settings-btn:hover {
-  background: #71ad2a;
-  border-color: #71ad2a;
+  background: var(--clo-accent-hover);
+  border-color: var(--clo-accent-hover);
 }
 
 /* --- move table ------------------------------------------------------------ */
@@ -487,9 +529,9 @@
   text-align: left;
   font-size: 11px;
   font-weight: 300;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 2px 6px 4px;
-  border-bottom: 1px solid #3a3630;
+  border-bottom: 1px solid var(--clo-bg-raised);
 }
 
 .clo-table th.clo-th-games {
@@ -515,7 +557,7 @@
 .clo-move {
   width: 3.5em;
   font-weight: 400;
-  color: #bababa;
+  color: var(--clo-text);
   /* The width above is only a suggestion to the auto table layout, and the cell
      is no longer just SAN — a repertoire badge (section 6c) sits beside it. In
      a narrow panel that wrapped the badge onto its own line under the move;
@@ -532,14 +574,14 @@
   width: 3em;
   text-align: right;
   white-space: nowrap;
-  color: #bababa;
+  color: var(--clo-text);
 }
 
 .clo-games {
   width: 5em;
   text-align: right;
   white-space: nowrap;
-  color: #949494;
+  color: var(--clo-text-dim);
 }
 
 /* --- optional engine section (section 5b in lichessable.js) ---------------- */
@@ -549,7 +591,7 @@
 .clo-engine-toggle {
   border: none;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 2px 4px;
   cursor: pointer;
   font-size: 12px;
@@ -561,12 +603,12 @@
 }
 
 .clo-engine-toggle[aria-pressed="true"] {
-  color: #a5c96a;
+  color: var(--clo-accent-text);
 }
 
 /* Eval + depth + 3 PV rows, boxed off from the database content below. */
 .clo-engine {
-  border-bottom: 1px solid #3a3630;
+  border-bottom: 1px solid var(--clo-bg-raised);
   margin-bottom: 8px;
   padding-bottom: 6px;
 }
@@ -594,7 +636,7 @@
 .clo-engine-depth,
 .clo-engine-note {
   font-size: 11px;
-  color: #949494;
+  color: var(--clo-text-dim);
 }
 
 .clo-engine-line {
@@ -608,7 +650,7 @@
   flex: 0 0 3.2em;
   text-align: right;
   white-space: nowrap;
-  color: #bababa;
+  color: var(--clo-text);
 }
 
 /* Long PVs truncate instead of wrapping; the full line is in the tooltip. */
@@ -618,7 +660,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #949494;
+  color: var(--clo-text-dim);
 }
 
 /* --- W/D/B percentage bars (mirrors lichess's own explorer bars) ----------- */
@@ -707,7 +749,7 @@
   position: relative;
   flex: 0 0 auto;
   display: flex;
-  border-bottom: 1px solid #3a3630;
+  border-bottom: 1px solid var(--clo-bg-raised);
   /* Height is set inline by sizeAnalysisMovesHost(): the box hugs the moves
      and stops growing at a fraction of the panel. */
 }
@@ -847,10 +889,10 @@
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
-  background: #262421;
-  color: #bababa;
+  background: var(--clo-bg);
+  color: var(--clo-text);
   font-size: 12px;
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
 }
@@ -859,6 +901,103 @@
 .clo-review[hidden],
 .clo-review-btn[hidden] {
   display: none;
+}
+
+/* --- THREE GROUPS, ONE ORDER, ONE SEPARATOR (v0.58.0, DESIGN-ui-inventory §3.2)
+   The row's order used to be INITIALISATION order — whichever module's
+   ensureUi() happened to run first in start(), then append order within it. So
+   the reading order encoded the boot sequence and nothing else: auto-play's
+   destructive "Clear" ended up beside an unrelated launcher from the next
+   module, and "Analyse" (the free-play escape hatch) sat BETWEEN the two
+   practice launchers.
+
+   Now every cluster carries .clo-review-grp and `order` decides, so a module
+   may keep appending to the row whenever it likes and still land in its own
+   group. Reading order is mistakes → practice → session → settings: what went
+   wrong, then what to do about it, then the escape hatch, then the preferences.
+   The preferences are last because they want to be behind a cog entirely
+   (change #9) and this is where they sit until they are.
+
+   Separator, spacing and the empty-group rule live HERE and not in the four
+   clusters, because "is there a rule between these two groups?" is a question
+   about the row, which no single module can see — that is finding F5 in one
+   sentence.
+
+   `:has` hides a group whose every child is hidden — the overstudy pair with no
+   variation detected, for one — so no module has to tell the row it has nothing
+   to show, and a group that empties takes its separator with it. */
+.clo-review-grp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px;
+  border-left: 1px solid var(--clo-line);
+}
+
+.clo-review-grp[hidden],
+.clo-review-grp:not(:has(> *:not([hidden]))) {
+  display: none;
+}
+
+.clo-review-title { order: 0; }
+.clo-mx { order: 1; }  /* what went wrong */
+.clo-cr { order: 2; }  /* what to do about it */
+.clo-os { order: 3; }  /* overstudy — the escape hatch, not the headline (§5.1) */
+.clo-ap { order: 4; }  /* settings, behind the cog (change #9) */
+
+/* --- COLLAPSED MID-QUIZ (v0.59.0, DESIGN-ui-inventory §3.3) ------------------
+   While a quiz is live nothing in this row acts on the card being answered, and
+   since v0.57.0 Retry — the one control that would — refuses to run there. So
+   the row goes down to its label plus whatever is actively RUNNING.
+
+   Those exceptions are NOT a peek at the collapsed row: they are the same
+   status controls the row already shows in exactly these states, so this is a
+   visibility rule laid over gates that already exist and no module learns
+   anything new. Two of them:
+
+   * a retry pass's Skip/Stop. The pass drives THROUGH live quizzes, so ending
+     it must never be a hunt. `:has` reads the gates the module already sets —
+     while a pass runs, `count` and `retry` are hidden and the two minis are
+     not, so "this group has a visible mini" IS "a pass is running", with no
+     flag to keep in step.
+   * auto-play's status chip, which is its cancel affordance and the only sign
+     a replay is in progress. It needs no rule at all: it lives on
+     .clo-review-status, which is not a group. */
+.clo-review--collapsed .clo-review-grp {
+  display: none;
+}
+
+.clo-review--collapsed .clo-mx:has(> .clo-mx-mini:not([hidden])) {
+  display: flex;
+}
+
+/* THE ONE PRIMARY (v0.58.0, DESIGN-ui-inventory §3.1 — finding F1/F6).
+   Filled #629924 is the loudest thing the extension draws, and four controls
+   could wear it at once because four modules each decided, locally, that theirs
+   was the important one. It is a MODIFIER now: every control in this row rests
+   at its own tier — secondary green outline, neutral outline, amber attention —
+   and exactly one wears this, chosen by reviewRowPrimary() in one place.
+
+   Nested selector, so it beats every single-class base rule below without any
+   of them having to know this exists; the html.clo-touch block outranks it in
+   turn (element + two classes), which is what keeps the tap targets sized.
+
+   It carries padding and a border of its own because the primary can land on a
+   control that has neither — "Stop" is .clo-mx-mini, bare text, and is the
+   primary while a retry pass runs. */
+.clo-review .clo-rowprimary {
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-weight: 400;
+}
+
+.clo-review .clo-rowprimary:hover {
+  background: var(--clo-accent-hover);
+  border-color: var(--clo-accent-hover);
+  color: #fff;
 }
 
 /* STATUS TEXT NEVER SHARES A LINE WITH A BUTTON (v0.57.0).
@@ -909,26 +1048,62 @@
   line-height: 1.5;
 }
 
+/* The label is also the collapse control (§3.3), so it is a real button now —
+   hence the chrome reset. It stays a label to look at: the row's own name, not
+   another thing competing to be pressed. */
 .clo-review-title {
-  color: #949494;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  cursor: pointer;
+  color: var(--clo-text-dim);
   font-weight: 500;
   font-size: 10px;
+  font-family: inherit;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
-/* NEUTRAL, both of them (DESIGN-ui-inventory §5.1). These were filled green
-   because they were the only buttons here when the widget was written — that is
-   seniority, not importance. Overstudying a variation is the escape hatch for "I
-   want this line again regardless"; it is not the next thing to do, and once
-   Retry existed it stopped being the most valuable thing on the row. Filled, it
-   competed with Retry and the queued-lines button for the one primary slot, and
-   it put a call to action on screen after a clean variation — where the honest
-   answer to "what next?" is nothing at all. */
+.clo-review-title:hover { color: var(--clo-text-bright); }
+
+/* Drawn from borders, not a "⌄" glyph: at 10px the arrowhead characters differ
+   in size and baseline per font, and this one sits against text. Down = the row
+   is open and a press closes it; right = closed. */
+.clo-review-title::after {
+  content: '';
+  width: 0;
+  height: 0;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  border-top: 4px solid currentColor;
+  transition: transform 120ms ease;
+}
+
+.clo-review--collapsed .clo-review-title::after {
+  transform: rotate(-90deg);
+}
+
+/* ONE button, NEUTRAL (DESIGN-ui-inventory §5.1, and v0.59.0 for the "one").
+   It was filled green because it was the only button here when the widget was
+   written — that is seniority, not importance. Overstudying a variation is the
+   escape hatch for "I want this line again regardless"; it is not the next thing
+   to do, and once Retry existed it stopped being the most valuable thing on the
+   row. Filled, it competed for the one primary slot and it put a call to action
+   on screen after a clean variation — where the honest answer to "what next?" is
+   nothing at all.
+
+   It was also TWO buttons, "This variation" and "Previous variation", for one
+   intention — and the second is unavailable for the whole first variation of
+   every session, so the row carried a permanently-dead control to describe a
+   choice that usually is not one. Now the choice is asked for only when there is
+   one, in .clo-os-menu. */
 .clo-review-btn {
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   background: transparent;
-  color: #bababa;
+  color: var(--clo-text);
   padding: 4px 12px;
   border-radius: 3px;
   cursor: pointer;
@@ -938,31 +1113,138 @@
 
 .clo-review-btn:hover {
   background: rgba(255, 255, 255, 0.06);
-  border-color: #6e6a63;
+  border-color: var(--clo-line-hover);
   color: #fff;
 }
 
-/* "Previous variation" stays the quieter of the two — same weight, dimmer text,
-   since which of them is current is still worth seeing at a glance. */
-.clo-review-btn--secondary {
-  color: #8a8a8a;
+/* --- the current/previous chooser (section 9) --------------------------------
+   Raised by the one Overstudy button, and only when there really are two
+   variations to choose between. Body-mounted and fixed, placed once from the
+   button's rect like every other popup here — inside the row it would change
+   the widget's height, which three anchored surfaces below would follow. */
+
+.clo-os-menu {
+  position: fixed;
+  z-index: 100001;
+  min-width: 200px;
+  max-width: 320px;
+  box-sizing: border-box;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--clo-bg-sunken);
+  border-radius: 4px;
+  background: var(--clo-bg);
+  color: var(--clo-text);
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
 
-.clo-review-btn--secondary:hover {
-  color: #dcdcdc;
+.clo-os-menu[hidden] { display: none; }
+
+.clo-os-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+
+.clo-os-item:hover { background: rgba(255, 255, 255, 0.07); }
+
+.clo-os-item-label {
+  color: var(--clo-text-bright);
+  font-size: 13px;
+}
+
+/* The variation's own title, which is what actually tells the two apart once
+   you have read the labels once. Ellipsised: course titles run long and this
+   menu must not stretch to fit one. */
+.clo-os-item-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--clo-text-faint);
+  font-size: 11px;
 }
 
 /* --- auto-play cluster (section 13) -----------------------------------------
-   Lives inside the overstudy widget row: toggle, speed select, status chip.
-   The chip is a button — clicking it cancels auto-play for the variation. */
+   In the row: a cog, and nothing else. Behind it: toggle, speed, Clear. Its
+   status chip is on the row's own status line (v0.57.0). Layout, spacing and
+   the separator come from .clo-review-grp; only the slot is this cluster's own
+   business.
 
-.clo-ap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding-left: 8px;
-  border-left: 1px solid #3d3a36;
+   THE THREE CONTROLS WENT BEHIND A COG in v0.59.0 (DESIGN-ui-inventory F4 /
+   change #9). They are persistent SETTINGS and everything else in the row acts
+   on the current variation or session; mixing the two is what put a preference
+   next to a launcher and left a destructive "Clear" beside an unrelated action
+   from the next module. The panel solved this exact problem first — its
+   preferences went behind .clo-cog — and this is the same move. */
+
+/* The cog carries auto-play's STATE, which is the one thing hiding the toggle
+   costs. Accent border and glyph when on, plus the answer in words in its
+   tooltip, because a colour alone is not a state. Never a FILL: this is still a
+   setting, and the row's fill means "the one thing to do next" (§3.1). */
+.clo-ap-cog {
+  border: 1px solid var(--clo-line);
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.2;
+  font-family: inherit;
 }
+
+.clo-ap-cog:hover,
+.clo-ap-cog--open {
+  border-color: var(--clo-line-hover);
+  color: var(--clo-text-bright);
+}
+
+.clo-ap-cog--on {
+  border-color: var(--clo-accent);
+  color: var(--clo-accent-text);
+}
+
+.clo-ap-cog--on:hover,
+.clo-ap-cog--on.clo-ap-cog--open {
+  background: rgba(98, 153, 36, 0.18);
+  color: #fff;
+}
+
+/* Body-mounted and fixed, like every other popup here: inside the row it would
+   grow the widget, and the Lichess panel, the alt-check chip and the heads-up
+   all anchor below the widget. */
+.clo-ap-menu {
+  position: fixed;
+  z-index: 100001;
+  box-sizing: border-box;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  border: 1px solid var(--clo-bg-sunken);
+  border-radius: 4px;
+  background: var(--clo-bg);
+  color: var(--clo-text);
+  font-size: 12px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+.clo-ap-menu[hidden] { display: none; }
 
 /* A SWITCH, not a call to action (DESIGN-ui-inventory F1). The on state used to
    fill green — the same treatment "This variation", "Retry" and the queued-lines
@@ -980,9 +1262,9 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
@@ -996,24 +1278,24 @@
   width: 1.75em;
   height: 1em;
   border-radius: 1em;
-  background-color: #3d3a36;
-  background-image: radial-gradient(circle at 0.5em 50%, #8a8a8a 0.32em, transparent 0.33em);
+  background-color: var(--clo-line);
+  background-image: radial-gradient(circle at 0.5em 50%, var(--clo-text-faint) 0.32em, transparent 0.33em);
   transition: background-color 120ms ease;
 }
 
 .clo-ap-toggle:hover {
-  border-color: #6e6a63;
-  color: #dcdcdc;
+  border-color: var(--clo-line-hover);
+  color: var(--clo-text-bright);
 }
 
 /* On: the accent lives in the switch and the outline, never in a fill. */
 .clo-ap-toggle--on {
-  border-color: #629924;
-  color: #a5c96a;
+  border-color: var(--clo-accent);
+  color: var(--clo-accent-text);
 }
 
 .clo-ap-toggle--on::before {
-  background-color: #629924;
+  background-color: var(--clo-accent);
   background-image: radial-gradient(circle at 1.25em 50%, #fff 0.32em, transparent 0.33em);
 }
 
@@ -1023,10 +1305,10 @@
 }
 
 .clo-ap-speed {
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   border-radius: 3px;
-  background: #1b1a17;
-  color: #bababa;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text);
   padding: 3px 4px;
   font-size: 12px;
   font-family: inherit;
@@ -1034,7 +1316,7 @@
 
 /* Quiet until armed: the first click turns it into a red "Clear?". */
 .clo-ap-clear {
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   background: transparent;
   color: #8b8b8b;
   padding: 4px 8px;
@@ -1059,7 +1341,7 @@
 .clo-ap-status {
   border: none;
   background: transparent;
-  color: #d9a942;
+  color: var(--clo-attention);
   padding: 0 2px;
   cursor: pointer;
   font-size: 12px;
@@ -1114,15 +1396,15 @@ html.clo-injecting .legal-square-capture-mt2 {
   line-height: 16px;
   text-align: center;
   font-size: 11px;
-  border: 1px solid #629924;
+  border: 1px solid var(--clo-accent);
   border-radius: 3px;
-  background: #262421;
-  color: #a5c96a;
+  background: var(--clo-bg);
+  color: var(--clo-accent-text);
   cursor: pointer;
 }
 
 .clo-qe-pencil:hover {
-  background: #629924;
+  background: var(--clo-accent);
   color: #fff;
 }
 
@@ -1134,10 +1416,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   width: 280px;
   box-sizing: border-box;
   padding: 8px 10px;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
-  background: #262421;
-  color: #bababa;
+  background: var(--clo-bg);
+  color: var(--clo-text);
   font-size: 13px;
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
@@ -1154,7 +1436,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-qe-popup--arrows { width: 330px; }
 
 .clo-qe-move {
-  color: #dcdcdc;
+  color: var(--clo-text-bright);
   font-weight: 500;
   margin-bottom: 6px;
 }
@@ -1170,9 +1452,9 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-qe-tab {
-  border: 1px solid #3a3630;
+  border: 1px solid var(--clo-bg-raised);
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 2px 10px;
   border-radius: 3px;
   cursor: pointer;
@@ -1180,11 +1462,11 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-family: inherit;
 }
 
-.clo-qe-tab:hover { color: #dcdcdc; }
+.clo-qe-tab:hover { color: var(--clo-text-bright); }
 .clo-qe-tab--active {
-  background: #1b1a17;
-  color: #dcdcdc;
-  border-color: #629924;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text-bright);
+  border-color: var(--clo-accent);
 }
 .clo-qe-tab:disabled { opacity: 0.6; cursor: default; }
 
@@ -1192,10 +1474,10 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-qe-san {
   width: 100%;
   box-sizing: border-box;
-  background: #1b1a17;
-  border: 1px solid #3a3630;
+  background: var(--clo-bg-sunken);
+  border: 1px solid var(--clo-bg-raised);
   border-radius: 3px;
-  color: #dcdcdc;
+  color: var(--clo-text-bright);
   font-size: 13px;
   font-family: inherit;
   padding: 4px 6px;
@@ -1227,7 +1509,7 @@ html.clo-injecting .legal-square-capture-mt2 {
   width: 100%;
   aspect-ratio: 1 / 1;
   margin-bottom: 6px;
-  border: 1px solid #3a3630;
+  border: 1px solid var(--clo-bg-raised);
   border-radius: 3px;
   overflow: hidden;
   /* A finger drawing an arrow must not scroll the page under it — `none`, not
@@ -1260,19 +1542,19 @@ html.clo-injecting .legal-square-capture-mt2 {
   width: 20px;
   height: 20px;
   padding: 0;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 3px;
   cursor: pointer;
 }
 
-.clo-qe-swatch--on { box-shadow: 0 0 0 2px #dcdcdc; }
+.clo-qe-swatch--on { box-shadow: 0 0 0 2px var(--clo-text-bright); }
 .clo-qe-swatch:disabled { opacity: 0.5; cursor: default; }
 
 .clo-qe-clearshapes {
   margin-left: auto;
-  border: 1px solid #3a3630;
+  border: 1px solid var(--clo-bg-raised);
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 2px 8px;
   border-radius: 3px;
   cursor: pointer;
@@ -1280,7 +1562,7 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-family: inherit;
 }
 
-.clo-qe-clearshapes:hover:not(:disabled) { color: #dcdcdc; border-color: #629924; }
+.clo-qe-clearshapes:hover:not(:disabled) { color: var(--clo-text-bright); border-color: var(--clo-accent); }
 .clo-qe-clearshapes:disabled { opacity: 0.5; cursor: default; }
 
 .clo-qe-hint {
@@ -1295,19 +1577,19 @@ html.clo-injecting .legal-square-capture-mt2 {
   align-items: center;
   gap: 6px;
   margin: 6px 0;
-  color: #949494;
+  color: var(--clo-text-dim);
   font-size: 12px;
   cursor: pointer;
 }
 
 .clo-qe-status {
-  color: #949494;
+  color: var(--clo-text-dim);
   font-style: italic;
   font-size: 12px;
   padding: 2px 0 4px;
 }
 
-.clo-qe-status.clo-error { color: #d85c5c; }
+.clo-qe-status.clo-error { color: var(--clo-danger); }
 .clo-qe-status[hidden] { display: none; }
 
 .clo-qe-actions {
@@ -1318,8 +1600,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 /* Save = lichess-green accent (as .clo-settings-btn); Cancel = quiet text. */
 .clo-qe-save {
-  border: 1px solid #629924;
-  background: #629924;
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
   color: #fff;
   padding: 3px 12px;
   border-radius: 3px;
@@ -1328,13 +1610,13 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-family: inherit;
 }
 
-.clo-qe-save:hover { background: #71ad2a; border-color: #71ad2a; }
+.clo-qe-save:hover { background: var(--clo-accent-hover); border-color: var(--clo-accent-hover); }
 .clo-qe-save:disabled { opacity: 0.6; cursor: default; }
 
 .clo-qe-cancel {
   border: none;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 3px 8px;
   cursor: pointer;
   font-size: 12px;
@@ -1354,11 +1636,11 @@ html.clo-injecting .legal-square-capture-mt2 {
   position: fixed;
   inset: 0;
   z-index: 2147483647;
-  background: #1b1a17;
+  background: var(--clo-bg-sunken);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #dcdcdc;
+  color: var(--clo-text-bright);
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
 }
 
@@ -1370,8 +1652,8 @@ html.clo-injecting .legal-square-capture-mt2 {
   width: 28px;
   height: 28px;
   margin: 0 auto 12px;
-  border: 3px solid #3a3630;
-  border-top-color: #629924;
+  border: 3px solid var(--clo-bg-raised);
+  border-top-color: var(--clo-accent);
   border-radius: 50%;
   animation: clo-qe-spin 0.9s linear infinite;
 }
@@ -1388,7 +1670,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-qe-shield-sub {
   margin-top: 6px;
   font-size: 12px;
-  color: #949494;
+  color: var(--clo-text-dim);
 }
 
 /* --- wrong-guess alternative check (section 15) ------------------------------
@@ -1403,10 +1685,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
-  border: 1px solid #629924;
+  border: 1px solid var(--clo-accent);
   border-radius: 14px;
-  background: #262421;
-  color: #a5c96a;
+  background: var(--clo-bg);
+  color: var(--clo-accent-text);
   font-size: 12px;
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
   cursor: pointer;
@@ -1417,7 +1699,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-ac-chip[hidden] { display: none; }
 
 .clo-ac-chip-x {
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 0 2px;
   font-size: 13px;
   line-height: 1;
@@ -1431,10 +1713,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   width: 340px; /* fits label + win rate + eval + depth on one line */
   box-sizing: border-box;
   padding: 8px 10px;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
-  background: #262421;
-  color: #bababa;
+  background: var(--clo-bg);
+  color: var(--clo-text);
   font-size: 13px;
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
@@ -1443,7 +1725,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-ac-popup[hidden] { display: none; }
 
 .clo-ac-title {
-  color: #dcdcdc;
+  color: var(--clo-text-bright);
   font-weight: 500;
   margin-bottom: 6px;
 }
@@ -1456,10 +1738,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   padding: 2px 0;
 }
 
-.clo-ac-row-label { color: #949494; flex: 1; }
+.clo-ac-row-label { color: var(--clo-text-dim); flex: 1; }
 .clo-ac-row-db { color: #8a8478; font-size: 11px; white-space: nowrap; } /* Lichess "54% · 1.2k" */
-.clo-ac-row-eval { color: #dcdcdc; font-weight: 600; }
-.clo-ac-row-depth { color: #6e6a63; font-size: 11px; }
+.clo-ac-row-eval { color: var(--clo-text-bright); font-weight: 600; }
+.clo-ac-row-depth { color: var(--clo-line-hover); font-size: 11px; }
 
 .clo-ac-verdict {
   margin: 6px 0 2px;
@@ -1470,26 +1752,26 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-ac-verdict[hidden] { display: none; }
 .clo-ac-verdict--green { color: #7fb84c; }
 .clo-ac-verdict--yellow { color: #d0a53f; }
-.clo-ac-verdict--red { color: #d85c5c; }
+.clo-ac-verdict--red { color: var(--clo-danger); }
 
 .clo-ac-scope {
   display: flex;
   align-items: center;
   gap: 6px;
   margin: 6px 0;
-  color: #949494;
+  color: var(--clo-text-dim);
   font-size: 12px;
   cursor: pointer;
 }
 
 .clo-ac-status {
-  color: #949494;
+  color: var(--clo-text-dim);
   font-style: italic;
   font-size: 12px;
   padding: 2px 0 4px;
 }
 
-.clo-ac-status.clo-error { color: #d85c5c; }
+.clo-ac-status.clo-error { color: var(--clo-danger); }
 .clo-ac-status[hidden] { display: none; }
 
 .clo-ac-actions {
@@ -1501,8 +1783,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 /* The Add button's colour IS the verdict: green under 0.2 pawns, yellow to
    0.4, red above (a red add needs a second "Add anyway" click). */
 .clo-ac-add {
-  border: 1px solid #629924;
-  background: #629924;
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
   color: #fff;
   padding: 3px 12px;
   border-radius: 3px;
@@ -1512,8 +1794,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-ac-add:disabled { opacity: 0.6; cursor: default; }
-.clo-ac-add--green { background: #629924; border-color: #629924; }
-.clo-ac-add--green:hover:not(:disabled) { background: #71ad2a; border-color: #71ad2a; }
+.clo-ac-add--green { background: var(--clo-accent); border-color: var(--clo-accent); }
+.clo-ac-add--green:hover:not(:disabled) { background: var(--clo-accent-hover); border-color: var(--clo-accent-hover); }
 .clo-ac-add--yellow { background: #b58900; border-color: #b58900; }
 .clo-ac-add--yellow:hover:not(:disabled) { background: #c79a12; border-color: #c79a12; }
 .clo-ac-add--red { background: #c0392b; border-color: #c0392b; }
@@ -1522,7 +1804,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-ac-cancel {
   border: none;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 3px 8px;
   cursor: pointer;
   font-size: 12px;
@@ -1537,21 +1819,16 @@ html.clo-injecting .legal-square-capture-mt2 {
    button, and — while a pass runs — a progress line with Skip/Stop. The list
    popup is fixed from the cluster's rect at open time, like the other popups. */
 
-.clo-mx {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding-left: 8px;
-  border-left: 1px solid #3d3a36;
-}
-
-.clo-mx[hidden] { display: none; }
-
-/* Amber, like the auto-play status chip: these are mistakes, not actions. */
+/* ATTENTION, and after v0.58.0 that is ALL amber means among this row's
+   outlined controls: "you have N outstanding items", on a control that only
+   opens a list. It stopped being shared with "Drill mistakes", which is four
+   controls away, ends in the same number, was pixel-identical — and launches a
+   quiz (finding F3). Anything that LAUNCHES now wears the practice vocabulary
+   (green outline) instead; see .clo-cr-drill. */
 .clo-mx-btn {
-  border: 1px solid #7a6a2e;
+  border: 1px solid var(--clo-attention-line);
   background: transparent;
-  color: #d9a942;
+  color: var(--clo-attention);
   padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
@@ -1564,11 +1841,16 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: #fff;
 }
 
-/* Retry is the action — same lichess-green accent as the widget's own buttons. */
+/* Retry RESTS as an ordinary green-outline action and is filled only when
+   reviewRowPrimary() names it (v0.58.0) — which it does in the browse state
+   with mistakes outstanding and no clickable lines to play first (§3.1). It
+   used to be filled unconditionally, including mid-quiz, where it is the one
+   control in this row that would abandon the card being answered and where,
+   since v0.57.0, it refuses to run at all. */
 .clo-mx-retry {
-  border: 1px solid #629924;
-  background: #629924;
-  color: #fff;
+  border: 1px solid var(--clo-accent);
+  background: transparent;
+  color: var(--clo-accent-text);
   padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
@@ -1576,10 +1858,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-family: inherit;
 }
 
-.clo-mx-retry:hover { background: #71ad2a; border-color: #71ad2a; }
+.clo-mx-retry:hover { background: rgba(98, 153, 36, 0.25); color: #fff; }
 
 .clo-mx-status {
-  color: #d9a942;
+  color: var(--clo-attention);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -1587,7 +1869,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-mx-mini {
   border: none;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 0 2px;
   cursor: pointer;
   font-size: 12px;
@@ -1609,10 +1891,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   width: 380px;
   box-sizing: border-box;
   padding: 8px 10px;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
-  background: #262421;
-  color: #bababa;
+  background: var(--clo-bg);
+  color: var(--clo-text);
   font-size: 13px;
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
@@ -1621,7 +1903,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-mx-popup[hidden] { display: none; }
 
 .clo-mx-title {
-  color: #dcdcdc;
+  color: var(--clo-text-bright);
   font-weight: 500;
   margin-bottom: 6px;
 }
@@ -1642,9 +1924,9 @@ html.clo-injecting .legal-square-capture-mt2 {
   cursor: pointer;
 }
 
-.clo-mx-item-move { color: #dcdcdc; font-weight: 600; white-space: nowrap; }
+.clo-mx-item-move { color: var(--clo-text-bright); font-weight: 600; white-space: nowrap; }
 .clo-mx-item-title {
-  color: #949494;
+  color: var(--clo-text-dim);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1652,14 +1934,14 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 .clo-mx-item-wrong { color: #8a8478; font-size: 11px; white-space: nowrap; }
 
-.clo-mx-empty { color: #949494; font-style: italic; font-size: 12px; }
+.clo-mx-empty { color: var(--clo-text-dim); font-style: italic; font-size: 12px; }
 
 .clo-mx-opt {
   display: flex;
   align-items: center;
   gap: 6px;
   margin: 4px 0;
-  color: #949494;
+  color: var(--clo-text-dim);
   font-size: 12px;
   cursor: pointer;
 }
@@ -1667,24 +1949,24 @@ html.clo-injecting .legal-square-capture-mt2 {
 /* Replay mode: whole variation / from the mistake / only the mistakes. Same
    look as the auto-play speed select it sits conceptually next to. */
 .clo-mx-mode {
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   border-radius: 3px;
-  background: #1b1a17;
-  color: #bababa;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text);
   padding: 3px 4px;
   font-size: 12px;
   font-family: inherit;
 }
 
 .clo-mx-note {
-  color: #6e6a63;
+  color: var(--clo-line-hover);
   font-size: 11px;
   line-height: 1.35;
   margin-bottom: 6px;
 }
 
 .clo-mx-status-line {
-  color: #d85c5c;
+  color: var(--clo-danger);
   font-style: italic;
   font-size: 12px;
   padding: 2px 0 4px;
@@ -1699,8 +1981,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-mx-start {
-  border: 1px solid #629924;
-  background: #629924;
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
   color: #fff;
   padding: 3px 12px;
   border-radius: 3px;
@@ -1709,14 +1991,19 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-family: inherit;
 }
 
-.clo-mx-start:hover { background: #71ad2a; border-color: #71ad2a; }
+.clo-mx-start:hover { background: var(--clo-accent-hover); border-color: var(--clo-accent-hover); }
 
 /* "Drill selected" (section 20): the other way to spend the same list, so it
-   sits beside Retry — amber-outlined, like every other mistake control. */
+   sits beside Retry — and, since v0.58.0, wears the same green outline as its
+   twin on the row (.clo-cr-drill). Amber was the list's colour and this is not
+   a list: it launches a quiz. The two actions here mirror the row's own
+   hierarchy — Retry filled, Drill outlined — for the reason in §3.1: until the
+   drill can replay the moves before a mistake, it is the faster answer and not
+   the better one. */
 .clo-mx-drill {
-  border: 1px solid #7a6a2e;
+  border: 1px solid var(--clo-accent);
   background: transparent;
-  color: #d9a942;
+  color: var(--clo-accent-text);
   padding: 3px 12px;
   border-radius: 3px;
   cursor: pointer;
@@ -1724,12 +2011,12 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-family: inherit;
 }
 
-.clo-mx-drill:hover { background: rgba(217, 169, 66, 0.2); color: #fff; }
+.clo-mx-drill:hover { background: rgba(98, 153, 36, 0.25); color: #fff; }
 
 .clo-mx-cancel {
   border: none;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 3px 8px;
   cursor: pointer;
   font-size: 12px;
@@ -1812,10 +2099,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   gap: 6px;
   width: 190px;
   padding: 8px 10px;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
-  background: #262421;
-  color: #bababa;
+  background: var(--clo-bg);
+  color: var(--clo-text);
   font-size: 12px;
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
 }
@@ -1826,7 +2113,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-chapter-title {
-  color: #949494;
+  color: var(--clo-text-dim);
   font-weight: 500;
   font-size: 10px;
   text-transform: uppercase;
@@ -1835,8 +2122,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 /* Same lichess-green accent as the review widget's primary button. */
 .clo-chapter-btn {
-  border: 1px solid #629924;
-  background: #629924;
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
   color: #fff;
   padding: 4px 12px;
   border-radius: 3px;
@@ -1846,8 +2133,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-chapter-btn:hover:not(:disabled) {
-  background: #71ad2a;
-  border-color: #71ad2a;
+  background: var(--clo-accent-hover);
+  border-color: var(--clo-accent-hover);
 }
 
 .clo-chapter-btn:disabled {
@@ -1856,13 +2143,13 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-chapter-status {
-  color: #949494;
+  color: var(--clo-text-dim);
   line-height: 1.35;
 }
 
 .clo-chapter-status[hidden] { display: none; }
-.clo-chapter-status--ok { color: #a5c96a; }
-.clo-chapter-status--warn { color: #d9a942; }
+.clo-chapter-status--ok { color: var(--clo-accent-text); }
+.clo-chapter-status--warn { color: var(--clo-attention); }
 
 /* While the Lichess queue runs, the button becomes Cancel: it must stay enabled
    and read as an interrupt rather than as the primary action. */
@@ -1870,7 +2157,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-chapter-btn--cancel:hover:not(:disabled) {
   border-color: #a33;
   background: transparent;
-  color: #e08a8a;
+  color: var(--clo-danger-text);
 }
 
 /* --- continuation review (section 18) ----------------------------------------
@@ -1898,7 +2185,7 @@ html.clo-injecting .legal-square-capture-mt2 {
   border-radius: 3px;
   overflow: hidden;
   background: #ebecd0;
-  box-shadow: 0 0 0 2px #629924;
+  box-shadow: 0 0 0 2px var(--clo-accent);
   user-select: none;
   /* `none`, not `manipulation`: a finger dragging a piece must not scroll the
      page out from under the board. */
@@ -2054,9 +2341,9 @@ html.clo-injecting .legal-square-capture-mt2 {
   display: flex;
   gap: 4px;
   padding: 6px;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
-  background: #262421;
+  background: var(--clo-bg);
   z-index: 2;
 }
 
@@ -2064,13 +2351,13 @@ html.clo-injecting .legal-square-capture-mt2 {
   width: 44px;
   height: 44px;
   padding: 2px;
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   border-radius: 3px;
   background: #ebecd0;
   cursor: pointer;
 }
 
-.clo-cr-promo-btn:hover { border-color: #629924; }
+.clo-cr-promo-btn:hover { border-color: var(--clo-accent); }
 
 /* The promotion picker reuses .clo-cr-piece for its art, where the absolute
    positioning and the move transition are both wrong. */
@@ -2091,10 +2378,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   gap: 8px;
   min-width: 200px;
   padding: 14px 16px;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
-  background: #262421;
-  color: #bababa;
+  background: var(--clo-bg);
+  color: var(--clo-text);
   font-size: 13px;
   font-family: inherit;
 }
@@ -2103,7 +2390,7 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #8a8a8a;
+  color: var(--clo-text-faint);
 }
 
 .clo-cr-prompt {
@@ -2111,12 +2398,12 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: #e8e8e8;
 }
 
-.clo-cr-prompt--ok  { color: #a5c96a; }
-.clo-cr-prompt--bad { color: #e08a8a; }
+.clo-cr-prompt--ok  { color: var(--clo-accent-text); }
+.clo-cr-prompt--bad { color: var(--clo-danger-text); }
 
 .clo-cr-progress {
   font-size: 12px;
-  color: #8a8a8a;
+  color: var(--clo-text-faint);
 }
 
 .clo-cr-actions {
@@ -2140,9 +2427,9 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-cr-btn {
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   background: transparent;
-  color: #bababa;
+  color: var(--clo-text);
   padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
@@ -2151,7 +2438,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-cr-btn:hover:not(:disabled) {
-  border-color: #629924;
+  border-color: var(--clo-accent);
   color: #fff;
 }
 
@@ -2162,8 +2449,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 /* The picker's two real choices, in the extension's usual green. */
 .clo-cr-btn--primary {
-  border-color: #629924;
-  color: #a5c96a;
+  border-color: var(--clo-accent);
+  color: var(--clo-accent-text);
   padding: 7px 12px;
 }
 
@@ -2174,7 +2461,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-cr-btn--exit {
   border-color: #a33;
-  color: #e08a8a;
+  color: var(--clo-danger-text);
 }
 
 .clo-cr-btn--exit:hover:not(:disabled) {
@@ -2182,39 +2469,24 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: #fff;
 }
 
-/* Launcher on the overstudy widget (section 9's cluster host). */
-.clo-cr {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
+/* The practice group on the overstudy widget (section 9's cluster host): the
+   three launchers that open a board of our own. Layout and separator come from
+   .clo-review-grp; the slot from the order block up there. */
 
-/* "Review queued lines" — the one call to action after a variation ends, so it
-   is filled rather than outlined and sits ahead of the plain launcher. Queued
-   lines are deliberately not started on their own (section 18b), which only
-   works if this is impossible to miss. */
-.clo-cr-queue {
-  border: 1px solid #629924;
-  background: #629924;
-  color: #fff;
-  font-weight: 600;
-  padding: 6px 14px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 13px;
-  font-family: inherit;
-  white-space: nowrap;
-}
-
-.clo-cr-queue:hover {
-  background: #6fae2a;
-  border-color: #6fae2a;
-}
-
+/* "Review queued lines" and "Review clickable(s)" are MUTUALLY EXCLUSIVE — one
+   slot, two labels — and since v0.58.0 they are also the same button. The queue
+   one used to be filled, bold and a size larger, i.e. the loudest control in the
+   extension, while the everyday launcher beside it was a plain outline: rarity
+   rewarded with weight (finding F6). Queued lines are still deliberately not
+   started on their own (section 18b), which needs this to be impossible to
+   miss — and it is, because reviewRowPrimary() names it the primary whenever it
+   shows, so it is filled exactly when it is on screen and by the row's own
+   rule rather than by this module's opinion of itself. */
+.clo-cr-queue,
 .clo-cr-open {
-  border: 1px solid #629924;
+  border: 1px solid var(--clo-accent);
   background: transparent;
-  color: #a5c96a;
+  color: var(--clo-accent-text);
   padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
@@ -2222,6 +2494,9 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-family: inherit;
 }
 
+.clo-cr-queue { white-space: nowrap; }
+
+.clo-cr-queue:hover,
 .clo-cr-open:hover {
   background: rgba(98, 153, 36, 0.25);
   color: #fff;
@@ -2231,9 +2506,9 @@ html.clo-injecting .legal-square-capture-mt2 {
    above it is not a review of anything, and it is up for the whole browse
    state, so it must not compete with the one that is. */
 .clo-cr-analyse {
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   background: transparent;
-  color: #bababa;
+  color: var(--clo-text);
   padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
@@ -2242,17 +2517,27 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-cr-analyse:hover {
-  border-color: #629924;
+  border-color: var(--clo-accent);
   color: #fff;
 }
 
-/* "Drill mistakes" (section 20). Amber, matching the mistake cluster's own
-   chip rather than the green review buttons: it is the same session mistakes,
-   reached from a second place. */
+/* "Drill mistakes" (section 20). GREEN OUTLINE since v0.58.0, not the amber it
+   borrowed from the mistake cluster. It was pixel-identical to "Mistakes (3)"
+   four controls away — same border, same text colour, same padding, both ending
+   in the same number — with only the verb telling them apart, and the verb is
+   the whole difference: one opens a list, this one starts a quiz (finding F3).
+   Amber in this row now means "N outstanding", full stop, and never launches
+   anything.
+
+   So it joins the two launchers above it as an ordinary practice action, which
+   is also what it is: the same board, the same overlay, a different source of
+   cards. What connects it to the mistakes is its label and its count, which is
+   where that connection belongs — the grouping (§3.2) puts it at the head of
+   this cluster, right after the mistake group it draws from. */
 .clo-cr-drill {
-  border: 1px solid #7a6a2e;
+  border: 1px solid var(--clo-accent);
   background: transparent;
-  color: #d9a942;
+  color: var(--clo-accent-text);
   padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
@@ -2261,7 +2546,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-cr-drill:hover {
-  background: rgba(217, 169, 66, 0.2);
+  background: rgba(98, 153, 36, 0.25);
   color: #fff;
 }
 
@@ -2289,9 +2574,9 @@ html.clo-injecting .legal-square-capture-mt2 {
   align-self: stretch;
   margin-top: auto;
   box-sizing: border-box;
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   border-radius: 3px;
-  background: #1b1a17;
+  background: var(--clo-bg-sunken);
   color: #d8d8d8;
   padding: 5px 8px;
   font-size: 12px;
@@ -2302,7 +2587,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-cr-anprefix:focus {
   outline: none;
-  border-color: #629924;
+  border-color: var(--clo-accent);
 }
 
 .clo-cr-anprefix:disabled { opacity: 0.45; }
@@ -2321,7 +2606,7 @@ html.clo-injecting .legal-square-capture-mt2 {
   overflow-wrap: anywhere;
 }
 
-.clo-cr-anstatus--bad { color: #e08a8a; }
+.clo-cr-anstatus--bad { color: var(--clo-danger-text); }
 
 .clo-cr-mvrow {
   display: flex;
@@ -2350,12 +2635,12 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-cr-mv:hover {
-  background: #3d3a36;
+  background: var(--clo-line);
   color: #fff;
 }
 
 .clo-cr-mv--on {
-  background: #629924;
+  background: var(--clo-accent);
   color: #fff;
 }
 
@@ -2387,10 +2672,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
-  background: #262421;
-  color: #bababa;
+  background: var(--clo-bg);
+  color: var(--clo-text);
   font-size: 13px;
   font-family: inherit;
 }
@@ -2406,7 +2691,7 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #8a8a8a;
+  color: var(--clo-text-faint);
   margin-right: auto; /* pushes the two buttons to the right edge */
 }
 
@@ -2414,9 +2699,9 @@ html.clo-injecting .legal-square-capture-mt2 {
    it is a destructive-ish control (the options page is the only way back), so
    it takes two clicks, like auto-play's "Clear". */
 .clo-cr-heads__off {
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   background: transparent;
-  color: #8a8a8a;
+  color: var(--clo-text-faint);
   padding: 2px 8px;
   border-radius: 3px;
   cursor: pointer;
@@ -2432,13 +2717,13 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-cr-heads__off--armed {
   border-color: #a04a44;
-  color: #e08a8a;
+  color: var(--clo-danger-text);
 }
 
 .clo-cr-heads__x {
   border: 0;
   background: transparent;
-  color: #8a8a8a;
+  color: var(--clo-text-faint);
   font-size: 18px;
   line-height: 1;
   padding: 0 2px;
@@ -2458,7 +2743,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-cr-heads__lead {
-  color: #8a8a8a;
+  color: var(--clo-text-faint);
   margin-top: -2px;
 }
 
@@ -2470,7 +2755,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 /* Only the branching move is ever printed here — the rest of the line is what
    the review asks for, so it stays unsaid. */
 .clo-cr-heads__move {
-  color: #a5c96a;
+  color: var(--clo-accent-text);
   font-weight: 600;
   line-height: 1.6;
   overflow-wrap: anywhere;
@@ -2492,7 +2777,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-cr-heads__note {
-  color: #a5c96a;
+  color: var(--clo-accent-text);
   font-size: 12px;
 }
 
@@ -2552,22 +2837,23 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: var(--clo-cr-important);
 }
 
-/* The launchers. Said BEFORE the press: by the time the quiz panel could say
-   it, the user has already chosen whether to play the lines. */
-.clo-cr-open--important {
-  border-color: var(--clo-cr-important);
-  color: var(--clo-cr-important);
-}
+/* THE LAUNCHERS, and on both of them the mark is a RING (v0.58.0). Said BEFORE
+   the press: by the time the quiz panel could say it, the user has already
+   chosen whether to play the lines.
 
-.clo-cr-open--important:hover {
-  background: rgba(230, 180, 34, 0.22);
-  color: #fff;
-}
-
-/* The queued-lines button is FILLED green (it is the one call to action after a
-   variation ends), so it keeps its fill and takes a ring instead — an amber
-   fill would read as a different kind of button rather than the same one
-   carrying a mark. */
+   The queued-lines button always took a ring, for a reason given at the time
+   that turns out to be the general one — "an amber fill would read as a
+   different kind of button rather than the same one carrying a mark". The
+   clickables launcher instead recoloured its border and text, which after
+   v0.58.0 made it indistinguishable from "Mistakes (3)" sitting one group to
+   its left: an amber-outlined button meaning "an author pointed at this" beside
+   an amber-outlined button meaning "you failed three moves" (finding F3, the
+   third meaning). So the mark is now a ring on whatever the button already is,
+   which is also the only treatment that survives the button being filled or
+   outlined depending on reviewRowPrimary() — it no longer has a fixed weight to
+   recolour. The word "Important" is in both tooltips regardless; the colour has
+   never been alone. */
+.clo-cr-open--important,
 .clo-cr-queue--important {
   box-shadow: 0 0 0 2px var(--clo-cr-important);
 }
@@ -2584,8 +2870,8 @@ html.clo-injecting .legal-square-capture-mt2 {
   right: 16px;
   bottom: 16px;
   z-index: 99999;
-  border: 1px solid #629924;
-  background: #629924;
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
   color: #fff;
   padding: 7px 14px;
   border-radius: 3px;
@@ -2595,7 +2881,7 @@ html.clo-injecting .legal-square-capture-mt2 {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.clo-cov-launch:hover { background: #71ad2a; border-color: #71ad2a; }
+.clo-cov-launch:hover { background: var(--clo-accent-hover); border-color: var(--clo-accent-hover); }
 .clo-cov-launch[hidden] { display: none; }
 
 .clo-cov {
@@ -2609,10 +2895,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 90px);
   box-sizing: border-box;
-  border: 1px solid #1b1a17;
+  border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
-  background: #262421;
-  color: #bababa;
+  background: var(--clo-bg);
+  color: var(--clo-text);
   font-size: 13px;
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
@@ -2626,12 +2912,12 @@ html.clo-injecting .legal-square-capture-mt2 {
   align-items: center;
   justify-content: space-between;
   padding: 7px 10px;
-  border-bottom: 1px solid #3d3a36;
+  border-bottom: 1px solid var(--clo-line);
   flex: 0 0 auto;
 }
 
 .clo-cov-title {
-  color: #dcdcdc;
+  color: var(--clo-text-bright);
   font-weight: 500;
   font-size: 11px;
   text-transform: uppercase;
@@ -2641,7 +2927,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cov-x {
   border: none;
   background: transparent;
-  color: #949494;
+  color: var(--clo-text-dim);
   padding: 0 2px;
   cursor: pointer;
   font-size: 16px;
@@ -2666,15 +2952,15 @@ html.clo-injecting .legal-square-capture-mt2 {
   margin-bottom: 6px;
 }
 
-.clo-cov-label { color: #949494; font-size: 12px; }
+.clo-cov-label { color: var(--clo-text-dim); font-size: 12px; }
 
 .clo-cov-select {
   flex: 1 1 auto;
   min-width: 0;
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   border-radius: 3px;
-  background: #1b1a17;
-  color: #bababa;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text);
   padding: 3px 4px;
   font-size: 12px;
   font-family: inherit;
@@ -2683,8 +2969,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cov-select--small { flex: 0 0 auto; }
 
 .clo-cov-btn {
-  border: 1px solid #629924;
-  background: #629924;
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
   color: #fff;
   padding: 4px 10px;
   border-radius: 3px;
@@ -2694,7 +2980,7 @@ html.clo-injecting .legal-square-capture-mt2 {
   white-space: nowrap;
 }
 
-.clo-cov-btn:hover:not(:disabled) { background: #71ad2a; border-color: #71ad2a; }
+.clo-cov-btn:hover:not(:disabled) { background: var(--clo-accent-hover); border-color: var(--clo-accent-hover); }
 .clo-cov-btn:disabled { opacity: 0.6; cursor: default; }
 
 /* While the Lichess queue runs the button becomes Cancel: it stays enabled and
@@ -2703,42 +2989,42 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cov-btn--cancel:hover:not(:disabled) {
   border-color: #a33;
   background: transparent;
-  color: #e08a8a;
+  color: var(--clo-danger-text);
 }
 
 .clo-cov-status {
-  color: #949494;
+  color: var(--clo-text-dim);
   font-size: 12px;
   line-height: 1.35;
   padding: 2px 0 4px;
 }
 
 .clo-cov-status[hidden] { display: none; }
-.clo-cov-status--ok { color: #a5c96a; }
-.clo-cov-status--warn { color: #d9a942; }
+.clo-cov-status--ok { color: var(--clo-accent-text); }
+.clo-cov-status--warn { color: var(--clo-attention); }
 
 .clo-cov-summary { padding: 2px 0 4px; }
 .clo-cov-summary[hidden] { display: none; }
 
 .clo-cov-summary-line {
-  color: #dcdcdc;
+  color: var(--clo-text-bright);
   font-weight: 500;
 }
 
 /* A cross-colour comparison: the report is real but the ranking is not, and
    that has to be visible above the list rather than in a grey footnote. */
 .clo-cov-clash {
-  color: #d9a942;
+  color: var(--clo-attention);
   font-size: 12px;
   line-height: 1.4;
   margin-top: 4px;
   padding: 4px 6px;
-  border-left: 2px solid #7a6a2e;
+  border-left: 2px solid var(--clo-attention-line);
   background: rgba(217, 169, 66, 0.08);
 }
 
 .clo-cov-note {
-  color: #6e6a63;
+  color: var(--clo-line-hover);
   font-size: 11px;
   line-height: 1.4;
   margin-top: 3px;
@@ -2754,7 +3040,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cov-controls[hidden] { display: none; }
 
 .clo-cov-depth {
-  color: #6e6a63;
+  color: var(--clo-line-hover);
   font-size: 11px;
   display: flex;
   align-items: center;
@@ -2763,10 +3049,10 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-cov-depth-input {
   width: 46px;
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   border-radius: 3px;
-  background: #1b1a17;
-  color: #bababa;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text);
   padding: 2px 4px;
   font-size: 12px;
   font-family: inherit;
@@ -2777,15 +3063,15 @@ html.clo-injecting .legal-square-capture-mt2 {
   align-items: center;
   gap: 6px;
   padding: 4px 0;
-  border-bottom: 1px solid #3d3a36;
-  color: #949494;
+  border-bottom: 1px solid var(--clo-line);
+  color: var(--clo-text-dim);
   font-size: 11px;
 }
 
 .clo-cov-check {
   flex: 0 0 auto;
   margin: 0;
-  accent-color: #629924;
+  accent-color: var(--clo-accent);
   cursor: pointer;
 }
 
@@ -2800,14 +3086,14 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cov-gap-main { flex: 1 1 auto; min-width: 0; }
 
 .clo-cov-line {
-  color: #bababa;
+  color: var(--clo-text);
   font-size: 12px;
   line-height: 1.45;
   word-break: break-word;
 }
 
-.clo-cov-num { color: #6e6a63; margin-right: 1px; }
-.clo-cov-san { color: #bababa; }
+.clo-cov-num { color: var(--clo-line-hover); margin-right: 1px; }
+.clo-cov-san { color: var(--clo-text); }
 
 /* The divergence move is the whole point of the row — everything before it is
    context the repertoire already covers. */
@@ -2819,7 +3105,7 @@ html.clo-injecting .legal-square-capture-mt2 {
   padding: 0 2px;
 }
 
-.clo-cov-more { color: #6e6a63; }
+.clo-cov-more { color: var(--clo-line-hover); }
 
 .clo-cov-meta {
   display: flex;
@@ -2843,14 +3129,14 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 /* Red = you are guessing over the board; amber = a line you may never be
    asked; grey = your repertoire simply recommends something else there. */
-.clo-cov-badge--hole { color: #d85c5c; }
-.clo-cov-badge--ends { color: #d85c5c; }
-.clo-cov-badge--unreachable { color: #d85c5c; }
-.clo-cov-badge--unmet { color: #d9a942; }
+.clo-cov-badge--hole { color: var(--clo-danger); }
+.clo-cov-badge--ends { color: var(--clo-danger); }
+.clo-cov-badge--unreachable { color: var(--clo-danger); }
+.clo-cov-badge--unmet { color: var(--clo-attention); }
 .clo-cov-badge--alternative { color: #8a8478; }
 
 .clo-cov-num-cell { flex: 0 0 auto; cursor: help; white-space: nowrap; }
-.clo-cov-score { color: #a5c96a; }
+.clo-cov-score { color: var(--clo-accent-text); }
 /* The unconditional probability: the same number over all your games, and the
    secondary reading of the two. */
 .clo-cov-dim { color: #565248; }
@@ -2862,14 +3148,14 @@ html.clo-injecting .legal-square-capture-mt2 {
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: right;
-  color: #6e6a63;
+  color: var(--clo-line-hover);
   text-decoration: none;
 }
 
-.clo-cov-link:hover { color: #bababa; text-decoration: underline; }
+.clo-cov-link:hover { color: var(--clo-text); text-decoration: underline; }
 
 .clo-cov-empty {
-  color: #a5c96a;
+  color: var(--clo-accent-text);
   font-style: italic;
   font-size: 12px;
   padding: 6px 0;
@@ -2885,10 +3171,10 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cov-chapter {
   flex: 1 1 auto;
   min-width: 0;
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   border-radius: 3px;
-  background: #1b1a17;
-  color: #bababa;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text);
   padding: 4px 6px;
   font-size: 12px;
   font-family: inherit;
@@ -2897,8 +3183,8 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cov-chapter[hidden] { display: none; }
 
 .clo-cov-add {
-  border: 1px solid #629924;
-  background: #629924;
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
   color: #fff;
   padding: 4px 12px;
   border-radius: 3px;
@@ -2908,7 +3194,7 @@ html.clo-injecting .legal-square-capture-mt2 {
   white-space: nowrap;
 }
 
-.clo-cov-add:hover:not(:disabled) { background: #71ad2a; border-color: #71ad2a; }
+.clo-cov-add:hover:not(:disabled) { background: var(--clo-accent-hover); border-color: var(--clo-accent-hover); }
 .clo-cov-add:disabled { opacity: 0.5; cursor: default; }
 .clo-cov-add[hidden] { display: none; }
 
@@ -2916,19 +3202,19 @@ html.clo-injecting .legal-square-capture-mt2 {
    extension (auto-play's Clear, the heads-up's Turn off). */
 .clo-cov-armed,
 .clo-cov-armed:hover:not(:disabled) {
-  border-color: #d9a942;
+  border-color: var(--clo-attention);
   background: transparent;
-  color: #d9a942;
+  color: var(--clo-attention);
 }
 
 .clo-cov-dupes { margin-top: 10px; }
 
 .clo-cov-sub-title {
-  color: #dcdcdc;
+  color: var(--clo-text-bright);
   font-size: 12px;
   font-weight: 500;
   padding-top: 6px;
-  border-top: 1px solid #3d3a36;
+  border-top: 1px solid var(--clo-line);
 }
 
 .clo-cov-dupe-list { margin-top: 4px; }
@@ -2941,15 +3227,15 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-size: 11px;
 }
 
-.clo-cov-dupe-count { color: #d9a942; font-weight: 600; }
+.clo-cov-dupe-count { color: var(--clo-attention); font-weight: 600; }
 .clo-cov-dupe-name {
-  color: #949494;
+  color: var(--clo-text-dim);
   flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.clo-cov-dupe-plies { color: #6e6a63; white-space: nowrap; }
+.clo-cov-dupe-plies { color: var(--clo-line-hover); white-space: nowrap; }
 
 .clo-cov-del-row {
   display: flex;
@@ -2961,10 +3247,10 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-cov-del-input {
   width: 96px;
-  border: 1px solid #3d3a36;
+  border: 1px solid var(--clo-line);
   border-radius: 3px;
-  background: #1b1a17;
-  color: #bababa;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text);
   padding: 3px 6px;
   font-size: 12px;
   font-family: inherit;
@@ -2976,7 +3262,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cov-del {
   border: 1px solid #a33;
   background: transparent;
-  color: #e08a8a;
+  color: var(--clo-danger-text);
   padding: 4px 12px;
   border-radius: 3px;
   cursor: pointer;
@@ -3125,10 +3411,22 @@ html.clo-touch .clo-cr-queue,
 html.clo-touch .clo-cr-analyse,
 html.clo-touch .clo-cr-drill,
 html.clo-touch .clo-cr-btn,
+html.clo-touch .clo-ap-cog,
 html.clo-touch .clo-qe-save {
   font-size: 16px;
   padding: 10px 16px;
 }
+
+/* The label is a tap target too now (it collapses the row), and the chooser's
+   items are the whole reason the row lost a button. */
+html.clo-touch .clo-review-title {
+  font-size: 13px;
+  padding: 6px 2px;
+}
+
+html.clo-touch .clo-os-item { padding: 10px 12px; }
+html.clo-touch .clo-os-item-label { font-size: 16px; }
+html.clo-touch .clo-os-item-name { font-size: 13px; }
 
 html.clo-touch .clo-qe-cancel {
   font-size: 16px;
@@ -3326,6 +3624,14 @@ html.clo-touch .clo-mx-status {
 html.clo-touch .clo-mx-mini {
   font-size: 16px;
   padding: 6px 8px;
+}
+
+/* Whatever the primary lands on is a real button and gets a real tap target —
+   "Stop" is a .clo-mx-mini, whose 6×8 is sized for bare text sitting between
+   other bare text. Outranks the per-control touch rules above (element + two
+   classes + one), which is what lets this be written once. */
+html.clo-touch .clo-review .clo-rowprimary {
+  padding: 10px 16px;
 }
 
 html.clo-touch .clo-mx-popup {

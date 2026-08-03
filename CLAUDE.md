@@ -740,6 +740,97 @@ Currently working (v0.18.x).
   alt-check's own listener reads it. `driverWindowBounds` is now a thin
   wrapper over the hoisted `popupDriverBounds(anchorEl)`, shared with the
   alt-check popup.
+- The TRAINER ROW is shared, and since v0.58.0 it has rules of its own that no
+  module may decide locally (DESIGN-ui-inventory.md is the whole argument;
+  `dev/harness.html` renders every state). Ground-truthed live 2026-08-03 on
+  course 453453 (overstudy of 70382641 — the route that reschedules nothing):
+  collapsed 107x29 label-only mid-quiz, expanded with NOTHING filled, the browse
+  row 473x38 with exactly one filled control, the manual collapse override
+  DROPPED at the state flip, and the chooser/cog popovers leaving the widget
+  height untouched. The one thing only a live run could show: a launcher wearing
+  `clo-rowprimary` AND `clo-cr-open--important` at once — green fill plus amber
+  ring, composing — which is why 18c's mark had to stop being a border recolour.
+  FOUR modules append to `.clo-review`
+  — section 9 (overstudy), 13 (auto-play), 16/17 (mistakes/retry), 18-20
+  (continuation/analysis/drill) — and each one used to pick its own colour and
+  land wherever `start()` happened to put it, so weight encoded WHICH MODULE
+  built a control and order encoded the BOOT SEQUENCE.
+  * GROUPS. Every cluster carries `.clo-review-grp`, which owns the layout, the
+    8px inset and the `1px #3d3a36` rule; a block of `order` declarations at the
+    top of the row's stylesheet decides the sequence (title 0, mistakes 1,
+    practice 2, overstudy 3, settings 4, status 99). So a module may keep
+    appending whenever it boots and still land in its own group — that is the
+    point, not a nicety. `.clo-review-grp:not(:has(> *:not([hidden])))` hides a
+    group whose every child is hidden, so a group that empties takes its
+    separator with it and no module has to tell the row it has nothing to show.
+    The overstudy pair got a wrapper (`.clo-os`) for this; it used to be two
+    loose children of the row.
+  * ONE PRIMARY. `reviewRowPrimary()` (top level, beside `reviewStatusHost()`)
+    returns a ROLE — `'stop' | 'queue' | 'clickables' | 'retry' | null` — and
+    each module applies `.clo-rowprimary` in its own `sync*`, but ONLY to a
+    control that is also showing. Two states answer null deliberately: mid-quiz
+    (nothing in this row acts on the card being answered) and a clean browse
+    state with nothing outstanding. A named control that is HIDDEN fills
+    nothing, which is why the function needs no clause about our own overlays —
+    during a quiz/drill/analysis the practice launchers are hidden by their own
+    sync and the row goes quiet by itself. Inputs cross module boundaries
+    through the usual null-safe bridges: `retryRunActive()`,
+    `mistakeLogApi.pending()`, `continuationLineCounts()`.
+    The treatment is a MODIFIER (`.clo-review .clo-rowprimary`, nested so it
+    beats every single-class base rule without any of them knowing it exists)
+    and carries its own border, padding and radius, because the primary can land
+    on a control that has none — "Stop" is `.clo-mx-mini`, bare text.
+    `html.clo-touch .clo-review .clo-rowprimary` restores the row's tap padding.
+  * COLOUR MEANS ONE THING EACH. Filled green = the one primary. Green outline =
+    an ordinary action, which is what every practice launcher wears (including
+    both drill buttons, which used to be amber). AMBER OUTLINE = "you have N
+    outstanding items" and NEVER launches anything — `.clo-mx-btn` alone. Amber
+    RING = section 18c's "an author marked this important", on both launchers
+    now, never an outline. Amber TEXT (no border) = the status line. Neutral
+    outline = an action away from the main task (Analyse, Overstudy).
+    Adding a control to this row means picking one of those, not inventing a
+    sixth; §3 of the design doc is the ruling. The palette itself is 16 `:root`
+    TOKENS at the top of the stylesheet (v0.59.0), named by role
+    (`--clo-accent`, `--clo-attention`, `--clo-text-dim` …) — but `--clo-rep-*`
+    (6c) and `--clo-cr-important` (18c) deliberately stay beside their own rules,
+    because each carries paragraphs of argument about why that exact colour.
+  * COLLAPSED MID-QUIZ (v0.59.0, §3.3). Outside the browse state the row goes
+    down to its label plus whatever is actively RUNNING. Two CSS rules do it —
+    `.clo-review--collapsed .clo-review-grp { display: none }` and an exception
+    `.clo-mx:has(> .clo-mx-mini:not([hidden]))`. That exception READS section
+    17's own gates rather than adding a flag: while a pass runs, `count` and
+    `retry` are hidden and Skip/Stop are not, so "this group has a visible mini"
+    IS "a pass is running", and the two can never drift. Auto-play's status chip
+    needs no rule — it lives on `.clo-review-status`, which is not a group.
+    State is section 9's: `collapseAuto` (what `reviewBrowseReady()` asks for)
+    and `collapseManual` (the user overriding it, DROPPED the moment the state
+    flips, and never persisted — a sticky collapse costs the browse-state
+    launchers for the rest of the session with no clue why). Collapsing closes
+    the overstudy chooser and calls `autoPlayCloseSettings`, which shuts the cog
+    popover AND disarms a pending "Clear?": a confirm hidden between its two
+    clicks is one the user can neither complete nor see they owe.
+  * ONE OVERSTUDY BUTTON (v0.59.0). "This variation" / "Previous variation" were
+    one intention split in two, and the second is unavailable for the whole
+    first variation of every session — a permanently-dead control describing a
+    choice that usually is not one. Now one button: with a distinct previous
+    variation it raises `.clo-os-menu` (which is also where the variation TITLES
+    finally live, instead of in a tooltip), otherwise it opens the only answer
+    there is. `previousEntry()` keeps the same-oid guard that in-session
+    back-navigation needs.
+  * AUTO-PLAY'S SETTINGS ARE BEHIND A COG (v0.59.0, F4). Toggle, speed and Clear
+    are persistent preferences and everything else in the row acts on the current
+    variation or session; the panel had already solved this with `.clo-cog`. The
+    cog CARRIES THE STATE — `.clo-ap-cog--on` plus the answer in words in its
+    tooltip — because that is the one thing hiding a toggle costs. Never a fill:
+    it is a setting, and a fill means "the one thing to do next".
+  * Both popovers (`.clo-os-menu`, `.clo-ap-menu`) are BODY-MOUNTED and fixed,
+    placed once from their trigger's rect, like every other popup here. Inside
+    the row they would change the widget's height, which the Lichess panel, the
+    alt-check chip and the heads-up all follow. Both swallow keydown/keypress/
+    keyup (MoveTrainer2 binds single-key shortcuts on `document` and does not
+    skip them for a focused control), close on an outside pointerdown in CAPTURE
+    phase by containment — never `stopPropagation`, the trainer underneath is
+    entitled to the event — and are dismissed rather than chased on resize.
 - Auto-play (section 13; design + live ground-truthing in DESIGN-autoplay.md):
   records every move the user answers correctly during a review session and
   replays it when a later variation (or transposition) reaches the same
@@ -1569,13 +1660,36 @@ Currently working (v0.18.x).
   waiting the window out. Verified live that with auto-play merely ENABLED (the
   common case) the panel still appears: every guard above is false until a move
   is actually injected.
-  PLACEMENT in a STACKED layout (portrait) while the quiz is LIVE stops at the
+  PLACEMENT — IN THE BROWSE STATE IT COVERS THE COMMENT (v0.60.0), for the same
+  reason the QUIZ panel always has: the lines it is offering to quiz are PRINTED
+  THERE. A completed variation's comment regularly ends with the whole line
+  written out ("If white goes for the doubled pawns: 7.Bxc6+! bxc6 8.O-O Bg4
+  9.h3 Bh5 10.d3 Rg8 11.Bf4 Qd5"), so a heads-up that offers that line while
+  leaving it on screen has handed over every answer before the user presses
+  anything. `placeHeadsUp` therefore prefers `SELECTORS.reviewCommentBox` —
+  the comment's own SCROLL CONTAINER, which a live quiz does not render at all
+  (18b is built on that fact) — so the rule is self-limiting: container present
+  ⇒ browse ⇒ cover it; absent ⇒ mid-quiz ⇒ placement UNCHANGED. The whole
+  container, not its top: the clickable lines are usually the LAST thing in a
+  long comment. The COLUMN is deliberately not a fallback here, which is where
+  this differs from `positionOverlays` — that one is a quiz the user asked for
+  and can be opened mid-quiz ("Review now"), so it wants one spot in both
+  states; this one is unsolicited, and mid-quiz Chessable's own "Quiz — White to
+  play!" is worth leaving readable. This also retired the old preference, the
+  gutter LEFT of the board, whose comment read "which during a quiz is empty:
+  the review panel only ever shows in the browse state" — true when written, and
+  falsified by v0.37.0 extending this panel INTO the browse state, where the
+  review panel is in that gutter: it covered the Lichess move table (which
+  spoils nothing) and left the comment showing (which spoils everything).
+  Ground-truthed live 2026-08-03: mid-quiz `[406,113,300,304]` content-sized and
+  no scroll container; browse `[1226,161,506,385]` against a comment box of
+  exactly `[1226,161,506,385]`, opaque, with the Lichess panel at `[286,113,420]`
+  no longer overlapped.
+  In a STACKED layout (portrait) while the quiz is LIVE placement stops at the
   board's own FOOTER instead of also clearing the overstudy widget and the whole
   trainer row (`coverComment` = stacked && `!reviewBrowseReady()`): down there
   Chessable prints nothing but "Quiz — White to play!", while our panel would
-  otherwise be a scroll away from the board it is talking about. In the BROWSE
-  state that column holds the comment — the clickable lines included — so the
-  old placement stands.
+  otherwise be a scroll away from the board it is talking about.
   Unlike the quiz panel this one must NOT
   swallow keys — the user is still playing on Chessable's board and needs
   MoveTrainer2's shortcuts — so its buttons `blur()` themselves after a press

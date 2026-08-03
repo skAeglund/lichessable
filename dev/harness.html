@@ -358,26 +358,27 @@ body {
   <div class="hx-grid">
     <div class="hx-card" style="flex:1 1 100%">
       <h3>Everything at once — browse state, mistakes logged, lines queued</h3>
-      <p class="hx-note">Overstudy (2) + auto-play (4) + mistakes (2) + continuation (4) = twelve
-         controls, three of them green, competing for one "press me next".</p>
+      <p class="hx-note">Overstudy (2) + auto-play (3) + mistakes (2) + continuation (3) = ten
+         controls in four groups, read left to right as mistakes → practice → session →
+         settings. Exactly one is filled: <em>Review queued lines</em>, named by
+         <code>reviewRowPrimary()</code>.</p>
       <div class="hx-stage">
         <div class="clo-review hx-pos">
-          <span class="clo-review-title">Overstudy</span>
-          <button type="button" class="clo-review-btn">This variation</button>
-          <button type="button" class="clo-review-btn clo-review-btn--secondary">Previous variation</button>
-          <span class="clo-ap">
-            <button type="button" class="clo-ap-toggle clo-ap-toggle--on" aria-pressed="true">Auto-play</button>
-            <select class="clo-ap-speed"><option>Fast</option><option selected>Normal</option><option>Relaxed</option></select>
-            <button type="button" class="clo-ap-clear">Clear</button>
-          </span>
-          <span class="clo-mx">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-mx">
             <button type="button" class="clo-mx-btn">Mistakes (3)</button>
             <button type="button" class="clo-mx-retry">Retry</button>
           </span>
-          <span class="clo-cr">
-            <button type="button" class="clo-cr-queue">Review queued lines (2)</button>
-            <button type="button" class="clo-cr-analyse">Analyse</button>
+          <span class="clo-review-grp clo-cr">
             <button type="button" class="clo-cr-drill">Drill mistakes (3)</button>
+            <button type="button" class="clo-cr-queue clo-rowprimary">Review queued lines (2)</button>
+            <button type="button" class="clo-cr-analyse">Analyse</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+          <span class="clo-review-grp clo-ap">
+            <button type="button" class="clo-ap-cog clo-ap-cog--on" aria-expanded="false">⚙</button>
           </span>
           <div class="clo-review-status">
             <button type="button" class="clo-ap-status" id="hx-demo-status">▶ replaying known moves… (click to stop)</button>
@@ -388,41 +389,201 @@ body {
       </div>
     </div>
 
-    <div class="hx-card">
-      <h3>Auto-play cluster</h3>
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>The primary, state by state (§3.1)</h3>
+      <p class="hx-note">One rule, evaluated in one place. Two of these states have no filled
+         control at all, which is the answer to "what next?" when there is nothing to do.</p>
       <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px">
         <div class="clo-review hx-pos">
-          <span class="clo-review-title">Overstudy</span>
-          <span class="clo-ap">
-            <button type="button" class="clo-ap-toggle" aria-pressed="false">Auto-play</button>
-            <select class="clo-ap-speed"><option selected>Normal</option></select>
-            <button type="button" class="clo-ap-clear">Clear</button>
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-mx">
+            <button type="button" class="clo-mx-btn">Mistakes (3)</button>
+            <button type="button" class="clo-mx-retry clo-rowprimary">Retry</button>
+          </span>
+          <span class="clo-review-grp clo-cr">
+            <button type="button" class="clo-cr-drill">Drill mistakes (3)</button>
+            <button type="button" class="clo-cr-analyse">Analyse</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Browse, mistakes only → <b>Retry</b>.</p>
+
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-mx">
+            <button type="button" class="clo-mx-btn">Mistakes (3)</button>
+            <button type="button" class="clo-mx-retry">Retry</button>
+          </span>
+          <span class="clo-review-grp clo-cr">
+            <button type="button" class="clo-cr-drill">Drill mistakes (3)</button>
+            <button type="button" class="clo-cr-open clo-rowprimary">Review clickables (2)</button>
+            <button type="button" class="clo-cr-analyse">Analyse</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Browse, lines available → <b>Review clickables</b>;
+          Retry drops back to an outline.</p>
+
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-mx">
+            <button type="button" class="clo-mx-btn">Mistakes (3)</button>
+            <button type="button" class="clo-mx-retry">Retry</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+          <span class="clo-review-grp clo-ap">
+            <button type="button" class="clo-ap-cog clo-ap-cog--on" aria-expanded="false">⚙</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Live quiz → <b>none</b>. Retry is visible, refuses
+          if pressed (v0.57.0), and must not also be the loudest thing under the board.</p>
+
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-cr">
+            <button type="button" class="clo-cr-analyse">Analyse</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Browse, nothing pending → <b>none</b>. The mistake
+          group is gone and took its separator with it.</p>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Auto-play — a cog in the row, settings behind it</h3>
+      <p class="hx-note">The cog carries the state the hidden toggle used to show, in colour and
+         in its tooltip. Never a fill: it is a setting, and a fill means "the one thing to do
+         next".</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px">
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-ap">
+            <button type="button" class="clo-ap-cog" aria-expanded="false">⚙</button>
           </span>
         </div>
         <div class="clo-review hx-pos">
-          <span class="clo-review-title">Overstudy</span>
-          <span class="clo-ap">
-            <button type="button" class="clo-ap-toggle clo-ap-toggle--on" aria-pressed="true">Auto-play</button>
-            <select class="clo-ap-speed"><option selected>Normal</option></select>
-            <button type="button" class="clo-ap-clear clo-ap-clear--armed">Clear — sure?</button>
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-ap">
+            <button type="button" class="clo-ap-cog clo-ap-cog--on clo-ap-cog--open" aria-expanded="true">⚙</button>
           </span>
           <div class="clo-review-status">
             <button type="button" class="clo-ap-status">✋ new move — your turn</button>
+          </div>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Off, then on-and-open. The popover itself (it is
+          body-mounted and fixed, so it is shown here in flow):</p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div class="clo-ap-menu" style="position:static">
+            <button type="button" class="clo-ap-toggle" aria-pressed="false">Auto-play</button>
+            <select class="clo-ap-speed" hidden><option selected>Normal</option></select>
+            <button type="button" class="clo-ap-clear" hidden>Clear</button>
+          </div>
+          <div class="clo-ap-menu" style="position:static">
+            <button type="button" class="clo-ap-toggle clo-ap-toggle--on" aria-pressed="true">Auto-play</button>
+            <select class="clo-ap-speed"><option>Fast</option><option selected>Normal</option><option>Relaxed</option></select>
+            <button type="button" class="clo-ap-clear">Clear</button>
+          </div>
+          <div class="clo-ap-menu" style="position:static">
+            <button type="button" class="clo-ap-toggle clo-ap-toggle--on" aria-pressed="true">Auto-play</button>
+            <select class="clo-ap-speed"><option selected>Normal</option></select>
+            <button type="button" class="clo-ap-clear clo-ap-clear--armed">Clear?</button>
           </div>
         </div>
       </div>
     </div>
 
     <div class="hx-card">
-      <h3>Retry pass — running</h3>
-      <div class="hx-stage">
+      <h3>Overstudy — one button, and the chooser it raises</h3>
+      <p class="hx-note">Two buttons for one intention, the second dead for the whole first
+         variation of every session. Now the choice is asked for only when there is one; with a
+         single variation to offer, the press goes straight there.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px">
         <div class="clo-review hx-pos">
-          <span class="clo-review-title">Overstudy</span>
-          <span class="clo-mx">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+        </div>
+        <div class="clo-os-menu" style="position:static;align-self:flex-start">
+          <button type="button" class="clo-os-item">
+            <span class="clo-os-item-label">Current variation</span>
+            <span class="clo-os-item-name">Sicilian: Alapin, 2…d5 main line</span>
+          </button>
+          <button type="button" class="clo-os-item">
+            <span class="clo-os-item-label">Previous variation</span>
+            <span class="clo-os-item-name">Sicilian: Alapin, 2…Nf6, 5.d4 with a very long title that has to be cut</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>Collapsed mid-quiz (§3.3)</h3>
+      <p class="hx-note">Default while a quiz is live; the label toggles it and the choice is
+         dropped when the state flips. Only things actively <em>running</em> survive — and they
+         survive because of gates the modules already set, not a new flag.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px">
+        <div class="clo-review clo-review--collapsed hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="false">LiChessable</button>
+          <span class="clo-review-grp clo-mx">
             <button type="button" class="clo-mx-btn">Mistakes (3)</button>
             <button type="button" class="clo-mx-retry">Retry</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+          <span class="clo-review-grp clo-ap">
+            <button type="button" class="clo-ap-cog clo-ap-cog--on" aria-expanded="false">⚙</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Quiz live, nothing running → the label alone.</p>
+
+        <div class="clo-review clo-review--collapsed hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="false">LiChessable</button>
+          <span class="clo-review-grp clo-mx">
+            <button type="button" class="clo-mx-btn" hidden>Mistakes (3)</button>
+            <button type="button" class="clo-mx-retry" hidden>Retry</button>
             <button type="button" class="clo-mx-mini">Skip</button>
-            <button type="button" class="clo-mx-mini">Stop</button>
+            <button type="button" class="clo-mx-mini clo-rowprimary">Stop</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+          <div class="clo-review-status">
+            <button type="button" class="clo-ap-status">▶ replaying known moves…</button>
+            <span class="clo-mx-status">Retry 2/3 — Sicilian: Alapin, 2…d5</span>
+          </div>
+        </div>
+        <p class="hx-note" style="margin:0 10px">A retry pass running through a live quiz: Skip and
+          Stop stay, the status line stays, everything else is down. The <code>:has</code> rule
+          reads the same <code>hidden</code> flags the module already sets.</p>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Retry pass — running</h3>
+      <p class="hx-note">The count and Retry are hidden while a pass runs; Stop takes the primary
+         slot, because the pass drives through live quizzes and ending it must never be a hunt.
+         It is <code>.clo-mx-mini</code> — bare text — so the primary rule brings its own padding
+         and border.</p>
+      <div class="hx-stage">
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-mx">
+            <button type="button" class="clo-mx-mini">Skip</button>
+            <button type="button" class="clo-mx-mini clo-rowprimary">Stop</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
           </span>
           <div class="clo-review-status">
             <button type="button" class="clo-ap-status">▶ replaying known moves…</button>
@@ -434,24 +595,35 @@ body {
 
     <div class="hx-card">
       <h3>Continuation cluster — important line present</h3>
-      <p class="hx-note">Amber ring, never an amber fill: a filled amber button reads as a
-         different button rather than the same one flagged.</p>
+      <p class="hx-note">An amber <em>ring</em> on both launchers since v0.58.0, never an amber
+         outline: the outline now means "N outstanding" and belongs to the mistake count alone.
+         A ring is also the only mark that survives the button being filled or not, which is
+         no longer this module's decision.</p>
       <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px">
         <div class="clo-review hx-pos">
-          <span class="clo-review-title">Overstudy</span>
-          <span class="clo-cr">
-            <button type="button" class="clo-cr-open clo-cr-open--important">Review clickables (3)</button>
-            <button type="button" class="clo-cr-analyse">Analyse</button>
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-cr">
             <button type="button" class="clo-cr-drill">Drill mistakes (3)</button>
+            <button type="button" class="clo-cr-open clo-cr-open--important clo-rowprimary">Review clickables (3)</button>
+            <button type="button" class="clo-cr-analyse">Analyse</button>
           </span>
         </div>
         <div class="clo-review hx-pos">
-          <span class="clo-review-title">Overstudy</span>
-          <span class="clo-cr">
-            <button type="button" class="clo-cr-queue clo-cr-queue--important">Review queued lines (2)</button>
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-cr">
+            <button type="button" class="clo-cr-queue clo-cr-queue--important clo-rowprimary">Review queued lines (2)</button>
             <button type="button" class="clo-cr-analyse">Analyse</button>
           </span>
         </div>
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-cr">
+            <button type="button" class="clo-cr-open clo-cr-open--important">Review clickables (3)</button>
+            <button type="button" class="clo-cr-analyse">Analyse</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Last one: the same mark on the unfilled button,
+          for the states where something else holds the primary.</p>
       </div>
     </div>
 

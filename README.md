@@ -146,10 +146,11 @@ It also adds an **Overstudy widget** to trainer sessions — review
 (`https://www.chessable.com/learn/…`), which run the same trainer app with
 identical markup: a small floating card centered
 beneath the board (below the Exit/nav row; bottom-right corner as fallback)
-with two buttons — overstudy **this variation** and overstudy
-the **previous variation** (i.e. the one you most recently completed, after
-the review queue advances). Each opens the variation's overstudy in a
-**background tab**, so the running review session keeps focus. On
+with an **Overstudy** button. Press it and, if a distinct previous variation
+exists (the one you most recently completed, after the review queue advances),
+it offers the choice — *current* or *previous*, each with its title; if there
+is only one, it just opens that one. Either way the variation's overstudy
+opens in a **background tab**, so the running review session keeps focus. On
 chessable.com, "overstudy" is simply the learn route
 (`/learn/<course>/<variation>/…`) for an already-learned variation — exactly
 where Chessable's own Overstudy buttons navigate. Because the session timer
@@ -158,10 +159,40 @@ would otherwise start running unseen, a learn session that boots in a
 own pause control once it renders); switch to the tab and click the play
 overlay to start.
 
+Four separate features hang their controls on that one card, so as of
+**v0.58/0.59** the row is organised rather than assembled. Reading left to right
+it goes **what went wrong** (Mistakes, Retry) → **what to do about it** (Drill,
+Review clickables, Analyse) → **the escape hatch** (Overstudy) → **settings**
+(a cog), with a thin rule between each group; a group whose controls are all
+inapplicable disappears and takes its rule with it.
+
+Colour is load-bearing and each shade means one thing: a **filled green** button
+is the one thing to do next here — there is never more than one, and in a live
+quiz or after a clean variation there is deliberately none; a **green outline**
+is an ordinary action; an **amber outline** means "you have N of these
+outstanding" and never launches anything; an **amber ring** is a line the course
+author marked important; a **grey outline** is a step away from what you were
+doing.
+
+The label reads *LiChessable* rather than *Overstudy* — which named two of the
+ten controls under it — and it is also the row's collapse control. **While a
+quiz is live the row collapses to that label**, because nothing in it acts on
+the card you are answering; it opens again by itself when the variation ends,
+and you can toggle it by hand in between (the choice is dropped at the next
+state change, so a collapse can never quietly cost you the browse-state
+buttons for the rest of a session). The exceptions stay visible precisely
+because they are *running*: a retry pass's Skip and Stop — the pass drives on
+through live quizzes, so ending it must never be a hunt — and auto-play's status
+message, which is how you cancel a replay.
+
 Trainer sessions — review and learn alike — can also **auto-play moves you
 already proved this session**
-(the *Auto-play* toggle on the overstudy widget, off by default, with a
-Fast/Normal/Relaxed pace select). Every move you answer correctly is recorded
+(the *Auto-play* toggle behind the widget's **cog**, off by default, with a
+Fast/Normal/Relaxed pace select and a *Clear* alongside it — they are
+preferences, so as of v0.59.0 they live with the other preferences rather than
+among the actions. The cog itself turns green while auto-play is on, and says so
+in its tooltip, since that is the one thing tucking a toggle away would
+otherwise cost). Every move you answer correctly is recorded
 against its **position** for the rest of the browser session (12 h cap); when
 a later variation reaches a position you've already answered — typically the
 shared prefix of the next line, but any transposition counts — the extension
@@ -282,9 +313,9 @@ off) for the duration and put back the way you had it afterwards:
   retried mistake, so in a line where you failed moves 8 and 12 you play those
   two moves and nothing else.
 
-**Drill mistakes (N)** is the fast way through the same list, and sits on the
-widget beside **Analyse** once a variation is finished (the popup has a **Drill
-selected** button too, for a subset). Instead of walking whole variations, it
+**Drill mistakes (N)** is the fast way through the same list, and leads the
+practice group on the widget once a variation is finished — next to the mistake
+count it spends (the popup has a **Drill selected** button too, for a subset). Instead of walking whole variations, it
 asks for the failed **moves** — on our own board, the one the clickable-line
 review and the analysis board use. Each card plays the opponent's move that came
 before your mistake, then asks you for the move you got wrong; answer it and the
@@ -440,9 +471,7 @@ still opens and the timer is paused as soon as the control appears.
 
 On a **phone in portrait**, where Chessable stacks its comment column under the
 board, this panel sits directly under the board while you are playing — over that
-column, which says nothing but "Quiz — White to play!" at that point. Once the
-variation ends and the column holds the actual comment, it moves out of the way
-below everything again.
+column, which says nothing but "Quiz — White to play!" at that point.
 
 The same panel appears once more when the variation **ends**, for the lines that
 carry on from the final position — those branch exactly where the variation
@@ -450,6 +479,17 @@ stops, so there is no earlier moment at which to show them. There the button
 reads **Add to review queue**, and because the variation is already over, a
 continuation of your *own* colour is offered too (there is nothing left to give
 away).
+
+**Once the variation is over the panel covers Chessable's comment** (v0.60.0),
+which is the same thing the quiz board itself does and for the same reason: the
+lines it is offering to quiz are *printed in that comment*. A completed variation
+regularly spells the whole line out — *"If white goes for the doubled pawns:
+7.Bxc6+! bxc6 8.O-O Bg4 9.h3 Bh5 10.d3 Rg8 11.Bf4 Qd5"* — so a panel that offers
+to quiz that line while leaving it on screen has already given you every answer.
+It covers the comment box entirely, because those lines are usually the *last*
+thing in it. While you are still playing nothing changes: a quiz renders no
+comment at all, so there is nothing to hide and the panel stays beside the board
+where it was. Press **×** if you want to read the comment instead.
 
 Nothing starts on its own. When anything is queued, a filled **Review queued
 lines (n)** button appears once the variation is over — being dropped into a quiz
@@ -636,10 +676,12 @@ lichessable/
 Open `dev/harness.html` in any browser — no extension, no Chessable, no server.
 It loads `content/lichessable.css` directly and renders a static replica of
 every `.clo-` surface: the Lichess panel in each of its states, the overstudy
-widget with all four clusters attached, the quick-edit popup's four tabs, the
-alt-check chip and its three verdict bands, the continuation quiz board and
-panel, the mid-quiz heads-up, the analysis panel, the mistake popup and retry
-shield, and the coverage report.
+widget with all four clusters attached — plus cards showing the row in each of
+the states §3.1 of the design doc assigns a primary to, its collapsed mid-quiz
+states, the Overstudy chooser and the auto-play popover — the quick-edit popup's
+four tabs, the alt-check chip and its three verdict bands, the continuation quiz
+board and panel, the mid-quiz heads-up, the analysis panel, the mistake popup and
+retry shield, and the coverage report.
 
 It exists because most of these surfaces are otherwise reachable only by
 reloading the extension, loading a course and completing a variation — minutes
@@ -652,7 +694,15 @@ one, **width** narrows the page to check wrapping.
 
 Because it loads the real stylesheet, computed styles and element rectangles in
 the harness are the real thing — `getBoundingClientRect()` across a set of
-states is how the v0.57.0 status-line reflow was both found and confirmed fixed.
+states is how the v0.57.0 status-line reflow was both found and confirmed fixed,
+and how v0.58.0's group order, "exactly one filled control per state" and
+empty-group collapse were each checked as a number rather than a look.
+
+It is also how v0.59.0's colour-token extraction was *proved* rather than
+assumed: snapshot every element's computed colours (plus its `::before` and
+`::after`) before the substitution and after, and diff. 1711 rows, 0
+differences. For a mechanical change across 292 call sites that is the only
+honest form of "no visual change".
 
 **The stylesheet caches hard over `file://`.** After editing
 `content/lichessable.css`, a plain page reload will often keep serving the OLD

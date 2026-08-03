@@ -671,6 +671,8 @@
   const PANEL_ID = 'lichessable-panel';
   const REVIEW_WIDGET_ID = 'lichessable-review'; // overstudy widget (section 9); the review panel anchors below it
   const REVIEW_STATUS_CLASS = 'clo-review-status'; // its status line — see reviewStatusHost()
+  const OS_MENU_ID = 'lichessable-os-menu';     // Overstudy current/previous chooser (section 9)
+  const AP_MENU_ID = 'lichessable-ap-menu';     // auto-play settings popover (section 13)
   const QE_PENCIL_ID = 'lichessable-qe-pencil';  // quick-edit hover pencil (section 12)
   const QE_POPUP_ID  = 'lichessable-qe-popup';   // quick-edit comment popup (section 12)
   const QE_SHIELD_ID = 'lichessable-qe-shield';  // "Saving…" cover in the driver popup window (section 12)
@@ -3383,8 +3385,20 @@
       current: null,    // { bid, oid, lid, title } — variation on the board now
       previous: null,   // { bid, oid, lid, title } — the one before it
       widget: null,
-      buttons: null,    // { current, previous }
+      btn: null,        // the one "Overstudy" button
+      title: null,      // the label, which is also the collapse control
+      menu: null,       // current/previous chooser, built on first need
+      menuOpen: false,
       warnedNoDetect: false, // one warning per detection outage, not per tick
+      // Collapse (§3.3). `auto` is what the trainer state asks for; `manual` is
+      // the user overriding it and is dropped the moment the state flips, so a
+      // collapse never outlives the quiz it was made during. Deliberately NOT
+      // persisted: the sticky version costs a user who collapsed once all of
+      // the browse-state launchers for the rest of the session, with no clue
+      // why they stopped appearing.
+      collapseAuto: false,
+      collapseManual: null,
+      collapsed: false,
     };
 
     // Course id from the session URL (module-level TRAINER_URL_RE); the
@@ -3439,17 +3453,170 @@
     function updateWidget(inReview) {
       if (!inReview || (!rs.current && !rs.previous)) {
         if (rs.widget) rs.widget.hidden = true;
+        closeMenu();
         return;
       }
       if (!rs.widget || !rs.widget.isConnected) mountWidget(); // idempotent self-heal
       rs.widget.hidden = false;
+      syncCollapse();
       positionWidget();
-      // After in-session back-navigation "previous" can equal "current" —
-      // showing both would just open the same overstudy twice.
-      const previous = rs.previous && (!rs.current || rs.previous.oid !== rs.current.oid)
+      const previous = previousEntry();
+      rs.btn.hidden = !rs.current && !previous;
+      if (!rs.btn.hidden) {
+        // The button says only "Overstudy"; WHICH variation is the menu's job,
+        // or — with only one to offer — not a question at all.
+        rs.btn.title = rs.current && previous
+          ? 'Overstudy this variation or the one before it, in a background tab'
+          : 'Open overstudy for ' + describe(rs.current || previous) +
+            ' in a background tab';
+      }
+      if (rs.menuOpen) renderMenu(previous);
+    }
+
+    /** After in-session back-navigation "previous" can equal "current", and
+     *  offering both would just open the same overstudy twice. */
+    function previousEntry() {
+      return rs.previous && (!rs.current || rs.previous.oid !== rs.current.oid)
         ? rs.previous : null;
-      syncButton(rs.buttons.current, rs.current, 'current');
-      syncButton(rs.buttons.previous, previous, 'previous');
+    }
+
+    const describe = (entry) => (entry && entry.title) || ('#' + (entry && entry.oid));
+
+    // --- collapse (§3.3) -------------------------------------------------------
+    //
+    // Mid-quiz nothing in this row acts on the card being answered — and since
+    // v0.57.0 Retry, the one control that would, refuses to run there — so the
+    // row collapses to its label and whatever is actively RUNNING. The
+    // exceptions are not a peek at the collapsed row: they are the same status
+    // controls the row already shows in those states (auto-play's chip, which is
+    // its cancel affordance, and a retry pass's Skip/Stop, which must never be a
+    // click away since the pass drives THROUGH live quizzes). So this is a
+    // visibility rule laid over existing gates, and the CSS says so — no module
+    // learns a new state.
+    function syncCollapse() {
+      const auto = !reviewBrowseReady();
+      // "Holds until the state flips": a manual choice is about the quiz or the
+      // browse state it was made in, and survives neither.
+      if (auto !== rs.collapseAuto) {
+        rs.collapseAuto = auto;
+        rs.collapseManual = null;
+      }
+      const want = rs.collapseManual === null ? auto : rs.collapseManual;
+      if (want === rs.collapsed && rs.widget.classList.contains('clo-review--collapsed') === want) {
+        return;
+      }
+      rs.collapsed = want;
+      rs.widget.classList.toggle('clo-review--collapsed', want);
+      rs.title.setAttribute('aria-expanded', String(!want));
+      rs.title.title = want
+        ? 'Show the LiChessable controls for this variation'
+        : 'Hide the LiChessable controls (they come back when the variation ends)';
+      if (want) {
+        // Never collapse over an armed confirm or an open popover: a pending
+        // "Clear?" hidden between its two clicks is a confirm the user can
+        // neither complete nor see they still owe.
+        closeMenu();
+        if (autoPlayCloseSettings) autoPlayCloseSettings();
+      }
+    }
+
+    function toggleCollapse() {
+      rs.collapseManual = !rs.collapsed;
+      if (rs.widget) syncCollapse();
+    }
+
+    // --- the current/previous chooser -----------------------------------------
+
+    function openOverstudy(entry) {
+      if (!entry) return;
+      const url = location.origin + CONFIG.review.learnPrefix +
+        entry.bid + '/' + entry.oid + (entry.lid ? '/' + entry.lid : '');
+      log('opening overstudy in a background tab:', url);
+      chrome.runtime.sendMessage({ type: 'clo-open-overstudy', url });
+    }
+
+    /**
+     * One button instead of two (v0.59.0). "This variation" and "Previous
+     * variation" were two controls for one intention, and the second is
+     * unavailable for the whole first variation of every session — so the row
+     * carried a permanently-dead button to describe a choice that usually is
+     * not one. Now the button asks only when there is something to ask: with a
+     * distinct previous variation it opens a chooser, otherwise it goes
+     * straight to the only answer there is.
+     */
+    function onOverstudyPress() {
+      const previous = previousEntry();
+      if (rs.current && previous) { openMenu(previous); return; }
+      openOverstudy(rs.current || previous);
+    }
+
+    function openMenu(previous) {
+      if (rs.menuOpen) { closeMenu(); return; } // a second press closes it
+      if (!rs.menu || !rs.menu.isConnected) buildMenu();
+      renderMenu(previous);
+      rs.menu.hidden = false;
+      rs.menuOpen = true;
+      // Fixed and placed once, like every other popup here. Above the button
+      // by preference: the widget sits under the board, so "below" is often
+      // off-screen.
+      const anchor = rs.btn.getBoundingClientRect();
+      const height = rs.menu.offsetHeight || 72;
+      const width = rs.menu.offsetWidth || 220;
+      let top = anchor.top - height - 6;
+      if (top < 8) top = Math.min(anchor.bottom + 6, window.innerHeight - height - 8);
+      rs.menu.style.top = Math.round(Math.max(8, top)) + 'px';
+      rs.menu.style.left = Math.round(Math.min(Math.max(8, anchor.left),
+        Math.max(8, window.innerWidth - width - 8))) + 'px';
+    }
+
+    function closeMenu() {
+      if (rs.menu) rs.menu.hidden = true;
+      rs.menuOpen = false;
+    }
+
+    function buildMenu() {
+      const stale = document.getElementById(OS_MENU_ID);
+      if (stale) stale.remove();
+      const menu = document.createElement('div');
+      menu.id = OS_MENU_ID;
+      menu.className = 'clo-os-menu';
+      menu.hidden = true;
+      // MoveTrainer2 binds single-key shortcuts on `document` and does not skip
+      // them for focused controls, so a keystroke aimed at this menu would
+      // otherwise drive the trainer (the quick-edit popup swallows keys for the
+      // same reason). Escape closes; nothing else gets through.
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        menu.addEventListener(type, (e) => {
+          e.stopPropagation();
+          if (type === 'keydown' && e.key === 'Escape') closeMenu();
+        });
+      }
+      document.body.appendChild(menu);
+      rs.menu = menu;
+    }
+
+    function renderMenu(previous) {
+      if (!rs.menu) return;
+      rs.menu.textContent = '';
+      for (const [entry, label] of [[rs.current, 'Current variation'],
+                                    [previous, 'Previous variation']]) {
+        if (!entry) continue;
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'clo-os-item';
+        const head = document.createElement('span');
+        head.className = 'clo-os-item-label';
+        head.textContent = label;
+        const name = document.createElement('span');
+        name.className = 'clo-os-item-name';
+        name.textContent = describe(entry);
+        item.append(head, name);
+        item.addEventListener('click', () => { // no inline handlers
+          closeMenu();
+          openOverstudy(entry);
+        });
+        rs.menu.appendChild(item);
+      }
     }
 
     /**
@@ -3488,14 +3655,6 @@
       });
     }
 
-    function syncButton(btn, entry, which) {
-      btn.hidden = !entry;
-      if (entry) {
-        const name = entry.title || '#' + entry.oid;
-        btn.title = `Open overstudy for the ${which} variation (${name}) in a background tab`;
-      }
-    }
-
     function mountWidget() {
       const stale = document.getElementById(WIDGET_ID);
       if (stale) stale.remove(); // defensive: avoids duplicates across re-inits
@@ -3504,41 +3663,58 @@
       widget.id = WIDGET_ID;
       widget.className = 'clo-review';
 
-      const title = document.createElement('span');
+      // "LiChessable", not "Overstudy" (v0.58.0, DESIGN-ui-inventory F5): three
+      // more modules have appended to this row since, so the label named two
+      // controls while appearing to title all ten. It matches
+      // .clo-chapter-title, the other widget's, which has always said this.
+      // Since v0.59.0 it is also the collapse control (§3.3) — the label was
+      // already the one element in the row that belongs to the row itself.
+      const title = document.createElement('button');
+      title.type = 'button';
       title.className = 'clo-review-title';
-      title.textContent = 'Overstudy';
+      title.textContent = 'LiChessable';
+      title.setAttribute('aria-expanded', 'true');
+      title.addEventListener('click', toggleCollapse); // no inline handlers
 
-      const btnCurrent = makeOverstudyButton('This variation', 'current', '');
-      const btnPrevious = makeOverstudyButton('Previous variation', 'previous', ' clo-review-btn--secondary');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'clo-review-btn';
+      btn.textContent = 'Overstudy';
+      btn.hidden = true;
+      btn.addEventListener('click', onOverstudyPress);
 
-      widget.append(title, btnCurrent, btnPrevious);
+      // A group of its own like every other module's cluster, so the row's
+      // `order` can place it and its separator appears and disappears with it —
+      // .clo-review-grp's :has rule hides the group when no variation was
+      // detected, which is when the button is hidden and a lone rule would
+      // otherwise be left floating.
+      const group = document.createElement('span');
+      group.className = 'clo-review-grp clo-os';
+      group.append(btn);
+
+      widget.append(title, group);
       document.body.appendChild(widget);
 
       rs.widget = widget;
-      rs.buttons = { current: btnCurrent, previous: btnPrevious };
+      rs.btn = btn;
+      rs.title = title;
     }
 
-    function makeOverstudyButton(label, which, extraClass) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'clo-review-btn' + extraClass;
-      btn.textContent = label;
-      btn.hidden = true;
-      btn.addEventListener('click', () => { // no inline handlers
-        const entry = which === 'current' ? rs.current : rs.previous;
-        if (!entry) return;
-        const url = location.origin + CONFIG.review.learnPrefix +
-          entry.bid + '/' + entry.oid + (entry.lid ? '/' + entry.lid : '');
-        log('opening overstudy in a background tab:', url);
-        chrome.runtime.sendMessage({ type: 'clo-open-overstudy', url });
-      });
-      return btn;
-    }
+    // Dismissal for the chooser. Capture phase so a press anywhere lands here
+    // first, and the menu's own presses are excluded by containment rather than
+    // by stopping the event — the trainer underneath is entitled to it.
+    document.addEventListener('pointerdown', (e) => {
+      if (!rs.menuOpen) return;
+      if (rs.menu && rs.menu.contains(e.target)) return;
+      if (rs.btn && rs.btn.contains(e.target)) return; // its own toggle handles it
+      closeMenu();
+    }, true);
 
     const pollTimer = setInterval(tick, CONFIG.review.pollMs);
     window.addEventListener('pagehide', () => clearInterval(pollTimer));
-    // Keep the board anchoring snappy between ticks.
-    window.addEventListener('resize', positionWidget);
+    // Keep the board anchoring snappy between ticks. The chooser is placed once
+    // from the button's rect, so it is dismissed rather than chased.
+    window.addEventListener('resize', () => { closeMenu(); positionWidget(); });
     window.addEventListener('scroll', positionWidget, true);
     tick();
     log('review overstudy watcher active (top document)');
@@ -3736,6 +3912,57 @@
       widget.appendChild(host); // CSS `order` puts it last, whatever the DOM order
     }
     return host;
+  }
+
+  /**
+   * () => { lines, queued } — assigned by initContinuationReview (section 18).
+   * `lines` is what "Review clickable(s)" would open, `queued` what "Review
+   * queued lines" would; the two launchers share one slot. Null until that
+   * module has run, and it never runs outside a trainer document.
+   */
+  let continuationLineCounts = null;
+
+  /**
+   * WHICH CONTROL IN THE TRAINER ROW IS THE PRIMARY ONE (section 9's widget).
+   *
+   * Filled #629924 is the loudest thing the extension draws, and four controls
+   * could wear it at once — because four modules each decided, in their own
+   * file, that theirs was the one to press. No module can see the row, so every
+   * pairwise conflict got fixed locally and then reappeared between modules
+   * that never meet. This is that decision made ONCE, for the row as a whole:
+   * the answer is a ROLE name, and each module applies .clo-rowprimary to its
+   * own control when it is both showing and named. See DESIGN-ui-inventory §3.1
+   * for the table this implements.
+   *
+   * Two states deliberately answer null, and that is the point of the exercise:
+   * a filled button is a claim that there is something to do next, and mid-quiz
+   * (nothing here acts on the card being answered) or after a clean variation
+   * with nothing outstanding, there isn't.
+   *
+   * A named control that is HIDDEN simply leaves the row unfilled — which is
+   * why this does not need to know about our own overlays being up. During a
+   * quiz, drill or analysis the practice launchers are hidden by their own
+   * sync, so 'clickables' names nothing, and the row goes quiet behind the
+   * board that has the user's attention. That is the honest answer, not a gap.
+   *
+   * Order of the two line kinds matches syncButton's own (`show` requires
+   * `!showQueue`): a queue the user armed by hand beats the offer of all of
+   * them, and both beat Retry — §3.1's "browse, mistakes ONLY".
+   */
+  function reviewRowPrimary() {
+    // A running pass owns the row: Stop is the only decision left in it, and
+    // the pass drives THROUGH live quizzes, so it must never be a hunt.
+    if (retryRunActive && retryRunActive()) return 'stop';
+    // Everything below acts on a finished variation. Retry's own gate is the
+    // same one (v0.57.0) — it is visible mid-quiz and refuses there, which is
+    // precisely when it must not also be the loudest thing under the board.
+    if (!reviewBrowseReady()) return null;
+    const counts = continuationLineCounts ? continuationLineCounts() : null;
+    if (counts && counts.queued > 0) return 'queue';
+    if (counts && counts.lines > 0) return 'clickables';
+    const pending = (mistakeLogApi && mistakeLogApi.pending()) || [];
+    if (pending.length) return 'retry';
+    return null;
   }
 
   function getReviewBoard() {
@@ -6816,6 +7043,15 @@
    */
   let autoPlayHold = null;
 
+  /**
+   * () => void — assigned by initAutoPlay. Closes the settings popover and
+   * disarms a pending "Clear?" confirm. Called by the widget row when it
+   * collapses (§3.3): a popover left open would float over a row that is no
+   * longer there, and a confirm hidden between its two clicks is one the user
+   * can neither complete nor see they still owe.
+   */
+  let autoPlayCloseSettings = null;
+
   function initAutoPlay() {
     if (typeof CloSan === 'undefined') {
       warn('auto-play disabled: CloSan (engine/san.js) not loaded');
@@ -6835,7 +7071,8 @@
       record: null,            // { posKey: entry } for the current course
       recordBid: null,
       saveTimer: 0,
-      ui: null,                // { root, toggle, speed, clear, status }
+      ui: null,                // { root, cog, menu, toggle, speed, clear, status }
+      menuOpen: false,         // the settings popover behind the cog (section 9's row)
       statusTimer: 0,
       clearArmed: false,       // the "Clear" button is waiting for its confirming click
       clearTimer: 0,           // …and disarms itself when this fires
@@ -8091,7 +8328,10 @@
 
       const root = document.createElement('span');
       root.id = AP_CLUSTER_ID;
-      root.className = 'clo-ap';
+      // .clo-review-grp carries the row's shared layout and separator; .clo-ap
+      // only picks the slot (last — these are preferences, and change #9 wants
+      // them behind a cog of the widget's own).
+      root.className = 'clo-review-grp clo-ap';
 
       const toggle = document.createElement('button');
       toggle.type = 'button';
@@ -8147,7 +8387,29 @@
       status.hidden = true;
       status.addEventListener('click', cancelForVariation);
 
-      root.append(toggle, speed, clear);
+      // SETTINGS GO BEHIND A COG (v0.59.0, DESIGN-ui-inventory F4 / change #9).
+      // These three persist across sessions; everything else in the row acts on
+      // the current variation or session, and mixing the two is what made a
+      // preference sit next to a launcher and a destructive "Clear" end up
+      // beside an unrelated action. The panel solved this exact problem first —
+      // its preferences went behind .clo-cog — and this is the same move.
+      //
+      // The cog carries the STATE, because that is the one thing hiding the
+      // toggle would cost: .clo-ap-cog--on when auto-play is enabled, with the
+      // answer in its tooltip too, since a colour alone is not a state.
+      const cog = document.createElement('button');
+      cog.type = 'button';
+      cog.className = 'clo-ap-cog';
+      cog.textContent = '⚙';
+      cog.setAttribute('aria-expanded', 'false');
+      cog.addEventListener('click', () => (ap.menuOpen ? closeMenu() : openMenu()));
+
+      // Body-mounted and fixed, like every other popup here: inside the row it
+      // would grow the widget, and three surfaces anchor below this widget.
+      const menu = buildMenu();
+      menu.append(toggle, speed, clear);
+
+      root.append(cog);
       widget.appendChild(root);
       // The status goes on the widget's own status line, NOT in this cluster:
       // inline among the controls, every message re-laid-out the whole row.
@@ -8159,9 +8421,57 @@
         if (staleStatus) staleStatus.remove();
         statusHost.appendChild(status);
       }
-      ap.ui = { root, toggle, speed, clear, status };
+      ap.ui = { root, cog, menu, toggle, speed, clear, status };
       disarmClear(); // a re-mount (React re-render) must not inherit a pending confirm
       syncUi();
+    }
+
+    function buildMenu() {
+      const stale = document.getElementById(AP_MENU_ID);
+      if (stale) stale.remove();
+      const menu = document.createElement('div');
+      menu.id = AP_MENU_ID;
+      menu.className = 'clo-ap-menu';
+      menu.hidden = true;
+      // MoveTrainer2 binds single-key shortcuts on `document` and does not skip
+      // them while a control has focus — so with the speed select focused, "n"
+      // would jump to the next variation. Same swallow as the quick-edit popup;
+      // Escape closes.
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        menu.addEventListener(type, (e) => {
+          e.stopPropagation();
+          if (type === 'keydown' && e.key === 'Escape') closeMenu();
+        });
+      }
+      document.body.appendChild(menu);
+      return menu;
+    }
+
+    function openMenu() {
+      if (!ap.ui) return;
+      if (!ap.ui.menu.isConnected) document.body.appendChild(ap.ui.menu);
+      ap.ui.menu.hidden = false;
+      ap.menuOpen = true;
+      ap.ui.cog.setAttribute('aria-expanded', 'true');
+      ap.ui.cog.classList.add('clo-ap-cog--open');
+      // Above the cog by preference — the widget sits under the board, so
+      // "below" is regularly off-screen. Placed once, like the other popups.
+      const anchor = ap.ui.cog.getBoundingClientRect();
+      const height = ap.ui.menu.offsetHeight || 120;
+      const width = ap.ui.menu.offsetWidth || 200;
+      let top = anchor.top - height - 6;
+      if (top < 8) top = Math.min(anchor.bottom + 6, window.innerHeight - height - 8);
+      ap.ui.menu.style.top = Math.round(Math.max(8, top)) + 'px';
+      ap.ui.menu.style.left = Math.round(Math.min(Math.max(8, anchor.right - width),
+        Math.max(8, window.innerWidth - width - 8))) + 'px';
+    }
+
+    function closeMenu() {
+      if (!ap.ui) return;
+      ap.ui.menu.hidden = true;
+      ap.menuOpen = false;
+      ap.ui.cog.setAttribute('aria-expanded', 'false');
+      ap.ui.cog.classList.remove('clo-ap-cog--open');
     }
 
     function armClear() {
@@ -8189,6 +8499,15 @@
       ap.ui.speed.value = ap.speed;
       ap.ui.speed.hidden = !ap.enabled;
       ap.ui.clear.hidden = !ap.enabled;
+      // The cog is now the only part of this cluster in the row, so it carries
+      // the state the toggle used to show — in colour AND in words, since the
+      // whole point of hiding a toggle behind a cog is that its state stops
+      // being legible for free.
+      ap.ui.cog.classList.toggle('clo-ap-cog--on', ap.enabled);
+      ap.ui.cog.title = 'Auto-play settings — currently ' +
+        (ap.enabled ? 'ON (' + ap.speed + ')' : 'off') + '.\n' +
+        'Auto-play replays moves you already answered correctly this session and ' +
+        'hands the board back at the first move you have not proven yet.';
       if (!ap.enabled) { ap.ui.status.hidden = true; disarmClear(); }
     }
 
@@ -8405,6 +8724,21 @@
       if (want) stopReplaying();
       else evaluateAutoPlay();
     };
+
+    // Section 9's row, collapsing (§3.3): a popover left open would float over
+    // a row that is no longer there, and an armed "Clear?" hidden between its
+    // two clicks is a confirm the user can neither complete nor see they owe.
+    autoPlayCloseSettings = () => { closeMenu(); disarmClear(); };
+
+    // Dismissal for that popover, capture phase, containment rather than
+    // stopPropagation — the trainer underneath is entitled to the event.
+    document.addEventListener('pointerdown', (e) => {
+      if (!ap.menuOpen || !ap.ui) return;
+      if (ap.ui.menu.contains(e.target) || ap.ui.cog.contains(e.target)) return;
+      closeMenu();
+      disarmClear(); // an armed confirm must not survive the popover closing
+    }, true);
+    window.addEventListener('resize', () => { if (ap.menuOpen) closeMenu(); });
 
     // Prefs (shared across tabs via storage; off by default).
     (async () => {
@@ -10526,7 +10860,7 @@
 
       const root = document.createElement('span');
       root.id = MX_CLUSTER_ID;
-      root.className = 'clo-mx';
+      root.className = 'clo-review-grp clo-mx'; // shared layout + the first slot
       root.hidden = true;
 
       const count = document.createElement('button');
@@ -10601,6 +10935,15 @@
       rr.ui.retry.hidden = running || !pending.length;
       rr.ui.skip.hidden = !running;
       rr.ui.stop.hidden = !running;
+      // The row's one filled control, decided for the whole row rather than by
+      // this module (see reviewRowPrimary). Both are checked against their own
+      // visibility: a primary named on a hidden button fills nothing, which is
+      // how "our overlay is up, so the row goes quiet" falls out for free.
+      const primary = reviewRowPrimary();
+      rr.ui.retry.classList.toggle('clo-rowprimary',
+        !rr.ui.retry.hidden && primary === 'retry');
+      rr.ui.stop.classList.toggle('clo-rowprimary',
+        !rr.ui.stop.hidden && primary === 'stop');
       if (running) {
         const item = run.items[Math.min(run.index, run.items.length - 1)];
         rr.ui.status.textContent = 'Retry ' + Math.min(run.index + 1, run.total) + '/' + run.total +
@@ -11329,6 +11672,11 @@
     // Section 20: the mistake popup can start a drill, and hears back whether
     // the board could be opened at all.
     continuationDrill = (entries) => openDrill(entries);
+    // Section 9's row: how many lines each of the two launchers would open, so
+    // reviewRowPrimary can decide which control the row fills. Counts only —
+    // whether either button is SHOWING stays syncButton's business, and the
+    // caller checks that separately before applying anything.
+    continuationLineCounts = () => ({ lines: freshLines().length, queued: cr.hu.armed.size });
     // Section 6c: a repertoire chip in the panel plays its move on our board.
     // Same guards as onPanelMoveClick — a move landing mid-animation, mid-
     // promotion or on a quiz board would be anything but "show me that line".
@@ -13750,7 +14098,7 @@
 
       const cluster = document.createElement('span');
       cluster.id = CR_CLUSTER_ID;
-      cluster.className = 'clo-cr';
+      cluster.className = 'clo-review-grp clo-cr'; // shared layout + the practice slot
 
       // Queued lines are NOT started automatically: arriving in a quiz you did
       // not ask for is jarring, and the variation's own final continuations are
@@ -13786,7 +14134,12 @@
       drill.className = 'clo-cr-drill';
       drill.addEventListener('click', () => openDrill(pendingMistakes()));
 
-      cluster.append(queueBtn, button, analyse, drill);
+      // Task order, not append order (v0.58.0, DESIGN-ui-inventory §3.2): the
+      // drill leads, since it spends the mistake group immediately to the left;
+      // then the one clickable-lines launcher (queueBtn and button share a
+      // slot); then Analyse, which is the free-play escape hatch and used to sit
+      // BETWEEN the two practice launchers.
+      cluster.append(drill, queueBtn, button, analyse);
       widget.appendChild(cluster);
       cr.cluster = cluster;
       cr.button = button;
@@ -13821,6 +14174,12 @@
       cr.button.hidden = !show;
       cr.analyseBtn.hidden = !showAnalyse;
       cr.drillBtn.hidden = !showDrill;
+      // The row's one filled control (reviewRowPrimary), not this module's own
+      // judgement of its own importance — which is what had the rarest button
+      // in the extension wearing the loudest treatment (finding F6).
+      const primary = reviewRowPrimary();
+      cr.queueBtn.classList.toggle('clo-rowprimary', showQueue && primary === 'queue');
+      cr.button.classList.toggle('clo-rowprimary', show && primary === 'clickables');
       if (showDrill) {
         cr.drillBtn.textContent = mistakes > 1
           ? 'Drill mistakes (' + mistakes + ')' : 'Drill mistake';
@@ -14517,10 +14876,35 @@
 
     /**
      * Absolute in DOCUMENT coordinates like every other widget here (never
-     * fixed — see section 11). Preferred spot is the gutter LEFT of the board,
-     * which during a quiz is empty: the review panel only ever shows in the
-     * browse state. Otherwise below the board and the trainer's footer, clamped
-     * into the viewport.
+     * fixed — see section 11).
+     *
+     * IN THE BROWSE STATE IT COVERS THE COMMENT (v0.60.0), for the reason the
+     * quiz panel has always covered it: the lines this panel is offering to
+     * quiz are PRINTED THERE, in plain sight. A completed variation's comment
+     * regularly ends with the whole line written out — "If white goes for the
+     * doubled pawns: 7.Bxc6+! bxc6 8.O-O Bg4 9.h3 Bh5 10.d3 Rg8 11.Bf4 Qd5" —
+     * so a heads-up that offers to quiz that line while leaving it on screen has
+     * handed over every answer before the user presses anything. Covering it IS
+     * the point, exactly as in positionOverlays; nothing of ours ever goes
+     * INSIDE it.
+     *
+     * It also fixes what that spot cost us. The old preference was the gutter
+     * LEFT of the board, chosen when this panel only ever appeared mid-quiz —
+     * "which during a quiz is empty: the review panel only ever shows in the
+     * browse state". True then; v0.37.0 extended the panel INTO the browse
+     * state for lines branching at the final position, and the review panel is
+     * in that gutter there, so the two overlapped and this one covered the
+     * Lichess move table. It was covering the one thing that spoils nothing and
+     * leaving visible the one thing that spoils everything.
+     *
+     * `reviewCommentBox` is the comment's own SCROLL CONTAINER, which a live
+     * quiz does not render at all (a quiz prints no comment) — so preferring it
+     * is precisely "cover it in the browse state", and mid-quiz placement is
+     * untouched: the gutter really is free then, and Chessable's own
+     * "Quiz — White to play!" prompt stays readable. The column is deliberately
+     * NOT used as a fallback here, which is where this differs from
+     * positionOverlays: that one is a quiz the user asked for and may be opened
+     * mid-quiz ("Review now"), this one is unsolicited.
      */
     function positionHeadsUp() {
       if (cr.hu.el && !cr.hu.el.hidden) placeHeadsUp();
@@ -14536,6 +14920,23 @@
       const gap = CONFIG.review.panelGap;
       const sx = window.scrollX, sy = window.scrollY;
       const width = Math.min(Math.max(C.headsUpMiniPx + 120, 300), window.innerWidth - gap * 2);
+
+      // The spoiler, when there is one. Sized to the whole container: the
+      // clickable lines are usually the LAST thing in a long comment, so a
+      // panel merely parked at the top of it would leave them showing.
+      const box = document.querySelector(SELECTORS.reviewCommentBox);
+      const br = box ? box.getBoundingClientRect() : null;
+      if (br && br.width > 120 && br.height > 120) {
+        setInlinePx(el, {
+          left: br.left + sx, top: br.top + sy, width: br.width, height: br.height,
+        });
+        return true;
+      }
+      // Every path below sizes to content, so drop a height left over from a
+      // previous cover — otherwise the panel keeps the comment's dimensions
+      // wherever it lands next.
+      if (el.style.height) el.style.height = '';
+
       const gutter = rect.left - gap * 2;
       if (gutter >= width) {
         setInlinePx(el, { left: rect.left + sx - gap - width, top: Math.max(gap, rect.top + sy), width });
