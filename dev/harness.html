@@ -292,6 +292,29 @@ body {
     </div>
 
     <div class="hx-card">
+      <h3>Variation-page header — "Analyse" (19b)</h3>
+      <p class="hx-note">The standalone <code>/variation/</code> page has no trainer row, so the
+         analysis launcher goes in the panel's own header. Bare text like every control beside it
+         (<code>.clo-cr-analyse-head</code>), not the row's outlined <code>.clo-cr-analyse</code>.
+         Live width there is 420px; measured 2026-08-04 it fits on one 38px line.</p>
+      <div class="hx-stage">
+        <div class="clo-panel clo-panel--review hx-pos" style="width:420px">
+          <div class="clo-header">
+            <span class="clo-title">Lichess Database</span>
+            <button type="button" class="clo-cr-analyse-head">Analyse</button>
+            <button type="button" class="clo-engine-toggle">Engine</button>
+            <button type="button" class="clo-cog">⚙</button>
+            <button type="button" class="clo-toggle">Hide</button>
+          </div>
+          <div class="clo-body">
+            <div class="clo-opening">B32 · Sicilian Defense: Open</div>
+            <div class="clo-status">Loading Lichess data…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
       <h3>Degraded states</h3>
       <p class="hx-note">The repertoire line sits OUTSIDE everything <code>showStatus()</code>
          hides — a position with no games is exactly where it is the only answer left.</p>
@@ -1137,6 +1160,10 @@ body {
             <div class="clo-cr-heads__moves">
               <div class="clo-cr-heads__move clo-cr-heads__move--important">3.c3!</div>
               <div class="clo-cr-heads__move">3.d3</div>
+              <!-- Lines written INSIDE the ones above (linesInside, v0.66.1):
+                   carried into the queue and into "Review now", but they do not
+                   branch here, so a quiet count rather than a move of their own. -->
+              <div class="clo-cr-heads__move clo-cr-heads__move--inside">+1 line written inside</div>
             </div>
           </div>
           <div class="clo-cr-heads__btns">

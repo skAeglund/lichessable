@@ -773,6 +773,33 @@ now on the state flip *into* a quiz rather than out of one; and the field has no
 been in a live session, so focus behaviour against Chessable's own focus handling
 is unverified.
 
+### v0.66.0 — the first control outside this row
+
+**Analyse on the variation page** (section 19b). The `/variation/<id>/` page has
+no trainer row at all, so the launcher goes in the Lichess panel's own header,
+beside Engine / ⚙ / Hide. Worth recording because the rules answered it without
+bending, and the answer was *not* "reuse the class":
+
+- **Tier: neutral**, the same one the row's Analyse wears — "an action away from
+  the main task" (§3). Not primary: `reviewRowPrimary()` is about *this row*, and
+  it says nothing about a panel header; more to the point, a header on a page
+  where the user came to read a database has no "one thing to do next".
+- **Vocabulary is the host's, not the tier's default.** The row expresses neutral
+  as a `#3d3a36` outline because everything around it is a button. Every control
+  in the panel header is *bare text* (`.clo-toggle`, `.clo-engine-toggle`), so an
+  outlined button there would be the loudest thing in a panel whose job is to be
+  read. Hence a separate class, `.clo-cr-analyse-head`, sized and coloured to
+  match its neighbours rather than its twin. **A tier is a claim about weight
+  relative to what surrounds the control**, and the surroundings changed.
+- **Placement**: before Engine, so ⚙ and Hide — the panel's own two controls —
+  stay where the user already looks for them.
+
+Measured in the harness (real stylesheet, cache busted) and live at the panel's
+420px: one line, **31px desktop, 57 → 61px under `html.clo-touch`**; the button
+51×18 at 12px, `--clo-text-dim`, zero border — identical to Engine beside it.
+Live: title ends at 278, Analyse 286-337, Engine 345-390, cog 398-417, Hide
+425-458.
+
 ### Next
 
 **Nothing on the change list**, and the parts of it a single session could reach

@@ -506,12 +506,28 @@ Every move number the author printed has to match the position it would be playe
 from, so a line is only quizzed where it actually belongs — including a line
 written inside another one, which is placed on its parent's board rather than on
 the mainline. A line that cannot be placed with certainty is skipped with a
-console note rather than guessed at, and so is a comment that writes several
-branches as one run of moves ("10.dxe6 fxe6 11.Bd3 d5 10...dxe6 …"): it still
-supplies the positions for the lines written inside it, but it is not itself a
-line anyone can play through. This is practice only — nothing is rescheduled, and
-nothing is recorded as proven for auto-play. See
+console note rather than guessed at. This is practice only — nothing is
+rescheduled, and nothing is recorded as proven for auto-play. See
 `DESIGN-continuation-review.md`.
+
+**A comment that writes several branches at once.** Two facts about how
+Chessable turns comment text into clickable moves, both checked by writing the
+comments and reading back what came out: **only text inside parentheses becomes
+clickable** (prose outside stays prose, which is why the extension's own
+"Add as line" writes `(12.Be3 Rb7 13.Nc3)`), and **parentheses nest** — so
+`1.e4 (1.d4 d5) 1...c5` already gives two separate lines and always worked. What
+did not is several branches inside *one* pair of brackets:
+`(4.Qxd4 e5 4.c3 dxc3)`, or the same without any numbers to separate them,
+`(10.dxe6 fxe6 11.Bd3 d5 10...dxe6 …)`. Chessable prints those as ONE run of
+clickable moves and the extension used to drop the whole thing. Since v0.66.0
+each branch is offered as **its own line** — `4.Qxd4 e5` and `4.c3 dxc3` — instead
+of nothing at all. The
+split follows the moves themselves — a move that carries on where the run left
+off continues the branch, one that returns to where a branch was left open
+resumes it (so the main line is re-joined rather than left as two stubs), and
+anything else starts a new branch. Each branch is then judged on its own: one
+that never asks *you* for a move, or that asks for a move the author marked "?",
+is dropped while the others stand.
 
 **Meeting a line where it starts.** The button above only appears once the
 variation is over, by which point you have long left the position each line
@@ -648,6 +664,19 @@ hang a line on — the board was on the starting position, or inside a clickable
 line rather than on a move of the variation itself — and the line underneath
 says which. The comment column behind the overlay still shows the old text; it
 is rebuilt the next time the variation is drawn.
+
+**The same board on a variation page.** Since v0.66.0 the analysis board is also
+available on a standalone variation page (`/variation/<id>/`), where the launcher
+is an **Analyse** button in the Lichess panel's own header — that page has no
+trainer row to put it in. Everything else is identical: our board goes over
+Chessable's, the panel covers the move list beside it, the database and the
+engine follow our position, and **Add as line** appends to the comment on the
+move the board was showing. Two small differences follow from the host. The
+starting position comes from the page's own FEN field rather than from a lesson
+plan, so it is exact wherever you open it. And edit rights need no check at all —
+the page shows an "Edit Variation" link only for a course you can edit, so the
+save goes straight through with no extra window. The page keeps showing the old
+comment until you reload it, and the status line says so.
 
 On a chapter's **Edit Variations** page (`/course/<course>/<chapter>/e/`) the
 extension adds a **Sort by popularity** button, which reorders the whole chapter to
@@ -1434,7 +1463,34 @@ enough not to run, the ↻ button is the only way back.
   the oracle still answers in the browse state — so this needed no board reading
   and no FEN approximation; both lines of the test comment reproduced Chessable's
   own board square for square. A line that fits nowhere is dropped with a console
-  line. While a quiz runs the review panel stands down (`continuationActive`),
+  line.
+- **Branching groups become separate lines** — v0.66.0, `walkLine` +
+  `branchLines`. Chessable prints "1.e4 (1.d4 d5) 1...c5" as one flat run of
+  clickable moves, so the walk is **segmented as it goes**: each move is played
+  from the first of (1) where this segment left off, (2) the end of a segment
+  left open earlier — a variation closing, resumed newest-first so nesting closes
+  innermost-first — or (3) a position the run has already been played from, i.e.
+  a new branch. Rule 2 is what re-joins `1.e4 … 1...c5` into one line instead of
+  hanging the second stub off the *sideline*: the position after 1.e4 is not in
+  the "played from" list at all until something is played from it, so the old
+  scan of that list alone could only find the wrong one. Every candidate is still
+  a position this very line stood on and every move's printed number is still
+  checked, so this is a refinement rather than a looser pass. Verified live on
+  both readers (course 453453, comment `(4.Qxd4 e5 4.c3 dxc3)`): the browse-state
+  scanner logged *"writes 2 branches in one line — 1 of them quizzable"* and went
+  from 4 offered lines to 5, and the heads-up raised both branching moves at that
+  ply and played `Qxd4 e5 | c3 dxc3` through to the end. The entry keeps the
+  whole run (the lines written *inside* it are anchored by their index in it) and
+  adds the branches, which `quizzableLines` — one filter now, shared by the DOM
+  and lesson-plan readers — offers instead of the run. Each branch carries
+  `moveIdx`, its plies' indices in the original run, because a branch's printed
+  spans are not contiguous and `lineSpans` needs them to find the move to click
+  on the way out. Spot-checked against the real `walkLine` in a headless harness:
+  the example above yields `e4 c5` and `d4 d5`, "1.e4 c5 1.d4 d5" the same two,
+  three first-move alternatives yield three lines, and an ordinary line is still
+  reported as one. A **truncated** group (a move we cannot read, `18.--`) is
+  still dropped whole and still only supplies positions for the lines inside it.
+  While a quiz runs the review panel stands down (`continuationActive`),
   since its FEN would describe the board we are covering, and keys are swallowed
   on `document` in capture phase — MoveTrainer2's single-key shortcuts ("n" =
   next variation) ignore focus and one keypress would end the quiz. A refused
@@ -1474,9 +1530,13 @@ enough not to run, the ↻ button is the only way back.
   — except at the **final** position, where the variation is over and there is
   nothing left to give away, so the panel runs in the browse state too and
   offers continuations of either colour (`startPly < finalPly` is the whole
-  test). Only lines anchored on a **mainline** position are raised, since a line
+  test). Only lines anchored on a **mainline** position are *raised*, since a line
   anchored inside another comment line branches from a position the user never
-  plays through. And the clock is the plan's own `fen` located in its
+  plays through — but since v0.66.1 such a line is still **carried**
+  (`linesInside`): the author wrote it as an alternative to a move of the very
+  line being pointed out, so it goes into the queue and into "Review now" with
+  its host instead of being lost, and the panel says "+1 line written inside"
+  rather than printing a move that branches four plies later. And the clock is the plan's own `fen` located in its
   `sourceFen`s — **never** the board, which can hold a stale duplicate piece
   (seen live: a knight on b8 *and* c6 after a rolled-back wrong answer) long
   after any animation, defeating the one-king-per-side check and stopping the
@@ -1587,13 +1647,36 @@ enough not to run, the ↻ button is the only way back.
   name and the engine all key off our position with no other change — and a
   click on a database row plays that move here (the row carries no
   `dataset.uci` in a review document, so the SAN is resolved against our
-  position with `sanToUci`). The starting position is `readReviewFen()`, so it
-  inherits whatever that can answer — exact on the mainline (the lesson plan's
-  own FEN), the home-square castling heuristic with en passant `-` inside a
-  comment line; every position after it is exact. Board orientation moved
+  position with `sanToUci`). The starting position is `analysisStartFen()`: in
+  the trainer that is `readReviewFen()`, so it inherits whatever that can answer
+  — exact on the mainline (the lesson plan's own FEN), the home-square castling
+  heuristic with en passant `-` inside a comment line; every position after it
+  is exact. Board orientation moved
   from `cr.userColor` to `cr.view` so **Flip** cannot change what a quiz asks
   for. Playing writes nothing — no proofs, no rescheduling — and Chessable's own
   board is never touched, so leaving is just hiding the overlays.
+- **The analysis board on a variation page** — section 19b, and deliberately the
+  smallest possible addition: the module already runs in every top document, so
+  what it needed was a `tick` branch, three host-dependent reads, and a place to
+  put the launcher. `variationTick()` does the analysis board and nothing else —
+  the clickable-line quiz, the heads-up, the drill and the retry pass all belong
+  to a trainer session — and reuses `cr.oid` for the page's own variation id,
+  which gives the "variation changed" teardown for free (the page pages between
+  variations with no document load). `analysisStartFen()` reads the page's own
+  readonly `#inputFEN` there, so every start position is exact, castling and en
+  passant included. `analysisEntryMove()` splits into two hosts: on this page the
+  shown move's id **is** its ply index and its class is the colour, and a move
+  highlighted inside a comment is refused for the same reason as in the trainer.
+  `positionOverlays()` covers `#theOpeningMoves`, which sits in the same slot
+  right of the board that the trainer's comment column does. Edit rights come
+  from `variationEditRights()` — hoisted to top level and now shared with
+  quick-edit's own host adapter — so **Add as line** never opens a probe window
+  there: the page renders its "Edit Variation" link only for a course the user
+  can edit, and that answer is never null (which matters, because the variation
+  host reports no `bid` for the shared per-course cache to key on). The launcher
+  is `.clo-cr-analyse-head` in the Lichess panel's header, bare text like every
+  control beside it; `tick` hides it on every non-variation tick, because the
+  panel element itself survives the SPA hop into a trainer session.
 - **Add as line** — the analysis board's one write, and an ordinary quick-edit
   `save` job (section 12) with no change to the driver: the line is rendered as
   numbered SAN from its own start position (`analysisLinePgn`, ellipsis form

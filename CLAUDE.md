@@ -37,7 +37,10 @@ often as the session lasts. A completed variation whose comment holds clickable
 subvariation lines offers "Review clickable(s)" — the button is deliberately not
 named after "continuations", since a line branching off earlier in the variation
 continues nothing — which quizzes those lines on
-OUR OWN board overlaid on Chessable's — theirs is navigation-only (section 18);
+OUR OWN board overlaid on Chessable's — theirs is navigation-only (section 18).
+A comment writing several branches as one run of clickable moves
+("1.e4 (1.d4 d5) 1...c5") yields ONE LINE PER BRANCH, all of them quizzable
+(v0.66.0; before that the whole run was dropped);
 an opt-in setting starts that review by itself, and ending it leaves THEIR board
 on the position the line reached. A "!" on such a line's FIRST move marks it
 IMPORTANT and every host of it — launcher, mid-quiz heads-up, quiz panel — turns
@@ -46,7 +49,9 @@ ANALYSIS board (section 19): "Analyse" on the widget lets any legal move be
 played for either side from the completed position, with the Lichess panel and
 the engine following OUR board instead of Chessable's, and "Add as line" writes
 the line worked out there back into the course as a clickable line in the
-comment of the move it was opened on. A COURSE page
+comment of the move it was opened on; it opens on the standalone variation page
+too (section 19b), from an "Analyse" button in the Lichess panel's own header —
+that page has no trainer row to host one. A COURSE page
 (`https://www.chessable.com/course/<bid>/`) gets a "Repertoire coverage" panel
 (section 21): it walks the course's move tree against one of the user's own
 courses, lists the variations that are missing ranked by how likely the user is
@@ -1583,17 +1588,79 @@ Currently working (v0.18.x).
   deliberately NOT collected: two lines showing different replies to one
   position is the ordinary "and if he plays this instead" case (verified live —
   variation 70382641's two lines branch from the same position and both stay).
-  A comment line is often not a line: authors write several branches in one
-  breath ("10.dxe6 fxe6 11.Bd3 d5 10...dxe6 11.Qxd8 …") and Chessable makes
-  every move of that a clickable sub-move in the SAME group. `walkLine` handles
-  it by REWINDING to the latest earlier position a move's printed number names
-  (and where its SAN is legal); a group that needed a rewind is `branched` and a
-  group with a move we cannot read (Chessable writes null moves as `18.--`) is
-  `truncated`. NEITHER is quizzed — playing them straight through would ask for
-  moves from positions the author never joined up — but both are still stored in
-  `resolved`, because their positions are the ONLY way to place the lines
-  written inside them (that is what makes the `12.Be3` line above resolvable at
-  all: its anchor exists only inside its unquizzable parent). Also dropped: a line whose USER-colour move is annotated
+  WHAT MAKES A MOVE CLICKABLE — ground-truthed 2026-08-04 on course 453453 by
+  writing three comments and reading back what Chessable rendered, because the
+  answer decides which of the two shapes below the reader ever meets:
+  * PARENTHESES DO. Text OUTSIDE them is prose, however move-like it looks:
+    `Branch test: 5.Nb3 (5.Nc3 Qxb2) 5...Nf6` rendered ONE clickable group,
+    `5.Nc3 Qxb2` — "5.Nb3" and "5...Nf6" stayed plain text. So section 19's
+    "Add as line" wrapping its output in parentheses is not decoration, and a
+    comment written without them is not quizzable at all.
+  * PARENTHESES NEST, exactly as PGN does.
+    `Branch test: (5.Nb3 (5.Nc3 Qxb2) 5...Nf6)` gave ids `7.0.0` + `7.0.1` for
+    the outer line and `7.0.0.0.0` + `7.0.0.0.1` for the inner — TWO groups,
+    which `subMoveGroups` already separates and which have always resolved. So
+    the user's own example, `1.e4 (1.d4 d5) 1...c5`, was never the broken case.
+  * THE BROKEN CASE IS SEVERAL BRANCHES INSIDE ONE PAIR OF PARENTHESES.
+    `Flat branch test: (4.Qxd4 e5 4.c3 dxc3)` gave ONE group — `5.0.0` `5.0.1`
+    `5.0.2` — whose third move rewinds. That is what `branched` means and what
+    was dropped whole.
+  A comment line is therefore often not a line: authors write several branches in
+  one breath ("10.dxe6 fxe6 11.Bd3 d5 10...dxe6 11.Qxd8 …") and Chessable makes
+  every move of that a clickable
+  sub-move in the SAME group. SINCE v0.66.0 EACH BRANCH IS ITS OWN LINE, and
+  `walkLine` is what cuts them apart: it SEGMENTS as it walks, playing each move
+  from the first of
+  (1) where the current segment left off — no branch;
+  (2) the END of a segment left open earlier ⇒ a variation closed, so RESUME it,
+      scanned NEWEST-FIRST so nesting closes innermost-first;
+  (3) a position already played FROM ⇒ a new branch off an earlier move.
+  RULE 2 IS THE ONE THAT WAS MISSING and it is not a nicety: the position after
+  1.e4 is not in `before` at all until something is played from it, so the old
+  scan of `before` alone could only ever find the position inside the SIDELINE —
+  "1...c5" was anchored after 1.d4, i.e. quizzed as an answer to the wrong move.
+  It is a REFINEMENT, not a looser pass: every candidate is a position this very
+  line stood on, and `moveFits` still checks the printed move number of EVERY
+  move as well as legality. Spot-checked against the real `walkLine` in a
+  headless harness before anything was written down, then GROUND-TRUTHED LIVE
+  2026-08-04 (course 453453, overstudy of 70382641, comment
+  `Flat branch test: (4.Qxd4 e5 4.c3 dxc3)` on 3...cxd4) on BOTH readers:
+  * DOM/browse — `continuation: line 5|5.0 (Qxd4 e5 c3) writes 2 branches in one
+    line — 1 of them quizzable`, `line 5|5.0#1 (c3) has no move for the user —
+    skipped`, then `5 line(s) ready — h3 Nc6 | c3! d5 | Qxd4 e5 | Nb3 Nf6 |
+    Nc3 Qxb2` and a launcher reading "Review clickables (5)". Before the change
+    that group contributed nothing, so it was 4.
+  * PLAN/heads-up — the panel raised BOTH branching moves at 3...cxd4 ("Qxd4",
+    "c3"), and "Review now" ran `starting 2 line(s) now — Qxd4 e5 | c3 dxc3`,
+    played to `all lines done`. The two readers legitimately disagree on the
+    second branch: the DOM stops making moves clickable after `4.c3` while the
+    server's own comment JSON still carries `dxc3`, so the plan reader has a user
+    move there and the DOM reader does not. Both answers are right about what
+    their source says — which is why `quizzableLines` judges each branch on its
+    own rather than the group as a whole.
+  Note also: the browse-state gates need a CLEAN completion. A run that ends in
+  "Time's up" renders the move list and the clickable lines but NO
+  `practiceProgress` block, so `reviewBrowseReady()` stays false and the launcher
+  never appears — which under automation (where the clamped timers make "Time's
+  up" the default outcome) reads exactly like a broken scan.
+  `branched` now means `segments.length > 1` (equivalent to the old "a rewind
+  happened" — a rewind can only create or resume, both of which need a second
+  segment). The entry keeps the WHOLE run in `plies`/`before` and ADDS
+  `branches`, because the lines written INSIDE it are anchored by their index in
+  the run; `quizzableLines` — ONE filter now, shared by the DOM scanner and the
+  lesson-plan reader, which had drifting copies of the same three rules — offers
+  the branches instead of the run and judges each on its own (no user-colour
+  move, or a "?" on one, drops that branch and leaves the others).
+  Each branch carries `moveIdx`, its plies' indices in the ORIGINAL run: a
+  branch's printed spans are NOT contiguous, so `lineSpans` (and through it
+  `navigateToLineEnd`) cannot find the move to click without them — it maps ply n
+  through `moveIdx` and returns the spans FOR THAT LINE, not the whole group.
+  A group with a move we cannot read (Chessable writes null moves as `18.--`) is
+  `truncated` and is still dropped WHOLE — its last branch stops mid-line — but,
+  like every unquizzable group, it is still stored in `resolved`, because its
+  positions are the ONLY way to place the lines written inside it (that is what
+  makes the `12.Be3` line above resolvable at all: its anchor exists only inside
+  its unquizzable parent). Also dropped: a line whose USER-colour move is annotated
   "?", "??" or "?!" — authors use these lines to show what NOT to play, and
   quizzing one would drill the blunder as repertoire. `quickEditSanFromEl`
   STRIPS eval glyphs (the edit page's ids carry none), so `moveAnnotation()`
@@ -1714,9 +1781,36 @@ Currently working (v0.18.x).
     there too (`startPly < finalPly` is the whole test). The wording follows:
     "The opponent can also respond with:" mid-variation, "From here the
     opponent can play:" / "You can also carry on with:" at the end.
-  * ONLY lines anchored on a MAINLINE position (`fens.indexOf(startFen) >= 0`).
-    A line anchored inside another comment line branches from a position the
-    user never plays through, so there is no moment at which to raise it.
+  * ONLY lines anchored on a MAINLINE position (`fens.indexOf(startFen) >= 0`)
+    are RAISED. A line anchored inside another comment line branches from a
+    position the user never plays through, so there is no moment at which to
+    raise it. BUT IT IS STILL CARRIED (`linesInside`, `groupLines`, v0.66.1 —
+    reported and reproduced live on variation 71087636 with the comment
+    `(6.O-O! fxe4 7.Nxe4 (7.Ne5 d6 and Black is better.) 7...d5 …)`, where the
+    console read `2 clickable line(s) …, 1 can be pointed out`). That rule was
+    right about when to SHOW such a line and wrong about what to do with it: the
+    author wrote `(7.Ne5 d6)` as an alternative to a move of the very line being
+    pointed out, so it is part of the SAME offer, and dropping it made
+    "Review on variation end" and "Review now" quietly review half of what the
+    comment says. The browse-state launcher never had the problem — it has no
+    mainline rule and always offered both, which is why this looked like a
+    branching bug rather than a heads-up one.
+    CARRIED, NOT PRINTED: the panel's rows are the alternatives at THIS position
+    and a move branching four plies later is not one, so `showHeadsUp` adds a
+    quiet "+n line(s) written inside" row instead and the mini board's arrows
+    stay `group.lines` only. `armHeadsUp`/`reviewNow`/the "already armed" test
+    take `groupLines(group)` = `lines` + `inside`; `headsUpScan` extends the
+    `tagLinesInCourse` candidates the same way, since a carried line that is
+    already in the course must be able to drop out for the same reason a raised
+    one is.
+    THE RELATION IS DERIVED FROM POSITIONS, never from the comment keys, so it
+    holds for both readers with no key surgery: a line is inside another when it
+    starts on a position that other line REACHES. Its own start position is
+    deliberately NOT in that set — a line starting where the host starts is a
+    SIBLING, and at the root those are raised in their own right; including it
+    would duplicate them into the queue. Exact string compare, like the mainline
+    test: `resolveCommentLine` anchors a nested line on one of its parent's own
+    FENs, so the two are the same string and not merely the same position.
   * The clock is the plan's own `fen` (Chessable's current position) located in
     the plan's `sourceFen`s — `pollHeadsUpPly`, asynchronous, so at most one
     tick stale, which is the right lag (the panel must not blink out on the
@@ -1993,7 +2087,8 @@ Currently working (v0.18.x).
   would drive Chessable's board, which does not work), so the SAN is resolved
   with `sanToUci` against `cr.pos`; it stands down while the quick-edit popup is
   open, which reads the same clicks for its alt tab. The START position is
-  `readReviewFen()`, so it inherits whatever that can answer — exact on the
+  `analysisStartFen()`, which in the trainer is `readReviewFen()`, so it inherits
+  whatever that can answer — exact on the
   mainline (the lesson plan's own FEN), home-square castling and en passant "-"
   inside a comment line — and every position after it is exact. `positionReviewPanel`'s below-the-board fallback now also clears
   `CR_PANEL_ID`, for the stacked layout where both park under the board.
@@ -2048,6 +2143,67 @@ Currently working (v0.18.x).
   playing after stepping back truncates, so the list IS the line. Chessable's
   comment column behind our overlay keeps the OLD text until the trainer redraws
   the variation, so the status line is the entire confirmation.
+- THE ANALYSIS BOARD ON A VARIATION PAGE (section 19b, v0.66.0; ground-truthed
+  end to end 2026-08-04 on /variation/70382641/): the `/variation/<oid>/` page is
+  the analysis board's SECOND host, and it cost a `tick` branch plus three
+  host-dependent reads because the module already runs in every top document and
+  the page's board is the STANDARD chessboard.js markup the trainer's is —
+  measured live: `.chessboard-63f37` 452px with no `[data-testid=boardContainer]`
+  wrapper (so `getReviewBoard()`'s document fallback finds it), 64
+  `.square-55d63` carrying `square-e4` classes AND `e4-<uuid>` ids, and
+  `div.piece-417db[data-piece=wR]` with an `<svg>` child, so `harvestBoardPieces`
+  and `trainerUserColor` work unchanged.
+  ONLY THE ANALYSIS BOARD. `variationTick` is deliberately not a smaller copy of
+  the trainer tick: the clickable-line quiz, the heads-up, the drill and the
+  retry pass all belong to a SESSION. It reuses `cr.oid` for the page's own
+  variation id, which buys the "variation changed" teardown for free — the page's
+  pager navigates with NO document load (section 12c), so an open board must not
+  survive into the next variation. Verified live: pager click ⇒ 'analysis board:
+  variation changed' and the launcher back on the new one.
+  * `analysisStartFen()` reads the page's own readonly `#inputFEN` here (section
+    11b — it is kept current on every move navigation), so EVERY start position
+    is exact, castling and en passant included, even inside a comment line where
+    the trainer host must fall back to the home-square heuristic. NOT `readFen()`:
+    that prefers OUR board, which is the thing being opened.
+  * `readFen()` now asks `continuationAnalysisFen()` FIRST on both review hosts,
+    above the `isVariationPath()` split — otherwise the input read below it wins
+    and the panel sits on the move Chessable's board was left on.
+  * `analysisEntryMove()` splits into `reviewEntryMove` / `variationEntryMove`.
+    Here the shown move's id IS its 0-based ply index and its class is the colour
+    (`variationMoveDescriptor`, quick-edit's own). `variationMoveShown` is NOT
+    scoped to the mainline — a clickable move inside a comment wears the same
+    highlight class — so membership of the `variationMoves` list is what refuses
+    one, for the review host's reason: our line would continue from a position no
+    mainline comment hangs at.
+  * `positionOverlays()` covers `SELECTORS.variationMovesBox` (`#theOpeningMoves`)
+    when neither comment selector matches. Measured live: it is 488x489 at
+    [948,195], i.e. exactly the trainer's comment-column slot right of the board
+    inside `.grid-variation`, and our panel lands on it to the pixel.
+  * EDIT RIGHTS NEED NO PROBE and must not start one. `variationEditRights()` was
+    hoisted to top level out of quick-edit's `HOSTS.variation` and is now shared:
+    the page renders its "Edit Variation" link only for a course the user can
+    edit, so the answer is never null. That is load-bearing rather than an
+    optimisation — the variation host reports NO `bid`, so `quickEditApi.rightsFor('')`
+    would answer "unknown" and open a driver window for a question already
+    answered on screen.
+  * THE LAUNCHER IS IN THE LICHESS PANEL'S HEADER (`CR_VARBTN_ID`,
+    `.clo-cr-analyse-head`), because this page has no trainer row and the panel is
+    the surface the board is ABOUT — it is what follows our position once the
+    board is open. Same TIER as the row's Analyse (neutral, DESIGN-ui-inventory
+    §3), different vocabulary: every control in that header is bare text, and an
+    outlined button among them would be the loudest thing in a panel whose job is
+    to be read. Measured live at 420px: title ends at 278, Analyse 286-337,
+    Engine 345-390, cog 398-417, Hide 425-458 — one 38px line.
+  * `tick` calls `hideVariationButton()` on EVERY non-variation tick, not just
+    from `syncButton`: the panel ELEMENT survives the SPA hop into a trainer
+    session (`reviewPanelTick` only re-mounts a DETACHED panel), and the mid-quiz
+    branch returns without reaching `syncButton` at all — so the button would
+    otherwise still be sitting in the trainer's panel header.
+  * After a save the page keeps showing the old comment. `refreshVariationPage`
+    (12c) COULD re-read in place and is deliberately not called: it pages away
+    and back with our board still up, and every hazard in that function's own
+    notes would apply with an overlay over the board. The status line says
+    "Reload the page to see it" instead.
 - Mistake drill (section 20, v0.45.0; verified live 2026-07-29): the fast
   alternative to the retry pass —
   the session's failed MOVES, one card each, instead of their whole variations.
@@ -2350,6 +2506,24 @@ What the harness CANNOT answer: anything that depends on Chessable's own DOM,
 on trainer state, or on timing — placement/anchoring, the browse-state gates,
 board adoption, and every JS behaviour change. Those still need a live session
 and an extension reload.
+
+A DRIVEN TAB REPORTS ITSELF `document.hidden` (the same fact section 18b's
+heads-up gave up its hidden-tab guard over), and Chrome then clamps EVERY timer
+in it to ~1 s. THE LICHESS PANEL THEREFORE NEVER FETCHES IN AN AUTOMATED TAB and
+this looks exactly like a bug you have just introduced: the panel mounts, is
+positioned correctly, `readFen()` returns a good FEN — and no "position:" line is
+ever logged. The cause is a livelock between two clamped timers, not the panel:
+the 500 ms poll (`CONFIG.review.pollMs`) calls `scheduleRefresh()`, whose 300 ms
+debounce (`CONFIG.debounceMs`) is clamped to 1 s as well, so the next tick clears
+it before it can fire, for ever. Diagnosed 2026-08-04 after it was mistaken twice
+for a regression. It is harmless in a real, visible tab — and a hidden tab not
+fetching is the behaviour you would want anyway — so DO NOT "fix" it. To see the
+panel populate under automation, front the tab (a `navigate` call does) and read
+back within the moment it is visible, or drive the position change and check the
+DOM rather than waiting on the poll. Everything that does NOT go through this
+debounce — the overlays, the launchers, the continuation module's own tick —
+works normally in a hidden tab, which is why the analysis board could be verified
+end to end while the panel behind it sat idle.
 
 ## Reloading the extension (READ THIS BEFORE TESTING)
 

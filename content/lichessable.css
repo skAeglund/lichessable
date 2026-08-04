@@ -2706,6 +2706,26 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: #fff;
 }
 
+/* The same control on the standalone variation page (section 19b), where there
+   is no trainer row to put it in and it goes in the Lichess panel's own header.
+   SAME TIER (neutral — an action away from the main task), different vocabulary:
+   every control in that header is bare text, so an outlined button among them
+   would be the loudest thing in a panel whose whole job is to be read. Sized and
+   coloured exactly like .clo-toggle / .clo-engine-toggle beside it. */
+.clo-cr-analyse-head {
+  border: none;
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 2px 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cr-analyse-head:hover {
+  color: #fff;
+}
+
 /* "Drill mistakes" (section 20). GREEN OUTLINE since v0.58.0, not the amber it
    borrowed from the mistake cluster. It was pixel-identical to "Mistakes (3)"
    four controls away — same border, same text colour, same padding, both ending
@@ -3022,6 +3042,17 @@ html.clo-injecting .legal-square-capture-mt2 {
    still tellable apart once the panel as a whole is amber. */
 .clo-cr-heads__move--important {
   color: var(--clo-cr-important);
+}
+
+/* Lines written INSIDE the ones printed above (linesInside). They are carried
+   into the queue and into "Review now" but they do not branch HERE, so they get
+   a count rather than a move — and it is deliberately quiet: this is a footnote
+   about what comes along, not a third alternative competing with the two real
+   ones above it. */
+.clo-cr-heads__move--inside {
+  color: var(--clo-text-dim);
+  font-weight: 400;
+  font-size: 12px;
 }
 
 /* THE LAUNCHERS, and on both of them the mark is a RING (v0.58.0). Said BEFORE
@@ -3493,7 +3524,8 @@ html.clo-touch .clo-stub-badge {
 /* Header controls are the smallest tap targets in the panel — the padding
    matters more than the type size here. */
 html.clo-touch .clo-toggle,
-html.clo-touch .clo-engine-toggle {
+html.clo-touch .clo-engine-toggle,
+html.clo-touch .clo-cr-analyse-head {
   font-size: 16px;
   padding: 8px 12px;
 }

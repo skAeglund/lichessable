@@ -157,6 +157,11 @@
     // subvariations), hence the > span > child scoping.
     variationMoves:    '#theOpeningMoves > span > .whiteMove, #theOpeningMoves > span > .blackMove',
     variationMoveShown: '#theOpeningMoves .textMoveHighlighted', // the move the board is on
+    // The box that list lives in — the analysis board (section 19) covers it
+    // with its own panel, the way it covers the trainer's comment column.
+    // Measured live 2026-08-04: 488x489, sitting right of the board inside
+    // .grid-variation, which is exactly the trainer's comment-column slot.
+    variationMovesBox: '#theOpeningMoves',
     variationEditLink: 'a[href*="/explore/edit/"]', // "Edit Variation" — rendered only with edit rights
     // The page's own variation pager, used to make it re-read a variation we
     // just changed (section 12c). Stable ids, so no language-dependent text
@@ -764,6 +769,7 @@
   const MX_POPUP_ID   = 'lichessable-mx-popup'; // the mistake list popup (section 17)
   const MX_SHIELD_ID  = 'lichessable-mx-shield'; // the retry transition shield (section 17)
   const CR_CLUSTER_ID = 'lichessable-cr';       // "Review clickables" cluster (section 18)
+  const CR_VARBTN_ID  = 'lichessable-cr-var';   // "Analyse" in the panel header, variation page (19b)
   const CR_BOARD_ID   = 'lichessable-cr-board'; // our quiz board, overlaid on Chessable's (section 18)
   const CR_PANEL_ID   = 'lichessable-cr-panel'; // prompt/controls, covering the comment column (section 18)
   const CR_HEADS_ID   = 'lichessable-cr-heads'; // mid-quiz "the opponent can also…" heads-up (section 18b)
@@ -1076,11 +1082,15 @@
     // (section 11) — but the standalone variation page, though also a top
     // document, DOES have one (readonly, updated on every move navigation),
     // so it falls through to the normal input read (section 11b).
-    if (IS_REVIEW && !isVariationPath()) {
+    if (IS_REVIEW) {
       // The analysis board (section 19) covers Chessable's, and the position
       // being looked at is ours — so it, not their DOM, is the source here.
+      // Asked FIRST on both review hosts: since v0.66.0 the analysis board also
+      // opens on the variation page, where the input below is otherwise the
+      // truth and would keep the panel on the move the board was left on.
       const analysis = continuationAnalysisFen && continuationAnalysisFen();
-      return analysis || readReviewFen();
+      if (analysis) return analysis;
+      if (!isVariationPath()) return readReviewFen();
     }
     const input = document.querySelector(SELECTORS.fenInput);
     const value = input ? input.value.trim() : '';
@@ -5147,6 +5157,20 @@
     return { san, color: el.classList.contains('whiteMove') ? 'w' : 'b', plyIndex };
   }
 
+  /**
+   * Edit rights on the standalone variation page, which needs no probe: the
+   * page itself is the signal, since Chessable renders the "Edit Variation"
+   * link only for a course you can actually edit. Never null — unlike the
+   * trainer's tri-state, where rights can only be learnt by opening a tab.
+   *
+   * Top level because two modules ask: quick-edit's HOSTS.variation and the
+   * analysis board's "Add as line" (section 19), which must NOT fall through to
+   * quickEditApi there — the variation host reports no bid, so the shared cache
+   * would answer "unknown" and open a driver window for a question the page has
+   * already answered.
+   */
+  const variationEditRights = () => Boolean(document.querySelector(SELECTORS.variationEditLink));
+
   /** Current variation id in the review browse state (marker row, then link).
    *  A /learn/ overstudy tab has the id in its URL itself
    *  (/learn/<bid>/<oid>/<lid> — constant for the tab's whole session). */
@@ -5979,7 +6003,7 @@
         // No probe needed here: the page itself is the rights signal, since
         // Chessable only renders the "Edit Variation" link (Repertoire Admin
         // box) for a course you can actually edit. Never null.
-        rights: () => Boolean(document.querySelector(SELECTORS.variationEditLink)),
+        rights: () => variationEditRights(),
         refresh: () => refreshVariationPage(),
         // Same bottom-of-board signal as review; the variation page's board is
         // the standard chessboard.js one, so squares come from findSquare.
@@ -12402,6 +12426,7 @@
       button: null,
       queueBtn: null,     // "Review queued lines" (section 18b)
       analyseBtn: null,   // "Analyse" (section 19)
+      varBtn: null,       // …and its variation-page twin, in the panel header (19b)
       drillBtn: null,     // "Drill mistakes" (section 20)
       // --- mistake drill (section 20) --------------------------------------
       // Only a tally: a drill card carries its own log entry on the line.
@@ -12550,38 +12575,98 @@
      * Plays a line's moves from `fen`, returning null the moment one cannot be
      * played anywhere — which is exactly how a wrong anchor is rejected.
      *
-     * A comment line is not always a line: authors write several branches in
-     * one breath ("10.dxe6 fxe6 11.Bd3 d5 10...dxe6 11.Qxd8 …"), and Chessable
-     * makes every one of those a clickable move in the SAME group. A move whose
-     * printed number names an earlier position REWINDS to it (the latest one it
-     * fits), which is what makes such a group yield usable positions for the
-     * lines written inside it. The line itself is then marked `branched` and is
-     * NOT quizzed — playing it straight through would ask for moves from
-     * positions the author never joined up.
+     * A COMMENT LINE IS NOT ALWAYS A LINE. Authors write several branches in one
+     * breath ("10.dxe6 fxe6 11.Bd3 d5 10...dxe6 11.Qxd8 …", and the parenthesised
+     * form "1.e4 (1.d4 d5) 1...c5"), and Chessable makes every one of those a
+     * clickable move in the SAME group. So the walk is SEGMENTED as it goes: each
+     * move is played from the first of these that accepts it —
+     *
+     *  1. where this segment left off — the ordinary case, no branch;
+     *  2. the END of a segment left open earlier ⇒ the variation that
+     *     interrupted it is over, so RESUME it (newest first, i.e. variations
+     *     close innermost-first, exactly as they were opened);
+     *  3. a position this line has already been played FROM ⇒ a new branch off
+     *     an earlier move.
+     *
+     * Rule 2 is what re-joins "1.e4 … 1...c5" into ONE line instead of leaving
+     * two one-move stubs with the second hanging off the sideline — the position
+     * after 1.e4 is not in `before` at all until something is played from it, so
+     * a scan of `before` alone (all this used to do) could only find the wrong
+     * one. It is a refinement, not a looser pass: every candidate is a position
+     * this very line stood on, and moveFits still checks the printed move number
+     * of EVERY move as well as its legality.
+     *
+     * `segments` is those branches as playable lines, `plies`/`before` the whole
+     * group in printed order (which is what the lines written INSIDE this one
+     * are anchored on, by their index in the group). `branched` — more than one
+     * segment — means the group as printed must not be quizzed straight through:
+     * quizzableLines offers its segments instead.
      */
     function walkLine(fen, moves) {
-      let cur = fen;
       const before = [];  // before[i] = the position move i was played FROM
       const plies = [];
-      let branched = false;
+      const segs = [];    // the separate lines this group spells out
+      let cur = null;     // the segment being written right now
       for (const mv of moves) {
-        let from = moveFits(cur, mv) ? cur : null;
-        if (!from) {
-          for (let i = before.length - 1; i >= 0; i--) {
-            if (moveFits(before[i], mv)) { from = before[i]; break; }
-          }
-          if (!from) return null;
-          branched = true;
+        let from = null;
+        let host = null;  // the segment this move belongs to; null ⇒ a new one
+        const here = cur ? cur.endFen : fen;
+        if (moveFits(here, mv)) { from = here; host = cur; }
+        for (let s = segs.length - 1; s >= 0 && !from; s--) {
+          if (segs[s] !== cur && moveFits(segs[s].endFen, mv)) { from = segs[s].endFen; host = segs[s]; }
         }
+        for (let i = before.length - 1; i >= 0 && !from; i--) {
+          if (moveFits(before[i], mv)) from = before[i];
+        }
+        if (!from) return null;
         const pos = CloSan.parseFen(from);
         const uci = pos && sanToUci(pos, mv.san);
         const next = uci ? fenAfterUci(from, uci) : null;
         if (!next) return null;
+        const ply = { san: mv.san, uci, color: pos.side, fen: next, annot: mv.annot };
+        if (!host) {
+          host = { startFen: from, plies: [], before: [], moveIdx: [], endFen: from };
+          segs.push(host);
+        }
+        host.plies.push(ply);
+        host.before.push(from);
+        // The ply's index in the GROUP, which is the only way back to the
+        // printed move: a branch's spans are not contiguous, so lineSpans (and
+        // through it navigateToLineEnd) could not otherwise find the one to
+        // click.
+        host.moveIdx.push(plies.length);
+        host.endFen = next;
+        cur = host;
         before.push(from);
-        plies.push({ san: mv.san, uci, color: pos.side, fen: next, annot: mv.annot });
-        cur = next;
+        plies.push(ply);
       }
-      return { plies, before, branched };
+      return { plies, before, branched: segs.length > 1, segments: segs };
+    }
+
+    /**
+     * A branched group's segments as lines in their own right, or null when the
+     * walk was a single line after all (the ordinary case, where the line itself
+     * is what gets quizzed).
+     *
+     * Additional objects, never a replacement: the parent entry keeps the WHOLE
+     * walk, because the lines written INSIDE this one are anchored on
+     * `plies`/`before` by a branch index that counts moves in the group.
+     */
+    function branchLines(base, walk, finalFen) {
+      const segs = walk.segments;
+      if (segs.length < 2) return null;
+      return segs.map((seg, n) => ({
+        key: base.key + '#' + n,
+        startFen: seg.startFen,
+        plies: seg.plies,
+        before: seg.before,
+        moveIdx: seg.moveIdx,
+        branched: false,
+        truncated: false,
+        inCourse: null,
+        label: seg.plies.map((p) => p.san + (p.annot || '')).join(' '),
+        fromFinal: seg.startFen === finalFen,
+      }));
     }
 
     /**
@@ -12727,6 +12812,7 @@
         ? [...new Set([...branchFens, ...attachFens, ...parentFens, ...fens])]
         : [...new Set([...branchFens, ...attachFens])];
 
+      const finalFen = fens[fens.length - 1];
       for (const fen of anchors) {
         const walk = walkLine(fen, moves);
         if (!walk) continue;
@@ -12735,7 +12821,12 @@
           startFen: fen,
           plies: walk.plies,
           before: walk.before,
+          moveIdx: walk.plies.map((p, i) => i),
           branched: walk.branched,
+          // The branches this group really spells out, when it is more than one
+          // line written in a single breath (splitWalk). Null for the ordinary
+          // single line, which is quizzed as itself.
+          branches: branchLines({ key: group.key }, walk, finalFen),
           truncated,
           inCourse: null, // set by tagLinesInCourse: a title, true, or stays null
           label: moves.map((m) => m.san + m.annot).join(' '),
@@ -12743,12 +12834,59 @@
           // branching off somewhere in the middle of it, and the user may want
           // only the former — hence the chooser in openReview. Comparing FEN
           // strings is exact here: both sides come out of the same `fens` array.
-          fromFinal: fen === fens[fens.length - 1],
+          fromFinal: fen === finalFen,
         };
       }
       log('continuation: no position fits line', group.key,
         '(' + moves.map((m) => m.san).join(' ') + ') — line skipped');
       return null;
+    }
+
+    /**
+     * What a resolved group actually offers the quiz: itself, or — when it
+     * writes several branches in one breath — each of those branches, minus the
+     * ones there is no point asking. Shared by both readers (the browse-state
+     * DOM scanner and the lesson-plan one), which applied identical rules in two
+     * places and must not drift now that a group can yield more than one line.
+     *
+     * A TRUNCATED group is still dropped whole: its last branch stops at a move
+     * we cannot read ("18.--"), and the entry only survives at all so the lines
+     * written INSIDE it have positions to anchor on.
+     *
+     * @param {string} tag  log prefix — which reader is speaking
+     */
+    function quizzableLines(line, userColor, tag) {
+      if (line.truncated) {
+        log(tag + ': line', line.key, '(' + line.label + ') has a move we cannot read —',
+          'not quizzed; its positions still place the lines written inside it');
+        return [];
+      }
+      const out = [];
+      for (const part of line.branches || [line]) {
+        // The user answers their own colour only; a line that never reaches
+        // their move has nothing to quiz.
+        if (!part.plies.some((p) => p.color === userColor)) {
+          log(tag + ': line', part.key, '(' + part.label + ') has no move for the user — skipped');
+          continue;
+        }
+        // Authors also use these lines to show what NOT to play, marking the
+        // move "?", "??" or "?!". Quizzing such a line would drill the blunder
+        // as if it were the repertoire, so the whole line is dropped. Only the
+        // USER's moves count: an annotated OPPONENT move is the premise of a
+        // line whose point is how to punish it, and stays quizzable.
+        const blunder = part.plies.find((p) => p.color === userColor && isBlunderAnnot(p.annot));
+        if (blunder) {
+          log(tag + ': line', part.key, '(' + part.label + ') asks the user to play',
+            blunder.san + blunder.annot, '— skipped as a move to avoid');
+          continue;
+        }
+        out.push(part);
+      }
+      if (line.branches) {
+        log(tag + ': line', line.key, '(' + line.label + ') writes',
+          line.branches.length, 'branches in one line —', out.length, 'of them quizzable');
+      }
+      return out;
     }
 
     /**
@@ -13010,35 +13148,9 @@
       for (const group of groups) {
         const line = resolved.get(group.key);
         if (!line) continue;
-        // Resolved, but only as a place to hang the lines written inside it.
-        if (line.truncated) {
-          log('continuation: line', line.key, '(' + line.label + ') has a move we cannot read —',
-            'not quizzed; its positions still place the lines written inside it');
-          continue;
-        }
-        if (line.branched) {
-          log('continuation: line', line.key, '(' + line.label + ') writes several branches in one',
-            'line — not quizzed; its positions still place the lines written inside it');
-          continue;
-        }
-        // The user answers their own colour only; a line that never reaches
-        // their move has nothing to quiz.
-        if (!line.plies.some((p) => p.color === userColor)) {
-          log('continuation: line', line.key, '(' + line.label + ') has no move for the user — skipped');
-          continue;
-        }
-        // Authors also use these lines to show what NOT to play, marking the
-        // move "?", "??" or "?!". Quizzing such a line would drill the blunder
-        // as if it were the repertoire, so the whole line is dropped. Only the
-        // USER's moves count: an annotated OPPONENT move is the premise of a
-        // line whose point is how to punish it, and stays quizzable.
-        const blunder = line.plies.find((p) => p.color === userColor && isBlunderAnnot(p.annot));
-        if (blunder) {
-          log('continuation: line', line.key, '(' + line.label + ') asks the user to play',
-            blunder.san + blunder.annot, '— skipped as a move to avoid');
-          continue;
-        }
-        lines.push(line);
+        // Resolved, but a truncated group is only a place to hang the lines
+        // written inside it; a branched one yields its branches.
+        for (const part of quizzableLines(line, userColor, 'continuation')) lines.push(part);
       }
 
       return { lines: dropAmbiguous(lines, plan, fens, userColor), fens, userColor };
@@ -13726,6 +13838,10 @@
      * positions the author never joined up.
      */
     function analysisEntryMove() {
+      return isVariationPath() ? variationEntryMove() : reviewEntryMove();
+    }
+
+    function reviewEntryMove() {
       if (document.querySelector(SELECTORS.reviewSubMoveShown)) {
         return { why: 'The board was inside a clickable line, not on a move of the variation ' +
           '— a line can only be added after a move of the variation itself.' };
@@ -13741,6 +13857,42 @@
       return {
         move: {
           oid, bid: readQuickEditBid() || '',
+          san: desc.san, color: desc.color, plyIndex: desc.plyIndex,
+        },
+      };
+    }
+
+    /**
+     * The same answer on the standalone variation page (section 19b), where
+     * Chessable hands it over directly: the shown move's own id IS its 0-based
+     * ply index and its class is the colour (variationMoveDescriptor).
+     *
+     * The highlight selector is NOT scoped to the mainline — a clickable move
+     * inside a comment wears it too — so membership of the mainline list is what
+     * separates the two, and a comment move is refused for the review host's
+     * reason: our line would then continue from a position no mainline comment
+     * hangs at, and its move numbers would name positions the author never
+     * joined up.
+     */
+    function variationEntryMove() {
+      const shown = document.querySelector(SELECTORS.variationMoveShown);
+      if (!shown) {
+        return { why: 'The board was on the starting position, which has no move to comment on.' };
+      }
+      const moves = [...document.querySelectorAll(SELECTORS.variationMoves)];
+      if (moves.indexOf(shown) < 0) {
+        return { why: 'The board was inside a clickable line, not on a move of the variation ' +
+          '— a line can only be added after a move of the variation itself.' };
+      }
+      const desc = variationMoveDescriptor(shown);
+      if (!desc) return { why: 'The move on the board could not be read.' };
+      const m = VARIATION_PATH_RE.exec(location.pathname);
+      if (!m) return { why: 'This variation could not be identified.' };
+      // No bid here, and none is needed: the edit driver addresses the variation
+      // by oid, and rights come from the page itself (variationEditRights).
+      return {
+        move: {
+          oid: m[1], bid: '',
           san: desc.san, color: desc.color, plyIndex: desc.plyIndex,
         },
       };
@@ -13841,8 +13993,14 @@
       }
       // Rights are per COURSE and probed lazily, exactly as the quick-edit
       // popup and the alt check do it; the probe opens a focused driver window,
-      // so it is never started merely by opening the analysis board.
-      const rights = quickEditApi ? quickEditApi.rightsFor(an.entry.bid) : null;
+      // so it is never started merely by opening the analysis board. On the
+      // variation page there is nothing to probe: the page renders the "Edit
+      // Variation" link only for a course the user can edit, so that IS the
+      // answer — and it is never null, so the probe arm below cannot be reached
+      // there (which matters, since the variation host has no bid to key on).
+      const rights = isVariationPath()
+        ? variationEditRights()
+        : (quickEditApi ? quickEditApi.rightsFor(an.entry.bid) : null);
       if (rights === false) {
         resetAnSave('idle', "You don't have edit rights for this course.", true);
         return;
@@ -13940,9 +14098,13 @@
         log('analysis: line added to the comment on ply', job.plyIndex);
         // Chessable's comment column behind our overlay still shows the old
         // text — it is only rebuilt when the trainer next renders the variation
-        // — so the status line is the whole confirmation.
+        // — so the status line is the whole confirmation. The variation page is
+        // the one host that could re-read in place (refreshVariationPage), but
+        // that round trip pages away and back with our board still up; saying so
+        // is the honest, cheap answer.
         resetAnSave('idle', 'Added to the comment on ' +
-          (cr.an.entry ? cr.an.entry.san : 'that move') + '.', false);
+          (cr.an.entry ? cr.an.entry.san : 'that move') + '.' +
+          (isVariationPath() ? ' Reload the page to see it.' : ''), false);
       } else {
         resetAnSave('idle', msg.error === 'another quick-edit is in progress'
           ? 'Another save is in progress — try again in a moment.'
@@ -13951,10 +14113,27 @@
       }
     }
 
+    /**
+     * The position Chessable's board is showing, whichever review host we are
+     * on. In the trainer that is the DOM reconstruction (exact on the mainline,
+     * where the lesson plan answers); on the variation page it is the page's own
+     * readonly #inputFEN, which is exact everywhere — so a line worked out from
+     * inside a comment there has real castling rights and en passant too.
+     *
+     * readFen() cannot be used: it prefers OUR board, which is the thing being
+     * opened.
+     */
+    function analysisStartFen() {
+      if (!isVariationPath()) return readReviewFen();
+      const input = document.querySelector(SELECTORS.fenInput);
+      const value = input ? input.value.trim() : '';
+      return value || null;
+    }
+
     /** Opens the analysis board on the position Chessable's board is showing. */
     function openAnalysis() {
       if (cr.active) return;
-      const fen = readReviewFen();
+      const fen = analysisStartFen();
       if (!fen || !CloSan.parseFen(fen)) {
         warn('analysis: board position unreadable — not opening');
         return;
@@ -14452,9 +14631,13 @@
       // exist during a live quiz (a quiz renders no comment at all), so a
       // mid-quiz review falls back to the COLUMN that holds it — the same spot
       // on screen, which is what keeps "Review now" looking like every other
-      // run rather than like a panel bolted under the board.
+      // run rather than like a panel bolted under the board. On the variation
+      // page (section 19b) neither exists and the move list sits in that very
+      // slot, right of the board inside .grid-variation, so it is what the
+      // analysis panel covers there.
       const box = document.querySelector(SELECTORS.reviewCommentBox) ||
-                  document.querySelector(SELECTORS.reviewCommentCol);
+                  document.querySelector(SELECTORS.reviewCommentCol) ||
+                  (isVariationPath() && document.querySelector(SELECTORS.variationMovesBox));
       const br = box ? box.getBoundingClientRect() : null;
       if (br && br.width > 120 && br.height > 120) {
         setInlinePx(cr.panel, {
@@ -14746,14 +14929,25 @@
      * comment re-renders freely, and the ids repeat across blocks. Two
      * identically-written lines in one variation are indistinguishable here —
      * and lead to the same position anyway.
+     *
+     * A BRANCH of a group written in one breath ("1.e4 (1.d4 d5) c5", splitWalk)
+     * owns spans that are not contiguous, so `moveIdx` — each ply's index in the
+     * group it came from — is what maps ply n back to its printed move. Both
+     * readers fill it, and it is the identity for an ordinary line, so the
+     * fallback only covers a line built without one (a drill card).
+     *
+     * Returns the spans FOR THIS LINE, ply for ply, not the whole group.
      */
     function lineSpans(line) {
       const n = line.plies.length;
+      const idx = line.moveIdx && line.moveIdx.length === n
+        ? line.moveIdx : line.plies.map((p, i) => i);
+      const need = idx[n - 1] + 1;
       for (const group of subMoveGroups([...document.querySelectorAll(SELECTORS.reviewSubMoves)])) {
-        if (group.els.length < n) continue;
+        if (group.els.length < need) continue;
         let ok = true;
-        for (let i = 0; i < n && ok; i++) ok = quickEditSanFromEl(group.els[i]) === line.plies[i].san;
-        if (ok) return group.els;
+        for (let i = 0; i < n && ok; i++) ok = quickEditSanFromEl(group.els[idx[i]]) === line.plies[i].san;
+        if (ok) return idx.map((at) => group.els[at]);
       }
       return null;
     }
@@ -14926,7 +15120,62 @@
       return true;
     }
 
+    // --- launcher on the variation page (section 19b) -------------------------
+    //
+    // The standalone /variation/ page has no overstudy widget and no trainer
+    // row, so the cluster above has nowhere to go. What it does have is OUR
+    // Lichess panel (section 11b), which is the surface the analysis board is
+    // about — the panel is what follows our position once the board is open —
+    // so the launcher goes in its header, beside Engine and the cogwheel.
+    //
+    // Bare text, not the trainer row's outlined .clo-cr-analyse: every control
+    // in that header is bare text, and a bordered button among them would read
+    // as the loudest thing in a panel whose job is to be read. Same TIER
+    // (neutral, "an action away from the main task" — DESIGN-ui-inventory §3),
+    // expressed in the vocabulary of the host it lives in.
+
+    function ensureVariationButton() {
+      const header = document.querySelector('#' + PANEL_ID + ' .clo-header');
+      if (!header) return false;
+      if (cr.varBtn && cr.varBtn.isConnected && cr.varBtn.parentElement === header) return true;
+      const stale = document.getElementById(CR_VARBTN_ID);
+      if (stale) stale.remove();
+      const btn = document.createElement('button');
+      btn.id = CR_VARBTN_ID;
+      btn.type = 'button';
+      btn.className = 'clo-cr-analyse-head';
+      btn.textContent = 'Analyse';
+      btn.title = 'Play on from this position on our own board: any legal move, ' +
+        'both sides, with the Lichess database and the engine following along. ' +
+        'Nothing you play here is saved or counted.';
+      btn.addEventListener('click', openAnalysis);
+      // Before the cogwheel and Hide, which are the panel's own two controls
+      // and stay where the user already knows to look for them.
+      header.insertBefore(btn, header.querySelector('.clo-engine-toggle') ||
+        header.querySelector('.clo-cog'));
+      cr.varBtn = btn;
+      return true;
+    }
+
+    function syncVariationButton() {
+      if (!ensureVariationButton()) return;
+      // Hidden while our own board is up: Exit on the analysis panel is the way
+      // out, exactly as on the trainer row, and a second entry point to a board
+      // that is already open is noise. A position we cannot read is no position
+      // to analyse from, so the button says nothing rather than opening on
+      // nothing.
+      cr.varBtn.hidden = cr.active || !analysisStartFen();
+    }
+
+    function hideVariationButton() {
+      if (cr.varBtn) cr.varBtn.hidden = true;
+    }
+
     function syncButton() {
+      // The variation page has its own single launcher; everything below it
+      // belongs to a trainer session and has no host there.
+      if (isVariationPath()) { syncVariationButton(); return; }
+      hideVariationButton();
       if (!ensureCluster()) return;
       const n = freshLines().length;
       const queued = cr.hu.armed.size;
@@ -15159,7 +15408,7 @@
      * TO it — then, for a nested line, its parent's positions. walkLine is what
      * accepts or rejects each, exactly as in the browse-state scanner.
      */
-    function resolveCommentLine(group, ctx, resolved) {
+    function resolveCommentLine(group, ctx, resolved, finalFen) {
       const moves = [];
       for (const val of group.moves) {
         const mv = parseCommentMove(val);
@@ -15186,10 +15435,13 @@
           startFen: fen,
           plies: walk.plies,
           before: walk.before,
+          moveIdx: walk.plies.map((p, i) => i),
           branched: walk.branched,
+          branches: branchLines({ key: group.key }, walk, finalFen),
           truncated,
           inCourse: null,
           label: moves.map((m) => m.san + m.annot).join(' '),
+          fromFinal: fen === finalFen,
         };
       }
       return null;
@@ -15206,6 +15458,7 @@
     function planLines(plan, fens, userColor) {
       const resolved = new Map();
       const order = [];
+      const finalFen = fens[fens.length - 1];
       for (let i = 0; i < plan.plies.length; i++) {
         const ply = plan.plies[i];
         for (const [which, raw] of [['b', ply.commentBefore], ['a', ply.comment]]) {
@@ -15216,7 +15469,7 @@
           const byDepth = parsed.groups.slice()
             .sort((a, b) => a.key.split('.').length - b.key.split('.').length);
           for (const group of byDepth) {
-            const line = resolveCommentLine(group, parsed, resolved);
+            const line = resolveCommentLine(group, parsed, resolved, finalFen);
             if (line) resolved.set(group.key, line);
           }
           for (const group of parsed.groups) if (resolved.has(group.key)) order.push(group.key);
@@ -15225,16 +15478,7 @@
 
       const out = [];
       for (const key of order) {
-        const line = resolved.get(key);
-        if (line.truncated || line.branched) continue;
-        if (!line.plies.some((p) => p.color === userColor)) continue;
-        const blunder = line.plies.find((p) => p.color === userColor && isBlunderAnnot(p.annot));
-        if (blunder) {
-          log('heads-up: line', line.label, 'asks the user to play',
-            blunder.san + blunder.annot, '— skipped as a move to avoid');
-          continue;
-        }
-        out.push(line);
+        for (const part of quizzableLines(resolved.get(key), userColor, 'heads-up')) out.push(part);
       }
       return dropAmbiguous(out, plan, fens, userColor);
     }
@@ -15299,7 +15543,7 @@
       const now = headsUpPly();
       if (!fens || !cr.userColor || now < 0) return null;
       const finalPly = fens.length - 1;
-      const best = new Map(); // startPly → lines branching there
+      const best = new Map(); // startPly → lines branching HERE, on the mainline
       for (const line of cr.hu.lines) {
         if (line.inCourse) continue;
         const first = line.plies[0];
@@ -15325,13 +15569,75 @@
       if (!best.size) return null;
       const startPly = Math.max(...best.keys());
       const lines = best.get(startPly);
-      const sig = startPly + '|' + lines.map(lineSig).join('~');
+      // …and the lines written INSIDE those, which cannot be raised on their own
+      // but belong to the same offer (see linesInside).
+      const inside = [];
+      const claimed = new Set(lines);
+      for (const line of lines) {
+        for (const nested of linesInside(line, cr.hu.lines.filter((l) => !l.inCourse), claimed)) {
+          claimed.add(nested);
+          inside.push(nested);
+        }
+      }
+      const sig = startPly + '|' + lines.concat(inside).map(lineSig).join('~');
       if (cr.hu.seen.has(sig)) return null;
       // A line off the FINAL position continues the variation rather than
       // branching out of it, which changes both the wording and the button:
       // there is no "variation end" left to wait for.
-      return { sig, startPly, fen: lines[0].startFen, lines, final: startPly === finalPly };
+      return { sig, startPly, fen: lines[0].startFen, lines, inside, final: startPly === finalPly };
     }
+
+    /**
+     * The lines written INSIDE `line`: a sideline branching off one of its own
+     * moves — "(7.Ne5 d6 and Black is better)" inside "6.O-O! fxe4 7.Nxe4
+     * 7...d5" — and anything nested inside that in turn.
+     *
+     * WHY THEY NEED CARRYING (v0.66.1, reported and reproduced live on course
+     * 453453 variation 71087636). Such a line can never be RAISED on its own:
+     * the heads-up's clock is the mainline ply the user is standing on, and a
+     * nested line branches from a position that only ever occurs inside another
+     * comment line, so `fens.indexOf(startFen)` is -1 and the filter above drops
+     * it. That reasoning is sound about when to SHOW it and was wrong about what
+     * to do with it: the author wrote it as an alternative to a move of the very
+     * line being pointed out, so it is part of the same offer, and dropping it
+     * meant "Review on variation end" and "Review now" quietly reviewed half of
+     * what the comment said. (The browse-state launcher never had this problem —
+     * it has no mainline rule and has always offered both.)
+     *
+     * They are carried, not printed: the panel's rows are the alternatives at
+     * THIS position, and a move branching four plies later is not one of those.
+     * showHeadsUp says how many are riding along instead.
+     *
+     * The relation is derived from POSITIONS, not from comment keys, so it holds
+     * for both readers with no key surgery: a line is inside another when it
+     * starts on a position that other line REACHES. Its own start position is
+     * deliberately not in that set — a line starting where the host starts is a
+     * SIBLING, and at the root those are already raised in their own right.
+     * Compared as exact strings, like the mainline test above: resolveCommentLine
+     * anchors a nested line on one of its parent's own FENs, so the two are the
+     * same string and not merely the same position.
+     */
+    function linesInside(line, all, exclude) {
+      const out = [];
+      const seen = new Set(exclude || []);
+      seen.add(line);
+      const queue = [line];
+      while (queue.length) {
+        const host = queue.shift();
+        const spots = new Set(host.plies.map((p) => p.fen));
+        for (const other of all) {
+          if (seen.has(other) || !spots.has(other.startFen)) continue;
+          seen.add(other);
+          out.push(other);
+          queue.push(other);
+        }
+      }
+      return out;
+    }
+
+    /** Everything a press on the shown panel acts on: the lines branching here
+     *  plus the ones written inside them. */
+    const groupLines = (group) => group.lines.concat(group.inside || []);
 
     // --- the mini board ------------------------------------------------------
 
@@ -15511,12 +15817,31 @@
         row.textContent = line.plies[0].san + (line.plies[0].annot || '');
         ui.moves.appendChild(row);
       }
-      const armed = group.lines.every((l) => cr.hu.armed.has(lineSig(l)));
+      // The lines written INSIDE the ones above ride along into the queue and
+      // into "Review now", but they are not alternatives HERE, so they get a
+      // count rather than a move of their own (linesInside). Saying nothing
+      // would make the review longer than the panel implied.
+      const inside = (group.inside || []).length;
+      if (inside) {
+        const row = document.createElement('div');
+        row.className = 'clo-cr-heads__move clo-cr-heads__move--inside';
+        row.textContent = '+' + inside + (inside > 1 ? ' lines' : ' line') + ' written inside';
+        row.title = inside > 1
+          ? 'The comment writes ' + inside + ' further lines inside these — alternatives ' +
+            'to moves further along them. They branch too late to point out here, so they ' +
+            'come with these when you review.'
+          : 'The comment writes a further line inside this one — an alternative to a move ' +
+            'further along it. It branches too late to point out here, so it comes with ' +
+            'this one when you review.';
+        ui.moves.appendChild(row);
+      }
+      const shownLines = groupLines(group);
+      const armed = shownLines.every((l) => cr.hu.armed.has(lineSig(l)));
       ui.arm.disabled = armed;
       ui.now.title = group.final
-        ? 'Play through ' + (group.lines.length > 1 ? 'these lines' : 'this line') +
+        ? 'Play through ' + (shownLines.length > 1 ? 'these lines' : 'this line') +
           ' straight away, on our own board.'
-        : 'Play through ' + (group.lines.length > 1 ? 'these lines' : 'this line') +
+        : 'Play through ' + (shownLines.length > 1 ? 'these lines' : 'this line') +
           ' right here, without waiting for the variation to end. Chessable’s ' +
           'session timer is paused while you do, and the variation carries on ' +
           'from where it stands the moment you are done.';
@@ -15614,13 +15939,13 @@
       blurButton(e);
       const group = cr.hu.shown;
       if (!group) return;
-      for (const line of group.lines) cr.hu.armed.set(lineSig(line), line);
+      for (const line of groupLines(group)) cr.hu.armed.set(lineSig(line), line);
       cr.hu.seen.add(group.sig);
       cr.hu.ui.arm.disabled = true;
       cr.hu.ui.note.textContent = queuedNote(group);
       cr.hu.ui.note.hidden = false;
       syncButton(); // the "Review queued lines" button appears/counts up
-      log('continuation: queued —', group.lines.map((l) => l.label).join(' | '));
+      log('continuation: queued —', groupLines(group).map((l) => l.label).join(' | '));
       // Its work is done, and it is sitting over the board's gutter (or, on a
       // phone, over the comment column) — so it takes itself away, after just
       // long enough for the note to be read. `seen` above is what keeps the
@@ -15653,7 +15978,7 @@
       blurButton(e);
       const group = cr.hu.shown;
       if (!group || cr.active) return;
-      const lines = group.lines; // showOverlays hides the panel, which clears cr.hu.shown
+      const lines = groupLines(group); // showOverlays hides the panel, which clears cr.hu.shown
       cr.hu.seen.add(group.sig); // played now ⇒ never raised again in this variation
       if (!showOverlays()) return; // warned there; the panel stays up for a retry
       holdTrainer();
@@ -15918,9 +16243,20 @@
 
       const lines = planLines(plan, fens, userColor);
       // Only the lines that could ever be raised are worth a lookup — this is a
-      // network round trip and it runs mid-quiz.
-      const candidates = lines.filter((l) => l.plies[0] && l.plies[0].color !== userColor &&
+      // network round trip and it runs mid-quiz. Since v0.66.1 that includes the
+      // lines written INSIDE a raisable one, which are queued with it and so
+      // must be able to drop out for the same reason: one already added to the
+      // course as a real variation would otherwise be drilled twice.
+      const raisable = lines.filter((l) => l.plies[0] && l.plies[0].color !== userColor &&
         fens.indexOf(l.startFen) >= 0);
+      const candidates = raisable.slice();
+      const claimed = new Set(candidates);
+      for (const line of raisable) {
+        for (const nested of linesInside(line, lines, claimed)) {
+          claimed.add(nested);
+          candidates.push(nested);
+        }
+      }
       const inCourse = await tagLinesInCourse(candidates);
       if (readQuickEditOid() !== oid) { cr.hu.scanning = false; return; }
 
@@ -15930,11 +16266,13 @@
       cr.hu.lines = lines;
       cr.hu.fens = fens;
       cr.userColor = userColor;
-      const raisable = candidates.length - inCourse;
+      const live = candidates.filter((l) => !l.inCourse);
+      const pointable = raisable.filter((l) => !l.inCourse).length;
       log('heads-up: ' + lines.length + ' clickable line(s) in this variation, ' +
-        raisable + ' can be pointed out' +
+        pointable + ' can be pointed out' +
+        (live.length > pointable ? ' (+' + (live.length - pointable) + ' written inside them)' : '') +
         (inCourse ? ' (' + inCourse + ' already in the course)' : '') +
-        (raisable ? ' — ' + candidates.filter((l) => !l.inCourse).map((l) => l.label).join(' | ') : ''));
+        (live.length ? ' — ' + live.map((l) => l.label).join(' | ') : ''));
     }
 
     /**
@@ -15968,7 +16306,44 @@
 
     // --- watchdog ------------------------------------------------------------
 
+    /**
+     * The standalone variation page (section 19b): the analysis board and
+     * nothing else. There is no quiz to run here — the clickable lines, the
+     * heads-up, the drill and the retry pass all belong to a trainer session —
+     * so this is deliberately not a smaller copy of the trainer tick.
+     *
+     * cr.oid is reused for the page's own variation id, which gives the
+     * "variation changed" teardown for free: chessable.com pages the variation
+     * without a document load, so an open analysis board must not survive into
+     * the next one.
+     */
+    function variationTick() {
+      harvestPieces();
+      const m = VARIATION_PATH_RE.exec(location.pathname);
+      const oid = m ? m[1] : null;
+      if (oid !== cr.oid) {
+        cr.oid = oid;
+        // Everything below belongs to a trainer session we have just left.
+        cr.lines = [];
+        cr.signature = '';
+        cr.scanTries = 0;
+        cancelAutoStart();
+        resetHeadsUp();
+        hideButton();
+        if (cr.active) closeReview('variation changed');
+      }
+      if (cr.active) { positionOverlays(); return; }
+      syncVariationButton();
+    }
+
     function tick() {
+      if (isVariationPath()) { variationTick(); return; }
+      // The panel element itself SURVIVES the hop from the variation page to a
+      // trainer session — chessable.com never reloads the document, and
+      // reviewPanelTick only re-mounts a panel that has been detached — so the
+      // header button we put in it would still be sitting there. Hidden here
+      // rather than in syncButton, which the mid-quiz branch below never reaches.
+      hideVariationButton();
       if (!isTrainerPath()) {
         if (cr.active) closeReview('left the trainer');
         cr.lines = [];
