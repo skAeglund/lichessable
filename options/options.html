@@ -113,6 +113,36 @@
     pinned, so a phone cannot scale the board off the screen around it.
   </p>
 
+  <label class="inline"><input type="checkbox" id="showGrade"> Show and grade (two-button review)</label>
+
+  <p class="fineprint">
+    Adds a <strong>Show &amp; grade</strong> button to the in-session widget in
+    trainer sessions. In that mode you never make a move — a card is two presses,
+    and every press shows a move: <code>2</code> plays the correct move on our
+    own board, then <code>2</code> again shows the opponent's reply and says you
+    knew it, or <code>4</code> shows the reply and marks the card wrong through
+    Chessable's own <em>I don't know</em> control. At the end of a variation
+    <code>2</code> asks for the next one, so a whole session runs from two keys.
+  </p>
+
+  <p class="fineprint">
+    It exists so a session can be studied from a Bluetooth ring with the screen
+    out of reach, and it is the groundwork for blindfold practice. Your thinking
+    time is not charged to the card: Chessable's timer is paused while you think
+    and started again only to play the move. Promotions still have to be played
+    on the board.
+  </p>
+
+  <p class="fineprint">
+    It works the same way in a <strong>Retry</strong> pass, and the same two keys
+    answer a card in <strong>Drill mistakes</strong> — there they are simply an
+    extra way to answer, since that board still takes a played move. An
+    <strong>Auto</strong> toggle beside the Stop button replays the cards you have
+    already answered correctly this session and hands back at the first one you
+    have not; it is separate from the ordinary auto-play setting, and it never
+    plays a move a Retry pass is walking you back to.
+  </p>
+
   <p class="fineprint">
     Off by default because the field takes the keyboard while it is focused, so
     MoveTrainer's single-key shortcuts (<code>n</code> for the next variation

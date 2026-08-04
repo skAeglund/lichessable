@@ -680,6 +680,133 @@ body {
     </div>
 
     <div class="hx-card">
+      <h3>Show and grade (section 23)</h3>
+      <p class="hx-note">Off by default, and <code>/practice/</code> only. The second control in this
+         row that acts on the card being answered, so it sits beside the move field — and the
+         FOURTH exception to the mid-quiz collapse, for the same reason as the other three: mid-quiz
+         is the only time it has anything to do. Idle it is an ordinary action (green outline,
+         §3.2); running, it becomes Stop and takes the row primary, because a mode that owns the
+         whole session must not make its exit a hunt.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px">
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-sg">
+            <button type="button" class="clo-sg-btn">Show &amp; grade</button>
+          </span>
+          <span class="clo-review-grp clo-mx">
+            <button type="button" class="clo-mx-btn">Mistakes (3)</button>
+            <button type="button" class="clo-mx-retry clo-rowprimary">Retry</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Browse state, mode idle. It is NOT the primary here —
+          Retry is. Offering to start a study mode is not louder than the outstanding mistakes.</p>
+
+        <div class="clo-review clo-review--collapsed hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="false">LiChessable</button>
+          <span class="clo-review-grp clo-sg">
+            <button type="button" class="clo-sg-btn clo-rowprimary">Stop</button>
+            <button type="button" class="clo-sg-auto">Auto</button>
+          </span>
+          <span class="clo-review-grp clo-mx">
+            <button type="button" class="clo-mx-btn">Mistakes (3)</button>
+            <button type="button" class="clo-mx-retry">Retry</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Quiz live, mode RUNNING, auto-play OFF. Everything
+          else collapses away; Stop is what is left, and it is filled. The exception matches on the
+          button carrying <code>.clo-rowprimary</code> — the module's own "I am running" state, so
+          there is no extra flag to keep in step.</p>
+
+        <div class="clo-review clo-review--collapsed hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="false">LiChessable</button>
+          <span class="clo-review-grp clo-sg">
+            <button type="button" class="clo-sg-btn clo-rowprimary">Stop</button>
+            <button type="button" class="clo-sg-auto clo-sg-auto--on">Auto</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Auto-play ON. The toggle carries its own state —
+          accent on the border and the text, never a fill: a fill in this row means "the one thing
+          to do next", and this is a preference. It only shows while the mode is running, which is
+          the only time it means anything. Section 23's auto-play is separate from section 13's and
+          neither toggle touches the other.</p>
+
+        <div class="clo-review clo-review--collapsed hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="false">LiChessable</button>
+          <span class="clo-review-grp clo-sg">
+            <button type="button" class="clo-sg-btn clo-rowprimary">Stop</button>
+            <button type="button" class="clo-sg-auto">Auto</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+          <div class="clo-review-status">
+            <span class="clo-sg-status">👁 Promotions have to be played on the board</span>
+          </div>
+        </div>
+        <p class="hx-note" style="margin:0 10px">The one refusal the mode can hand back mid-card.
+          Amber text on the row's own status line, like every other status here (§3.2) — never
+          inline among the controls.</p>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Show and grade — the board panel (section 23)</h3>
+      <p class="hx-note">Our board covers Chessable's, and this panel covers the comment column, the
+         same slot the clickable-line quiz uses. AMBER ring on the board rather than the quiz's
+         green: it sits in exactly the same place as the drill and the line quiz but accepts no
+         input at all, and the ring is what says so at a glance. In a blindfold build the board is
+         not drawn and this prompt is what <code>announce()</code> speaks.</p>
+      <div class="hx-stage" style="display:flex;gap:16px;flex-wrap:wrap">
+        <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
+          <div class="clo-cr-title">Show and grade</div>
+          <div class="clo-cr-prompt clo-sg-prompt">Opponent played Bc4</div>
+          <div class="clo-sg-keys">2 — show me the move   ·   4 — I don't know it</div>
+        </div>
+        <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
+          <div class="clo-cr-title">Show and grade</div>
+          <div class="clo-cr-prompt clo-sg-prompt">e6</div>
+          <div class="clo-sg-keys">2 — I knew it   ·   4 — I didn't know</div>
+        </div>
+        <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
+          <div class="clo-cr-title">Show and grade</div>
+          <div class="clo-cr-prompt clo-sg-prompt">e6</div>
+          <div class="clo-sg-keys">2 — the opponent's reply (marked as not known)</div>
+        </div>
+      </div>
+      <p class="hx-note">And the same two keys on a DRILL card (section 20), where the panel is the
+         continuation board's own — a drill grades only our mistake list, so there is no timer, no
+         Chessable and no third element: the prompt carries the keys, because "what do I do now?"
+         is the question it already answers.</p>
+      <div class="hx-stage" style="display:flex;gap:16px;flex-wrap:wrap">
+        <div class="clo-cr-panel hx-pos" style="width:320px">
+          <div class="clo-cr-title">Mistake 2 of 5</div>
+          <div class="clo-cr-progress">Sicilian: Najdorf · played Nf3</div>
+          <div class="clo-cr-prompt">Black to play — or 2 to see it</div>
+        </div>
+        <div class="clo-cr-panel hx-pos" style="width:320px">
+          <div class="clo-cr-title">Mistake 2 of 5</div>
+          <div class="clo-cr-progress">Sicilian: Najdorf · played Nf3</div>
+          <div class="clo-cr-prompt">Nc6 — 2 knew it · 4 didn't</div>
+        </div>
+      </div>
+      <p class="hx-note">TWO presses a card, and every press shows a move: the first plays YOUR
+         move on our board (animated, with the arrow still saying which move produced the
+         position), the second plays the OPPONENT'S reply and grades the card on the way past.
+         The third panel is the same revealed state after <code>4</code> was used at the first
+         press — the verdict is already decided, so the remaining press only advances.</p>
+      <p class="hx-note">Only ever one loud line, because that is the whole content of a card in
+         this mode.</p>
+      <p class="hx-note">The panel does not change height between them, which is what stops the
+         board below it moving as the card advances.</p>
+    </div>
+
+    <div class="hx-card">
       <h3>Mistakes, all gone through (v0.61.0)</h3>
       <p class="hx-note">The list button outlives the queue — the session's history stays
          reachable after a pass — so it drops the amber once nothing is outstanding.

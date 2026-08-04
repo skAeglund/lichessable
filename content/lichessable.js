@@ -66,6 +66,18 @@
     // pressing it is the only way back (see resumeTrainerTimer).
     trainerPlayOverlay: '.play-button--board',
     trainerFooter:    '.board-footer',           // Exit / nav row under the board — widget sits below it
+    // Show and grade (section 23). Chessable's own "I need help" control is ONE
+    // footer button that MUTATES: it starts as Hint (first press draws a circle
+    // round the piece to move) and becomes "I don't know", whose press plays the
+    // move AND records the failure. Ground-truthed live 2026-08-04 in a
+    // /practice/ review session. The bell identifies the first state; the second
+    // is found as "the footer icon button that is neither bell nor pause", since
+    // its own icon has not been read and a label match would be language-bound.
+    trainerHintIcon:  '.fa-bell',
+    // The study/transition state's forward control ("Study this move. When ready
+    // click Next"). A data-testid, so no label matching, and a plain untrusted
+    // .click() drives it (verified) — unlike the board, which needs pressSquare.
+    trainerNextBtn:   '[data-testid="nextMovesButton"]',
     trainerRow:       '.row-practice',           // flex row holding board + comment column; shifted to re-center the board
     // Review drawer: an empty marker div sits INSIDE the active variation row;
     // the row itself carries the ids as plain attributes (+ name in `title`).
@@ -400,6 +412,59 @@
       // ONE case where a phone keyboard is not an ambush — it is already up).
       // Bounded so a stale flag cannot grab focus minutes later.
       carryFocusMs: 15000,
+    },
+
+    // --- Show and grade (section 23) -----------------------------------------
+    // Anki-style "show me, then tell Chessable how it went": the user never
+    // makes a move, so a whole review session runs from two buttons — which is
+    // what makes it playable from a Bluetooth ring.
+    showGrade: {
+      key: 'cloShowGrade',    // chrome.storage.local; absent = off (opt-IN)
+      pollMs: 500,
+      // The two bindings. ARRAYS, not strings, so a second spelling of the same
+      // intention (a ring that sends MediaTrackNext rather than "2") is one
+      // entry rather than a code change. Matched on KeyboardEvent.key.
+      //
+      // Media keys are NOT wired yet: on most platforms they never reach a page
+      // as key events at all — the OS routes them to the media session, which a
+      // page can only claim by playing audio. Until a real ring has been
+      // captured, only the digits are bound.
+      keys: {
+        next:   ['2'],   // reveal, then "I knew it", then "next variation"
+        wrong:  ['4'],   // "I didn't know it"
+        repeat: [],      // reserved for TTS (section 23's blindfold seam)
+      },
+      // Set false for blindfold practice: the driver is unchanged, nothing is
+      // drawn, and announce() is the only thing that speaks. Not yet a UI
+      // setting — TTS is the update that gives it a reason to be one.
+      showBoard: true,
+      // Resuming the timer hands the board back to Chessable; a press issued in
+      // the same breath can land on the outgoing render. Also the gap between
+      // the two footer presses of the give-up flow, which are separate React
+      // state transitions.
+      settleMs: 400,
+      stepMs: 350,
+      // The glide on OUR board. Must stay in step with `.clo-cr-piece`'s
+      // `transition: transform 180ms ease-out` in the stylesheet — it is only
+      // the delay before the DOM is reconciled, so a value SHORTER than the
+      // transition would cut the animation off mid-flight. 180ms is the
+      // continuation board's, matched to MoveTrainer2's own ~200ms click-move
+      // glide, i.e. Chessable's fastest.
+      animMs: 180,
+      // --- auto-play (this mode's own, independent of section 13's toggle) ---
+      autoKey: 'cloShowGradeAutoPlay', // chrome.storage.local; opt-IN
+      // The two beats of an auto-played card, so a replay reads as moves rather
+      // than as a blur: reveal, look at it, then advance. Deliberately NOT
+      // faster — the cycle's real floor is Chessable's own (~440ms for our move
+      // to land plus ~480ms for its reply), so shaving these buys nothing and
+      // costs the user the ability to follow the line.
+      autoRevealMs: 420,
+      autoAdvanceMs: 380,
+      // A press that changes nothing must not strand the mode with the board
+      // covered and the timer paused. Every act is watchdogged to this.
+      actMaxMs: 8000,
+      injectClassMs: 150, // `clo-injecting` lifetime, as auto-play's injection
+      minBoardPx: 80,     // below this the trainer board is mid-render
     },
 
     // --- Touch-sized UI (section 6, applyTouchUiClass) ----------------------
@@ -7533,6 +7598,25 @@
   let autoPlayRetryHold = null;
 
   /**
+   * (on) => void — assigned by initAutoPlay, called by show-and-grade (section
+   * 23) for as long as that mode is running.
+   *
+   * A THIRD flag, for the reason the second one exists, and it is the difference
+   * between this mode's own auto-play working and not working. `heldOff` means
+   * "an outside feature owns the board and nothing is really being played on it"
+   * — a mid-quiz review, a drill — so `processFrame` returns on it and the
+   * tracker observes nothing. Under show-and-grade the session underneath IS
+   * really being played: we press its squares, it animates, it replies. Those
+   * frames are real moves and reading them is the whole point, because that is
+   * what records a card as PROVEN — and without the proofs this mode's own
+   * auto-play has an empty record to consult and can never fire.
+   *
+   * Same shape as the retry shield's, and ORed with the others in `held()`, so
+   * injection by section 13 is still blocked throughout.
+   */
+  let autoPlayShowGradeHold = null;
+
+  /**
    * () => boolean — assigned by initAutoPlay, read by the mid-quiz heads-up
    * (section 18b): true while auto-play is REPLAYING this variation's opening
    * run, i.e. from the first injected move until it hands back.
@@ -7590,6 +7674,19 @@
    */
   let autoPlayNoteTypedMove = null;
 
+  // (fen, uci) => boolean — has the user already answered this position with
+  // this move THIS session? Section 23's auto-play asks; the record itself, its
+  // 12 h TTL and its per-course scoping all stay section 13's. Read-only, and
+  // null-safe like every other bridge here.
+  let autoPlayIsProven = null;
+
+  // (fen) => boolean — is this position on the retry pass's hold list (section
+  // 17's `autoPlaySetHold`)? Section 23's auto-play asks before replaying a
+  // card: a move the pass is walking the user back to must never be played FOR
+  // them, however well proven it is earlier in the session. Same key shape as
+  // holdKeys — placement + side only.
+  let autoPlayIsHeld = null;
+
   function initAutoPlay() {
     if (typeof CloSan === 'undefined') {
       warn('auto-play disabled: CloSan (engine/san.js) not loaded');
@@ -7625,6 +7722,7 @@
       targetKey: null,         // …and THE one of them whose answer advances the pass (see autoPlaySetHold)
       heldOff: false,          // an outside feature owns the board right now (autoPlayHold)
       retryHeld: false,        // …and the retry runner's transition shield (autoPlayRetryHold)
+      sgHeld: false,           // …and show-and-grade running (autoPlayShowGradeHold)
       contextDead: false,      // orphaned by an extension reload — see noteDeadContext
       pollTimer: 0,
       observer: null,
@@ -7645,7 +7743,7 @@
      * site keeps agreeing by construction.
      */
     function held() {
-      return ap.heldOff || ap.retryHeld;
+      return ap.heldOff || ap.retryHeld || ap.sgHeld;
     }
 
     function freshVariationState(oid, bid) {
@@ -9268,6 +9366,18 @@
       else evaluateAutoPlay();
     };
 
+    // Section 23's hold. Its own flag too — see the bridge's doc comment: the
+    // session underneath show-and-grade really is being played, so processFrame
+    // must keep reading (which `heldOff` would stop), while injection stays
+    // blocked through held().
+    autoPlayShowGradeHold = (on) => {
+      const want = Boolean(on);
+      if (ap.sgHeld === want) return;
+      ap.sgHeld = want;
+      if (want) stopReplaying();
+      else evaluateAutoPlay();
+    };
+
     // Section 9's row, collapsing (§3.3): a popover left open would float over
     // a row that is no longer there, and an armed "Clear?" hidden between its
     // two clicks is a confirm the user can neither complete nor see they owe.
@@ -9278,6 +9388,31 @@
     // the move 'user' (so it is remembered as proven), and the two squares are
     // what let the alt check name it if the trainer refuses it. Order matters:
     // the alt check reads the last two entries as from→to.
+    /**
+     * Section 23's auto-play bridge. The key is posKeyOf's — placement + side +
+     * castling — and the FEN handed in is the lesson plan's own `sourceFen`,
+     * which is exact, so this needs none of the tracker's heuristics.
+     */
+    autoPlayIsProven = (fen, uci) => {
+      if (ap.contextDead || !ap.record || !fen || !uci) return false;
+      const pos = CloSan.parseFen(fen);
+      if (!pos) return false;
+      const entry = ap.record[posKeyOf(pos)];
+      return Boolean(entry && entry.moves && entry.moves[uci]);
+    };
+
+    /**
+     * The retry pass's hold, asked from outside. Key shape is holdKeys' own —
+     * placement + side, no castling — because the pass builds those keys from
+     * Chessable's FEN while the tracker's own position may carry the home-square
+     * heuristic.
+     */
+    autoPlayIsHeld = (fen) => {
+      if (!ap.holdKeys || !fen) return false;
+      const pos = CloSan.parseFen(fen);
+      return Boolean(pos && ap.holdKeys.has(placementFen(pos.board) + ' ' + pos.side));
+    };
+
     autoPlayNoteTypedMove = (from, to) => {
       if (ap.contextDead) return;
       ap.lastPointerAt = Date.now();
@@ -10711,9 +10846,21 @@
       return entry.num ? entry.num + dots + entry.san : entry.san;
     }
 
-    /** "played c5, timed out" — Chessable writes a timeout as "timeUp". */
+    /**
+     * "played c5, timed out, not known" — the three things Chessable writes into
+     * `quizIncorrectAttempts`: a real SAN, the literal "timeUp", and the literal
+     * "giveUp" (its own "I don't know" control, ground-truthed 2026-08-04 and
+     * the whole of section 23's failure path). "not known" rather than "gave
+     * up": in show-and-grade the user is ANSWERING the card honestly, not
+     * surrendering, and a list that scolds them for using the mode as intended
+     * is one they will stop reading.
+     */
     function wrongLabel(entry) {
-      const parts = (entry.wrong || []).map((w) => (/^time/i.test(w) ? 'timed out' : 'played ' + w));
+      const parts = (entry.wrong || []).map((w) => {
+        if (/^time/i.test(w)) return 'timed out';
+        if (/^give/i.test(w)) return 'not known';
+        return 'played ' + w;
+      });
       return parts.join(', ');
     }
 
@@ -12343,6 +12490,19 @@
   // also lives in documents where this module never ran.
   let continuationActive = null;
 
+  // () => boolean — true while show-and-grade (section 23) is running the
+  // session from its two keys. Type-a-move stands down on it: that mode answers
+  // the card with a keyboard of its own, and two things holding the keyboard
+  // over one quiz board is not a state either of them can reason about.
+  // Assigned by initShowGrade; null-safe like every other bridge here.
+  let showGradeActive = null;
+
+  // () => boolean — is show-and-grade TURNED ON (the preference, not a running
+  // session)? The mistake drill (section 20) asks: with it on, a drill card can
+  // be answered with the same two keys instead of by playing the move, which is
+  // what makes the drill usable from a ring like the rest of the mode.
+  let showGradeEnabled = null;
+
   // () => ?string — the FEN on the analysis board (section 19), or null when it
   // is not up. This is what makes the panel, the database and the engine follow
   // OUR board instead of Chessable's; same null-safe bridge pattern.
@@ -13548,6 +13708,8 @@
       cr.path = cr.line.plies;
       cr.attempts = 0;
       cr.hint = false;
+      cr.sgShown = false;  // section 23's reveal, per card
+      cr.sgLost = false;
       cr.sel = null;
       cr.lastMove = null;
       cr.flash = null;
@@ -14572,11 +14734,17 @@
 
     /** The card has just been answered: count it, and take the move off the
      *  pending list if the answer was clean. */
-    function finishDrillCard() {
+    /**
+     * `cleanOverride` is show-and-grade's verdict (section 23): there the user
+     * SAYS whether they knew the move rather than demonstrating it, so their
+     * answer is authoritative and the "no miss, no hint" test does not apply —
+     * nothing was ever missed or hinted, the move was simply shown.
+     */
+    function finishDrillCard(cleanOverride) {
       const entry = cr.line && cr.line.entry;
       if (!entry) return;
       cr.drill.done++;
-      const clean = !cr.attempts && !cr.hint;
+      const clean = cleanOverride === undefined ? (!cr.attempts && !cr.hint) : cleanOverride;
       if (!clean) {
         log('mistake drill:', cr.line.label, '— answered with help, still on the list');
         return;
@@ -14884,13 +15052,29 @@
       // the move they were about to play is also right (section 18).
       const alts = (ply && ply.alts) || null;
       const answers = alts ? [ply.san].concat(alts.map((a) => a.san)) : (ply ? [ply.san] : []);
+      // Section 23's two keys, offered on a drill card. Written into the prompt
+      // rather than given a row of their own: the panel is one column wide and
+      // this is the same sentence ("what do I do now?") the prompt already
+      // answers, just with a second way of answering it.
+      const sgKeys = drilling && showGradeEnabled && showGradeEnabled()
+        ? { next: CONFIG.showGrade.keys.next[0], wrong: CONFIG.showGrade.keys.wrong[0] }
+        : null;
       let prompt;
-      if (cr.plyIdx >= plies) prompt = drilling ? 'Correct.' : 'Line complete.';
+      if (cr.sgShown && sgKeys) {
+        // The move just shown is the one BEFORE the cursor — applyMove advanced
+        // plyIdx past it.
+        const shownPly = linePath()[cr.plyIdx - 1];
+        prompt = ((shownPly && shownPly.san) || '') +
+          ' — ' + sgKeys.next + ' knew it · ' + sgKeys.wrong + " didn't";
+      } else if (cr.plyIdx >= plies) prompt = drilling ? 'Correct.' : 'Line complete.';
       else if (!ply || ply.color !== cr.userColor) prompt = '…';
       else if (cr.hint) prompt = 'Play ' + answers.join(' or ');
       else if (cr.attempts) prompt = 'Not that one — try again';
       else if (alts) prompt = (cr.userColor === 'w' ? 'White' : 'Black') + ' to play — either move';
-      else prompt = (cr.userColor === 'w' ? 'White' : 'Black') + ' to play';
+      else {
+        prompt = (cr.userColor === 'w' ? 'White' : 'Black') + ' to play';
+        if (sgKeys) prompt += ' — or ' + sgKeys.next + ' to see it';
+      }
       cr.ui.prompt.textContent = prompt;
       cr.ui.prompt.className = 'clo-cr-prompt' +
         (cr.plyIdx >= plies ? ' clo-cr-prompt--ok' : (cr.attempts && !cr.hint ? ' clo-cr-prompt--bad' : ''));
@@ -14904,6 +15088,44 @@
 
     /** Variation names run long, and the panel is one column wide. */
     const shortDrillTitle = (t) => (t.length > 34 ? t.slice(0, 33) + '…' : t);
+
+    // --- section 23 inside the drill -----------------------------------------
+    //
+    // Two presses, exactly as in a review session: the first SHOWS the move, the
+    // second says whether it was known and moves on. It is additive — the board
+    // still takes a played move, so the keys are an extra way to answer a card
+    // and not a mode the user has to be in.
+    //
+    // Simpler than the review version in one important way: a drill grades only
+    // OUR OWN mistake list. Nothing is sent to Chessable, nothing is
+    // rescheduled, there is no timer to pause and no card to keep in step with —
+    // so the whole of it is "play the move on our board, then mark or don't".
+
+    function drillShowGradeKey(lost) {
+      if (cr.busy || cr.promo) return;
+      const ply = currentPly();
+      if (!cr.sgShown) {
+        // FIRST PRESS — show the move. Only ever on the ply being asked for; an
+        // opponent ply is auto-played by step() and is not the user's to answer.
+        if (!ply || ply.color !== cr.userColor) return;
+        cr.sgShown = true;
+        cr.sgLost = Boolean(lost);
+        applyMove(ply);
+        cr.plyIdx++;
+        syncUi();
+        return;
+      }
+      // SECOND PRESS — the verdict, and on to the next card. The user's own
+      // answer is authoritative here, so it overrides finishDrillCard's
+      // "no miss, no hint" test: nothing was missed or hinted, it was shown.
+      const known = !lost && !cr.sgLost;
+      finishDrillCard(known);
+      log('mistake drill:', (cr.line && cr.line.label) || '',
+        known ? '— knew it' : '— not known');
+      cr.sgShown = false;
+      cr.sgLost = false;
+      nextLine();
+    }
 
     /** The lines this feature offers: everything discovered MINUS the ones the
      *  user has already added to the course as real variations (tagLinesInCourse
@@ -16609,6 +16831,18 @@
           return;
         }
         if (e.key === 'Escape') { closeReview('escaped', true); return; }
+        // Section 23 in the mistake drill: the same two keys, the same two
+        // presses, so a drill can be worked through from a ring exactly like a
+        // review session. Nothing here touches Chessable — a drill grades only
+        // our own mistake list — so this is the whole of it.
+        if (cr.mode === 'drill' && showGradeEnabled && showGradeEnabled()) {
+          const K = CONFIG.showGrade.keys;
+          if (K.next.includes(e.key) || K.wrong.includes(e.key)) {
+            e.preventDefault();
+            drillShowGradeKey(K.wrong.includes(e.key));
+            return;
+          }
+        }
         if (cr.mode !== 'analysis') return;
         // Analysis navigation. Swallowed above already, so the trainer's own
         // single-key shortcuts never see these either.
@@ -18370,7 +18604,8 @@
       // key swallow is in CAPTURE phase, so a field of ours underneath would be
       // fighting it for every keystroke.
       if (!tm.enabled || !isTrainerPath() ||
-          (continuationActive && continuationActive())) {
+          (continuationActive && continuationActive()) ||
+          (showGradeActive && showGradeActive())) {
         hide();
         return;
       }
@@ -18449,6 +18684,1143 @@
   }
 
   // ==========================================================================
+  // 23. SHOW AND GRADE — a review card answered with two buttons
+  //     (top document, /practice/ REVIEW ONLY, opt-IN)
+  //
+  // The user never makes a move. They are shown the opponent's reply, they
+  // think, they press ONE key to see the answer, and a second key says whether
+  // they knew it. That is the whole session — which is what makes it playable
+  // from a Bluetooth ring with the screen out of reach, and the groundwork for
+  // blindfold practice with TTS (see `announce` and `showBoard`).
+  //
+  // GROUND-TRUTHED LIVE 2026-08-04, /practice/ review of course 453453. Three
+  // facts, and the feature is mostly a consequence of them:
+  //
+  //  * CHESSABLE ALREADY HAS A "MARK THIS WRONG" CONTROL, and it is one button
+  //    that mutates. In a live quiz the footer shows Hint; the first press draws
+  //    a circle round the piece to move and turns it into "I don't know"; the
+  //    second press PLAYS the move and records the failure. So the "I didn't
+  //    know it" path needs no wrong-move injection at all — which was the
+  //    original plan and its one real hazard, since a legal wrong move that
+  //    Chessable happens to ACCEPT grades a failure as a pass.
+  //  * WHAT IT RECORDS IS `quizIncorrectAttempts: ["giveUp"]`, plus quizTotal 1
+  //    and quizIncorrectTotal 1 — a third literal beside "timeUp" and a real
+  //    SAN. The mistake log (section 16) reads that array, so these failures
+  //    join the session's list with no bridge of our own; `wrongLabel` is what
+  //    had to learn the word (it reads "not known", never "played giveUp").
+  //    Pressing Hint ALONE records nothing at all: read before and after, every
+  //    counter was unchanged. So the first press is free and the second is the
+  //    whole grade.
+  //  * AFTER THE GIVE-UP the trainer parks in a study state ("Study this move.
+  //    When ready click Next for the quiz!") whose Next control is
+  //    `[data-testid="nextMovesButton"]` and takes a plain .click(). The board
+  //    is NOT live there, which is why the flow has that third step.
+  //
+  // THE TIMER IS PAUSED WHILE THE USER THINKS, and that is a correctness
+  // requirement rather than a courtesy: Chessable's per-move clock is short, a
+  // card that runs out is recorded `["timeUp"]` and the move is auto-played —
+  // so a move the user KNEW would be graded wrong, which is the one thing this
+  // mode exists to control. (Observed exactly that during the ground-truthing,
+  // by being slower than the clock.) Pausing is section 18b's mechanism,
+  // unchanged: a plain .click() on the footer pause control, and the full
+  // pressSquare pointer sequence to resume through the play overlay. Verified
+  // here that a pause survives the thinking with no timeUp recorded, and that
+  // the hint/give-up button stays rendered and clickable while paused.
+  //
+  // ONE THING NOT TO SHORTCUT: pressing the BOARD while paused resumes the
+  // session and the press is CONSUMED. So every act resumes first, waits
+  // `settleMs`, and only then presses.
+  // ==========================================================================
+  function initShowGrade() {
+    if (typeof CloSan === 'undefined') {
+      warn('show-and-grade disabled: CloSan (engine/san.js) not loaded');
+      return;
+    }
+
+    const C = CONFIG.showGrade;
+    const SG_BTN_ID = 'lichessable-sg';
+    const SG_BOARD_ID = 'lichessable-sg-board';
+    const SG_PANEL_ID = 'lichessable-sg-panel';
+
+    const sg = {
+      enabled: false,
+      active: false,
+      // 'off' | 'think' | 'shown' | 'acting' | 'browse'
+      phase: 'off',
+      // Set by pressing "wrong" at the THINK stage — the card is already lost,
+      // the user just wants to see the move. The grade is then applied by the
+      // press that advances, so both keys have the same two-press shape.
+      markedUnknown: false,
+      // Auto-play (this mode's own). `handedOver` follows section 13's rule:
+      // only a variation's OPENING run is ever replayed, never a jump back in
+      // after the user has taken a card themselves.
+      autoPlay: false,
+      autoTimer: 0,
+      handedOver: false,
+      lastAutoSkip: '',  // dedupe key for noteAutoSkip
+      ui: null,          // { root, btn, status }
+      board: null,       // { el, grid, layer, shapes }
+      panel: null,       // { el, title, prompt, keys }
+      squares: new Map(),
+      pieces: new Map(),
+      pos: null,         // CloSan position OUR board is showing
+      planFen: '',       // the trainer's own current fen, as last read
+      oid: null,
+      // THE BOARD WALKS THE PLAN AT THE USER'S PACE, and is deliberately NOT
+      // slaved to the trainer's fen — that is what the third press buys. The
+      // trainer is one or two plies ahead of us between the grade and the reply
+      // press, which is normal and not a desync.
+      plies: [],         // the whole variation, from the lesson plan
+      cursor: 0,         // index of the NEXT ply our board will play
+      cardIdx: -1,       // index of the user ply currently being asked for
+      lastMove: null,    // { from, to } — the move our board last played
+      view: 'w',
+      reading: false,
+      timerPaused: false,
+      actingAt: 0,
+      // The position we ACTED on. Until the trainer has moved off it, the card
+      // on screen is the one we just answered — so the mode must neither
+      // re-pause (which would freeze the board mid-reply, over the animation we
+      // just asked for) nor announce it as though it were a new question. The
+      // plan's own fen is what clears it, so this cannot outlive the answer.
+      awaitingFen: '',
+      announced: '',
+    };
+
+    // --- the blindfold seam --------------------------------------------------
+    //
+    // Every user-visible statement this mode makes goes through these two, so a
+    // TTS build is a body for `announce` and `showBoard: false` — not a hunt
+    // through the driver for the places that happen to draw. Deliberately in
+    // place before there is anything to speak: retrofitting it once the drawing
+    // calls are scattered is exactly the expensive version.
+
+    /**
+     * The ONE place this mode says anything. Deliberately independent of the
+     * panel: with `showBoard: false` there is no panel at all, and an announce
+     * that quietly did nothing in exactly that configuration would make the
+     * blindfold seam dead on arrival — which is the failure this indirection
+     * exists to prevent. TTS hangs off here; `setPrompt` is merely the output
+     * that happens to exist today, and it does its own null check.
+     */
+    function announce(text) {
+      if (!text || text === sg.announced) return;
+      sg.announced = text;
+      setPrompt(text);
+    }
+
+    const drawing = () => C.showBoard !== false;
+
+    // --- Chessable's own controls -------------------------------------------
+
+    const footerButtons = () => [...document.querySelectorAll(SELECTORS.trainerIconBtn)];
+
+    /** The bell, i.e. the control in its FIRST state. */
+    const hintButton = () =>
+      footerButtons().find((el) => el.querySelector(SELECTORS.trainerHintIcon)) || null;
+
+    /**
+     * The same control in its SECOND state ("I don't know"). Identified by
+     * exclusion rather than by its own icon: that icon has not been read, and
+     * matching the label would break in every language but English. The footer
+     * holds only these controls, so "neither bell nor pause" is exact.
+     */
+    const giveUpButton = () =>
+      footerButtons().find((el) => !el.querySelector(SELECTORS.trainerHintIcon) &&
+                                   !el.querySelector(SELECTORS.trainerPauseIcon)) || null;
+
+    const nextButton = () => document.querySelector(SELECTORS.trainerNextBtn);
+
+    /**
+     * WHERE THE MODE RUNS. Both trainer routes since v0.72.0 — /practice/ for
+     * ordinary review, and /learn/ for the mistake RETRY pass (section 17),
+     * overstudy tabs and first-time learning. The two render the identical
+     * MoveTrainer2 markup, so every mechanism here (the lesson plan, the pause
+     * control, the give-up button, the injection) is the same on both; the old
+     * /practice/-only gate was about where GRADING means something, and a retry
+     * pass is exactly a case where the interaction is wanted and the grading
+     * deliberately changes nothing.
+     */
+    const inSession = () => isTrainerPath();
+
+    // --- reading the trainer -------------------------------------------------
+
+    /**
+     * The position is the trainer's OWN (`ctx.fen` through the lesson plan),
+     * never one derived from the board DOM — section 18b's rule, for section
+     * 18b's reason: after a rolled-back wrong answer that board can hold a
+     * stale duplicate piece for far longer than an animation, and a placement
+     * read off it then matches nothing. It is also exact, so castling and en
+     * passant need none of readReviewFen's heuristics.
+     */
+    function refreshPlan() {
+      if (sg.reading) return;
+      sg.reading = true;
+      readLessonLine().then((plan) => {
+        sg.reading = false;
+        if (!sg.active) return;
+        if (!plan || plan.error || typeof plan.fen !== 'string' || !plan.fen) return;
+        applyPlan(plan);
+      }).catch(() => { sg.reading = false; });
+    }
+
+    function applyPlan(plan) {
+      const newVariation = plan.oid && plan.oid !== sg.oid;
+      if (newVariation) {
+        sg.oid = plan.oid;
+        sg.cardIdx = -1;
+        sg.lastMove = null;
+        // THE BOARD GOES BLANK UNTIL THE NEW VARIATION IS ANCHORED. Without
+        // this it keeps showing the position the LAST variation ended on for
+        // however many ticks the trainer takes to settle, then jumps — which
+        // reads as a flicker of someone else's game. `sg.pos` null is what
+        // hides it (see setBoardVisible), so there is one condition, not a
+        // flag to keep in step.
+        sg.pos = null;
+        sg.handedOver = false;
+        sg.markedUnknown = false;
+        clearAutoTimer();
+      }
+      sg.plies = Array.isArray(plan.plies) ? plan.plies : [];
+      if (plan.fen !== sg.planFen) {
+        sg.planFen = plan.fen;
+        // The trainer has moved off the position we answered.
+        if (sg.awaitingFen && sg.planFen !== sg.awaitingFen) sg.awaitingFen = '';
+      }
+      // Anchoring is ONLY ever done from 'think' (or a fresh variation). In
+      // 'shown' our board is deliberately AHEAD of what the trainer has been
+      // told, and re-anchoring there would undo the very move the user asked
+      // to see.
+      //
+      // `awaitingFen` is the other half of that, and it is what stops the
+      // opposite error: a user who presses the reply key quickly is AHEAD of
+      // the trainer, which is still animating. Anchoring then would find the
+      // card we have just answered still current and drag the board BACK onto
+      // it — re-asking a move the user has already graded.
+      if (newVariation) { sg.awaitingFen = ''; anchor(); return; }
+      if ((sg.phase === 'think' || sg.phase === 'browse') && !sg.awaitingFen) anchor();
+    }
+
+    /**
+     * Puts our board on the card the trainer is actually asking for.
+     *
+     * The trainer's fen is the authority for WHICH card; the plan is the
+     * authority for the moves. A fen that is not a user ply means the trainer
+     * is mid-move or replaying, and the last anchor simply stands — never guess
+     * a card from a position we cannot find.
+     */
+    function anchor() {
+      const idx = sg.plies.findIndex((p) => p.sourceFen === sg.planFen);
+      if (idx < 0) return;
+      const ply = sg.plies[idx];
+      if (!ply || !ply.isUserMove || !ply.from || !ply.to) return;
+      if (idx === sg.cardIdx && sg.pos) return; // already here
+      sg.cardIdx = idx;
+      sg.cursor = idx;
+      sg.markedUnknown = false; // a verdict belongs to the card it was given on
+      sg.pos = CloSan.parseFen(ply.sourceFen);
+      const prev = idx > 0 ? sg.plies[idx - 1] : null;
+      sg.lastMove = (prev && prev.from && prev.to)
+        ? { from: squareIndexOf(prev.from), to: squareIndexOf(prev.to) }
+        : null;
+      sg.phase = 'think';
+      render();
+    }
+
+    /** The ply being asked for, or null while the board is between cards. */
+    const cardPly = () => (sg.cardIdx >= 0 ? sg.plies[sg.cardIdx] : null) || null;
+
+    /**
+     * Is the trainer really standing on the card our board is showing? Every
+     * act checks this before touching Chessable: our board runs at the user's
+     * pace and can legitimately be a press behind, so "what our board shows" is
+     * NOT evidence about what the trainer is asking. Grading the wrong card is
+     * the one mistake here that costs the user a real scheduled move.
+     */
+    function cardReady() {
+      const ply = cardPly();
+      return Boolean(ply && sg.planFen && ply.sourceFen === sg.planFen);
+    }
+
+    const squareIndexOf = (name) => {
+      if (typeof name !== 'string' || name.length < 2) return -1;
+      const file = name.charCodeAt(0) - 97, rank = name.charCodeAt(1) - 49;
+      return (file < 0 || file > 7 || rank < 0 || rank > 7) ? -1 : rank * 8 + file;
+    };
+
+    // --- our board (display only) --------------------------------------------
+    //
+    // Section 11c's primitives, which is why they are top level: the quick-edit
+    // arrows editor already draws this same board inside a popup. NOTHING here
+    // takes input — the mode is answered with two keys, and a board that could
+    // also be clicked would be a second, undocumented way to answer a card.
+
+    function buildBoard() {
+      for (const id of [SG_BOARD_ID, SG_PANEL_ID]) {
+        const stale = document.getElementById(id);
+        if (stale) stale.remove();
+      }
+      const el = document.createElement('div');
+      el.id = SG_BOARD_ID;
+      el.className = 'clo-cr-board clo-sg-board';
+      const grid = document.createElement('div');
+      grid.className = 'clo-cr-grid';
+      const layer = document.createElement('div');
+      layer.className = 'clo-cr-layer';
+      const shapes = document.createElementNS(SVG_NS, 'svg');
+      shapes.setAttribute('class', 'clo-cr-shapes');
+      shapes.setAttribute('viewBox', '0 0 8 8');
+      shapes.setAttribute('preserveAspectRatio', 'none');
+      el.append(grid, layer, shapes);
+      // Born HIDDEN. A board is only ever built before it has a position to
+      // show — at startMode, or after a React re-render took ours away — and an
+      // empty 8x8 appearing for a frame is the same flicker setBoardVisible
+      // exists to stop, just at the other end.
+      el.hidden = true;
+      document.body.appendChild(el);
+
+      const panel = document.createElement('div');
+      panel.id = SG_PANEL_ID;
+      panel.className = 'clo-cr-panel clo-sg-panel';
+      const title = document.createElement('div');
+      title.className = 'clo-cr-title';
+      const prompt = document.createElement('div');
+      prompt.className = 'clo-cr-prompt clo-sg-prompt';
+      const keys = document.createElement('div');
+      keys.className = 'clo-sg-keys';
+      panel.append(title, prompt, keys);
+      panel.hidden = true; // …and so is the panel, for the same reason
+      document.body.appendChild(panel);
+
+      sg.board = { el, grid, layer, shapes };
+      sg.panel = { el: panel, title, prompt, keys };
+      // A fresh panel says nothing yet, so nothing may be suppressed as
+      // "already said" — otherwise two variations opening on the same sentence
+      // would leave the second one blank.
+      sg.announced = '';
+      sg.pieces.clear();
+      buildGrid();
+    }
+
+    function buildGrid() {
+      sg.squares.clear();
+      fillBoardGrid(sg.board.grid, sg.view, (sq, idx) => { sg.squares.set(idx, sq); });
+    }
+
+    /**
+     * Shows or hides both overlays WITHOUT tearing them down.
+     *
+     * The condition is simply "do we have a position for the variation the
+     * trainer is on" — `sg.pos`, which applyPlan nulls at every variation
+     * change and anchor() fills in again once the new plan is readable. Hiding
+     * rather than removing matters: a removed board has to be rebuilt, pieces
+     * and all, which is a second flicker on top of the one this exists to stop.
+     */
+    function setBoardVisible(on) {
+      if (!sg.board) return;
+      sg.board.el.hidden = !on;
+      sg.panel.el.hidden = !on;
+    }
+
+    /**
+     * Plays one ply of the plan on OUR board, with the glide.
+     *
+     * The animation is `.clo-cr-piece`'s own `transition: transform 180ms
+     * ease-out` — the continuation board's, which was matched to MoveTrainer2's
+     * ~200 ms click-move glide in the first place. So this must MOVE the
+     * existing element rather than destroy and recreate it: a new node has
+     * nothing to transition from and the piece teleports, which is exactly what
+     * a plain `reconcile()` does.
+     *
+     * Best-effort, like the continuation board's applyMove: the reconcile
+     * afterwards is what is actually authoritative, so castling rooks, en
+     * passant and promotions all come out right even though only the primary
+     * piece is glided.
+     */
+    function playPlyOnBoard(ply) {
+      if (!ply || !sg.pos) return false;
+      const uci = sanToUci(sg.pos, ply.san);
+      const mv = uci && CloSan.uciToMove(sg.pos, uci);
+      if (!mv) {
+        warn('show-and-grade: could not play', ply.san, 'on our board');
+        return false;
+      }
+      if (sg.board) {
+        const moving = sg.pieces.get(mv.from);
+        const captured = sg.pieces.get(mv.to);
+        if (moving) {
+          if (captured) { captured.remove(); sg.pieces.delete(mv.to); }
+          sg.pieces.delete(mv.from);
+          sg.pieces.set(mv.to, moving);
+          placeBoardPieceAt(moving, mv.to);
+        }
+      }
+      sg.pos = CloSan.makeMove(sg.pos, mv);
+      sg.lastMove = { from: mv.from, to: mv.to };
+      // Let the glide finish, then make the DOM authoritative.
+      setTimeout(() => { if (sg.active) { reconcile(); paintSquares(); } }, C.animMs);
+      paintSquares();
+      paintArrow();
+      return true;
+    }
+
+    function reconcile() {
+      const board = sg.pos ? sg.pos.board : null;
+      if (!board || !sg.board) return;
+      for (const [idx, el] of [...sg.pieces]) {
+        const letter = board[idx];
+        if (!letter || el.dataset.code !== pieceCodeOf(letter)) {
+          el.remove();
+          sg.pieces.delete(idx);
+        }
+      }
+      for (let idx = 0; idx < 64; idx++) {
+        const letter = board[idx];
+        if (!letter) continue;
+        let el = sg.pieces.get(idx);
+        if (!el) {
+          el = makeBoardPiece(letter);
+          el.dataset.code = pieceCodeOf(letter);
+          sg.board.layer.appendChild(el);
+          sg.pieces.set(idx, el);
+        }
+        placeBoardPieceAt(el, idx);
+      }
+    }
+
+    const placeBoardPieceAt = (el, idx) => {
+      const { col, row } = boardVisualPos(idx, sg.view);
+      el.style.transform = 'translate(' + col * 100 + '%, ' + row * 100 + '%)';
+    };
+
+    function render() {
+      if (!sg.board || !drawing()) return;
+      harvestBoardPieces();
+      // Orientation is the trainer board's own bottom side. A null answer means
+      // it is mid-render, and the last one stands — never flip on a blank read.
+      const color = boardBottomColorNow();
+      if (color && color !== sg.view) { sg.view = color; buildGrid(); }
+      reconcile();
+      paintSquares();
+      paintArrow();
+    }
+
+    function boardBottomColorNow() {
+      const board = getReviewBoard();
+      if (!board) return null;
+      return boardBottomColor(
+        board.querySelector(SELECTORS.reviewSquare.replace('%s', 'a1')),
+        board.querySelector(SELECTORS.reviewSquare.replace('%s', 'h8')));
+    }
+
+    function paintSquares() {
+      const lm = sg.lastMove;
+      for (const [idx, sq] of sg.squares) {
+        sq.classList.toggle('clo-cr-sq--last',
+          Boolean(lm) && (idx === lm.from || idx === lm.to));
+      }
+    }
+
+    /**
+     * The answer, drawn, and ONLY once it has been asked for. The move has been
+     * PLAYED on our board by then, so the arrow is what still says which move
+     * produced the position being looked at. It goes as soon as the card is
+     * graded, since by then the board has moved on to the next one.
+     */
+    function paintArrow() {
+      if (!sg.board) return;
+      const svg = sg.board.shapes;
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      const ply = cardPly();
+      if (sg.phase !== 'shown' || !ply) return;
+      const from = squareIndexOf(ply.from), to = squareIndexOf(ply.to);
+      if (from < 0 || to < 0) return;
+      const g = boardShapeArrow(from, to, sg.view, SHAPE_COLOR_HEX.g);
+      g.setAttribute('class', 'clo-cr-shape');
+      svg.appendChild(g);
+    }
+
+    function positionBoard() {
+      const board = getReviewBoard();
+      if (!board || !sg.board) return false;
+      const rect = board.getBoundingClientRect();
+      if (rect.width < C.minBoardPx) return false; // mid-render; keep the last spot
+      const size = Math.min(rect.width, rect.height);
+      setInlinePx(sg.board.el, {
+        left: rect.left + window.scrollX,
+        top: rect.top + window.scrollY,
+        width: size,
+        height: size,
+      });
+      // The comment column, exactly as section 18's panel: a live quiz prints
+      // one sentence there and is then empty for the whole card.
+      const box = document.querySelector(SELECTORS.reviewCommentBox) ||
+                  document.querySelector(SELECTORS.reviewCommentCol);
+      const br = box ? box.getBoundingClientRect() : null;
+      if (br && br.width > 120 && br.height > 120) {
+        setInlinePx(sg.panel.el, {
+          left: br.left + window.scrollX,
+          top: br.top + window.scrollY,
+          width: br.width,
+        });
+      } else {
+        if (sg.panel.el.style.width) sg.panel.el.style.width = '';
+        setInlinePx(sg.panel.el, {
+          left: Math.max(8, rect.left) + window.scrollX,
+          top: rect.bottom + 8 + window.scrollY,
+        });
+      }
+      return true;
+    }
+
+    // --- what the panel says -------------------------------------------------
+
+    function setPrompt(text) {
+      if (!sg.panel) return;
+      if (sg.panel.prompt.textContent !== text) sg.panel.prompt.textContent = text;
+    }
+
+    function keyName(list) { return (list && list.length) ? list.join(' / ') : '—'; }
+
+    function syncPanel() {
+      if (!sg.panel) return;
+      sg.panel.title.textContent = 'Show and grade';
+      const next = keyName(C.keys.next), wrong = keyName(C.keys.wrong);
+      let keys = '';
+      if (sg.phase === 'think') {
+        keys = next + ' — show me the move   ·   ' + wrong + " — I don't know it";
+      } else if (sg.phase === 'shown') {
+        keys = sg.markedUnknown
+          ? next + " — the opponent's reply (marked as not known)"
+          : next + " — I knew it   ·   " + wrong + " — I didn't know";
+      } else if (sg.phase === 'browse') {
+        keys = next + ' — next variation';
+      } else if (sg.phase === 'acting') {
+        keys = 'Working…';
+      }
+      sg.panel.keys.textContent = keys;
+    }
+
+    // --- the two answers -----------------------------------------------------
+
+    /**
+     * FIRST PRESS: "show me." The move is PLAYED on our board — arrow as well,
+     * not instead: the arrow says which move it was, the glide says what the
+     * position now looks like, and for a mode aimed at blindfold practice the
+     * resulting position is the more useful of the two.
+     *
+     * `lost` is the "wrong" key taken at this stage: the card is already lost
+     * and the user only wants to see the move, so the grade is remembered and
+     * applied by the press that advances. That is what keeps EVERY path two
+     * presses — one to see your move, one to see the opponent's.
+     */
+    function reveal(lost) {
+      const ply = cardPly();
+      if (sg.phase !== 'think' || !ply) return;
+      sg.phase = 'shown';       // set BEFORE the move: paintArrow reads it
+      sg.markedUnknown = Boolean(lost);
+      if (playPlyOnBoard(ply)) sg.cursor = sg.cardIdx + 1;
+      announce(ply.san);
+      syncPanel();
+    }
+
+    /**
+     * SECOND PRESS: the opponent's reply, on our board, at once.
+     *
+     * Called the moment the grade is pressed and NOT after the Chessable act
+     * has finished, because the two are independent: the reply comes from the
+     * PLAN, so there is nothing to wait for, and a press that showed no move
+     * until Chessable caught up is the wasted press this shape exists to remove.
+     *
+     * A card with no reply after it is the variation's last move — the browse
+     * state is what follows, and tick() is already watching for it.
+     */
+    function advanceAfterGrade() {
+      const reply = sg.plies[sg.cursor];
+      if (!reply) return;
+      if (!playPlyOnBoard(reply)) return;
+      sg.cursor++;
+      // Whatever comes next is the next card; anchor() confirms it against the
+      // trainer on a later tick and fixes the cursor if we have drifted.
+      sg.cardIdx = sg.cursor;
+      announce('Opponent played ' + reply.san);
+    }
+
+    /**
+     * Resumes the timer and gives the board a beat to become live again. Every
+     * act goes through this: a press issued in the same breath as the resume
+     * lands on the outgoing render, and pressing the board while still paused
+     * resumes the session and is SWALLOWED.
+     */
+    function resumeAndSettle() {
+      if (sg.timerPaused) {
+        resumeTrainerTimer();
+        sg.timerPaused = false;
+      }
+      return new Promise((r) => setTimeout(r, C.settleMs));
+    }
+
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    /** "I knew it": play the course move, exactly as auto-play would. */
+    async function gradeKnown() {
+      const ply = cardPly();
+      if (!ply) return;
+      if (ply.san && /=/.test(ply.san)) {
+        // The two presses would open Chessable's own promotion picker, whose
+        // markup is unverified — auto-play and section 22 both refuse these.
+        setStatus('Promotions have to be played on the board');
+        return;
+      }
+      // Our board runs at the user's pace, so what it shows is not evidence
+      // about what the trainer is asking. Grading the wrong card is the one
+      // mistake here that costs a real scheduled move.
+      if (!cardReady()) { setStatus('Waiting for the board…'); return; }
+      enterActing();
+      advanceAfterGrade();  // the board moves NOW; the act below is Chessable's
+      await resumeAndSettle();
+      if (!sg.active) return;
+      const board = getReviewBoard();
+      const fromEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', ply.from));
+      const toEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', ply.to));
+      if (!fromEl || !toEl) {
+        failAct('Could not find ' + ply.from + ply.to + ' on the board');
+        return;
+      }
+      // The tracker has to be told a HUMAN answered this, or the move is filed
+      // as trainer-played and never remembered as proven — see section 22.
+      if (autoPlayNoteTypedMove) autoPlayNoteTypedMove(ply.from, ply.to);
+      log('show-and-grade: knew', ply.san);
+      document.documentElement.classList.add('clo-injecting');
+      pressSquare(fromEl);
+      pressSquare(toEl);
+      setTimeout(() => {
+        document.documentElement.classList.remove('clo-injecting');
+      }, C.injectClassMs);
+      leaveActing();
+    }
+
+    /**
+     * "I didn't know it": Chessable's own two-press give-up, then its study
+     * state's Next. The failure it records is `quizIncorrectAttempts: "giveUp"`,
+     * which the mistake log picks up on its own cadence — nothing to write here.
+     */
+    async function gradeUnknown() {
+      if (!cardReady()) { setStatus('Waiting for the board…'); return; }
+      enterActing();
+      advanceAfterGrade();  // the board moves NOW; the act below is Chessable's
+      await resumeAndSettle();
+      if (!sg.active) return;
+      const hint = hintButton();
+      if (hint) { hint.click(); await wait(C.stepMs); }
+      if (!sg.active) return;
+      const give = giveUpButton();
+      if (!give) {
+        failAct('Could not reach Chessable’s “I don’t know” — press it yourself');
+        return;
+      }
+      const ply = cardPly();
+      log('show-and-grade: did not know', (ply && ply.san) || '');
+      give.click();
+      await wait(C.stepMs);
+      if (!sg.active) return;
+      // The give-up parks the trainer in a study state whose board is not live.
+      const next = nextButton();
+      if (next) next.click();
+      leaveActing();
+    }
+
+    // --- auto-play -----------------------------------------------------------
+    //
+    // Replays the cards the user has already answered correctly THIS session,
+    // so a session gets to the new material instead of re-proving a shared
+    // prefix. Its own toggle, and section 13's is untouched — that one is held
+    // off for the whole mode anyway (it drives Chessable's board, which is the
+    // one thing this mode must be the only writer of).
+    //
+    // WHY IT DOES NOT RUN AHEAD OF CHESSABLE. Our board could replay the line
+    // at its own pace and let the real one catch up — but each card still has
+    // to be GRADED on Chessable, in order, and only while Chessable is actually
+    // standing on it (`cardReady`). Running ahead would mean holding a queue of
+    // ungraded cards, where one failed act mis-files every card behind it; and
+    // the moment the replay reaches an unproven move the user has to wait for
+    // Chessable regardless, so the board would be showing move 12 while the
+    // trainer is on move 4 and the first thing the user does is sit and wait.
+    // The gain is nothing and the failure mode is grading the wrong card, so
+    // this advances ONE card at a time, gated on cardReady().
+
+    function clearAutoTimer() {
+      clearTimeout(sg.autoTimer);
+      sg.autoTimer = 0;
+    }
+
+    /**
+     * Is the card on screen one the user has already proven this session — and
+     * one auto-play is allowed to take?
+     *
+     * THE HOLD IS WHAT MAKES THIS SAFE INSIDE A RETRY PASS (section 17). That
+     * pass exists to walk the user back to the moves they failed, and it marks
+     * those positions through `autoPlaySetHold`. Such a move is very often ALSO
+     * proven — they answered it correctly later in the session, which is why it
+     * is in the record at all — so without this check auto-play would cheerfully
+     * play the one move the whole pass is asking for. Same failure section 17
+     * documents at length for section 13's replay; this is that rule applied to
+     * our own.
+     */
+    function cardIsProven() {
+      const ply = cardPly();
+      if (!ply || !sg.pos || !autoPlayIsProven) return false;
+      if (autoPlayIsHeld && autoPlayIsHeld(ply.sourceFen)) return false;
+      const uci = sanToUci(sg.pos, ply.san);
+      return Boolean(uci && autoPlayIsProven(ply.sourceFen, uci));
+    }
+
+    /**
+     * One auto-played card: reveal, a beat to look at it, then advance — the
+     * same two steps a press would drive, so there is no second code path for
+     * the board or the grade to drift down.
+     */
+    /**
+     * One console line per (card, reason) whenever auto-play declines to take a
+     * card. Section 13 keeps exactly this for exactly this reason: a silent
+     * no-op is indistinguishable from a bug, and "auto-play doesn't work" is
+     * otherwise a question no log can answer. Deduped on the card, so a 500 ms
+     * poll cannot turn it into a flood.
+     */
+    function noteAutoSkip(why) {
+      const key = sg.oid + '#' + sg.cardIdx + '#' + why;
+      if (sg.lastAutoSkip === key) return;
+      sg.lastAutoSkip = key;
+      const ply = cardPly();
+      log('show-and-grade: auto-play passed on', (ply && ply.san) || 'this card', '—', why);
+    }
+
+    function maybeAutoPlay() {
+      if (sg.autoTimer) return;
+      if (!sg.autoPlay) return;                      // off; no line, it is not news
+      if (sg.phase !== 'think' || !cardReady()) return;  // not our moment yet
+      if (sg.handedOver) { noteAutoSkip('you have taken this variation over'); return; }
+      if (!cardIsProven()) {
+        noteAutoSkip(autoPlayIsHeld && cardPly() && autoPlayIsHeld(cardPly().sourceFen)
+          ? 'a retry pass is asking for this move'
+          : 'not answered correctly yet this session');
+        return;
+      }
+      sg.autoTimer = setTimeout(() => {
+        sg.autoTimer = 0;
+        if (!sg.active || sg.phase !== 'think' || !cardReady()) return;
+        reveal(false);
+        sg.autoTimer = setTimeout(() => {
+          sg.autoTimer = 0;
+          if (!sg.active || sg.phase !== 'shown') return;
+          gradeKnown();
+        }, C.autoAdvanceMs);
+      }, C.autoRevealMs);
+    }
+
+    /**
+     * Browse state: on to the next variation.
+     *
+     * REFUSED WHILE A RETRY PASS IS RUNNING. Section 17 chooses what comes next
+     * — it has a queue of variations to walk and navigates to them itself — so a
+     * "next variation" of ours would take the user off the pass's own route and
+     * the pass would then have to drag them back. The pass advances on its own
+     * within a tick, so there is nothing for the user to press for.
+     */
+    function advance() {
+      if (retryRunActive && retryRunActive()) {
+        setStatus('The retry pass picks the next variation');
+        return;
+      }
+      const next = nextButton();
+      if (next) { next.click(); return; }
+      // No button rendered: fall back to MoveTrainer2's own single-key
+      // shortcut, the way section 22 advances. NOTE that a synthetic key was
+      // seen NOT to drive the study state during the ground-truthing, so this
+      // is a fallback and not the primary path.
+      const key = CONFIG.textMove.advanceKey;
+      const upper = key.toUpperCase();
+      const base = {
+        key, code: 'Key' + upper, keyCode: upper.charCodeAt(0),
+        which: upper.charCodeAt(0), bubbles: true, cancelable: true,
+      };
+      document.dispatchEvent(new KeyboardEvent('keydown', base));
+      document.dispatchEvent(new KeyboardEvent('keypress', base));
+      document.dispatchEvent(new KeyboardEvent('keyup', base));
+    }
+
+    function enterActing() {
+      sg.phase = 'acting';
+      sg.actingAt = Date.now();
+      sg.awaitingFen = sg.planFen;
+      syncPanel();
+    }
+
+    /**
+     * Both the completed act and the watchdog land on 'think': the board has
+     * already been advanced to the next card by advanceAfterGrade, so this is
+     * only releasing the key lock. If the act did NOT land, `cardReady()` will
+     * be false on that next card and the grade is refused rather than mis-filed
+     * — the safe direction when we cannot know whether Chessable took it.
+     */
+    /**
+     * An act that could not be carried out AFTER the board had already been
+     * advanced on the press. Our board is then a card ahead of Chessable, and
+     * every later grade would be refused by `cardReady()` for the rest of the
+     * session — the trainer never moves, so `awaitingFen` would never clear on
+     * its own. So put the two back in step: drop the wait and force `anchor()`
+     * to re-derive the card from the trainer, wherever it actually is.
+     */
+    function failAct(msg) {
+      warn('show-and-grade:', msg);
+      setStatus(msg);
+      sg.awaitingFen = '';
+      sg.cardIdx = -1;
+      leaveActing();
+    }
+
+    function leaveActing() {
+      if (sg.phase === 'acting') sg.phase = 'think';
+      sg.actingAt = 0;
+      sg.markedUnknown = false;
+      paintArrow();
+      syncPanel();
+    }
+
+    // --- keys ----------------------------------------------------------------
+    //
+    // CAPTURE phase on `document`, which is section 18's discipline and for its
+    // reason: MoveTrainer2 binds single-key shortcuts on `document` and does not
+    // skip focused controls, so a bubble-phase listener is not enough for a mode
+    // that owns the whole session. Only OUR OWN keys are swallowed — everything
+    // else still reaches the trainer.
+
+    function onKey(e) {
+      if (!sg.active || e.altKey || e.ctrlKey || e.metaKey) return;
+      const tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+      const isNext = C.keys.next.includes(e.key);
+      const isWrong = C.keys.wrong.includes(e.key);
+      if (!isNext && !isWrong) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.type !== 'keydown') return; // one action per press, on the way down
+      if (sg.phase === 'acting') return;
+      if (sg.phase === 'browse') { if (isNext) advance(); return; }
+      // TWO PRESSES PER CARD, AND EVERY PRESS SHOWS A MOVE. First press: your
+      // move. Second press: the opponent's, which is also what grades the card.
+      // Both keys have that same shape — "wrong" pressed at the think stage
+      // only remembers the verdict (the card is lost either way, and the user
+      // still wants to see the move), so it is applied by the press that
+      // advances rather than costing a press of its own.
+      // A press at the think stage is the user taking this variation over: from
+      // here on auto-play stays out of it, section 13's rule and for its reason
+      // (resuming mid-line was reported as jarring). Set HERE and not in
+      // reveal(), which auto-play itself calls.
+      if (sg.phase === 'think') {
+        sg.handedOver = true;
+        clearAutoTimer();
+        reveal(isWrong);
+        return;
+      }
+      if (sg.phase === 'shown') {
+        clearAutoTimer();
+        if (isWrong || sg.markedUnknown) gradeUnknown();
+        else gradeKnown();
+      }
+    }
+
+    // --- the row group -------------------------------------------------------
+
+    function setStatus(text) {
+      if (!sg.ui) return;
+      const msg = text ? '👁 ' + text : '';
+      if (sg.ui.status.textContent !== msg) sg.ui.status.textContent = msg;
+      sg.ui.status.hidden = !msg;
+    }
+
+    function ensureUi() {
+      const widget = document.getElementById(REVIEW_WIDGET_ID);
+      if (!widget) return;
+      if (sg.ui && sg.ui.root.isConnected && sg.ui.root.parentElement === widget) return;
+      const stale = document.getElementById(SG_BTN_ID);
+      if (stale) stale.remove();
+
+      const root = document.createElement('span');
+      root.id = SG_BTN_ID;
+      root.className = 'clo-review-grp clo-sg';
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'clo-sg-btn';
+      btn.textContent = 'Show & grade';
+      btn.title = 'Answer this session with two keys instead of the board: ' +
+        keyName(C.keys.next) + ' shows the move and confirms you knew it, ' +
+        keyName(C.keys.wrong) + ' marks it as not known.';
+      btn.addEventListener('click', () => {
+        if (sg.active) stop('stopped'); else startMode();
+        btn.blur(); // or the next space/Enter would toggle it again
+      });
+      // Auto-play's own toggle. It CARRIES ITS STATE — a class plus the answer
+      // in words in the tooltip — which is the pattern section 13's cog settled
+      // on (§F4): a setting must say what it is set to, and it is never a FILL,
+      // because a fill in this row means "the one thing to do next".
+      const auto = document.createElement('button');
+      auto.type = 'button';
+      auto.className = 'clo-sg-auto';
+      auto.textContent = 'Auto';
+      auto.addEventListener('click', () => {
+        setAutoPlay(!sg.autoPlay);
+        auto.blur();
+      });
+
+      root.append(btn, auto);
+      widget.appendChild(root);
+
+      const status = document.createElement('span');
+      status.className = 'clo-sg-status';
+      status.hidden = true;
+      const host = reviewStatusHost();
+      if (host) {
+        const staleStatus = host.querySelector('.clo-sg-status');
+        if (staleStatus) staleStatus.remove();
+        host.appendChild(status);
+      }
+      sg.ui = { root, btn, auto, status };
+      syncAutoUi();
+    }
+
+    function setAutoPlay(on) {
+      sg.autoPlay = Boolean(on);
+      if (!sg.autoPlay) clearAutoTimer();
+      syncAutoUi();
+      try {
+        chrome.storage.local.set({ [C.autoKey]: sg.autoPlay });
+      } catch (err) { /* orphaned context — the in-memory flag still applies */ }
+    }
+
+    function syncAutoUi() {
+      if (!sg.ui || !sg.ui.auto) return;
+      sg.ui.auto.classList.toggle('clo-sg-auto--on', sg.autoPlay);
+      sg.ui.auto.title = sg.autoPlay
+        ? 'Auto-play is ON: cards you have already answered correctly this session ' +
+          'are shown and graded for you, and it hands back at the first move you ' +
+          'have not proven yet. Separate from the ordinary auto-play setting.'
+        : 'Auto-play is OFF: every card waits for you. Turn on to replay the moves ' +
+          'you have already answered correctly this session.';
+    }
+
+    function syncUi() {
+      if (!sg.ui) return;
+      const show = sg.enabled && inSession() && !(continuationActive && continuationActive());
+      sg.ui.root.hidden = !show;
+      sg.ui.btn.textContent = sg.active ? 'Stop' : 'Show & grade';
+      // A running mode owns the row: stopping is the only decision left in it.
+      sg.ui.btn.classList.toggle('clo-rowprimary', sg.active);
+      // The toggle is a preference, not an action on the card, so it is only
+      // offered where it means something — with the mode running.
+      sg.ui.auto.hidden = !sg.active;
+    }
+
+    // --- lifecycle -----------------------------------------------------------
+
+    function startMode() {
+      // `sg.enabled` as well as the route: syncUi hides the whole group when the
+      // preference is off, so a human cannot press this — but anything that
+      // reaches the button another way (a test harness, a stray synthetic click)
+      // would otherwise start a mode that tick() stops on its very next pass,
+      // which reads as "the button does nothing" with a misleading reason in the
+      // log. Refuse it here, where the answer is unambiguous.
+      if (sg.active || !sg.enabled || !inSession()) return;
+      sg.active = true;
+      sg.phase = 'think';
+      sg.planFen = '';
+      sg.awaitingFen = '';
+      sg.announced = '';
+      // Nothing about the last run may survive into this one: the cursor is an
+      // index into a plan that has almost certainly changed.
+      sg.plies = [];
+      sg.cursor = 0;
+      sg.cardIdx = -1;
+      sg.pos = null;
+      sg.lastMove = null;
+      sg.markedUnknown = false;
+      if (autoPlayShowGradeHold) autoPlayShowGradeHold(true);
+      if (drawing()) {
+        buildBoard();
+        positionBoard();
+      }
+      setStatus('');
+      log('show-and-grade: started');
+      syncUi();
+      tick();
+    }
+
+    /**
+     * Fails OPEN, unconditionally and in this order: the timer first, because a
+     * session left paused with our board down is the worst thing this mode can
+     * leave behind, and every other step is cosmetic beside it.
+     */
+    function stop(why) {
+      if (!sg.active) {
+        if (sg.board) hideBoard();
+        return;
+      }
+      sg.active = false;
+      sg.phase = 'off';
+      clearAutoTimer();
+      if (sg.timerPaused) { resumeTrainerTimer(); sg.timerPaused = false; }
+      if (autoPlayShowGradeHold) autoPlayShowGradeHold(false);
+      hideBoard();
+      setStatus('');
+      log('show-and-grade: stopped (' + why + ')');
+      syncUi();
+    }
+
+    function hideBoard() {
+      for (const id of [SG_BOARD_ID, SG_PANEL_ID]) {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      }
+      sg.board = null;
+      sg.panel = null;
+      sg.pieces.clear();
+      sg.squares.clear();
+    }
+
+    function maintainPause() {
+      if (!sg.active || sg.timerPaused || sg.phase === 'acting') return;
+      // The control is NOT always on screen — Chessable empties the footer in
+      // the transition states between quizzes — so this retries once per tick
+      // rather than giving up on a single press (section 18b's lesson).
+      sg.timerPaused = pauseTrainerTimer();
+    }
+
+    function tick() {
+      if (!sg.enabled || !inSession() || (continuationActive && continuationActive())) {
+        // Name the ACTUAL reason. These three used to collapse into one message
+        // ("another board opened") that was simply wrong for two of them, which
+        // is exactly the sort of log line that sends you looking in the wrong
+        // module — it cost a debugging session.
+        if (sg.active) {
+          stop(!sg.enabled ? 'turned off in the options'
+            : !inSession() ? 'left the trainer session'
+            : 'another board opened');
+        }
+        ensureUi();
+        syncUi();
+        return;
+      }
+      ensureUi();
+      syncUi();
+      if (!sg.active) return;
+
+      // The watchdog. An act that changes nothing must never strand the mode
+      // with the board covered and the timer paused, so this is checked before
+      // anything else can return early.
+      if (sg.phase === 'acting' && Date.now() - sg.actingAt > C.actMaxMs) {
+        warn('show-and-grade: no response to the last press — carrying on');
+        leaveActing();
+      }
+      if (document.hidden) return;
+
+      if (reviewBrowseReady()) {
+        // The variation is over: nothing to grade, nothing to pause. The board
+        // is HIDDEN rather than torn down — the next variation needs it back a
+        // moment later, and rebuilding it is a flicker of its own.
+        if (sg.timerPaused) { resumeTrainerTimer(); sg.timerPaused = false; }
+        if (sg.phase !== 'acting') sg.phase = 'browse';
+        clearAutoTimer();
+        setBoardVisible(false);
+        syncPanel();
+        return;
+      }
+
+      // A rebuilt board starts empty (buildBoard clears the piece map), and
+      // anchor() will not redraw it — it short-circuits when the card has not
+      // changed. So the redraw belongs here, with the rebuild that caused it.
+      if (drawing() && (!sg.board || !sg.board.el.isConnected)) { buildBoard(); render(); }
+      refreshPlan();
+      // Nothing is shown until the CURRENT variation has been anchored. `sg.pos`
+      // is null from the variation change until anchor() fills it in, which is
+      // exactly the window in which the previous variation's final position
+      // would otherwise sit on screen and then jump.
+      setBoardVisible(Boolean(sg.pos));
+      if (drawing() && sg.pos) positionBoard();
+
+      if (sg.phase === 'browse') sg.phase = 'think';
+      if (sg.phase === 'acting') return;
+
+      // 'shown' is the user's to leave: our board is deliberately showing a move
+      // the trainer has not been told about yet, and the timer is already paused.
+      if (sg.phase !== 'think') { syncPanel(); return; }
+
+      if (!cardPly()) {
+        // The trainer is playing, or the plan is not readable yet.
+        syncPanel();
+        return;
+      }
+      // Only pause once the trainer is actually asking this card — pausing
+      // while it is still animating freezes it mid-move.
+      if (cardReady()) {
+        maintainPause();
+        announce('Your move');
+        maybeAutoPlay();
+      }
+      syncPanel();
+    }
+
+    // --- preference ----------------------------------------------------------
+
+    (async () => {
+      try {
+        const stored = await chrome.storage.local.get([C.key, C.autoKey]);
+        sg.enabled = stored[C.key] === true;
+        sg.autoPlay = stored[C.autoKey] === true;
+        syncAutoUi();
+      } catch (err) {
+        warn('show-and-grade: preference read failed:', err);
+      }
+    })();
+
+    try {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local') return;
+        if (changes[C.autoKey]) {
+          sg.autoPlay = changes[C.autoKey].newValue === true;
+          if (!sg.autoPlay) clearAutoTimer();
+          syncAutoUi();
+        }
+        if (!changes[C.key]) return;
+        sg.enabled = changes[C.key].newValue === true;
+        if (!sg.enabled) stop('turned off');
+        else tick();
+      });
+    } catch (err) { /* orphaned context — off, which is the default anyway */ }
+
+    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('keypress', onKey, true);
+    document.addEventListener('keyup', onKey, true);
+    window.addEventListener('resize', () => { if (sg.active && drawing()) positionBoard(); });
+
+    showGradeActive = () => sg.active;
+    showGradeEnabled = () => sg.enabled;
+
+    let lastTickError = '';
+    const pollTimer = setInterval(() => {
+      try {
+        tick();
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        if (msg !== lastTickError) { lastTickError = msg; warn('show-and-grade tick failed:', err); }
+      }
+    }, C.pollMs);
+    window.addEventListener('pagehide', () => { clearInterval(pollTimer); stop('page left'); });
+    tick();
+    log('show-and-grade watcher active (top document)');
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -18497,6 +19869,12 @@
     // while our own board covers Chessable's). Both are null-safe, so the order
     // is a convention rather than a requirement.
     initTextMove();
+    // After initAutoPlay (whose hold and answer bridges it uses), after
+    // initContinuationReview (whose `active` bridge stands it down) and after
+    // initTextMove, which stands DOWN on this one — the bridge is assigned when
+    // initShowGrade runs, and a null reads as "not active", which is true until
+    // then. All null-safe, so the order is a convention.
+    initShowGrade();
     initChapterSort();
     initCoverage();
   }

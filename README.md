@@ -235,6 +235,75 @@ it is logged the same way if it is wrong, the wrong-guess **alt check** offers t
 engine-check it just the same, and auto-play remembers it as proven. Promotions
 still have to be played on the board.
 
+### Show and grade (two-button review)
+
+Off by default; turn on **Show and grade** in the options page, then press
+**Show & grade** on the widget during a **Review** session. In this mode you
+never make a move — the whole session runs from two keys, which is what makes it
+studiable from a Bluetooth ring with the screen out of reach.
+
+A card is **two presses, and every press shows a move.** Our board — drawn over
+Chessable's — shows the position, and you think. Press **`2`** and your move is
+*played* on it, with the glide Chessable itself uses, and marked with an arrow.
+Press **`2`** again and the opponent's reply appears — which is the next card,
+and the same press quietly scores yours as correct. Press **`4`** instead of that
+second `2` and the card is marked wrong; the reply appears just the same.
+
+If you already know you have lost the move, **`4`** works at the *first* press
+too: it shows you the move and remembers the card as failed, so the next press
+still just advances. Either way it is two presses a card, and neither of them is
+spent on anything you cannot see. Once the variation is over, **`2`** asks for
+the next one.
+
+**Auto-play** has its own **Auto** toggle beside the Stop button, on while the
+mode runs, and it is entirely separate from the ordinary auto-play setting —
+turning one on does not turn the other on. With it on, any card you have already
+answered correctly this session is shown and graded for you, and it hands back at
+the first move you have *not* proven yet. As with the ordinary auto-play, only a
+variation's opening run is ever replayed: once you have answered a card yourself,
+the rest of that variation is yours.
+
+It advances one card at a time rather than racing ahead of Chessable. It could
+replay the line on our board at its own pace, but every card still has to be
+graded on Chessable *in order*, so the moment the replay reached a move you had
+not proven you would be sitting waiting for the real board to catch up — with our
+board showing a position several moves further on. Going at Chessable's pace is
+both the safer and, in practice, the faster-feeling of the two.
+
+**Your thinking time is not charged to the card.** Chessable's per-move clock is
+short, and a card that runs out is recorded as a failure with the move played for
+you — so a move you actually knew would be graded wrong, which is the one thing
+this mode exists to control. The session timer is therefore paused while you
+think and started again only to play the move.
+
+**Nothing here invents a wrong move to make a card fail.** *I didn't know it*
+drives Chessable's own **I don't know** control, which is what records the
+failure and plays the move — so the grading is Chessable's own, and there is no
+way for a "wrong" move to be accidentally accepted as right. Those failures join
+the session's **Mistakes** list like any other, shown as *not known*, so
+**Retry** and **Drill mistakes** pick them up unchanged.
+
+The board is drawn with an **amber** ring rather than the green of the
+clickable-line quiz and the drill, because it sits in the same place as those and
+accepts no input at all: the two keys are the only way to answer. Promotions
+still have to be played on the board.
+
+**It covers the mistake flows too.** A **Retry** pass runs as an ordinary trainer
+session, so the mode works there unchanged — and auto-play knows not to play the
+very move the pass is walking you back to, however well you proved it earlier.
+While a pass is running it also stops answering "next variation": the pass picks
+that itself. In the **Drill**, where the board is ours and nothing reaches
+Chessable at all, the same two keys work on each card — `2` shows the move, then
+`2` for knew it (off the list) or `4` for didn't (stays on it). There the keys
+are simply an extra way to answer: you can still play the move on the board if
+you would rather.
+
+The keys are `2` and `4` for now;
+support for a ring's media buttons needs a capture of what a real ring emits,
+since on most platforms those never reach a web page as key presses at all. The
+mode is also the groundwork for blindfold practice: everything it says goes
+through one `announce()` call and the board can be switched off wholesale.
+
 Trainer sessions — review and learn alike — can also **auto-play moves you
 already proved this session**
 (the *Auto-play* toggle behind the widget's **cog**, off by default, with a

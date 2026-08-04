@@ -941,10 +941,11 @@
 
 .clo-review-title { order: 0; }
 .clo-tm { order: 1; }  /* the card being answered — nothing else here acts on it */
-.clo-mx { order: 2; }  /* what went wrong */
-.clo-cr { order: 3; }  /* what to do about it */
-.clo-os { order: 4; }  /* overstudy — the escape hatch, not the headline (§5.1) */
-.clo-ap { order: 5; }  /* settings, behind the cog (change #9) */
+.clo-sg { order: 2; }  /* …nor this: show-and-grade answers that same card (§23) */
+.clo-mx { order: 3; }  /* what went wrong */
+.clo-cr { order: 4; }  /* what to do about it */
+.clo-os { order: 5; }  /* overstudy — the escape hatch, not the headline (§5.1) */
+.clo-ap { order: 6; }  /* settings, behind the cog (change #9) */
 
 /* --- COLLAPSED MID-QUIZ (v0.59.0, DESIGN-ui-inventory §3.3) ------------------
    While a quiz is live nothing in this row acts on the card being answered, and
@@ -986,6 +987,19 @@
    hidden. Matching on the child's own state takes this to (0,4,0) and makes the
    exception strictly narrower than the rule it bends. */
 .clo-review--collapsed .clo-tm:has(> .clo-tm-input:not([hidden])) {
+  display: flex;
+}
+
+/* THE FOURTH EXCEPTION, same idiom again: show-and-grade (section 23) RUNS
+   mid-quiz — that is the only time it has anything to do — and its Stop is the
+   one way out, so the group has to survive the collapse while it is active.
+
+   The gate read here is the module's own: syncUi puts .clo-rowprimary on the
+   button exactly when the mode is running (a running mode owns the row), so
+   "this group holds the primary" IS "the mode is running", with no flag to keep
+   in step. (0,4,0) like the two above, i.e. strictly narrower than the rule it
+   bends. */
+.clo-review--collapsed .clo-sg:has(> .clo-rowprimary) {
   display: flex;
 }
 
@@ -1193,6 +1207,72 @@
 }
 
 .clo-tm-status[hidden] {
+  display: none;
+}
+
+/* --- show and grade (section 23) --------------------------------------------
+   One button: start the mode, then Stop. GREEN OUTLINE, the row's "ordinary
+   action" tier (§3.2) — starting a study mode is not the one thing to do next
+   on a row that also carries Retry and the clickable-line launchers. Once it IS
+   running, syncUi promotes it with .clo-rowprimary, which is honest for a mode
+   that owns the whole session and whose Stop must never be a hunt. */
+.clo-sg-btn {
+  border: 1px solid var(--clo-accent);
+  background: transparent;
+  color: var(--clo-accent-text);
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clo-sg-btn:hover {
+  background: rgba(98, 153, 36, 0.25);
+  color: #fff;
+}
+
+/* Show-and-grade's OWN auto-play toggle (§23), independent of section 13's.
+   NEUTRAL outline, never a fill: §3.2 reserves the fill for the one thing to do
+   next, and this is a preference. It CARRIES ITS STATE — the class plus the
+   answer in words in its tooltip — which is the lesson section 13's cog settled
+   on (§F4): hiding a toggle behind anything costs you the ability to see what
+   it is set to, unless the control itself says. */
+.clo-sg-auto {
+  border: 1px solid var(--clo-line);
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clo-sg-auto:hover {
+  color: var(--clo-text-bright);
+  border-color: var(--clo-text-dim);
+}
+
+/* On. The accent on the TEXT and the border, not behind them — the same way the
+   panel's cog says "a filter is active" without becoming a button. */
+.clo-sg-auto--on {
+  border-color: var(--clo-accent);
+  color: var(--clo-accent-text);
+}
+
+.clo-sg-auto[hidden] {
+  display: none;
+}
+
+.clo-sg-status {
+  color: var(--clo-attention);
+  font-size: 12px;
+}
+
+.clo-sg-status[hidden] {
   display: none;
 }
 
@@ -2677,6 +2757,46 @@ html.clo-injecting .legal-square-capture-mt2 {
   cursor: pointer;
   font-size: 12px;
   font-family: inherit;
+}
+
+/* --- show-and-grade's board and panel (section 23) ---------------------------
+   Both reuse the continuation board's geometry and chrome wholesale (.clo-cr-
+   board / -grid / -layer / -shapes / -panel), because they ARE that board —
+   section 11c's primitives draw it and a second implementation would drift.
+   Two differences, and both are the mode's whole character:
+
+   * IT TAKES NO INPUT. The card is answered with two keys, and a board that
+     could also be clicked would be a second, undocumented way to answer it —
+     one that bypasses the grading this mode exists to control. `pointer-events:
+     none` is the enforcement, not a decoration: the module binds no square
+     handlers at all, so this is a guarantee about the future rather than about
+     today.
+   * A DIFFERENT ACCENT RING. Amber, not the quiz's green: green here means "you
+     are being asked for a move" on a board that accepts one, and this board
+     never does. The ring is the one thing distinguishing it at a glance from
+     the drill and the clickable-line quiz, which sit in exactly the same place.
+*/
+.clo-sg-board {
+  pointer-events: none;
+  box-shadow: 0 0 0 2px var(--clo-attention);
+}
+
+.clo-sg-panel {
+  gap: 10px;
+}
+
+/* The move, or what the opponent just played — the panel's one loud line, and
+   in a blindfold build the thing `announce` would be speaking instead. */
+.clo-sg-prompt {
+  font-size: 20px;
+  color: var(--clo-text-bright);
+}
+
+/* What the two keys do RIGHT NOW. Quiet: it is a reminder for the first few
+   cards, not the content — and once the ring is in hand nobody reads it. */
+.clo-sg-keys {
+  font-size: 12px;
+  color: var(--clo-text-faint);
 }
 
 .clo-cr-queue { white-space: nowrap; }

@@ -64,7 +64,12 @@ A live quiz can also be answered BY TYPING (section 22): an opt-in field on the
 trainer row plays what you write on Chessable's own board, on sight, with no
 Enter for anything but O-O — and, once the variation is over, Enter on the same
 field asks for the next one, so a whole session can be played without letting go
-of the keyboard.
+of the keyboard. A review session can also be answered WITHOUT PLAYING AT ALL
+(section 23, "show and grade"): the opponent's move is shown on OUR board, one
+key reveals the answer and a second key says whether it was known — the move is
+then played for the user, or marked wrong through Chessable's OWN "I don't know"
+control and played. Two keys for a whole session, so it can be studied from a
+Bluetooth ring, and the groundwork for blindfold practice with TTS.
 Currently working (v0.18.x).
 
 ## Structure
@@ -2531,6 +2536,229 @@ Currently working (v0.18.x).
   that chapter; whether `mode=del` is recoverable through the course page's
   "Show Deleted"; and the tree walk's cost on a 500+ variation course (largest
   tested is 81).
+
+- Show and grade (section 23, v0.71.0; design + the whole live read in
+  DESIGN-show-and-grade.md): a `/practice/` REVIEW card answered with two keys
+  and no move — the mode that makes a session studiable from a Bluetooth ring,
+  and the seam for blindfold practice. Opt-IN (`cloShowGrade`, storage.local).
+  IMPLEMENTED BUT NOT YET VERIFIED LIVE — §11 of the design doc is the list, and
+  the injection in the "I knew it" path is the item everything else rests on.
+  THE FEATURE IS MOSTLY A CONSEQUENCE OF ONE GROUND TRUTH (2026-08-04, course
+  453453): CHESSABLE ALREADY HAS THE "MARK THIS WRONG" CONTROL, and it is ONE
+  footer button that MUTATES. In a live quiz the footer is [Hint `.fa-bell`,
+  Pause `.fa-pause`]; the first press circles the piece to move and turns the
+  button into "I don't know"; the SECOND press PLAYS the move and records
+  `quizIncorrectAttempts: ["giveUp"]` + `quizTotal 1` + `quizIncorrectTotal 1`.
+  Pressing Hint ALONE records NOTHING — every counter read identical before and
+  after — so the first press is free and the second is the whole grade.
+  * `"giveUp"` is a THIRD literal beside `"timeUp"` and a real SAN. The mistake
+    log (16) reads that array, so these failures join the session's list with no
+    bridge of our own; the only change needed was `wrongLabel`, which would
+    otherwise have rendered "played giveUp". It says "not known" — the user is
+    ANSWERING honestly in this mode, not surrendering.
+  * SO THERE IS NO WRONG-MOVE INJECTION ANYWHERE, which was the original design
+    and its one real hazard: a legal wrong move Chessable happens to ACCEPT
+    grades a failure as a PASS. Gone, along with the open question of whether
+    the lesson plan carries `alt_white`/`alt_black`. Do not reintroduce it.
+  * The give-up PLAYS the move itself and parks the trainer in a study state
+    ("Study this move…") whose control is `SELECTORS.trainerNextBtn`
+    (`[data-testid="nextMovesButton"]`, so no label matching) and takes a plain
+    untrusted `.click()`. Only the "I knew it" path ever presses the BOARD.
+  THE TIMER IS PAUSED WHILE THE USER THINKS, and that is correctness, not
+  courtesy: the per-move clock is short, a card that runs out records
+  `["timeUp"]` and plays the move — so a move the user KNEW is graded wrong.
+  (Observed exactly that twice during the ground-truthing, by being slower than
+  the clock.) Section 18b's mechanism unchanged; verified here that a pause
+  survives the thinking with no timeUp, and that the hint/give-up button stays
+  rendered AND clickable while paused (only "Pause timer" is replaced).
+  TWO TRAPS, both found by falling into them:
+  * PRESSING THE BOARD WHILE PAUSED RESUMES THE SESSION AND THE PRESS IS
+    CONSUMED. Hence `resumeAndSettle()` — resume, wait `settleMs`, then press —
+    which nothing in this module may skip.
+  * A REAL `n` keypress advanced the study state; a SYNTHETIC `KeyboardEvent`
+    did NOT. One observation in one state, but it is the first direct evidence
+    about section 22's `advance()`, which this file already flags as unverified.
+    Section 23 therefore prefers the BUTTON and keeps the key dispatch as a
+    fallback only — and section 22's own use of it wants re-testing.
+  ARCHITECTURE: it is NOT a `cr.mode`. The continuation module's
+  `startLine`/`step`/`tryMove` walk a STORED line; this follows the LIVE
+  trainer, so sharing that driver would have meant bending it. What IS shared is
+  section 11c's primitives (`fillBoardGrid`, `harvestBoardPieces`,
+  `makeBoardPiece`, `boardVisualPos`, `boardShapeArrow`) and the `.clo-cr-*`
+  board CSS — which is what they were hoisted to top level for. The board takes
+  NO input (`pointer-events: none`, and no square handlers are bound at all): the
+  card is answered with two keys, and a board that could also be clicked would be
+  a second, undocumented way to answer it. Its ring is AMBER, not the quiz's
+  green — it sits in exactly the same place as the drill and the line quiz and
+  never accepts a move, and the ring is what says so at a glance.
+  TWO PRESSES PER CARD, AND EVERY PRESS SHOWS A MOVE (v0.70.0). That is the
+  governing rule — it is what a ring is actually pressing, and a press that
+  displays nothing is a wasted one. First press: YOUR move, played on our board
+  (animated) with the arrow — the arrow says WHICH move, the glide says what the
+  position now LOOKS like, and the second is the more useful for a mode aimed at
+  blindfold practice. Second press: THE OPPONENT'S REPLY, which is also what
+  GRADES the card. The grade rides on a press that was going to happen anyway, so
+  it costs nothing, and the reply — the one move the user does not choose — can
+  never slide past unnoticed.
+  BOTH KEYS HAVE THAT SAME SHAPE. "Wrong" pressed at the THINK stage does NOT
+  cost a press of its own: the card is lost either way and the user still wants
+  to see the move, so the verdict is remembered (`sg.markedUnknown`, cleared by
+  `anchor`/`leaveActing`/`startMode`) and applied by the press that advances.
+  v0.69.0 had a third press — grade, THEN reply — which is the wasted press this
+  replaced; do not reintroduce it.
+  `advanceAfterGrade()` runs the MOMENT the key is pressed, not when the
+  Chessable act finishes: the reply comes from the plan, so there is nothing to
+  wait for. That is also why `failAct()` exists — an act that cannot be carried
+  out leaves our board a card AHEAD of Chessable, where `cardReady()` would
+  refuse every later grade for the rest of the session (the trainer never moves,
+  so `awaitingFen` never clears), so it drops the wait and forces `anchor()` to
+  re-derive the card from wherever the trainer actually is.
+  Simulated over whole variations before anything was written down (5 cases: user
+  as Black and as White, a card marked wrong at the think stage, a variation
+  ending on the user's move, a line with castling and a capture) — exactly two
+  presses per card, no press showing nothing, and the moves shown equal to the
+  plan's own sequence.
+  SO OUR BOARD WALKS THE PLAN AT THE USER'S PACE and is NOT slaved to the
+  trainer's fen (`sg.plies`/`sg.cursor`/`sg.cardIdx`). Between the grade and the
+  reply press the trainer is one or two plies AHEAD; that is normal, not a
+  desync. Two rules keep it honest, and both were needed:
+  * `anchor()` runs ONLY from 'think', and NEVER while `awaitingFen` is set (the
+    trainer still standing on the card we just answered). Without the first, a
+    re-anchor yanks the board forward past the move the user asked to see;
+    without the second, a user who presses the reply key quickly is dragged BACK
+    onto the card they have already graded.
+  * `cardReady()` gates BOTH grades — the trainer must actually be standing on
+    the card our board shows. What our board shows is NOT evidence about what the
+    trainer is asking, and grading the wrong card is the one mistake here that
+    costs a real scheduled move.
+  ANIMATION: `.clo-cr-piece` already has `transition: transform 180ms ease-out`
+  (the continuation board's, matched to MoveTrainer2's own ~200ms click-move
+  glide, i.e. Chessable's fastest), so the board inherits it and the only thing
+  needed was to stop DESTROYING pieces — `playPlyOnBoard` MOVES the existing
+  element (applyMove's pattern) where a plain `reconcile()` removes and recreates
+  it, which has nothing to transition from and teleports.
+  `CONFIG.showGrade.animMs` (180) is the delay before the authoritative
+  reconcile and must never be SHORTER than the CSS transition.
+  The walk was spot-checked against the real CloSan generator before any of this
+  was written down (25 landings over 6 lines — the live variation "4", both
+  castles, en passant, promotion, rook disambiguation, a capture chain): every
+  position our board reaches equals the plan's own next `sourceFen`.
+  IT HOLDS SECTION 13 OFF THROUGH ITS OWN FLAG, `ap.sgHeld` via
+  `autoPlayShowGradeHold` — NEVER `autoPlayHold`/`heldOff`, and this is the whole
+  reason its auto-play did not work at all in v0.71.0 (fixed v0.73.0).
+  `processFrame` returns on `ap.heldOff` (that flag means "an outside feature
+  owns the board and nothing is really being played on it" — 18b's review, a
+  drill), so for the mode's whole duration the TRACKER OBSERVED NOTHING: no move
+  was ever classified, no `pendingRecord` was ever set, no proof was ever
+  recorded — and this mode's own auto-play then consulted an empty record and
+  could never fire. Under show-and-grade the session underneath IS really being
+  played (we press its squares, it animates, it replies), so those frames are
+  real moves and reading them is the entire point. Same reasoning, and the same
+  fix, as section 17's transition shield — which is why the comment above
+  `if (ap.heldOff) return;` already spelled it out. THREE flags now, ORed in
+  `held()`, which is what still blocks section 13's INJECTION throughout.
+  ITS OWN AUTO-PLAY (v0.71.0), toggle on the row (`cloShowGradeAutoPlay`),
+  independent of section 13's — which is held off for the whole mode anyway,
+  since it drives Chessable's board and this mode must be the only writer of it.
+  The RECORD stays section 13's; section 23 only asks, through the read-only
+  bridge `autoPlayIsProven(fen, uci)` (key = `posKeyOf`, and the FEN handed in is
+  the plan's own exact `sourceFen`, so no heuristics). It fills by itself during
+  a session, because "I knew it" already calls `autoPlayNoteTypedMove`. An
+  auto-played card runs the SAME TWO STEPS a press would — `reveal()`, a beat,
+  `gradeKnown()` — so there is no second code path for the board or the grade to
+  drift down.
+  IT DOES NOT RUN AHEAD OF CHESSABLE, and this will be proposed again, so: every
+  card must still be GRADED on Chessable, IN ORDER, and only while Chessable is
+  standing on it (`cardReady`). Running ahead means a queue of ungraded cards
+  where one failed act mis-files every card behind it — and the moment the replay
+  reaches an unproven move the user waits for Chessable anyway, so the board
+  would show move 12 with the trainer on move 4 and the first thing the user does
+  is sit and wait. Gain nothing, risk grading the wrong card. ONE card at a time,
+  gated on `cardReady()`; the floor is Chessable's own (~440ms + ~480ms) exactly
+  as section 13's is.
+  HAND-BACK IS SECTION 13'S RULE: only a variation's OPENING run is replayed,
+  never a jump back in after the user has taken a card (`sg.handedOver`, set in
+  `onKey` and deliberately NOT in `reveal()`, which auto-play itself calls).
+  Simulated over 5 cases: nothing proven, a proven prefix (hands back at the
+  first new move), all proven, only the MIDDLE proven (⇒ no auto-play at all —
+  the opening-run rule), and proven-again-after-a-hand-back (⇒ still manual).
+  NO FLICKER AT A VARIATION CHANGE (v0.71.0): the board used to keep showing the
+  position the PREVIOUS variation ended on until the trainer settled, then jump.
+  `applyPlan` nulls `sg.pos` on a variation change and
+  `setBoardVisible(Boolean(sg.pos))` hides both overlays until `anchor()` fills
+  it in — ONE condition, not a flag to keep in step. The overlays are HIDDEN, not
+  torn down (a removed board must be rebuilt, pieces and all — a second flicker
+  on top of the one this removes; `hideBoard()`'s removal is now `stop()`'s
+  alone), and they are BORN HIDDEN in `buildBoard()`, since a board is only ever
+  built before it has a position and an empty 8x8 for a frame is the same
+  flicker at the other end.
+  IT COVERS BOTH MISTAKE FLOWS (v0.72.0), and they needed opposite amounts of
+  work — the retry pass is an ordinary trainer session on another ROUTE, the
+  drill is our own board with no Chessable in it at all.
+  * RETRY (17): `onPractice()` became `inSession()` = `isTrainerPath()`. Both
+    routes render identical MoveTrainer2 markup, so plan, pause, give-up and
+    injection all work unchanged; the /practice/-only rule was about where
+    GRADING means something, and a retry pass is exactly where the interaction is
+    wanted and the grading deliberately changes nothing. Also brings the mode to
+    overstudy tabs and first-time learning. TWO CONFLICTS, both real:
+    - AUTO-PLAY MUST NOT REPLAY THE MOVE BEING RETRIED. That move is very often
+      ALSO proven — the user answered it correctly later in the session, which is
+      why it is in the record — so without a check our auto-play plays the one
+      move the whole pass is asking for. New read-only bridge
+      `autoPlayIsHeld(fen)` reads section 17's own `autoPlaySetHold` list;
+      `cardIsProven()` asks it first. Key shape is `holdKeys`' (placement+side,
+      no castling) for holdKeys' own reason.
+    - `advance()` REFUSES while `retryRunActive()`: the pass has a queue and
+      navigates itself, so our "next variation" would take the user off its route.
+    CONSEQUENCE, not a conflict, and intended: this mode holds section 13's
+    auto-play off for its whole duration, so in a retry pass the run-up is
+    replayed by OUR auto-play (the hold check lands it in the same place). With
+    the Auto toggle off the user presses through the run-up, which is what
+    "every card waits for you" means.
+  * DRILL (20): a drill grades only OUR OWN mistake list — nothing sent to
+    Chessable, nothing rescheduled, no timer, no card to keep in step — so it is
+    the two keys and nothing else, in the continuation module's existing
+    capture-phase listener. First press `applyMove`s the card's move; second
+    press is the verdict, then `nextLine()`. `finishDrillCard(cleanOverride)`
+    gained one optional argument: show-and-grade's verdict is AUTHORITATIVE and
+    overrides the "no miss, no hint" test, because nothing was missed or hinted —
+    the move was shown, and the user saying they knew it is the only evidence
+    there is. ADDITIVE: the board still takes a played move, so the keys are a
+    second way to answer rather than a mode to be in. Gated on
+    `showGradeEnabled()` — the PREFERENCE, not a running session, since a drill
+    is not a trainer session and the row's button does not apply to it.
+  The POSITION is the trainer's own `ctx.fen` through `readLessonLine()` —
+  section 18b's rule for section 18b's reason. Playing is auto-play's recipe plus
+  `autoPlayNoteTypedMove`, without which the move is filed as trainer-played and
+  never remembered as proven. Promotions refused with a sentence.
+  KEYS are `CONFIG.showGrade.keys`, a set of ARRAYS so a second spelling is an
+  entry rather than a code change; swallowed on `document` in CAPTURE phase
+  (section 18's discipline — MoveTrainer2 binds single-key shortcuts there and
+  does not skip focused controls), OUR TWO ONLY, and never inside an input.
+  Media keys are deliberately NOT wired: on most platforms they never reach a
+  page as key events at all (the OS routes them to the media session, claimable
+  only by playing audio), and no real ring has been captured yet.
+  Section 22 stands down through the new `showGradeActive` bridge — two things
+  holding the keyboard over one quiz board is not a state either can reason
+  about. Auto-play is held for the duration; `continuationActive()` stops this
+  mode, since those own the board.
+  `stop()` FAILS OPEN, TIMER FIRST, on every exit path (toggle, preference off,
+  leaving /practice/, another board opening, `pagehide`): a session left paused
+  with our board down is the worst thing this mode can leave behind. `acting` is
+  watchdogged to `actMaxMs`, checked before any other early return in `tick()`.
+  BLINDFOLD SEAM: every user-visible statement goes through `announce(text)` and
+  `CONFIG.showGrade.showBoard` (default true) stops anything being drawn. In
+  place before there is anything to speak, deliberately — retrofitting it once
+  the drawing calls are scattered through the driver is the expensive version.
+  ROW: `.clo-sg` at `order: 2`, beside the move field (both act on the card being
+  answered); mistakes/practice/overstudy/settings each shifted up one. Green
+  OUTLINE idle, and `.clo-rowprimary` while running, when it reads "Stop" — a
+  mode that owns the session must not make its exit a hunt. A FOURTH
+  collapsed-mid-quiz exception in the established idiom,
+  `.clo-review--collapsed .clo-sg:has(> .clo-rowprimary)`, reading the module's
+  own state rather than a new flag, at (0,4,0). Measured in the harness: browse
+  row 38px, collapsed-while-running 38px, +26px with a status line — the same
+  figures the move field gives.
 
 ## Verification (no automated tests)
 
