@@ -1574,20 +1574,76 @@ Currently working (v0.18.x).
   no credentials, HTTP error, timeout, unexpected shape, unreadable bid — the
   line simply stays quizzable, since losing a line to a network hiccup is worse
   than drilling one twice.
-  ONE POSITION, ONE ANSWER (`dropAmbiguous`, v0.34.2): authors offer
+  ONE POSITION, ONE ANSWER — UNLESS THE ANSWERS ARE THE SAME LINE FORKING
+  (`dropAmbiguous`, v0.34.2; combining added v0.67.0). Authors offer
   alternatives for their own side all the time ("10...fxe6 … 10...dxe6 …"), and
-  a quiz cannot ask those — the user would see the same board twice and be
-  marked wrong for a move the author also recommends. So every USER ply of every
+  a quiz cannot ask those one after the other — the user would see the same
+  board twice and be marked wrong for a move the author also recommends. So
+  every USER ply of every
   quizzable line is collected per position (`cacheKey`, i.e. the first four FEN
   fields, so a transposition into a disputed position counts too) and a position
-  with two different answers drops EVERY line that asks there — both sides,
-  never a winner picked: which move is the repertoire is the author's call, made
-  by editing the comment. The MAINLINE's own user plies seed that map (from the
-  lesson plan), so a line contradicting the variation the user just played goes
-  as well, while a line repeating a mainline move is fine. OPPONENT plies are
+  with two different answers is CONTESTED. OPPONENT plies are
   deliberately NOT collected: two lines showing different replies to one
   position is the ordinary "and if he plays this instead" case (verified live —
   variation 70382641's two lines branch from the same position and both stay).
+  A contested position is then resolved ONE of three ways:
+  * COMBINED (`mergeUserAlternatives`) when the clashing lines are the SAME LINE
+    up to the disputed move — which is exactly what an author writing "or you
+    can play…" produces. They become ONE line accepting EITHER answer, which
+    then carries on down whichever was actually played. It counts as one line in
+    the launcher and costs one pass; the branch not taken is not drilled this
+    time, which is the point of combining rather than asking twice (the author's
+    call, 2026-08-04).
+  * DROPPED when the MAINLINE answers the position differently. There is no
+    second line to combine with — only the game the user has just played — and
+    being asked to unlearn it a minute later is the trap this pass exists for.
+    Deliberately kept as a drop rather than "accept both" (same call).
+  * DROPPED when it is not a clean divergence: lines meeting at a position by
+    different routes (a transposition), or disagreeing at more than one point.
+    "Either move here, then carry on accordingly" is not a true description of
+    those, and forcing them into that shape would quiz a board the author never
+    joined up. `mergeUserAlternatives` REFUSES rather than approximates —
+    identical startFen, identical uci prefix, one shared divergence index, at
+    least two lines — and the caller falls back to the old drop.
+  A line whose USER move carries "?", "??" or "?!" never reaches this pass at
+  all (`quizzableLines` drops it first), so a combined line can never offer a
+  move the author marked as a mistake. That was the stated condition for
+  combining and it is satisfied structurally, not by a second test here.
+  ONE FORK PER LINE is all the run side supports, so a line already combined (or
+  dropped) at an EARLIER disagreement makes every other line at a later contested
+  position take the safe answer — `settled` in the loop. Without that guard a
+  position whose only remaining asker had already been folded elsewhere would
+  "merge" a group of one and let a real clash through.
+  THE COMBINED LINE IS THE FIRST OF THE GROUP with `alts` hung on the disputed
+  ply, each alternative carrying its own continuation and a `src` back to the
+  line it was printed in. The primary path stays exactly where it was, so
+  everything that does not know about alternatives — labels, `importantLine`,
+  the heads-up's mini board — keeps working untouched. The label shows the fork
+  ("O-O b5/Qc7 Bb3") so a log line says the pair was combined rather than one of
+  them lost.
+  AT RUN TIME THE PATH IS RUN STATE, NEVER THE LINE (`cr.path` / `linePath()`).
+  `startLine` sets it to the line's own plies and `tryMove` re-paths on taking an
+  alternative — prefix + the answer given + that answer's continuation. It must
+  not live on the line: the same combined line has to be playable the other way
+  in a later run. `step`, `currentPly` and `syncUi` all read the PATH, since
+  taking an alternative can make the rest a different length.
+  `navigateToLineEnd` takes the path too and follows the last ply's `src`: a
+  combined path crosses from one printed comment line into another at the fork,
+  and without it Chessable's board would be left on the branch the user did not
+  take. Ground-truthed live 2026-08-04 on variation 71087636 with
+  `(7.O-O b5 8.Bb3) or (7.O-O Qc7 8.a3)`: both readers logged the combine, the
+  launcher went 2 → 3, the prompt read "Black to play — either move", and playing
+  the NON-primary Qc7 finished the line and left the board on **a3** — the
+  alternative's own continuation, not the primary's Bb3.
+  The hint names every accepted answer ("Play b5 or Qc7"); the ordinary prompt
+  says "— either move" before the user has to guess that the move they were
+  about to play is also right.
+  ONE THING THE ORDER COSTS: `tagLinesInCourse` runs AFTER this pass, so a
+  combined line is checked for "already in the course" by its PRIMARY ending
+  only, and a member that was already added as a real variation no longer drops
+  out on its own. Fail-open, like everything else in that check — the line stays
+  quizzable — but it is why the count can differ by one from what a pre-merge
+  tagging would give.
   WHAT MAKES A MOVE CLICKABLE — ground-truthed 2026-08-04 on course 453453 by
   writing three comments and reading back what Chessable rendered, because the
   answer decides which of the two shapes below the reader ever meets:

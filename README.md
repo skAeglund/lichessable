@@ -490,14 +490,25 @@ rest, and its tooltip says how many were left out (the console names them, with
 the variation they were found in). If the check cannot be made — signed out, a
 network error — the line is kept rather than lost.
 
-**One position, one answer.** Where a comment offers you a choice — "10...fxe6 …
-or 10...dxe6 …" — neither line is quizzed: you would be shown the same board
-twice and marked wrong for a move the author also recommends. Which one is your
-repertoire is a decision only you can make, by editing the comment down to one
-line. The same applies to a line that answers a position differently from the
-variation you have just played. Lines that differ in your *opponent's* move are
-untouched — that is the ordinary "and if he plays this instead" case, and both
-still get quizzed.
+**Where a comment offers you a choice**, the lines are **combined into one** and
+either answer is accepted (v0.67.0). "10...fxe6 … or 10...dxe6 …" used to lose
+both lines — asking them one after the other would show you the same board twice
+and mark you wrong for a move the author also recommends — so now they become a
+single line: at the fork the prompt reads *"Black to play — either move"*, and
+whichever you play, the quiz carries on down **that** line. It counts as one
+line and costs one pass; the branch you did not take is simply not drilled this
+time. The hint names both. A line asking you for a move marked "?", "??" or "?!"
+is dropped before this stage, so a combined line can never offer you a mistake.
+
+Two cases are still skipped rather than combined, and both are deliberate. A
+line that answers a position differently from **the variation you have just
+played** has nothing to combine with — only the game you already know — and
+being asked to unlearn it a minute later is the trap this rule exists for. And
+lines that are not a clean fork — ones that meet at a position by different move
+orders, or disagree in more than one place — are left out, because "either move
+here, then carry on accordingly" is not a true description of them. Lines that
+differ in your *opponent's* move were never affected: that is the ordinary "and
+if he plays this instead" case, and both still get quizzed separately.
 
 The positions are not read off the board: each line is anchored on the trainer's
 own lesson plan and replayed with the extension's move generator, so the FENs are
@@ -610,10 +621,11 @@ for.
 Mid-variation only the opponent's alternatives are raised, never one of yours: a
 line starting with a move of *your* colour branches where the trainer is about to
 ask *you* for a move, so showing it would hand you the answer. (At the final
-position that no longer applies, hence the exception above.) Lines already in your course,
-lines marked as blunders and lines with two answers are left out here for the
-same reasons as above, and a line whose first move simply transposes back into
-the variation is not an alternative at all.
+position that no longer applies, hence the exception above.) Lines already in your course
+and lines marked as blunders are left out here for the same reasons as above; a
+line offering you a choice arrives already combined into one, so it is raised
+like any other; and a line whose first move simply transposes back into the
+variation is not an alternative at all.
 
 This can get noisy if you never use it, so it is a setting: **Point out
 clickable lines while playing a variation** on the extension's options page, on
@@ -1464,6 +1476,27 @@ enough not to run, the ↻ button is the only way back.
   and no FEN approximation; both lines of the test comment reproduced Chessable's
   own board square for square. A line that fits nowhere is dropped with a console
   line.
+- **Your own alternatives are combined, not dropped** — v0.67.0,
+  `mergeUserAlternatives`. A contested position (two different answers for your
+  colour) is resolved three ways: *combined* when the clashing lines are the same
+  line up to the disputed move, *dropped* when the mainline is one of the
+  answers, and *dropped* when it is not a clean fork (a transposition, or a
+  second disagreement). The merge REFUSES rather than approximates — identical
+  start position, identical move prefix, one shared divergence index, at least
+  two lines — because "either move here, then carry on accordingly" is not true
+  of anything else. The combined line is the first of the group with `alts` on
+  the forking ply, each alternative carrying its own continuation and a `src`
+  back to the line it was printed in; the primary path is untouched, so labels,
+  `importantLine` and the mini board need no changes. **The path walked is run
+  state** (`cr.path`), never stored on the line, so the same line can be played
+  the other way next time; `step`, `currentPly` and `syncUi` read it because
+  taking an alternative can change the remaining length, and `navigateToLineEnd`
+  follows the last ply's `src` so the board is left on the branch you actually
+  played rather than the other one. One fork per line is all the run side
+  supports, so a line already combined elsewhere makes later contested positions
+  take the safe answer. Verified live and in a headless harness against the real
+  code (two-way, three-way, a fork deeper in the line, opponent-only differences
+  left alone, and the mainline clash still dropped).
 - **Branching groups become separate lines** — v0.66.0, `walkLine` +
   `branchLines`. Chessable prints "1.e4 (1.d4 d5) 1...c5" as one flat run of
   clickable moves, so the walk is **segmented as it goes**: each move is played

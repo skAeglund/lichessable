@@ -12397,6 +12397,12 @@
       line: null,
       pos: null,          // CloSan position on our board right now
       plyIdx: 0,          // next ply of the line to play
+      // The plies this ATTEMPT is walking (linePath). The line's own `plies`
+      // until the user takes an alternative at a combined divergence (section
+      // 18), from which point it is the prefix + the answer given + that
+      // answer's continuation. Run state, never stored on the line: the same
+      // combined line must be playable the other way in a later run.
+      path: null,
       userColor: null,    // 'w' | 'b' — board bottom, i.e. the course colour
       // Which colour the board is DRAWN from. Follows userColor for a quiz;
       // analysis can flip it. Kept apart from userColor, which keeps its quiz
@@ -12894,12 +12900,31 @@
      * another line — or the variation itself — answers differently.
      *
      * Authors write alternatives for their own side all the time ("10...fxe6 …
-     * 10...dxe6 …"), and a quiz cannot ask them: the user is shown the same
-     * board twice and marked wrong for a move the author also recommends.
-     * Which one is the repertoire is a decision only the author can make, by
-     * editing the comment, so BOTH sides of a clash go — nothing here picks a
-     * winner. The variation the user has just played counts as one of the
-     * answers, since being asked to unlearn it a minute later is the same trap.
+     * 10...dxe6 …"), and a quiz cannot simply ask them one after the other: the
+     * user is shown the same board twice and marked wrong for a move the author
+     * also recommends.
+     *
+     * SINCE v0.67.0 TRUE ALTERNATIVES ARE COMBINED INSTEAD OF DROPPED. When the
+     * clashing lines are the same line up to the disputed move — which is what
+     * an author writing "or you can play…" produces — they become ONE line that
+     * accepts EITHER move and then carries on down whichever was played
+     * (mergeUserAlternatives). It counts as one line in the launcher and costs
+     * one pass; the branch not taken is simply not drilled this time, which is
+     * the point of combining rather than asking twice.
+     *
+     * TWO CLASHES ARE STILL DROPPED, both deliberately:
+     *  * THE MAINLINE'S OWN MOVE. If the variation the user has just played
+     *    answers the position differently, there is no second line to combine
+     *    with — only the game they already know — and being asked to unlearn it
+     *    a minute later is the trap this whole pass exists to avoid.
+     *  * ANYTHING THAT IS NOT A CLEAN DIVERGENCE: lines that meet at a position
+     *    by different routes (a transposition), or that disagree at more than
+     *    one point. "Either move here, then continue accordingly" does not
+     *    describe those, so they keep the old behaviour rather than being forced
+     *    into a shape they do not have.
+     * A line whose USER move carries "?", "??" or "?!" never reaches this pass —
+     * quizzableLines has already dropped it — so a combined line can never offer
+     * a move the author marked as a mistake.
      *
      * Positions are compared on the first four FEN fields (the move counters
      * differ between a mainline position and the same position reached inside a
@@ -12909,6 +12934,8 @@
      */
     function dropAmbiguous(lines, plan, fens, userColor) {
       const answers = new Map(); // position key → Map(uci → san)
+      const askers = new Map();  // position key → [{ line, at }] (clickable lines only)
+      const byMainline = new Map(); // position key → the variation's own uci there
       const note = (fen, uci, san) => {
         const key = cacheKey(fen);
         let byUci = answers.get(key);
@@ -12921,27 +12948,133 @@
         const san = plan.plies[i] && plan.plies[i].san;
         if (!pos || !san || pos.side !== userColor) continue;
         const uci = sanToUci(pos, san);
-        if (uci) note(fens[i], uci, san);
+        if (uci) { note(fens[i], uci, san); byMainline.set(cacheKey(fens[i]), uci); }
       }
       for (const line of lines) {
         line.plies.forEach((p, i) => {
-          if (p.color === userColor && line.before[i]) note(line.before[i], p.uci, p.san);
+          if (p.color !== userColor || !line.before[i]) return;
+          note(line.before[i], p.uci, p.san);
+          const key = cacheKey(line.before[i]);
+          if (!askers.has(key)) askers.set(key, []);
+          askers.get(key).push({ line, at: i });
         });
+      }
+
+      // Every position where the user is asked for two different moves, in the
+      // order the lines reach them, so a cluster is resolved at its FIRST point
+      // of disagreement.
+      const verdict = new Map(); // line → 'drop' | mergedLine
+      for (const [key, byUci] of answers) {
+        if (byUci.size < 2) continue;
+        const group = askers.get(key) || [];
+        if (!group.length) continue;
+        // A line already combined (or dropped) at an EARLIER disagreement cannot
+        // also be reshaped here — one fork per line is the whole of what the run
+        // side supports — so the rest of this position's lines take the safe
+        // answer rather than being quietly left in with a clash unresolved.
+        const settled = group.some((a) => verdict.has(a.line));
+        const open = group.filter((a) => !verdict.has(a.line));
+        if (!open.length) continue;
+        const mainUci = byMainline.get(key);
+        const clashesWithMainline = Boolean(mainUci) &&
+          open.some((a) => a.line.plies[a.at].uci !== mainUci);
+        const combined = (settled || clashesWithMainline) ? null : mergeUserAlternatives(open);
+        if (!combined) {
+          for (const a of open) {
+            verdict.set(a.line, 'drop');
+            const others = [...byUci].filter(([uci]) => uci !== a.line.plies[a.at].uci)
+              .map(([, san]) => san);
+            log('continuation: line', a.line.key, '(' + a.line.label + ') asks for',
+              a.line.plies[a.at].san + ', but the same position is also answered with',
+              others.join(' / '), '—',
+              clashesWithMainline
+                ? 'skipped; that is the variation\'s own move'
+                : 'skipped; one position cannot have two answers');
+          }
+          continue;
+        }
+        // The combined line stands in for the first of the group; the rest are
+        // folded into it and must not be offered again in their own right.
+        verdict.set(open[0].line, combined);
+        for (const a of open.slice(1)) verdict.set(a.line, 'drop');
+        log('continuation: lines', open.map((a) => a.line.key).join(' + '),
+          'offer the user', combined.plies[combined.altAt].san + '/' +
+          combined.plies[combined.altAt].alts.map((x) => x.san).join('/'),
+          'in the same position — combined into one line either answer completes');
       }
 
       const kept = [];
       for (const line of lines) {
-        const at = line.plies.findIndex((p, i) => p.color === userColor && line.before[i] &&
-          (answers.get(cacheKey(line.before[i])) || new Map()).size > 1);
-        if (at < 0) { kept.push(line); continue; }
-        const others = [...answers.get(cacheKey(line.before[at]))]
-          .filter(([uci]) => uci !== line.plies[at].uci).map(([, san]) => san);
-        log('continuation: line', line.key, '(' + line.label + ') asks for',
-          line.plies[at].san + ', but the same position is also answered with',
-          others.join(' / '), '— skipped; one position cannot have two answers');
+        const v = verdict.get(line);
+        if (v === 'drop') continue;
+        kept.push(v || line);
       }
       return kept;
     }
+
+    /**
+     * One line accepting either of the moves a group of lines offers at the
+     * position they disagree on, or null when they are not a clean divergence.
+     *
+     * The shape it insists on is exactly the one an author writes: the SAME line
+     * up to the disputed move, and a different move there. Anything else — two
+     * lines that merely transpose into the position, or that already disagreed
+     * earlier — is refused, and the caller falls back to dropping them. That is
+     * a deliberate floor, not a limitation to route around: "either move here,
+     * then carry on accordingly" is not a true description of lines that do not
+     * share the road up to that point, and quizzing them as if it were would
+     * put the user on a board the author never joined up.
+     *
+     * The result is the FIRST line of the group with `alts` hung on the disputed
+     * ply — each alternative carrying its own continuation, and a `src` back to
+     * the line it came from so navigateToLineEnd can still find its printed
+     * moves. The primary path stays exactly where it was, so everything that
+     * does not know about alternatives (labels, importantLine, the mini board)
+     * keeps working unchanged.
+     */
+    function mergeUserAlternatives(group) {
+      if (group.length < 2) return null; // nothing to combine WITH: a clash of one
+      const base = group[0].line;
+      const at = group[0].at;
+      if (!base.plies[at] || group.some((a) => a.at !== at)) return null;
+      for (const a of group.slice(1)) {
+        const line = a.line;
+        if (line.startFen !== base.startFen) return null;   // met by different routes
+        if (!line.plies[at]) return null;
+        for (let i = 0; i < at; i++) {
+          if (!line.plies[i] || line.plies[i].uci !== base.plies[i].uci) return null;
+        }
+        if (line.plies[at].uci === base.plies[at].uci) return null; // not an alternative at all
+      }
+      const alts = group.slice(1).map((a) => ({
+        san: a.line.plies[at].san,
+        uci: a.line.plies[at].uci,
+        annot: a.line.plies[at].annot,
+        color: a.line.plies[at].color,
+        fen: a.line.plies[at].fen,
+        // What follows this answer, which is what "carry on accordingly" means.
+        plies: a.line.plies.slice(at + 1).map((p, n) => withSource(p, a.line, at + 1 + n)),
+        src: { line: a.line, at },
+      }));
+      const plies = base.plies.map((p, i) => {
+        const ply = withSource(p, base, i);
+        return i === at ? { ...ply, alts } : ply;
+      });
+      return {
+        ...base,
+        plies,
+        altAt: at,
+        // "fxe6/dxe6" where the line forks, so one glance at a log line or a
+        // tooltip says the pair was combined rather than one of them lost.
+        label: plies.map((p, i) => (i === at
+          ? [p.san + (p.annot || '')].concat(alts.map((x) => x.san + (x.annot || ''))).join('/')
+          : p.san + (p.annot || ''))).join(' '),
+      };
+    }
+
+    /** A ply tagged with where it was printed, so a path that crosses two
+     *  comment lines can still be pointed back at the right spans. */
+    const withSource = (ply, line, at) => (ply.src ? ply : { ...ply, src: { line, at } });
 
     // --- "already in your course" ---------------------------------------------
     // Chessable lets the user add a clickable line to the repertoire as a real
@@ -13333,7 +13466,7 @@
      *  resolved move — null once the line is done. */
     function currentPly() {
       if (!cr.line || !cr.pos) return null;
-      const ply = cr.line.plies[cr.plyIdx];
+      const ply = linePath()[cr.plyIdx];
       if (!ply) return null;
       const mv = CloSan.uciToMove(cr.pos, ply.uci);
       return mv ? { ...ply, mv } : null;
@@ -13410,6 +13543,9 @@
         return;
       }
       cr.plyIdx = 0;
+      // Back to the line's own moves: a run that took an alternative last time
+      // must start from the fork again, not from the branch it happened to pick.
+      cr.path = cr.line.plies;
       cr.attempts = 0;
       cr.hint = false;
       cr.sel = null;
@@ -13434,9 +13570,19 @@
     }
 
     /** Drives the line forward: auto-plays the opponent, stops on the user. */
+    /**
+     * The plies this attempt is actually walking. Identical to the line's own
+     * `plies` until the user takes an alternative at a combined divergence
+     * (section 18's mergeUserAlternatives), from which point it is the primary
+     * prefix plus the answer played plus that answer's own continuation. Held in
+     * run state rather than on the line, which must stay reusable: the same
+     * combined line can be played again, the other way, in a later run.
+     */
+    const linePath = () => cr.path || (cr.line ? cr.line.plies : []);
+
     function step() {
       if (!cr.active || !cr.line) return;
-      if (cr.plyIdx >= cr.line.plies.length) {
+      if (cr.plyIdx >= linePath().length) {
         // A line only ever ends by its moves being PLAYED — a refused move is
         // never applied — so reaching here in a drill means the mistake was
         // answered. Whether it counts as dealt with is the stricter question
@@ -13652,6 +13798,24 @@
         applyMove(ply);
         cr.plyIdx++;
         flashSquare(mv.to, 'ok');
+        step();
+        return;
+      }
+      // The author's other answer to this position, when the two lines were
+      // combined (mergeUserAlternatives). Accepted exactly like the primary,
+      // and the rest of the quiz follows the answer that was actually given —
+      // which is the whole of "you may play either line".
+      const alt = ply.alts && ply.alts.find((a) => a.uci === uci);
+      if (alt) {
+        // A plain ply, not the alternative record itself: a ply carrying a
+        // nested `plies` array would be a trap for anything walking the path.
+        const played = { san: alt.san, uci: alt.uci, annot: alt.annot,
+          color: alt.color, fen: alt.fen, src: alt.src };
+        cr.path = linePath().slice(0, cr.plyIdx).concat([played], alt.plies);
+        applyMove(played);
+        cr.plyIdx++;
+        flashSquare(mv.to, 'ok');
+        log('continuation: took the alternative', alt.san, 'in', cr.line.label);
         step();
         return;
       }
@@ -14151,6 +14315,7 @@
       cr.view = cr.userColor; // start from the course colour, flippable from here
       cr.busy = false;
       cr.line = null;
+      cr.path = null;
       cr.lastMove = null;
       cr.ui.chooser.hidden = true; // the quiz's picker never belongs here
       cr.boardEl.hidden = false;   // …which is also what hides the board
@@ -14691,7 +14856,9 @@
       // to place with the variation it came from beside it (section 20).
       const drilling = cr.mode === 'drill';
       const entry = drilling ? cr.line.entry : null;
-      const plies = cr.line.plies.length;
+      // The path being walked, not the line's own moves: taking an alternative
+      // at a combined divergence can make the rest a different length.
+      const plies = linePath().length;
       const done = Math.min(cr.plyIdx, plies);
       if (drilling) {
         cr.ui.title.textContent = total > 1
@@ -14712,11 +14879,17 @@
       }
 
       const ply = currentPly();
+      // Where two lines were combined, BOTH answers count — so the hint names
+      // both, and the ordinary prompt says so before the user has to guess that
+      // the move they were about to play is also right (section 18).
+      const alts = (ply && ply.alts) || null;
+      const answers = alts ? [ply.san].concat(alts.map((a) => a.san)) : (ply ? [ply.san] : []);
       let prompt;
       if (cr.plyIdx >= plies) prompt = drilling ? 'Correct.' : 'Line complete.';
       else if (!ply || ply.color !== cr.userColor) prompt = '…';
-      else if (cr.hint) prompt = 'Play ' + ply.san;
+      else if (cr.hint) prompt = 'Play ' + answers.join(' or ');
       else if (cr.attempts) prompt = 'Not that one — try again';
+      else if (alts) prompt = (cr.userColor === 'w' ? 'White' : 'Black') + ' to play — either move';
       else prompt = (cr.userColor === 'w' ? 'White' : 'Black') + ' to play';
       cr.ui.prompt.textContent = prompt;
       cr.ui.prompt.className = 'clo-cr-prompt' +
@@ -14962,11 +15135,21 @@
      * `played` is how far the line actually got (cr.plyIdx), so exiting halfway
      * lands on the position the user was last shown, never on moves ahead of
      * them; nothing is clicked when the line had not started.
+     *
+     * `path` is what was walked, which for a COMBINED line (mergeUserAlternatives)
+     * can cross from one printed line into another at the fork. The last ply
+     * carries a `src` naming the line it was printed in, so the span is looked up
+     * there rather than in the line the run started on — without it the board
+     * would be left on the branch the user did not take.
      */
-    function navigateToLineEnd(line, played) {
+    function navigateToLineEnd(line, played, path) {
       if (!line || played <= 0 || !reviewBrowseReady()) return;
-      const idx = Math.min(played, line.plies.length) - 1;
-      const els = lineSpans(line);
+      const walked = (path && path.length ? path : line.plies);
+      const at = Math.min(played, walked.length) - 1;
+      const src = walked[at] && walked[at].src;
+      const host = (src && src.line) || line;
+      const idx = src ? src.at : at;
+      const els = lineSpans(host);
       if (!els || !els[idx]) {
         log('continuation: no printed move found for', line.label, '— board left where it was');
         return;
@@ -14981,7 +15164,7 @@
           // exactly as on Chessable's squares (and it picks the touch flavour
           // on a phone by itself).
           pressSquare(els[idx]);
-          log('continuation: board left on', line.plies[idx].san, 'of', line.label);
+          log('continuation: board left on', walked[at].san, 'of', line.label);
         } catch (err) {
           warn('continuation: could not navigate the board to the line end:', err);
         }
@@ -15014,10 +15197,12 @@
       const wasQuiz = cr.mode === 'quiz';
       const lastLine = cr.line;
       const played = cr.plyIdx;
+      const lastPath = cr.path;
       cr.active = false;
       cr.choosing = false;
       cr.queue = [];
       cr.line = null;
+      cr.path = null;
       cr.pos = null;
       cr.sel = null;
       // Exit is live during an opponent's move and during the pause on a
@@ -15044,7 +15229,7 @@
       // board on. Analysis never touched their board, and a drill's positions
       // come from the mistake log — the comment column holds nothing matching
       // them, so there would be nothing to click.
-      if (wasActive && navEnd && wasQuiz) navigateToLineEnd(lastLine, played);
+      if (wasActive && navEnd && wasQuiz) navigateToLineEnd(lastLine, played, lastPath);
       // Back to the quiz's own defaults, so the next launcher press is a quiz.
       cr.mode = 'quiz';
       cr.view = null;
