@@ -940,10 +940,11 @@
 }
 
 .clo-review-title { order: 0; }
-.clo-mx { order: 1; }  /* what went wrong */
-.clo-cr { order: 2; }  /* what to do about it */
-.clo-os { order: 3; }  /* overstudy — the escape hatch, not the headline (§5.1) */
-.clo-ap { order: 4; }  /* settings, behind the cog (change #9) */
+.clo-tm { order: 1; }  /* the card being answered — nothing else here acts on it */
+.clo-mx { order: 2; }  /* what went wrong */
+.clo-cr { order: 3; }  /* what to do about it */
+.clo-os { order: 4; }  /* overstudy — the escape hatch, not the headline (§5.1) */
+.clo-ap { order: 5; }  /* settings, behind the cog (change #9) */
 
 /* --- COLLAPSED MID-QUIZ (v0.59.0, DESIGN-ui-inventory §3.3) ------------------
    While a quiz is live nothing in this row acts on the card being answered, and
@@ -968,6 +969,23 @@
 }
 
 .clo-review--collapsed .clo-mx:has(> .clo-mx-mini:not([hidden])) {
+  display: flex;
+}
+
+/* THE THIRD EXCEPTION, and the one the rule above was written for without
+   knowing it: "type a move" (section 22) is the only control in this row that
+   acts on the card being answered, so mid-quiz — the collapsed state — is the
+   ONLY time it has anything to do. Same idiom as the retry minis: the field is
+   hidden by its own module whenever there is no live quiz, so "this group has a
+   visible input" IS "a quiz is asking for a move", with no flag to keep in step
+   and no module told anything new.
+
+   The :has() is not decoration. `.clo-review-grp[hidden]` and the empty-group
+   rule above both sit at (0,2,0), which a plain `.clo-review--collapsed .clo-tm`
+   would only tie — and later-wins would then show a group whose input is
+   hidden. Matching on the child's own state takes this to (0,4,0) and makes the
+   exception strictly narrower than the rule it bends. */
+.clo-review--collapsed .clo-tm:has(> .clo-tm-input:not([hidden])) {
   display: flex;
 }
 
@@ -1115,6 +1133,67 @@
   background: rgba(255, 255, 255, 0.06);
   border-color: var(--clo-line-hover);
   color: #fff;
+}
+
+/* --- TYPE A MOVE (section 22) ------------------------------------------------
+   The one control in this row that acts on the card being answered, which is
+   why it sits first after the label and why it is the third exception to the
+   mid-quiz collapse.
+
+   It is an INPUT, not an action, so it deliberately takes none of the five
+   treatments §3.2 rules on — no fill, no green outline, no amber. A field looks
+   like a field: the inset well every other text input here uses, going green at
+   the border on focus so "the keyboard is going to this" is visible without the
+   control claiming to be the thing to press. reviewRowPrimary() is untouched for
+   the same reason; the primary fill is a claim about a BUTTON.
+
+   Sized in `ch` so the well is as wide as the longest thing anyone types into
+   it ("Qh4xe1#" is 7) plus room to see it, rather than being a guess in pixels
+   that a font change invalidates. */
+.clo-tm-input {
+  box-sizing: border-box;
+  width: 9ch;
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text-bright);
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-tm-input::placeholder { color: #6f6f6f; }
+
+.clo-tm-input:focus {
+  outline: none;
+  border-color: var(--clo-accent);
+}
+
+/* Nothing legal starts like what is in the field. Red on the BORDER only — the
+   text stays fully legible, because the user is mid-word and about to fix it,
+   and a red field that also recolours its own contents reads as an error that
+   has already happened. */
+.clo-tm-input--bad {
+  border-color: var(--clo-danger);
+}
+
+.clo-tm-input[hidden] {
+  display: none;
+}
+
+/* Amber, because §3.2 says amber TEXT with no border is what this row's status
+   line is — the same tier as auto-play's and the retry pass's, which is what it
+   shares the line with. The "no legal move starts like that" case is NOT
+   promoted to red: the field's own border already says that, and a second
+   red thing for one mistyped character is shouting. */
+.clo-tm-status {
+  color: var(--clo-attention);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.clo-tm-status[hidden] {
+  display: none;
 }
 
 /* --- the current/previous chooser (section 9) --------------------------------
@@ -3838,4 +3917,20 @@ html.clo-touch .clo-cov-row-gap {
 html.clo-touch .clo-cov-check {
   width: 18px;
   height: 18px;
+}
+
+/* --- type a move (section 22) ---------------------------------------------
+   16px is not a size preference here: anything smaller makes mobile Safari and
+   Chrome zoom the whole page in on focus, and this field is focused in the
+   middle of a quiz with the board already placed. The extra width is for the
+   larger type, not for longer input. */
+
+html.clo-touch .clo-tm-input {
+  width: 8ch;
+  font-size: 16px;
+  padding: 8px 8px;
+}
+
+html.clo-touch .clo-tm-status {
+  font-size: 16px;
 }

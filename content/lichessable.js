@@ -369,6 +369,21 @@
       addRightsWaitMs: 50000, // …and one for a rights probe (quickEdit.probeTimeoutMs + slack)
     },
 
+    // --- Type a move (section 22) -------------------------------------------
+    // A text field on the trainer row that plays what you type on Chessable's
+    // own quiz board. OFF by default and hidden until it is turned on: a focused
+    // input in a trainer session swallows MoveTrainer2's single-key shortcuts,
+    // which is a real cost to anyone who does not want the feature.
+    textMove: {
+      key: 'cloTextMove',   // chrome.storage.local; absent = off (opt-IN)
+      pollMs: 500,          // the usual self-healing tick: mount, position, focus
+      // How long a commit refuses a second one. The two presses are synchronous,
+      // so this only exists to swallow a double Enter while MoveTrainer2 is
+      // still animating the move it was given.
+      busyMs: 400,
+      injectClassMs: 150,   // `clo-injecting` lifetime, as auto-play's injection
+    },
+
     // --- Touch-sized UI (section 6, applyTouchUiClass) ----------------------
     touch: {
       // chrome.storage.local; 'auto' | 'touch' | 'desktop' (options page). The
@@ -7511,6 +7526,33 @@
    */
   let autoPlayCloseSettings = null;
 
+  /**
+   * (from, to) => void — assigned by initAutoPlay, called by section 22 just
+   * before it presses the two squares of a TYPED move.
+   *
+   * A typed answer is the user's answer, but nothing about it looks like one to
+   * the tracker: our presses are synthetic, so `ap.lastPointerAt` is never
+   * stamped and `ap.recentSquares` never fed. Both consequences are wrong, and
+   * silently so:
+   *
+   *   * applyObservedMove would classify the move as 'trainer' (user colour, no
+   *     pointer credit — the solution-replay case), so it would never become a
+   *     pendingRecord and the move would not be remembered as proven. Every
+   *     move answered by typing would then be handed back on the next pass
+   *     through the same position, which is exactly what auto-play exists to
+   *     avoid.
+   *   * the alt check's pointer path (section 15) reads the last two distinct
+   *     squares under the user's own input to reconstruct a REFUSED guess, so a
+   *     typed wrong answer would get no engine check and no "add as an
+   *     alternative" offer — the one moment that feature is for.
+   *
+   * So this hands the tracker the two facts a real press would have left behind.
+   * It is deliberately NOT a synthetic pointer event: `onTrustedPointer` refuses
+   * those on purpose (our own injections must never vouch for themselves), and
+   * the point here is that a HUMAN typed the move, not that a pointer moved.
+   */
+  let autoPlayNoteTypedMove = null;
+
   function initAutoPlay() {
     if (typeof CloSan === 'undefined') {
       warn('auto-play disabled: CloSan (engine/san.js) not loaded');
@@ -9058,17 +9100,22 @@
       return null;
     }
 
-    /** Feeds ap.recentSquares (alt-check pointer capture). Consecutive events
+    /** Feeds ap.recentSquares (alt-check pointer capture). Consecutive entries
      *  on the same square collapse — a click is a down+up pair on one square,
-     *  and only distinct squares can form a move. */
-    function recordPointerSquare(e) {
-      const sq = pointSquare(e);
+     *  and only distinct squares can form a move. Named separately from the
+     *  event wrapper below because section 22 has the two squares of a typed
+     *  move and no event at all (see autoPlayNoteTypedMove). */
+    function noteSquare(sq) {
       if (!sq) return;
       const rs = ap.recentSquares;
       const lastEntry = rs[rs.length - 1];
       if (lastEntry && lastEntry.sq === sq) { lastEntry.t = Date.now(); return; }
       rs.push({ sq, t: Date.now() });
       if (rs.length > 4) rs.shift();
+    }
+
+    function recordPointerSquare(e) {
+      noteSquare(pointSquare(e));
     }
 
     function onTrustedPointer(e) {
@@ -9188,6 +9235,18 @@
     // a row that is no longer there, and an armed "Clear?" hidden between its
     // two clicks is a confirm the user can neither complete nor see they owe.
     autoPlayCloseSettings = () => { closeMenu(); disarmClear(); };
+
+    // Section 22's bridge — see its doc comment for why a typed move has to
+    // announce itself. The pointer credit is what makes applyObservedMove call
+    // the move 'user' (so it is remembered as proven), and the two squares are
+    // what let the alt check name it if the trainer refuses it. Order matters:
+    // the alt check reads the last two entries as from→to.
+    autoPlayNoteTypedMove = (from, to) => {
+      if (ap.contextDead) return;
+      ap.lastPointerAt = Date.now();
+      noteSquare(from);
+      noteSquare(to);
+    };
 
     // Dismissal for that popover, capture phase, containment rather than
     // stopPropagation — the trainer underneath is entitled to the event.
@@ -17159,6 +17218,481 @@
   }
 
   // ==========================================================================
+  // 22) Type a move (top document, /practice/… and /learn/…)
+  //
+  // A text field on the trainer row that answers the card being quizzed: type
+  // "Nc3" and the move is played on Chessable's own board. OFF by default and
+  // invisible until switched on in the options page (`cloTextMove`) — a focused
+  // input in a trainer session has to swallow MoveTrainer2's single-key
+  // shortcuts, which is a real cost to anyone who did not ask for this.
+  //
+  // NO ENTER, ALMOST ALWAYS. Each keystroke is resolved against the position,
+  // and the move is played the moment the typed text can only mean one legal
+  // move AND is not the beginning of another one. That last clause is what the
+  // whole rule turns on and it has exactly one real case: O-O is a legal move
+  // and also the first three characters of O-O-O, so playing it on sight would
+  // castle the wrong way for anyone who types at human speed. There, and only
+  // there, Enter commits — and the status line says so while it waits. An idle
+  // timer was considered instead and rejected: a wrong move here is scored
+  // against a real SRS card, so "they have probably stopped typing" is not a
+  // good enough reason to play one. (The UCI spelling has no such problem:
+  // nothing legal begins "e1g1", so that form castles kingside on sight —
+  // verified against the real generator, along with every other case in this
+  // paragraph, before any of it was written down.)
+  //
+  // WHAT IS ACCEPTED: SAN as CloSan writes it ("Nc3", "exd5", "O-O", "Rae1"),
+  // with a move number, spaces, check/mate and !? glyphs, and 0-0 for O-O all
+  // taken in stride; failing that, from-to UCI ("e2e4"). SAN is tried first, so
+  // a UCI move whose SAN is shorter can never be typed in full — "e4" has
+  // already played by the time "e4e5" is finished. That is the right way round:
+  // SAN is what the course, the comment column and this extension all speak.
+  // Case is honoured before it is ignored, because "bxc3" and "Bxc3" are two
+  // different moves and a user who typed one of them meant it; a lower-case
+  // spelling that fits both is refused as ambiguous rather than guessed at.
+  //
+  // THE POSITION IS THE TRAINER'S OWN (`ctx.fen`, via the lesson plan), not one
+  // read off the board. Section 18b's ply clock is built on the same fact and
+  // for the same reason: the board DOM can hold a stale duplicate piece for far
+  // longer than an animation after a rolled-back wrong answer, and a placement
+  // derived from it then matches nothing at all. The plan's FEN is exact —
+  // castling rights and en passant included — so "O-O" and "exd6" resolve
+  // correctly without any of readReviewFen's heuristics.
+  //
+  // PLAYING is auto-play's injection recipe, unchanged: the two squares pressed
+  // with `pressSquare` in the same task, which is the path MoveTrainer2 animates
+  // (see section 13). What is NOT auto-play's is the bookkeeping: a typed move
+  // is a human answer, so `autoPlayNoteTypedMove` hands the tracker the pointer
+  // credit and the two squares a real press would have left behind. Without it
+  // the move would be filed as trainer-played (never remembered as proven) and
+  // a refused one would get no alt check.
+  //
+  // Promotions are REFUSED with a sentence rather than half-played: the two
+  // presses would open Chessable's own picker, whose markup is unverified —
+  // the same reason auto-play refuses them.
+  // ==========================================================================
+  function initTextMove() {
+    if (typeof CloSan === 'undefined') {
+      warn('type-a-move disabled: CloSan (engine/san.js) not loaded');
+      return;
+    }
+
+    const C = CONFIG.textMove;
+    const TM_ID = 'lichessable-textmove';
+    const UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
+
+    const tm = {
+      enabled: false,   // cloTextMove; opt-IN, so only an explicit true shows it
+      ui: null,         // { root, input, status }
+      pos: null,        // CloSan position of the board right now
+      posFen: '',       // …the plan FEN it was parsed from
+      oid: null,
+      userColor: null,  // board's bottom side, i.e. the colour being quizzed
+      reading: false,   // a lesson-plan read is in flight
+      dismissed: false, // Escape: stop taking focus until the position moves on
+      playing: false,   // a pair of presses is in flight
+      busyTimer: 0,
+      classTimer: 0,
+    };
+
+    // --- reading the position ------------------------------------------------
+
+    /**
+     * Asks the trainer where it thinks the board is. Fire-and-forget, one read
+     * at a time — and a read that does NOT answer changes nothing: the last
+     * position stands until a later tick replaces it.
+     *
+     * That is not tidiness. Every position change CLEARS the field (below), so
+     * treating an unanswered read as "no position" would wipe a half-typed move
+     * whenever the plan happened to be unreadable for one tick — mid-variation
+     * swap, a cold fiber tree, the responder losing a race. The gates in tick()
+     * are what take the field away when the quiz is genuinely over.
+     */
+    function refreshPosition() {
+      if (tm.reading) return;
+      tm.reading = true;
+      readLessonLine().then((plan) => {
+        tm.reading = false;
+        if (!tm.enabled) return;
+        if (!plan || plan.error || typeof plan.fen !== 'string' || !plan.fen) return;
+        setPosition(plan.fen, plan.oid || null);
+      }).catch(() => { tm.reading = false; });
+    }
+
+    function setPosition(fen, oid) {
+      if (fen === tm.posFen && oid === tm.oid) return;
+      // A different variation can be a different colour (an overstudy of the
+      // other side), so the cached answer below has to go with it.
+      if (oid !== tm.oid) tm.userColor = null;
+      tm.posFen = fen;
+      tm.oid = oid;
+      tm.pos = fen ? CloSan.parseFen(fen) : null;
+      // A new position is a new question, so a move half-typed for the last one
+      // is meaningless — and one typed in FULL for it must never be carried
+      // over and fired at a board the user has not looked at yet. Deliberately
+      // no type-ahead. An Escape that silenced the field is spent too: the next
+      // card gets the focus back.
+      if (tm.ui) {
+        tm.ui.input.value = '';
+        tm.ui.input.classList.remove('clo-tm-input--bad');
+      }
+      tm.dismissed = false;
+      setHint('');
+    }
+
+    /**
+     * The colour being quizzed: the board's bottom side, exactly as every other
+     * trainer feature reads it. `boardBottomColor` answers null while the board
+     * is mid-render, and a null here would hide the field and take the focus
+     * with it — mid-quiz, between two keystrokes — so a null is IGNORED and the
+     * last answer stands. It cannot go stale across variations: setPosition
+     * drops it whenever the oid changes, which is the only thing that can change
+     * the answer.
+     */
+    function syncUserColor() {
+      const board = getReviewBoard();
+      const color = board && boardBottomColor(
+        board.querySelector(SELECTORS.reviewSquare.replace('%s', 'a1')),
+        board.querySelector(SELECTORS.reviewSquare.replace('%s', 'h8')));
+      if (color) tm.userColor = color;
+    }
+
+    /** True when a typed move would be accepted right now. */
+    function usable() {
+      if (tm.playing || !tm.pos || !tm.userColor) return false;
+      if (tm.pos.side !== tm.userColor) return false;
+      // Auto-play owns the board while it replays (an injection may also merely
+      // be scheduled — autoPlayReplaying covers both), and two move sources
+      // pressing squares at once is not something MoveTrainer2 has to cope with.
+      return !(autoPlayReplaying && autoPlayReplaying());
+    }
+
+    /** Why a commit was refused, in the user's terms. */
+    function waitingWhy() {
+      if (autoPlayReplaying && autoPlayReplaying()) {
+        return 'Auto-play is replaying — it will hand over in a moment';
+      }
+      if (tm.playing) return 'Still playing the last move…';
+      if (!tm.pos) return 'Waiting for the position…';
+      if (!tm.userColor) return 'The board is still drawing…';
+      return 'Not your move yet';
+    }
+
+    // --- resolving what was typed --------------------------------------------
+
+    /**
+     * Everything a human might type reduced to the SAN CloSan itself writes.
+     * "0" → "O" is safe in both notations: no square and no move number can
+     * contain a zero, so the only thing it can be is someone spelling O-O the
+     * way half the chess world does.
+     */
+    function normalise(raw) {
+      return String(raw)
+        .replace(/\s+/g, '')
+        .replace(/^\d+\.+/, '')    // a pasted "3." / "3..."
+        .replace(/[+#!?]+$/, '')   // check, mate and evaluation glyphs
+        .replace(/0/g, 'O');
+    }
+
+    /** Every legal move as { mv, uci, san, promo }, SAN bare on both sides so a
+     *  typed "Nc3" matches a generated "Nc3+". */
+    function legalMoves(pos) {
+      const out = [];
+      for (const mv of CloSan.generateMoves(pos)) {
+        const uci = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
+        const san = CloSan.moveToSan(pos, uci);
+        if (san) out.push({ mv, uci, san: san.replace(/[+#]+$/, ''), promo: mv.promo || null });
+      }
+      return out;
+    }
+
+    /** A piece move with its disambiguation dropped: "Rae1" → "Re1". Only ever
+     *  used to answer a typed move that left it out — one match is playable,
+     *  several name the choice the user still has to make. */
+    const relaxed = (san) => san.replace(/^([KQRBN])[a-h]?[1-8]?(x?[a-h][1-8])/, '$1$2');
+
+    /**
+     * What the typed text means right now:
+     *   ready     — one move, nothing longer starts with it: play it
+     *   enter     — one move, but it also starts a longer one (O-O / O-O-O)
+     *   ambiguous — several moves fit; the user has to say which
+     *   partial   — nothing yet, but a legal move starts with this
+     *   invalid   — no legal move begins this way
+     *   empty     — nothing typed
+     */
+    function resolve(raw) {
+      const text = normalise(raw);
+      if (!text) return { state: 'empty' };
+      if (!tm.pos) return { state: 'partial' };
+      const moves = legalMoves(tm.pos);
+      const lower = text.toLowerCase();
+
+      // 1) SAN, exact case first: "bxc3" and "Bxc3" are two different moves and
+      //    whoever typed one of them meant that one.
+      let hit = moves.filter((m) => m.san === text);
+      if (!hit.length) {
+        const ci = moves.filter((m) => m.san.toLowerCase() === lower);
+        if (ci.length === 1) hit = ci;
+        else if (ci.length > 1) return { state: 'ambiguous', moves: ci };
+      }
+      // 2) …then from-to UCI, for anyone who thinks in squares.
+      if (!hit.length && UCI_RE.test(lower)) hit = moves.filter((m) => m.uci === lower);
+      // 3) …then a piece move typed without the disambiguation it needs.
+      if (!hit.length) {
+        const rel = moves.filter((m) => relaxed(m.san).toLowerCase() === lower);
+        if (rel.length === 1) hit = rel;
+        else if (rel.length > 1) return { state: 'ambiguous', moves: rel };
+      }
+
+      // Is anything longer still on its way? This is the O-O / O-O-O clause,
+      // and the only reason Enter exists at all.
+      const longer = moves.filter((m) => {
+        const s = m.san.toLowerCase();
+        return s.startsWith(lower) && s !== lower;
+      });
+      if (hit.length === 1) {
+        return longer.length ? { state: 'enter', move: hit[0], longer }
+                             : { state: 'ready', move: hit[0] };
+      }
+      if (longer.length) return { state: 'partial' };
+      if (moves.some((m) => m.uci.startsWith(lower))) return { state: 'partial' };
+      return { state: 'invalid' };
+    }
+
+    // --- playing -------------------------------------------------------------
+
+    function commit(move) {
+      if (!move || tm.playing) return;
+      if (!usable()) { setHint(waitingWhy()); return; }
+      if (move.promo) {
+        // The two presses would open Chessable's own promotion picker, whose
+        // markup is unverified — the same reason auto-play refuses these.
+        setHint('Promotions have to be played on the board');
+        return;
+      }
+      const board = getReviewBoard();
+      const from = move.uci.slice(0, 2);
+      const to = move.uci.slice(2, 4);
+      const fromEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', from));
+      const toEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', to));
+      if (!fromEl || !toEl) {
+        warn('type-a-move: board squares for', move.uci, 'not found');
+        setHint('Could not find those squares on the board');
+        return;
+      }
+      // The tracker has to be told a HUMAN answered — see autoPlayNoteTypedMove.
+      if (autoPlayNoteTypedMove) autoPlayNoteTypedMove(from, to);
+      tm.playing = true;
+      tm.ui.input.value = '';
+      tm.ui.input.classList.remove('clo-tm-input--bad');
+      setHint('');
+      log('type-a-move: playing', move.san, '(' + move.uci + ')');
+      // Auto-play's recipe, unchanged: two presses in the SAME task, so the
+      // selection never gets a frame to paint and MoveTrainer2 animates the
+      // move as one of its own. The class is the backstop for the case where it
+      // does slip a render in between.
+      clearTimeout(tm.classTimer);
+      document.documentElement.classList.add('clo-injecting');
+      pressSquare(fromEl);
+      pressSquare(toEl);
+      tm.classTimer = setTimeout(() => {
+        document.documentElement.classList.remove('clo-injecting');
+      }, C.injectClassMs);
+      // Nothing is verified afterwards, deliberately. A refused move leaves the
+      // position exactly as it was, so "the board did not change" cannot tell a
+      // press that never landed from a wrong answer — and Chessable says which
+      // it was, in its own words, right above the board.
+      clearTimeout(tm.busyTimer);
+      tm.busyTimer = setTimeout(() => { tm.playing = false; }, C.busyMs);
+    }
+
+    // --- UI: a group on the overstudy widget ---------------------------------
+
+    function setHint(text) {
+      if (!tm.ui) return;
+      const msg = text ? '⌨ ' + text : '';
+      if (tm.ui.status.textContent !== msg) tm.ui.status.textContent = msg;
+      tm.ui.status.hidden = !msg;
+    }
+
+    function onType() {
+      const res = resolve(tm.ui.input.value);
+      tm.ui.input.classList.toggle('clo-tm-input--bad',
+        res.state === 'invalid' || res.state === 'ambiguous');
+      if (res.state === 'ready') { commit(res.move); return; }
+      if (res.state === 'enter') {
+        setHint('Enter plays ' + res.move.san + ' — or keep typing for ' +
+          res.longer.map((m) => m.san).join(' / '));
+      } else if (res.state === 'ambiguous') {
+        setHint('Which one? ' + res.moves.map((m) => m.san).join(' or '));
+      } else if (res.state === 'invalid') {
+        setHint('No legal move here starts like that');
+      } else {
+        setHint('');
+      }
+    }
+
+    function ensureUi() {
+      const widget = document.getElementById(REVIEW_WIDGET_ID);
+      if (!widget) return;
+      if (tm.ui && tm.ui.root.isConnected && tm.ui.root.parentElement === widget) return;
+      const stale = document.getElementById(TM_ID);
+      if (stale) stale.remove();
+
+      const root = document.createElement('span');
+      root.id = TM_ID;
+      root.className = 'clo-review-grp clo-tm';
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'clo-tm-input';
+      input.placeholder = 'Move…';
+      input.title = 'Type the move in algebraic notation (Nc3, exd5, O-O) or as two squares ' +
+        '(e2e4). It is played as soon as it can only mean one legal move.';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      // Without these a phone keyboard "helpfully" sends "E4" and "Nc3." — the
+      // first is not a move and the second only survives because the trailing
+      // punctuation is stripped.
+      input.setAttribute('autocapitalize', 'none');
+      input.setAttribute('autocorrect', 'off');
+      input.hidden = true; // …which is also what hides the group (see the CSS)
+
+      // MoveTrainer2 binds single-key shortcuts ("n" = next variation, space, …)
+      // on `document` and does NOT skip them while a text field has focus, so
+      // typing a move would otherwise drive the trainer. Bubble phase is enough
+      // (the quick-edit popup has done exactly this since v0.28.0); the default
+      // action still inserts the character.
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        input.addEventListener(type, (e) => e.stopPropagation());
+      }
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          // Give the keyboard back to the trainer without turning the feature
+          // off: the field stays, and the next card takes the focus again.
+          e.preventDefault();
+          tm.dismissed = true;
+          input.value = '';
+          onType();
+          input.blur();
+          return;
+        }
+        if (e.key !== 'Enter') return;
+        e.preventDefault(); // no form here, but a stray submit is not worth risking
+        const res = resolve(input.value);
+        // onType has already said what is wrong with the TEXT; the only thing
+        // Enter adds is why an otherwise fine move is not being accepted.
+        if (res.move) commit(res.move);
+        else if (!usable()) setHint(waitingWhy());
+      });
+      input.addEventListener('input', onType);
+      // Clicking the field is a request for it, whatever Escape said earlier.
+      input.addEventListener('focus', () => { tm.dismissed = false; });
+
+      root.appendChild(input);
+      widget.appendChild(root);
+
+      // Status text goes on the row's own status line, never inline among the
+      // controls — see reviewStatusHost() and the .clo-review-status block.
+      const status = document.createElement('span');
+      status.className = 'clo-tm-status';
+      status.hidden = true;
+      const host = reviewStatusHost();
+      if (host) {
+        const staleStatus = host.querySelector('.clo-tm-status');
+        if (staleStatus) staleStatus.remove();
+        host.appendChild(status);
+      }
+      tm.ui = { root, input, status };
+    }
+
+    /**
+     * Takes the keyboard, so a move can be typed without clicking anything
+     * first — which is the whole point of the feature. Three things stop it:
+     * an Escape (until the position moves on), a touch device (a phone would
+     * throw its on-screen keyboard over half the board unasked), and anything
+     * else already holding focus, which the user put there on purpose.
+     */
+    function maybeFocus() {
+      if (tm.dismissed || document.hidden || wantsTouchUi()) return;
+      const active = document.activeElement;
+      if (active === tm.ui.input) return;
+      if (active && active !== document.body && active !== document.documentElement) return;
+      tm.ui.input.focus({ preventScroll: true });
+    }
+
+    function hide() {
+      if (!tm.ui) return;
+      if (document.activeElement === tm.ui.input) tm.ui.input.blur();
+      tm.ui.input.value = '';
+      tm.ui.input.hidden = true;
+      tm.ui.input.classList.remove('clo-tm-input--bad');
+      setHint('');
+      tm.pos = null;
+      tm.posFen = '';
+      tm.oid = null;
+      tm.playing = false;
+      tm.dismissed = false;
+    }
+
+    function tick() {
+      // The browse state is deliberately out of scope: there is no card to
+      // answer, and Chessable's post-completion board accepts no moves at all
+      // (the ground truth section 18 is built on). Our own board covering
+      // theirs — a clickable-line quiz, a drill, the analysis board — is the
+      // other stand-down: that one has its own input.
+      if (!tm.enabled || !isTrainerPath() || reviewBrowseReady() ||
+          (continuationActive && continuationActive())) {
+        hide();
+        return;
+      }
+      ensureUi();
+      if (!tm.ui) return;
+      syncUserColor();
+      refreshPosition();
+      const live = Boolean(tm.pos && tm.userColor);
+      tm.ui.input.hidden = !live;
+      if (!live) { setHint(''); return; }
+      if (usable()) maybeFocus();
+    }
+
+    (async () => {
+      try {
+        const stored = await chrome.storage.local.get([C.key]);
+        tm.enabled = stored[C.key] === true;
+      } catch (err) {
+        warn('type-a-move: preference read failed:', err);
+      }
+    })();
+
+    try {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || !changes[C.key]) return;
+        tm.enabled = changes[C.key].newValue === true;
+        if (!tm.enabled) hide();
+        else tick();
+      });
+    } catch (err) { /* orphaned context — off, which is the default anyway */ }
+
+    // One try/catch around the whole tick, the house rule for these polls: the
+    // interval must survive a throw, or the field would silently freeze in
+    // whatever state it was last left — visible over a variation the trainer has
+    // moved on from, still taking the keyboard, with nothing in the console. One
+    // line per distinct message, so a repeating failure is not a flood.
+    let lastTickError = '';
+    const pollTimer = setInterval(() => {
+      try {
+        tick();
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        if (msg !== lastTickError) { lastTickError = msg; warn('type-a-move tick failed:', err); }
+      }
+    }, C.pollMs);
+    window.addEventListener('pagehide', () => { clearInterval(pollTimer); hide(); });
+    tick();
+    log('type-a-move watcher active (top document)');
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -17202,6 +17736,11 @@
     initMistakeLog();
     initRetryRunner();
     initContinuationReview();
+    // After initAutoPlay (whose bridge it needs to announce a typed answer) and
+    // after initContinuationReview (whose `active` bridge is what stands it down
+    // while our own board covers Chessable's). Both are null-safe, so the order
+    // is a convention rather than a requirement.
+    initTextMove();
     initChapterSort();
     initCoverage();
   }

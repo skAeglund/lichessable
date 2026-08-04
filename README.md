@@ -182,8 +182,43 @@ and you can toggle it by hand in between (the choice is dropped at the next
 state change, so a collapse can never quietly cost you the browse-state
 buttons for the rest of a session). The exceptions stay visible precisely
 because they are *running*: a retry pass's Skip and Stop — the pass drives on
-through live quizzes, so ending it must never be a hunt — and auto-play's status
-message, which is how you cancel a replay.
+through live quizzes, so ending it must never be a hunt — auto-play's status
+message, which is how you cancel a replay, and the **Move…** field below, which
+is the one control here that acts on the card you are answering.
+
+### Answering by typing
+
+Off by default; turn on **Answer quizzes by typing the move** in the options
+page. A small **Move…** field then appears on the widget whenever a quiz is
+waiting for you, takes the keyboard by itself, and plays what you type on
+Chessable's own board.
+
+**There is normally nothing to press.** Every keystroke is checked against the
+position, and the move goes the moment what you have typed can only mean one
+legal move — `Nc3`, `exd5`, `Rae1`, `O-O-O`. It accepts algebraic notation as
+the course writes it (a move number, spaces and `+` `#` `!` `?` are all ignored,
+and `0-0` is taken as `O-O`) or the two squares, `e2e4`. Case is honoured before
+it is ignored: `bxc3` and `Bxc3` are different moves, so a lower-case spelling
+that fits both is refused rather than guessed at, and the status line names the
+two candidates. Same for a piece move typed without a disambiguation it needs —
+`Re2` with two rooks on the rank answers *"Which one? Rae2 or Rhe2"*.
+
+The **one** move that needs a key is `O-O` while `O-O-O` is also legal: it is a
+complete move *and* the start of a longer one, so **Enter** settles it (or type
+`e1g1`, which cannot mean anything else). Nothing is ever played on a timer —
+a wrong move here is scored against a real card, so "they have probably stopped
+typing" is not a good enough reason to play one.
+
+**Esc** hands the keyboard back to Chessable's own single-key shortcuts (`n` for
+the next variation and the rest) until the next move — which is also why this is
+off by default: while the field has focus, those shortcuts go to the field. The
+field takes focus by itself on a desktop only; on a phone it waits to be tapped
+rather than throwing the on-screen keyboard over the board.
+
+A typed move is treated exactly like one played with the mouse: same scheduling,
+it is logged the same way if it is wrong, the wrong-guess **alt check** offers to
+engine-check it just the same, and auto-play remembers it as proven. Promotions
+still have to be played on the board.
 
 Trainer sessions — review and learn alike — can also **auto-play moves you
 already proved this session**
@@ -1572,6 +1607,41 @@ enough not to run, the ↻ button is the only way back.
   arrive on the shared `clo-quick-edit-result` message, which all three modules
   listen to and each ignores what is not theirs (ours: `save` mode, matching
   `oid` + `plyIndex`).
+- **Type a move** — section 22, and much smaller than the feature list suggests,
+  because everything it needs already existed. The **position** is the trainer's
+  own `ctx.fen`, read out of the lesson plan by `content/pagestate.js` — the same
+  source (and the same reasoning) as section 18b's ply clock: the board DOM can
+  hold a stale duplicate piece for far longer than an animation after a
+  rolled-back wrong answer, and a placement derived from it then matches nothing.
+  It is also exact, so `O-O` and `exd6` resolve without any of `readReviewFen`'s
+  heuristics. **Playing** is auto-play's injection recipe verbatim — the two
+  squares pressed with `pressSquare` in the same task, which is the path
+  MoveTrainer2 animates.
+
+  The **resolver** takes SAN first and UCI second, exact case before
+  case-insensitive, and then a piece move with its disambiguation left out;
+  anything that matches more than one move is refused with both named. A move is
+  played on sight only when nothing longer starts with it, which is what leaves
+  `O-O` (against `O-O-O`) needing Enter and nothing else. All of that is pure
+  and was spot-checked against the real `CloSan` generator — start position,
+  both castles, two knights to d2, en passant, promotion, `bxc3`/`Bxc3`,
+  `Rae2`/`Rhe2` — before it was written down.
+
+  The one genuinely new thing is `autoPlayNoteTypedMove`, which hands the
+  auto-play tracker the pointer credit and the two squares a real press would
+  have left behind. Without it a typed move looks like a *trainer-played* one
+  (user colour, no pointer input — the solution-replay case): it would never be
+  remembered as proven, and a refused one would get no alt check. It is
+  deliberately not a synthetic pointer *event* — `onTrustedPointer` refuses
+  those on purpose, so our own injections can never vouch for themselves.
+
+  The field stands down in the browse state (no card, and that board takes no
+  moves at all) and while our own board covers Chessable's — a clickable-line
+  quiz, a drill or the analysis board, which have their own input. Nothing is
+  verified after the presses, deliberately: a refused move leaves the position
+  exactly as it was, so "the board did not change" cannot tell a press that never
+  landed from a wrong answer — and Chessable says which it was, in its own words,
+  right above the board.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.

@@ -569,6 +569,80 @@ body {
       </div>
     </div>
 
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>Type a move (section 22)</h3>
+      <p class="hx-note">Off by default. The only control in this row that acts on the card being
+         answered, so it sits first after the label — and it is the third exception to the
+         mid-quiz collapse, for the same reason the other two are: mid-quiz is when it has
+         something to do. An input, not an action, so it takes none of §3.2's five treatments;
+         it looks like the field it is, and goes green at the border when the keyboard is
+         going to it.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px">
+        <div class="clo-review clo-review--collapsed hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="false">LiChessable</button>
+          <span class="clo-review-grp clo-tm">
+            <input type="text" class="clo-tm-input" placeholder="Move…">
+          </span>
+          <span class="clo-review-grp clo-mx">
+            <button type="button" class="clo-mx-btn">Mistakes (3)</button>
+            <button type="button" class="clo-mx-retry">Retry</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Quiz live, waiting for a move. Everything else is
+          collapsed away; the field is what is left.</p>
+
+        <div class="clo-review clo-review--collapsed hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="false">LiChessable</button>
+          <span class="clo-review-grp clo-tm">
+            <input type="text" class="clo-tm-input" value="O-O">
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+          <div class="clo-review-status">
+            <span class="clo-tm-status">⌨ Enter plays O-O — or keep typing for O-O-O</span>
+          </div>
+        </div>
+        <p class="hx-note" style="margin:0 10px">The one case that needs Enter, and the status line
+          that says so. Status text never shares a line with a control (§F8).</p>
+
+        <div class="clo-review clo-review--collapsed hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="false">LiChessable</button>
+          <span class="clo-review-grp clo-tm">
+            <input type="text" class="clo-tm-input clo-tm-input--bad" value="Kd4">
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+          <div class="clo-review-status">
+            <span class="clo-tm-status">⌨ No legal move here starts like that</span>
+          </div>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Nothing legal starts like that: the border goes
+          red, the text stays legible — the user is mid-word and about to fix it.</p>
+
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-tm">
+            <input type="text" class="clo-tm-input" placeholder="Move…" hidden>
+          </span>
+          <span class="clo-review-grp clo-mx">
+            <button type="button" class="clo-mx-btn">Mistakes (3)</button>
+            <button type="button" class="clo-mx-retry clo-rowprimary">Retry</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Browse state: no card to answer, so the field
+          hides itself — and the group goes with it, separator and all, without the module
+          telling the row anything.</p>
+      </div>
+    </div>
+
     <div class="hx-card">
       <h3>Mistakes, all gone through (v0.61.0)</h3>
       <p class="hx-note">The list button outlives the queue — the session's history stays

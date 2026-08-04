@@ -88,6 +88,31 @@
     reopen it: the next variation gets the next one.
   </p>
 
+  <label class="inline"><input type="checkbox" id="textMove"> Answer quizzes by typing the move</label>
+
+  <p class="fineprint">
+    Puts a small <strong>Move…</strong> field on the in-session widget while a
+    quiz is waiting for you, and plays what you type on Chessable's own board.
+    Algebraic notation (<code>Nc3</code>, <code>exd5</code>, <code>O-O</code>,
+    <code>Rae1</code>) or the two squares (<code>e2e4</code>); a move number,
+    spaces and <code>+</code>/<code>!</code> are ignored. The move goes as soon
+    as what you have typed can only mean one legal move, so there is normally
+    nothing to press — the one exception is <code>O-O</code> when
+    <code>O-O-O</code> is also legal, where <strong>Enter</strong> settles it
+    (or type <code>e1g1</code>, which cannot mean anything else).
+    <strong>Esc</strong> gives the keyboard back to Chessable's own shortcuts
+    until the next move. Promotions still have to be played on the board.
+  </p>
+
+  <p class="fineprint">
+    Off by default because the field takes the keyboard while it is focused, so
+    MoveTrainer's single-key shortcuts (<code>n</code> for the next variation
+    and the rest) go to the move field instead for as long as it has focus.
+    Typed moves count exactly like moves played with the mouse — same
+    scheduling, same mistake log, and they are remembered by auto-play in the
+    same way.
+  </p>
+
   <p class="fineprint">
     <strong>Review auto-play</strong> (the toggle on the in-session Overstudy
     widget): auto-played moves count as normal correct answers — the move was

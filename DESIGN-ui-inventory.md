@@ -732,6 +732,47 @@ rule is doing its job under automation.
    FINAL position (the author's Sicilian screenshot is one; 453453's variation 1
    is not).
 
+### v0.65.0 — a sixth control, and the first that is not a button
+
+**Type a move** (section 22) puts a text field on this row. It is the first
+addition since the hierarchy landed, so it is worth recording how the rules
+answered it rather than needing to bend:
+
+- **Order.** It goes *first*, before Mistakes — `.clo-tm { order: 1 }`, with the
+  four existing groups shifted up one. §3.2's reading order is mistakes →
+  practice → session → settings, and this belongs ahead of all of it for a reason
+  the row did not previously have a case for: it is the only control here that
+  acts on **the card being answered**. Everything else acts on a finished
+  variation or on the session.
+- **Tier: none of the five.** §3.2 says adding a control means picking one of the
+  five treatments, not inventing a sixth — and this is the exemption that proves
+  it, because it is not an *action*. It is the inset well every other text field
+  in the extension uses, going green at the border on focus. `reviewRowPrimary()`
+  is untouched: the primary fill is a claim about a button, and a field cannot be
+  the thing to press. Its status text does take a tier — amber, §3.2's status
+  colour, on `.clo-review-status` like the other two.
+- **The collapse (§3.3) gained a third exception**, and it is the one the rule
+  was written for without knowing it: mid-quiz is precisely when this control has
+  something to do. Same idiom as the retry minis —
+  `.clo-tm:has(> .clo-tm-input:not([hidden]))` reads section 22's own gate (the
+  field is hidden whenever no quiz is asking for a move) rather than adding a
+  flag. The `:has()` is load-bearing, not stylistic: `.clo-review-grp[hidden]`
+  sits at (0,2,0), which a plain descendant selector would only tie, and
+  later-wins would then show an empty group.
+
+Measured in the harness (real stylesheet, cache busted): collapsed row
+**29px label-only → 38px with the field**, 58px under `html.clo-touch`; field
+60×26 desktop, 71×36 touch at 16px — the size is a requirement, not a
+preference, since anything smaller makes mobile browsers zoom the page in on
+focus, mid-quiz. In the browse state the hidden field takes its group and
+separator with it through the existing empty-group rule, with no module telling
+the row anything.
+
+**Owed:** the 38px ↔ 29px transition is the same propagation as item 4 below,
+now on the state flip *into* a quiz rather than out of one; and the field has not
+been in a live session, so focus behaviour against Chessable's own focus handling
+is unverified.
+
 ### Next
 
 **Nothing on the change list**, and the parts of it a single session could reach

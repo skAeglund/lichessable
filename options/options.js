@@ -12,6 +12,10 @@ const HEADS_UP_KEY = 'cloLineHeadsUp';
 // must match CONFIG.continuation.autoKey in content/lichessable.js. Opt-IN,
 // the other way round: only an explicit true starts a review by itself.
 const AUTO_REVIEW_KEY = 'cloAutoReviewClickables';
+// must match CONFIG.textMove.key in content/lichessable.js. Opt-IN: the field
+// takes the keyboard from MoveTrainer's own single-key shortcuts while it is
+// focused, which is not something to hand anyone who did not ask for it.
+const TEXT_MOVE_KEY = 'cloTextMove';
 // must match CONFIG.touch.modeKey / CONFIG.touch.deviceKey in
 // content/lichessable.js. The MODE is the user's override ('auto' unless they
 // say otherwise); the DEVICE flag is the content script's own latch — it writes
@@ -36,12 +40,14 @@ function setStatus(text, isError) {
 async function init() {
   $('loadedVersion').textContent = chrome.runtime.getManifest().version;
   const stored = await chrome.storage.local.get(
-    [TOKEN_KEY, BUILD_KEY, HEADS_UP_KEY, AUTO_REVIEW_KEY, TOUCH_KEY, TOUCH_DEVICE_KEY]);
+    [TOKEN_KEY, BUILD_KEY, HEADS_UP_KEY, AUTO_REVIEW_KEY, TEXT_MOVE_KEY,
+     TOUCH_KEY, TOUCH_DEVICE_KEY]);
   if (stored[TOKEN_KEY]) $('token').value = stored[TOKEN_KEY];
   const build = stored[BUILD_KEY];
   $('engineBuild').value = build === 'full' || build === 'lite' ? build : 'auto';
   $('headsUp').checked = stored[HEADS_UP_KEY] !== false;
   $('autoReview').checked = stored[AUTO_REVIEW_KEY] === true;
+  $('textMove').checked = stored[TEXT_MOVE_KEY] === true;
   const touch = stored[TOUCH_KEY];
   $('touchUi').value = touch === 'touch' || touch === 'desktop' ? touch : 'auto';
   // Worth stating: it is the answer to "why is this still/not large?", and the
@@ -67,6 +73,15 @@ $('headsUp').addEventListener('change', async () => {
   setStatus($('headsUp').checked
     ? 'Clickable-line heads-up on.'
     : 'Clickable-line heads-up off.');
+});
+
+$('textMove').addEventListener('change', async () => {
+  // Saved immediately; the content script's storage listener puts the field on
+  // (or takes it off) every open trainer tab, no reload needed.
+  await chrome.storage.local.set({ [TEXT_MOVE_KEY]: $('textMove').checked });
+  setStatus($('textMove').checked
+    ? 'Type-a-move on — the field appears while a quiz is waiting for you.'
+    : 'Type-a-move off.');
 });
 
 $('touchUi').addEventListener('change', async () => {

@@ -55,6 +55,9 @@ answers back — adding the ticked lines through Chessable's own add call and
 deleting the surplus copies. The panel itself also BADGES the moves one of the
 user's own courses already plays (section 6c) — nominate a repertoire in the
 panel's cogwheel menu and every host of the panel marks what is prepared.
+A live quiz can also be answered BY TYPING (section 22): an opt-in field on the
+trainer row plays what you write on Chessable's own board, on sight, with no
+Enter for anything but O-O.
 Currently working (v0.18.x).
 
 ## Structure
@@ -864,15 +867,18 @@ Currently working (v0.18.x).
   height untouched. The one thing only a live run could show: a launcher wearing
   `clo-rowprimary` AND `clo-cr-open--important` at once — green fill plus amber
   ring, composing — which is why 18c's mark had to stop being a border recolour.
-  FOUR modules append to `.clo-review`
+  FIVE modules append to `.clo-review`
   — section 9 (overstudy), 13 (auto-play), 16/17 (mistakes/retry), 18-20
-  (continuation/analysis/drill) — and each one used to pick its own colour and
+  (continuation/analysis/drill), 22 (type a move) — and each one used to pick its
+  own colour and
   land wherever `start()` happened to put it, so weight encoded WHICH MODULE
   built a control and order encoded the BOOT SEQUENCE.
   * GROUPS. Every cluster carries `.clo-review-grp`, which owns the layout, the
     8px inset and the `1px #3d3a36` rule; a block of `order` declarations at the
-    top of the row's stylesheet decides the sequence (title 0, mistakes 1,
-    practice 2, overstudy 3, settings 4, status 99). So a module may keep
+    top of the row's stylesheet decides the sequence (title 0, TYPE A MOVE 1,
+    mistakes 2, practice 3, overstudy 4, settings 5, status 99 — the field is
+    first because it is the only thing here that acts on the card being
+    answered). So a module may keep
     appending whenever it boots and still land in its own group — that is the
     point, not a nicety. `.clo-review-grp:not(:has(> *:not([hidden])))` hides a
     group whose every child is hidden, so a group that empties takes its
@@ -903,19 +909,35 @@ Currently working (v0.18.x).
     now, never an outline. Amber TEXT (no border) = the status line. Neutral
     outline = an action away from the main task (Analyse, Overstudy).
     Adding a control to this row means picking one of those, not inventing a
-    sixth; §3 of the design doc is the ruling. The palette itself is 16 `:root`
+    sixth; §3 of the design doc is the ruling. The ONE exemption is section 22's
+    move field, and only because it is not an action at all: a text input looks
+    like the inset well every other text field here uses and goes green at the
+    BORDER on focus, which says "the keyboard is going here" without claiming to
+    be the thing to press. `reviewRowPrimary()` is untouched for the same reason
+    — the primary fill is a claim about a BUTTON, and a field cannot be it.
+    The palette itself is 16 `:root`
     TOKENS at the top of the stylesheet (v0.59.0), named by role
     (`--clo-accent`, `--clo-attention`, `--clo-text-dim` …) — but `--clo-rep-*`
     (6c) and `--clo-cr-important` (18c) deliberately stay beside their own rules,
     because each carries paragraphs of argument about why that exact colour.
   * COLLAPSED MID-QUIZ (v0.59.0, §3.3). Outside the browse state the row goes
-    down to its label plus whatever is actively RUNNING. Two CSS rules do it —
-    `.clo-review--collapsed .clo-review-grp { display: none }` and an exception
-    `.clo-mx:has(> .clo-mx-mini:not([hidden]))`. That exception READS section
-    17's own gates rather than adding a flag: while a pass runs, `count` and
+    down to its label plus whatever is actively RUNNING. Three CSS rules do it —
+    `.clo-review--collapsed .clo-review-grp { display: none }` and two exceptions,
+    `.clo-mx:has(> .clo-mx-mini:not([hidden]))` and
+    `.clo-tm:has(> .clo-tm-input:not([hidden]))`. Both READ the owning module's
+    own gates rather than adding a flag: while a pass runs, `count` and
     `retry` are hidden and Skip/Stop are not, so "this group has a visible mini"
-    IS "a pass is running", and the two can never drift. Auto-play's status chip
+    IS "a pass is running"; the move field is hidden by section 22 whenever there
+    is no live quiz, so "this group has a visible input" IS "a quiz is asking for
+    a move". Neither can drift. Auto-play's status chip
     needs no rule — it lives on `.clo-review-status`, which is not a group.
+    The `:has()` is LOAD-BEARING in both, not decoration: `.clo-review-grp[hidden]`
+    and the empty-group rule both sit at (0,2,0), which a plain
+    `.clo-review--collapsed .clo-tm` would only TIE — and later-wins would then
+    show a group whose every child is hidden. Matching on the child's state takes
+    the exception to (0,4,0), i.e. strictly narrower than the rule it bends.
+    Measured in the harness: label-only 29px, with the move field 38px, and 58px
+    under `html.clo-touch`.
     State is section 9's: `collapseAuto` (what `reviewBrowseReady()` asks for)
     and `collapseManual` (the user overriding it, DROPPED the moment the state
     flips, and never persisted — a sticky collapse costs the browse-state
@@ -2081,6 +2103,79 @@ Currently working (v0.18.x).
   move and during the finished-line pause, only `step()` ever cleared it, and a
   drill has an opponent move on nearly every card — so a stale `true` left the
   NEXT run's board refusing every press.
+- Type a move (section 22, v0.65.0): a text field on the trainer row that answers
+  the LIVE CARD — type "Nc3" and it is played on Chessable's own board. OPT-IN
+  (`cloTextMove`, storage.local, absent = off; options-page checkbox, watched
+  through `chrome.storage.onChanged`), and the reason it must be is real: the
+  field takes the keyboard, and MoveTrainer2 binds single-key shortcuts ("n" =
+  next variation) on `document` without skipping focused fields — so while it has
+  focus those shortcuts go to the field. It therefore swallows keydown/keypress/
+  keyup on ITSELF in bubble phase (the quick-edit popup's discipline, and bubble
+  is enough), and Escape BLURS rather than closing anything: the trainer gets its
+  shortcuts back until the next move, and the field is still there.
+  Almost NOTHING here is new — that is the point of where it was put:
+  * THE POSITION IS THE TRAINER'S OWN `ctx.fen`, through `readLessonLine()` —
+    section 18b's ply clock source, for section 18b's reason. NEVER a placement
+    read off the board: after a rolled-back wrong answer that board can hold a
+    stale DUPLICATE piece for far longer than an animation (ground-truthed
+    2026-07-27), which no one-king-per-side check catches, and a FEN derived from
+    it then matches nothing. It is also EXACT — castling rights and en passant
+    included — so "O-O" and "exd6" resolve without any of `readReviewFen`'s
+    heuristics. Re-read every tick; a changed FEN CLEARS the field, deliberately:
+    a move typed in full for the previous position must never be carried over and
+    fired at a board the user has not looked at yet. No type-ahead.
+  * PLAYING IS AUTO-PLAY'S INJECTION RECIPE, verbatim — `pressSquare` on the two
+    squares in the SAME task (the path MoveTrainer2 ANIMATES; see section 13),
+    with `clo-injecting` as the same backstop. Promotions are REFUSED with a
+    sentence, not half-played: the two presses would open Chessable's own
+    promotion picker, whose markup is UNVERIFIED — auto-play refuses them for
+    exactly this reason.
+  * NOTHING IS VERIFIED AFTERWARDS, and that is a decision rather than an
+    omission. A REFUSED MOVE LEAVES THE POSITION EXACTLY AS IT WAS, so auto-play's
+    "is the placement still `beforeKey`?" test — which is sound for a move it
+    knows to be correct — cannot here tell a press that never landed from a wrong
+    answer. Chessable says which it was, in its own words, directly above the
+    board. Do not add a board-diff check to this path.
+  * `autoPlayNoteTypedMove(from, to)` IS THE ONE NEW MECHANISM, and it is
+    load-bearing twice over. Our presses are synthetic, so without it
+    `applyObservedMove` classifies a typed move as 'trainer' (user colour, no
+    pointer credit — the solution-replay arm): it would never become a
+    `pendingRecord`, so a move answered by typing would NOT be remembered as
+    proven and would be handed back on every later pass through that position;
+    and `ap.recentSquares` would stay empty, so the alt check's POINTER path
+    (section 15, the primary one) could not name a refused typed guess and the
+    engine-check offer would silently never appear. The bridge stamps
+    `ap.lastPointerAt` and pushes the two squares IN ORDER (the alt check reads
+    the last two distinct entries as from→to) through the hoisted `noteSquare`.
+    Deliberately NOT a synthetic pointer EVENT: `onTrustedPointer` refuses those
+    on purpose, so our own injections can never vouch for themselves — and the
+    fact being asserted is that a HUMAN typed the move, not that a pointer moved.
+  THE RESOLVER runs on every keystroke and plays on sight when the text can only
+  mean ONE legal move AND nothing longer starts with it. Order: exact-case SAN,
+  then case-insensitive SAN, then UCI, then a piece move with its disambiguation
+  left out; more than one match at any step is REFUSED with both named, never
+  guessed at. Case is honoured before it is ignored because "bxc3" and "Bxc3" are
+  two different moves. The "nothing longer" clause has exactly ONE real case —
+  O-O is a legal move and the first three characters of O-O-O — and there, and
+  only there, Enter commits; the uci spelling "e1g1" has no such problem and
+  castles on sight. NO IDLE TIMER: a wrong move here is scored against a real SRS
+  card, so "they have probably stopped typing" is not a good enough reason to
+  play one. The resolver is pure and was spot-checked against the real CloSan
+  generator (33 cases: start position, both castles, two knights to d2, en
+  passant, promotion, bxc3/Bxc3, Rae2/Rhe2, uci prefixes) before any of the above
+  was written down — four of the first FENs were wrong, not the code.
+  FOCUS is taken by itself when a quiz is asking for the user's move and nothing
+  else holds it, so a move needs no click first — but NEVER on a touch device
+  (`wantsTouchUi()`): a phone would throw its on-screen keyboard over half the
+  board unasked, and there the field waits to be tapped. `html.clo-touch` sizes
+  it at 16px, which is not a preference — anything smaller makes mobile Safari
+  and Chrome ZOOM THE PAGE IN on focus, mid-quiz, with the board already placed.
+  STANDS DOWN in the browse state (no card, and that board takes no moves at all
+  — section 18's founding ground truth) and while `continuationActive()` (our own
+  board covering theirs: a clickable-line quiz, a drill, the analysis board, all
+  of which have their own input). Commits are refused while `autoPlayReplaying()`
+  — two move sources pressing squares at once is not something MoveTrainer2 has
+  to cope with — with the reason in the status line.
 - Repertoire coverage (section 21, v0.46.5; ground truth and every endpoint in
   DESIGN-repertoire-coverage.md; read, ranking, add and duplicate-removal all
   verified live 2026-07-29): answers "which of this
