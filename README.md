@@ -209,11 +209,26 @@ complete move *and* the start of a longer one, so **Enter** settles it (or type
 a wrong move here is scored against a real card, so "they have probably stopped
 typing" is not a good enough reason to play one.
 
+**Enter, once the variation is over, goes to the next one.** The field stays
+where it is when a variation completes — empty, and taking no moves, because
+Chessable's post-completion board accepts none — and its one remaining key asks
+the trainer for the next variation. So a whole session can be played without
+letting go of the keyboard, and on a phone the on-screen keyboard never closes
+between variations. The keyboard comes back to the field by itself on the next
+card, phone included: you were typing in it a moment ago. Every other key falls
+through to Chessable's own browsing shortcuts while the variation is finished.
+
 **Esc** hands the keyboard back to Chessable's own single-key shortcuts (`n` for
 the next variation and the rest) until the next move — which is also why this is
 off by default: while the field has focus, those shortcuts go to the field. The
 field takes focus by itself on a desktop only; on a phone it waits to be tapped
-rather than throwing the on-screen keyboard over the board.
+rather than throwing the on-screen keyboard over the board (the one exception is
+the Enter above, where the keyboard is already up).
+
+**On a phone the page does not zoom.** Mobile browsers scale the whole page up
+around a focused text field, which mid-quiz puts the board off screen; while
+this field is being typed into, the page's own zoom is pinned, and it is handed
+straight back when you are done.
 
 A typed move is treated exactly like one played with the mouse: same scheduling,
 it is logged the same way if it is wrong, the wrong-guess **alt check** offers to
@@ -1635,13 +1650,32 @@ enough not to run, the ↻ button is the only way back.
   deliberately not a synthetic pointer *event* — `onTrustedPointer` refuses
   those on purpose, so our own injections can never vouch for themselves.
 
-  The field stands down in the browse state (no card, and that board takes no
-  moves at all) and while our own board covers Chessable's — a clickable-line
+  The field stands down while our own board covers Chessable's — a clickable-line
   quiz, a drill or the analysis board, which have their own input. Nothing is
   verified after the presses, deliberately: a refused move leaves the position
   exactly as it was, so "the board did not change" cannot tell a press that never
   landed from a wrong answer — and Chessable says which it was, in its own words,
   right above the board.
+
+  In the **browse state** it used to stand down too, on the grounds that there is
+  no card and that board takes no moves at all. True, and beside the point:
+  hiding the field closes a phone's keyboard, so every variation cost a tap
+  before the first move could be typed. Since v0.65.1 it stays, inert, and its
+  one key asks the trainer for the next variation — by re-dispatching
+  MoveTrainer2's own `n` shortcut on `document`, which is exactly the key every
+  other module here has to defend itself against, and which ignores focus for the
+  same reason it can be re-sent. Everything but Enter and Escape falls through to
+  the trainer while it is in that state. `advance()` also stamps a one-shot
+  *carry* that lets the next card take the keyboard back on a touch device.
+
+  The **page zoom** is the other mobile half. `html.clo-touch`'s 16px only
+  answers the "this text is too small to edit" trigger; a mobile browser scales
+  the page up around a focused field anyway whenever the layout viewport is wider
+  than the screen, which Chrome's "Desktop site" guarantees. So the page's own
+  `meta[name=viewport]` is pinned to `maximum-scale=1` while the field is being
+  typed into (armed on pointerdown as well as focus — iOS decides during the
+  focus) and restored verbatim on blur. Touch only; a page with no viewport meta
+  is left alone rather than given one.
 - **Selectors** — every Chessable selector (`#inputFEN`, `#nextMovesBit`,
   `.nextMovesTable`, `.nextMovesContainer`, `.chessboard-63f37`) is
   centralized in the `SELECTORS` object at the top of `lichessable.js`.

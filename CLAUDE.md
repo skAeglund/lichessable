@@ -57,7 +57,9 @@ user's own courses already plays (section 6c) — nominate a repertoire in the
 panel's cogwheel menu and every host of the panel marks what is prepared.
 A live quiz can also be answered BY TYPING (section 22): an opt-in field on the
 trainer row plays what you write on Chessable's own board, on sight, with no
-Enter for anything but O-O.
+Enter for anything but O-O — and, once the variation is over, Enter on the same
+field asks for the next one, so a whole session can be played without letting go
+of the keyboard.
 Currently working (v0.18.x).
 
 ## Structure
@@ -2166,16 +2168,65 @@ Currently working (v0.18.x).
   was written down — four of the first FENs were wrong, not the code.
   FOCUS is taken by itself when a quiz is asking for the user's move and nothing
   else holds it, so a move needs no click first — but NEVER on a touch device
-  (`wantsTouchUi()`): a phone would throw its on-screen keyboard over half the
-  board unasked, and there the field waits to be tapped. `html.clo-touch` sizes
-  it at 16px, which is not a preference — anything smaller makes mobile Safari
-  and Chrome ZOOM THE PAGE IN on focus, mid-quiz, with the board already placed.
-  STANDS DOWN in the browse state (no card, and that board takes no moves at all
-  — section 18's founding ground truth) and while `continuationActive()` (our own
-  board covering theirs: a clickable-line quiz, a drill, the analysis board, all
-  of which have their own input). Commits are refused while `autoPlayReplaying()`
-  — two move sources pressing squares at once is not something MoveTrainer2 has
-  to cope with — with the reason in the status line.
+  (`wantsTouchUi()`), with the ONE exemption below: a phone would otherwise throw
+  its on-screen keyboard over half the board unasked.
+  THE PAGE MUST NOT ZOOM (v0.65.1). `html.clo-touch`'s 16px was only half the
+  cure — it answers the "this text is too small to edit" trigger, and mobile
+  Chrome and Safari scale the WHOLE PAGE up around a focused field ANYWAY
+  whenever the layout viewport is wider than the screen (Chrome's "Desktop site",
+  which section 6's touch latch exists because of, guarantees exactly that). The
+  board then goes off screen mid-quiz. So `lockViewport()` rewrites the PAGE'S
+  OWN `meta[name=viewport]` to `maximum-scale=1` for as long as the field is
+  being typed into and `unlockViewport()` restores the original string verbatim,
+  so pinch-zoom is the user's again the moment they are done. Armed on
+  POINTERDOWN as well as on focus — iOS decides the zoom as part of the focus and
+  a meta written from the focus handler can be one beat late — and released on
+  blur, on `hide()` and on pagehide. Touch only, and a page with NO viewport meta
+  is left alone: adding one would relayout the whole site. Existing
+  `maximum-scale`/`minimum-scale`/`user-scalable` tokens are STRIPPED rather than
+  appended to (a duplicated key is not reliably last-one-wins across engines);
+  `user-scalable=no` is deliberately not sent — Chrome ignores it and it is an
+  accessibility anti-pattern.
+  IT NO LONGER STANDS DOWN IN THE BROWSE STATE (v0.65.1) — it changes JOB. The
+  old stand-down was right about the facts (no card, and that board takes no
+  moves at all, section 18's founding ground truth) and wrong about the cost:
+  hiding the field CLOSES A PHONE'S KEYBOARD, so every variation cost a tap on
+  the field before the first move could be typed, which is most of the feature.
+  So `setBrowse(true)` keeps the field, empty and inert, and gives it exactly one
+  key: ENTER ASKS FOR THE NEXT VARIATION. There is no control of ours to press
+  and no selector of Chessable's for one, so `advance()` sends the trainer its
+  OWN shortcut — `CONFIG.textMove.advanceKey` ('n'), re-dispatched as
+  keydown/keypress/keyup on `document`, which is where MoveTrainer2 binds it and
+  why it ignores focus in the first place. Our field swallows the real keys, so
+  the dispatch cannot loop back in. Rate-limited by `advanceMs` against a double
+  Enter. NEEDS A LIVE VERIFICATION that a synthetic key event is accepted there;
+  every other synthetic input in this extension is pointer/mouse.
+  IN THAT STATE THE KEY SWALLOW INVERTS: everything but Enter and Escape falls
+  THROUGH to the trainer. The field takes no moves there (`onType` clears what is
+  typed), so swallowing "n", space and the arrows would cost the user Chessable's
+  own browsing shortcuts for the whole post-completion state and buy nothing.
+  `setBrowse` only ever acts on a CHANGE — it is called every tick and rewriting
+  the value would eat a half-typed move.
+  THE KEYBOARD SURVIVES THE VARIATION CHANGE, which is the touch exemption:
+  `advance()` stamps `tm.carryAt`, and `maybeFocus` honours a carry younger than
+  `carryFocusMs` even on a phone. That is the one case where a keyboard is not an
+  ambush — it was already up, and the user pressed Enter with it. It is a
+  ONE-SHOT: spent when it focuses, and spent by `tick`'s LIVE branch as soon as a
+  live card holds the field (never by the browse branch, where a field that loses
+  focus mid-transition must still get it back). After that a blur is the user
+  tapping something else, and taking focus back would be the ambush.
+  The browse hint is shown ONLY while the field holds the keyboard: measured in
+  the harness it costs the browse row 26px (38 → 64) and the Lichess panel
+  anchors below the widget, so a line standing there for the whole browse state
+  would move the panel for a key nobody can press without focusing first. At
+  473px (the ground-truthed browse row width) and above the FIELD itself adds no
+  height at all; only at ~380px does it force a wrap.
+  Still stands down entirely while `continuationActive()` (our own board covering
+  theirs: a clickable-line quiz, a drill, the analysis board, all of which have
+  their own input, and whose key swallow is in CAPTURE phase). Commits are
+  refused while `autoPlayReplaying()` — two move sources pressing squares at once
+  is not something MoveTrainer2 has to cope with — with the reason in the status
+  line.
 - Repertoire coverage (section 21, v0.46.5; ground truth and every endpoint in
   DESIGN-repertoire-coverage.md; read, ranking, add and duplicate-removal all
   verified live 2026-07-29): answers "which of this

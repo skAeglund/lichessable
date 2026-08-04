@@ -382,6 +382,19 @@
       // still animating the move it was given.
       busyMs: 400,
       injectClassMs: 150,   // `clo-injecting` lifetime, as auto-play's injection
+      // The browse state's Enter: MoveTrainer2's own single-key shortcut for
+      // "next variation", re-dispatched on `document`. There is no button of
+      // ours to press and no selector of Chessable's for one — but this key is
+      // bound on `document` and ignores focus, which is precisely what every
+      // other module in this file has to defend itself against, and precisely
+      // what makes it re-dispatchable.
+      advanceKey: 'n',
+      advanceMs: 700,       // …and how long one such press refuses a second
+      // A field that was being typed in when the variation was advanced takes
+      // the keyboard back on the next card, touch device or not (that is the
+      // ONE case where a phone keyboard is not an ambush — it is already up).
+      // Bounded so a stale flag cannot grab focus minutes later.
+      carryFocusMs: 15000,
     },
 
     // --- Touch-sized UI (section 6, applyTouchUiClass) ----------------------
@@ -17279,6 +17292,9 @@
     const C = CONFIG.textMove;
     const TM_ID = 'lichessable-textmove';
     const UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
+    const TM_TITLE = 'Type the move in algebraic notation (Nc3, exd5, O-O) or as two squares ' +
+      '(e2e4). It is played as soon as it can only mean one legal move. When the variation ' +
+      'is over, Enter goes to the next one.';
 
     const tm = {
       enabled: false,   // cloTextMove; opt-IN, so only an explicit true shows it
@@ -17290,9 +17306,61 @@
       reading: false,   // a lesson-plan read is in flight
       dismissed: false, // Escape: stop taking focus until the position moves on
       playing: false,   // a pair of presses is in flight
+      browse: false,    // the variation is over: the field is an Enter, not a move
+      carryAt: 0,       // …and Enter was pressed at: take the keyboard back
+      advanceAt: 0,     // last "next variation" press, for the double-Enter guard
+      vpMeta: null,     // the page's viewport meta while we have it pinned
+      vpPrev: null,     // …and its own content string, restored verbatim
       busyTimer: 0,
       classTimer: 0,
     };
+
+    // --- keeping the page where it is on a phone -----------------------------
+    //
+    // Mobile Chrome and Safari scale the WHOLE PAGE up around a focused text
+    // field, and here that field is focused in the middle of a quiz with the
+    // board already placed: the board goes off screen and the user is looking
+    // at nothing but their own input. The 16px type under `html.clo-touch` is
+    // the half of the cure that stops the "this text is too small to edit"
+    // trigger; this is the other half, for the zoom the browser does anyway
+    // because the page's layout viewport is wider than the screen.
+    //
+    // The cure is the page's OWN viewport meta, pinned to scale 1 for exactly
+    // as long as the field is being typed into and restored byte for byte
+    // afterwards — so pinch-zoom is the user's again the moment they are done.
+    // Only ever on a touch device: no desktop browser does this, and a page's
+    // viewport is not something to rewrite for nothing.
+    //
+    // Armed on POINTERDOWN as well as focus, because iOS decides on the zoom as
+    // part of the focus itself and a meta written from the focus handler can be
+    // one beat too late. A page with no viewport meta at all is left alone —
+    // adding one would relayout the whole site.
+
+    function lockViewport() {
+      if (tm.vpMeta || !wantsTouchUi()) return;
+      const meta = document.querySelector('meta[name="viewport"]');
+      if (!meta) return;
+      const prev = meta.getAttribute('content') || '';
+      tm.vpMeta = meta;
+      tm.vpPrev = prev;
+      // Drop whatever the page said about scale and say scale 1 instead; a
+      // duplicated key is not reliably "last one wins" across engines.
+      const kept = prev.split(',')
+        .map((s) => s.trim())
+        .filter((s) => s && !/^(maximum-scale|minimum-scale|user-scalable)\s*=/i.test(s));
+      kept.push('maximum-scale=1');
+      meta.setAttribute('content', kept.join(', '));
+    }
+
+    function unlockViewport() {
+      if (!tm.vpMeta) return;
+      // Only put back what we found. If the page rewrote the meta underneath us
+      // (Chessable does not, but a re-render is always possible), leaving its
+      // own value alone is safer than restoring a stale one.
+      if (tm.vpMeta.isConnected) tm.vpMeta.setAttribute('content', tm.vpPrev);
+      tm.vpMeta = null;
+      tm.vpPrev = null;
+    }
 
     // --- reading the position ------------------------------------------------
 
@@ -17505,6 +17573,70 @@
       tm.busyTimer = setTimeout(() => { tm.playing = false; }, C.busyMs);
     }
 
+    // --- the browse state: one key, and it is not a move ---------------------
+    //
+    // A completed variation has no card to answer and Chessable's post-completion
+    // board takes no moves at all (the ground truth section 18 is built on) — so
+    // the field used to go away here. It comes back, empty and inert, for one
+    // reason: on a phone, hiding it CLOSES THE KEYBOARD, and every variation
+    // then costs a tap on the field before the first move can be typed. Keeping
+    // it means the whole session can be played from the keyboard, which is the
+    // point of the feature.
+    //
+    // What Enter does here is ask the trainer for the next variation. There is
+    // no control of ours to press and no selector of Chessable's for one, so the
+    // trainer is sent its OWN shortcut (CONFIG.textMove.advanceKey), bound on
+    // `document` and indifferent to focus. Our field swallows the real keys in
+    // bubble phase, so this dispatch cannot loop back into us.
+
+    function advance() {
+      const now = Date.now();
+      if (now - tm.advanceAt < C.advanceMs) return;
+      tm.advanceAt = now;
+      tm.carryAt = now;      // the user is typing: give the keyboard back after
+      const key = C.advanceKey;
+      const upper = key.toUpperCase();
+      const base = {
+        key,
+        code: 'Key' + upper,
+        keyCode: upper.charCodeAt(0),
+        which: upper.charCodeAt(0),
+        bubbles: true,
+        cancelable: true,
+      };
+      log('type-a-move: next variation (' + key + ')');
+      document.dispatchEvent(new KeyboardEvent('keydown', base));
+      document.dispatchEvent(new KeyboardEvent('keypress', base,
+        { charCode: key.charCodeAt(0), which: key.charCodeAt(0) }));
+      document.dispatchEvent(new KeyboardEvent('keyup', base));
+      setHint('Next variation…');
+    }
+
+    /**
+     * Flip between the two things the field is. Only ever acts on a CHANGE —
+     * called every tick, and rewriting the value each time would eat whatever
+     * is half-typed.
+     */
+    function setBrowse(on) {
+      if (tm.browse === on) return;
+      tm.browse = on;
+      if (!tm.ui) return;
+      tm.ui.input.value = '';
+      tm.ui.input.classList.remove('clo-tm-input--bad');
+      tm.ui.input.placeholder = on ? 'Enter' : 'Move…';
+      tm.ui.input.title = on
+        ? 'Enter goes to the next variation.'
+        : TM_TITLE;
+      if (on) {
+        // A move typed for the position the variation ended on is meaningless
+        // now, and nothing here may be committed.
+        tm.pos = null;
+        tm.posFen = '';
+        tm.dismissed = false;
+      }
+      setHint('');
+    }
+
     // --- UI: a group on the overstudy widget ---------------------------------
 
     function setHint(text) {
@@ -17515,6 +17647,12 @@
     }
 
     function onType() {
+      if (tm.browse) {
+        // Nothing typed here means anything — the only key with a job is Enter.
+        tm.ui.input.value = '';
+        setHint('Enter goes to the next variation');
+        return;
+      }
       const res = resolve(tm.ui.input.value);
       tm.ui.input.classList.toggle('clo-tm-input--bad',
         res.state === 'invalid' || res.state === 'ambiguous');
@@ -17545,9 +17683,8 @@
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'clo-tm-input';
-      input.placeholder = 'Move…';
-      input.title = 'Type the move in algebraic notation (Nc3, exd5, O-O) or as two squares ' +
-        '(e2e4). It is played as soon as it can only mean one legal move.';
+      input.placeholder = tm.browse ? 'Enter' : 'Move…';
+      input.title = TM_TITLE;
       input.autocomplete = 'off';
       input.spellcheck = false;
       // Without these a phone keyboard "helpfully" sends "E4" and "Nc3." — the
@@ -17562,8 +17699,18 @@
       // typing a move would otherwise drive the trainer. Bubble phase is enough
       // (the quick-edit popup has done exactly this since v0.28.0); the default
       // action still inserts the character.
+      //
+      // IN THE BROWSE STATE IT LETS THEM THROUGH — everything but its own two
+      // keys. The field takes no moves there (onType clears whatever is typed),
+      // so swallowing "n", space and the arrows would cost the user Chessable's
+      // own browsing shortcuts for the whole post-completion state and buy
+      // nothing. Enter and Escape stay ours: those are the two this field
+      // answers, and Enter is the one it answers with the trainer's own key.
       for (const type of ['keydown', 'keypress', 'keyup']) {
-        input.addEventListener(type, (e) => e.stopPropagation());
+        input.addEventListener(type, (e) => {
+          if (tm.browse && e.key !== 'Enter' && e.key !== 'Escape') return;
+          e.stopPropagation();
+        });
       }
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
@@ -17578,6 +17725,9 @@
         }
         if (e.key !== 'Enter') return;
         e.preventDefault(); // no form here, but a stray submit is not worth risking
+        // The variation is over: Enter is how you get on with the session
+        // without reaching for the mouse (or, on a phone, for the board).
+        if (tm.browse) { advance(); return; }
         const res = resolve(input.value);
         // onType has already said what is wrong with the TEXT; the only thing
         // Enter adds is why an otherwise fine move is not being accepted.
@@ -17586,7 +17736,10 @@
       });
       input.addEventListener('input', onType);
       // Clicking the field is a request for it, whatever Escape said earlier.
-      input.addEventListener('focus', () => { tm.dismissed = false; });
+      input.addEventListener('focus', () => { tm.dismissed = false; lockViewport(); });
+      // Before the focus, not after it — see lockViewport.
+      input.addEventListener('pointerdown', lockViewport);
+      input.addEventListener('blur', unlockViewport);
 
       root.appendChild(input);
       widget.appendChild(root);
@@ -17611,16 +17764,31 @@
      * an Escape (until the position moves on), a touch device (a phone would
      * throw its on-screen keyboard over half the board unasked), and anything
      * else already holding focus, which the user put there on purpose.
+     *
+     * THE TOUCH RULE HAS ONE EXEMPTION, and it is the whole of "the keyboard
+     * should not go away between variations": a user who pressed Enter to
+     * advance was typing in this field a moment ago, with the keyboard already
+     * up, so taking it back on the next card ambushes nobody. It is a one-shot
+     * (`tm.carryAt`, cleared here) with a deadline, so it can never fire later
+     * in the session on its own.
      */
     function maybeFocus() {
-      if (tm.dismissed || document.hidden || wantsTouchUi()) return;
+      if (tm.dismissed || document.hidden) return;
       const active = document.activeElement;
+      // Already ours: nothing to do, and the carry is NOT spent here — it is
+      // spent when a live card has the focus (tick), so a field that loses it
+      // again mid-transition still gets it back.
       if (active === tm.ui.input) return;
       if (active && active !== document.body && active !== document.documentElement) return;
+      const carry = tm.carryAt && (Date.now() - tm.carryAt) < C.carryFocusMs;
+      if (wantsTouchUi() && !carry) return;
+      tm.carryAt = 0;
+      if (wantsTouchUi()) lockViewport();  // ahead of the focus, as on a tap
       tm.ui.input.focus({ preventScroll: true });
     }
 
     function hide() {
+      unlockViewport();
       if (!tm.ui) return;
       if (document.activeElement === tm.ui.input) tm.ui.input.blur();
       tm.ui.input.value = '';
@@ -17632,26 +17800,54 @@
       tm.oid = null;
       tm.playing = false;
       tm.dismissed = false;
+      tm.browse = false;
+      tm.carryAt = 0;
     }
 
     function tick() {
-      // The browse state is deliberately out of scope: there is no card to
-      // answer, and Chessable's post-completion board accepts no moves at all
-      // (the ground truth section 18 is built on). Our own board covering
-      // theirs — a clickable-line quiz, a drill, the analysis board — is the
-      // other stand-down: that one has its own input.
-      if (!tm.enabled || !isTrainerPath() || reviewBrowseReady() ||
+      // Our own board covering theirs — a clickable-line quiz, a drill, the
+      // analysis board — is the stand-down: that one has its own input, and its
+      // key swallow is in CAPTURE phase, so a field of ours underneath would be
+      // fighting it for every keystroke.
+      if (!tm.enabled || !isTrainerPath() ||
           (continuationActive && continuationActive())) {
         hide();
         return;
       }
       ensureUi();
       if (!tm.ui) return;
+      // Self-healing, and the only thing that catches a lock left behind: a
+      // React re-render takes the focused input away with it, and a removed
+      // element's blur never fires. The page's zoom is not ours to keep.
+      if (tm.vpMeta && document.activeElement !== tm.ui.input) unlockViewport();
+
+      // The variation is over. The field stays — see setBrowse — but it is an
+      // Enter and nothing else, so none of the position machinery runs.
+      if (reviewBrowseReady()) {
+        setBrowse(true);
+        tm.ui.input.hidden = false;
+        maybeFocus();
+        // Only while the field actually holds the keyboard. Measured in the
+        // harness: this one line costs the browse row 26px (38 → 64) and the
+        // Lichess panel anchors below the widget, so a hint standing there for
+        // the whole browse state would move the panel down for a key nobody
+        // can press without focusing the field first. The placeholder says
+        // "Enter" either way.
+        setHint(document.activeElement === tm.ui.input
+          ? 'Enter goes to the next variation' : '');
+        return;
+      }
+
+      setBrowse(false);
       syncUserColor();
       refreshPosition();
       const live = Boolean(tm.pos && tm.userColor);
       tm.ui.input.hidden = !live;
       if (!live) { setHint(''); return; }
+      // The carry is spent the moment a live card has the keyboard: from here
+      // on, a field that loses focus lost it because the user tapped something
+      // else, and taking it back would be the ambush the touch rule forbids.
+      if (document.activeElement === tm.ui.input) tm.carryAt = 0;
       if (usable()) maybeFocus();
     }
 

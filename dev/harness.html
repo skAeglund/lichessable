@@ -627,7 +627,7 @@ body {
         <div class="clo-review hx-pos">
           <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
           <span class="clo-review-grp clo-tm">
-            <input type="text" class="clo-tm-input" placeholder="Move…" hidden>
+            <input type="text" class="clo-tm-input" placeholder="Enter">
           </span>
           <span class="clo-review-grp clo-mx">
             <button type="button" class="clo-mx-btn">Mistakes (3)</button>
@@ -636,10 +636,23 @@ body {
           <span class="clo-review-grp clo-os">
             <button type="button" class="clo-review-btn">Overstudy</button>
           </span>
+          <div class="clo-review-status">
+            <span class="clo-tm-status">⌨ Enter goes to the next variation</span>
+          </div>
         </div>
-        <p class="hx-note" style="margin:0 10px">Browse state: no card to answer, so the field
-          hides itself — and the group goes with it, separator and all, without the module
-          telling the row anything.</p>
+        <p class="hx-note" style="margin:0 10px">Browse state (v0.65.1): the field STAYS, empty and
+          inert, because hiding it closes a phone's keyboard and every variation would then cost a
+          tap before the first move could be typed. It takes no moves here — Chessable's
+          post-completion board accepts none — so the one key it answers is Enter, which asks the
+          trainer for the next variation. Everything else falls through to MoveTrainer's own
+          shortcuts.</p>
+        <p class="hx-note" style="margin:0 10px">It is NOT the row primary: Retry still is. A text
+          field cannot be, and a field that never claims to be the thing to press is exactly why
+          it can sit here through both states without competing.</p>
+        <p class="hx-note" style="margin:0 10px">The status line shows ONLY while the field holds
+          the keyboard — measured here, it costs the browse row 26px (38 → 64), and the Lichess
+          panel anchors below this widget. Remove the <code>.clo-tm-status</code> above to see the
+          unfocused browse row.</p>
       </div>
     </div>
 
