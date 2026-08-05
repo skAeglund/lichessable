@@ -103,6 +103,27 @@
   }
 
   /**
+   * Is the user opted in to ALTERNATIVE MOVES for this course and colour?
+   * `"1"` / `"0"`, or null when the settings blob cannot be read.
+   *
+   * Ground-truthed 2026-08-05 (course 453453, variation 71087636): Chessable
+   * keeps this in the trainer context as `simpleSettingsApiData`, one key per
+   * course per colour, and it is what decides whether the accepted alternatives
+   * are shipped to the client AT ALL — with it "0", `getLesson` still carries
+   * `alt_black: "[\"d5\"]"` but the trainer's own `lessonPlan` and `lessonData`
+   * have no alt field of any kind. Section 23 reads it so it can say which of
+   * the two situations a variation with no alternatives on screen is in.
+   */
+  function readAltSetting(ctx, bid, studyColor) {
+    try {
+      const s = ctx.simpleSettingsApiData;
+      if (!s || !bid || !studyColor) return null;
+      const v = s['eq_' + bid + '_' + (studyColor === 'white' ? 'white' : 'black') + '_alternative'];
+      return typeof v === 'string' ? v : null;
+    } catch (err) { return null; }
+  }
+
+  /**
    * The current variation's line, or an { error } object. Only the fields the
    * two consumers need are copied out — never the whole context, which holds
    * far more of the user's progress data than either of them has any use for.
@@ -181,6 +202,13 @@
       // all and a clock built on it simply stops. Optional, like everything
       // else added for one consumer.
       fen: typeof ctx.fen === 'string' ? ctx.fen : null,
+      // --- show-and-grade extras (section 23). `bid` is what its getLesson
+      // lookup needs and the plan carries it exactly; the setting is what says
+      // whether an empty answer means "no alternatives here" or "you have them
+      // switched off". Both OPTIONAL.
+      bid: plan[0].bid != null ? String(plan[0].bid) : null,
+      altSetting: readAltSetting(ctx, plan[0].bid,
+        typeof ctx.studyColor === 'string' ? ctx.studyColor : null),
     };
   }
 

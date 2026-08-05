@@ -255,6 +255,21 @@ still just advances. Either way it is two presses a card, and neither of them is
 spent on anything you cannot see. Once the variation is over, **`2`** asks for
 the next one.
 
+**`3` — or the space bar — asks whether the move you were thinking of also
+counts.** Sometimes the
+move shown is not the one you had in mind and the course accepts both — grading
+that as a failure is simply wrong. Press it once the move is on screen and every
+alternative the course accepts here is drawn on the board as a blue arrow and
+listed by name, so you can grade yourself honestly. It changes no grade by
+itself, and it is deliberately not available *before* the move is shown — a set
+of arrows over the accepted moves would be the answer.
+
+One thing it will tell you that you may not expect: if **alternative moves are
+switched off** for that course and colour in your Chessable settings, it says so
+instead of claiming the move is accepted. That switch is what decides whether
+Chessable sends the alternatives to the trainer at all — with it off, even
+alternatives *you added yourself* are still marked wrong in review.
+
 **Auto-play** has its own **Auto** toggle beside the Stop button, on while the
 mode runs, and it is entirely separate from the ordinary auto-play setting —
 turning one on does not turn the other on. With it on, any card you have already
@@ -289,11 +304,22 @@ beat before each move appears; *Animation* is how long a piece takes to slide.
 Both apply to auto-played cards and to your own, and the pace is floored at the
 animation so the two can never be set against each other into one blurred move.
 
+The pace no longer decides whether auto-play *works*, which on a phone it did
+until v0.78.1. Chessable swallows a press that lands while its own board is still
+animating, and nothing here checks afterwards whether a press was taken — so the
+first card of a variation would silently not be played, you would press a key to
+get things moving, and that press hands the rest of the variation to you. The
+effect was that no move was ever auto-played at all, unless you happened to be on
+the slowest pace, whose beat was long enough to clear the animation by accident.
+The first press of each variation now waits out the trainer's own opening moves
+before it goes; every later press is unchanged.
+
 The **arrow on the move means "your turn to grade"**, not "this is the move" —
 the piece and its two highlighted squares already said that. So it appears on
 cards you are answering and stays away during auto-play, where the card grades
-itself a moment later and there is nothing waiting on you. It is drawn in the
-same amber as the ring, which is this mode's colour for *waiting for you*.
+itself a moment later and there is nothing waiting on you. It is green; an amber
+one was tried and blends into Chessable's own board image, so the ring keeps the
+amber and the arrow does not.
 
 One smaller thing while the mode runs: **Chessable's per-move clock is hidden**.
 It has nothing

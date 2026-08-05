@@ -259,12 +259,18 @@ than the phase, because an auto card sits in exactly the same `'shown'` phase a
 manual one does; `autoReveal` sets that flag *before* calling `reveal`, so the
 first paint already knows.
 
-Its colour is the **ring's amber**, read off `--clo-attention` rather than
-repeated in JS: one colour, one idea. It was the quiz board's green until
-v0.77.0, which on Chessable's own green board image has the same lack of edge
-that made the 2px green ring unreadable. The four `SHAPE_COLOR_HEX` values are
-*Chessable's* annotation colours and mean other things on a board the user also
-annotates, so they are only the fallback.
+Its colour was to be the **ring's amber**, read off `--clo-attention`: one
+colour, one idea, on the theory that green vanished against Chessable's own
+green board image.
+
+**That theory got tested by accident and lost** (v0.80.1). `paintShape` was
+silently dropping the resolved custom property, so from v0.77.0 to v0.80.0 the
+arrow rendered the stylesheet's green regardless of what the code said. When the
+fix finally made it amber, the verdict was immediate: the amber blends into the
+board — the very complaint green was supposed to have. So it goes back to green,
+by passing no colour argument at all, and three releases of unwitting field
+testing beat the argument. **The ring stays amber**: it is not on the board
+image, and it is what says this board takes no input.
 
 **A 4px ring plus a 1px dark edge.** At 2px, against the board image it now
 wears, amber sat on a busy green border and read as part of the board. Thicker
@@ -292,6 +298,80 @@ cut off mid-flight. And `advanceMs()` is floored at the glide, because the two
 settings are independent: a brisk pace with a slow animation would play the reply
 while your own move was still sliding, reading as one blurred movement rather
 than two moves.
+
+### The settle floor (v0.78.0) — reported from a phone
+
+**"Auto-play doesn't work at all — not a single move is auto-played."** Then, a
+minute later: switching the pace to *Relaxed* made it work. That second sentence
+is the whole diagnosis, because Relaxed (700 ms) is the one pace whose `reveal`
+beat clears ~450 ms on its own — and ~450 ms is section 13's own measured figure
+for how long a single animated trainer move owns the board. Its `settle` values
+(500/700/900) exist for exactly this and are documented as "keep it above
+~450 ms: a lower floor could let an injection land mid-burst".
+
+The mechanism, end to end:
+
+1. Card 0 of a variation. The trainer has just set the board up and auto-played
+   its own opening plies; the lesson plan reports the card as current *while the
+   board is still animating* (the plan swaps ~90 ms before a move animates).
+2. The chase serves the card at once, and `reveal` ms later — 150 / 260 / 420 /
+   700 by pace — auto-play presses.
+3. A press landing inside Chessable's animation is **swallowed**. This mode
+   deliberately verifies nothing afterwards: a refused move leaves the position
+   exactly as it was, so a board diff cannot tell a swallowed press from a wrong
+   answer.
+4. The trainer never moves on, `awaitingFen` never clears, our board is a card
+   ahead, and the user presses a key to get things going.
+5. `handedOver` — auto-play only ever replays a variation's *opening* run, so
+   that one press costs it the rest of the variation.
+
+One swallowed press per variation is therefore literally "not a single move".
+
+**It was v0.74.0's doing, and invisible in the change that caused it.** Auto-play
+used to pause the clock like every other card, so `resumeAndSettle` bought every
+press 400 ms. Dropping that pause was right — 410 ms of measured dead time — and
+dropped the accidental floor with it, leaving `reveal` as the entire wait. A
+desktop absorbed the difference; a phone did not.
+
+`settleBoard()` puts the floor back explicitly, in `pressCourseMove` (the one
+place this mode writes to the session, so the manual path gets it too) and
+*after* `resumeAndSettle`: the two answer different questions — is the board live
+at all, versus has it stopped moving.
+
+### …and the first attempt at it was worse than the bug (v0.78.1)
+
+v0.78.0 shipped this floor as a **loop waiting for the board to go quiet**, keyed
+on the last board *mutation*. Reported the same evening: "now it actually stopped
+working completely, even with relaxed". It had.
+
+A quiet-loop never finishes on a live board. The per-move clock is *running*
+during an auto-played card — `maintainPause` skips pausing those deliberately —
+so its bar, plus React reconciling the board subtree, re-armed the floor
+indefinitely. Every press then paid the full 1500 ms cap on top of the 400 ms
+resume; further key presses were swallowed by the `'acting'` phase while it
+waited; and that per-move clock is short enough that cards began recording
+`timeUp`, which grades them **wrong**. A fix for "the first press of a variation
+is swallowed" had turned into "every press is late and some are marked failed".
+
+The correction is to stop inventing and copy section 13, which works on the same
+device, on all three counts:
+
+1. **One delay, computed once**, never a loop. At most `pressFloorMs`.
+2. **The last observed *move*** (`vs.lastMoveAt`, stamped from the mutation
+   itself via `frameTime`), never `ap.mutationAt`. A mutation is any render; a
+   move is a move.
+3. **The first press of a variation only** (`sg.actedOnce`, reset on the
+   variation change) — section 13's own condition, "nothing observed yet this
+   variation, or the trainer drove the last user-colour move", and the only
+   place the race is. Mid-variation our press follows the opponent's reply,
+   chess gives the trainer no second move to race us with, and section 13 has
+   always injected there with no floor at all.
+
+So the cost is bounded by `pressFloorMs` **once per variation**, every unknown —
+no tracker, a throw, a stale stamp — resolves to *not* waiting, and setting
+`pressFloorMs` to 0 disables it outright. The lesson is the ordinary one: the
+mechanism that already survives this device was sitting right there, and the
+part I changed about it is the part that broke.
 
 ### Wearing Chessable's own board
 
@@ -408,7 +488,114 @@ is not a trainer session and the row's Show & grade button does not apply to it.
 | Entering the mode | A button on the trainer row; one tap at the start. |
 | Our mistake log | Rendered "not known" — `wrongLabel` learned the word. |
 | Blindfold-ready | Yes — `announce()` + `CONFIG.showGrade.showBoard`. |
-| Keys | `2` / `4`. Media keys deferred until a real ring is captured. |
+| Keys | `2` / `4`, plus `3` **or space** for the alternatives (v0.79.0, §2e). `1` earmarked for `repeat` (TTS). Media keys deferred until a real ring is captured. |
+
+## 2e. "Was my move also right?" — the alternatives key (v0.79.0)
+
+The move shown is not always the move you had in mind, and the course often
+accepts both. Grading that as a failure is simply wrong, so `3` — **or the space
+bar** — pressed once the move is on screen, draws every accepted alternative on
+the board and names it.
+
+**Space is the ring's key, not a convenience.** The first hardware this mode has
+been driven from sends `1`, `2`, `4` and `" "`, and which button is which is
+decided by where they sit on the ring. Taking space is safe only because of where
+these listeners already are — capture phase on `document`, with `preventDefault`
+and `stopPropagation` on all three event types before anything else sees them —
+so while the mode runs it cannot scroll the page, re-fire a focused button, or
+reach MoveTrainer2's own shortcuts. Outside the mode it is not bound at all.
+`1` is **earmarked** for `repeat`, the TTS "say that again"; nothing else may
+take it.
+
+That also forced `keyName` to grow a label map. `KeyboardEvent.key` is the right
+thing to match on and the wrong thing to print: a space's name is invisible,
+which in a panel whose entire job is to say which key does what would be the
+message lost.
+
+**What it is not.** It is not the wrong-move injection §4 removed. Nothing is
+played on Chessable to find out whether it would be accepted; the set is *read*,
+and the move the grade presses is still the course's own.
+
+### Where they actually live (ground truth, 2026-08-05)
+
+v0.79.0 assumed the accepted set was in page state, on the reasoning that
+MoveTrainer2 accepts an alternative with no network request so it must already
+know them. The reasoning was fine and the conclusion was wrong — it reported
+"no alternatives" on a variation with seven. Measured on course 453453,
+variation 71087636, whose alternatives were first confirmed to exist by reading
+the edit page's own `allTheMoves`:
+
+| source | carries alternatives? |
+|---|---|
+| `ctx.lessonPlan` (what pagestate.js reads) | **no alt field of any kind** |
+| `ctx.lessonData.moves` | **no alt field of any kind** |
+| `/api/v1/getLesson` (what the plan is built *from*) | **yes** — `alt_black: "[\"d5\"]"` |
+| edit page `allTheMoves` | yes — `alt_black: ["d5"]` (already parsed) |
+
+So the trainer *strips* them building its plan, and it is a fetch or nothing.
+
+`getLesson?uid&oid&bid` returns `lesson.moves[]`, **one entry per full move**
+keyed by `mid`, with `move_white`/`move_black` (the SAN) and `alt_white`/
+`alt_black`. Our plies carry `mid` and `color`, so the join is exact and never
+matches on SAN.
+
+**The alt value is a JSON-encoded string** — `"[\"d5\"]"`, `null` for none — not
+an array. That is why a correct field name alone would still have read as empty,
+and `parseAltField` accepts either shape.
+
+One fetch per variation, started when the plan lands so the key is instant, and
+cached per oid so a retry pass does not pay twice. Fails soft everywhere;
+"could not read them" stays a different sentence from "there are none".
+
+### The setting is part of the answer
+
+`simpleSettingsApiData` holds `eq_<bid>_<white|black>_alternative`, and on the
+test course it was `"0"` for Black — the colour being studied. With it off,
+Chessable never ships the accepted set to the trainer at all, which is both why
+the plan is empty and why one of the user's *own added* alternatives would still
+be marked wrong in review.
+
+pagestate's `readAltSetting` reads it (no fetch — it is already in the context)
+and the wording follows: **"Also accepted: d5"** when on, **"Course lists: d5
+(alternatives are off for this course)"** when off. Two measured facts, with no
+claim about what the trainer would do with a move it has never been told about.
+
+### A colour argument must be a key or a CSS value
+
+`paintShape` (§11c) took only Chessable's four colour **keys**; anything else was
+dropped silently and the shape fell back to the stylesheet's green — exactly the
+colour the caller passed an argument to avoid. Two consequences, both measured:
+these alternative arrows came out green, and, older and quieter, **v0.77.0's
+amber "your turn to grade" arrow had been rendering `rgb(21,120,27)` since the
+day it shipped**, because `arrowHex()` returns a resolved custom property and not
+a key. Fixed to accept either; verified live that the two arrows now render
+`rgb(217,169,66)` and `rgb(26,99,201)`.
+
+### Rules
+
+* **After the reveal, never before.** At the think stage a set of arrows over
+  the accepted moves is the quiz handed over.
+* **It grades nothing, and does not clear a verdict already given.** Clearing
+  `markedUnknown` would make the very next `next` press — which after a
+  think-stage "wrong" means only *advance* — silently grade the card correct.
+  A false proof is worse than the wrinkle it fixes (auto-play reads the same
+  record), and the natural order asks first anyway.
+* **Blue arrows.** Not green: green is what the main arrow *stopped* being in
+  v0.77.0 because it vanished against Chessable's own board image. Not amber:
+  that means "waiting for you to grade".
+* **The SAN list is not decoration.** The arrows are drawn on the board as it
+  stands *after* the course move, so where an alternative moves the same piece
+  (Nf3 against Ne2) its source square is now empty. The list is what reads then
+  — and it is the whole output under `showBoard: false`, since everything goes
+  through `announce`.
+* **An unresolvable SAN is still listed.** "Chessable says Bc4, we cannot draw
+  it" beats silence.
+
+Move numbers and eval glyphs are stripped for the resolve and kept for the
+display — §21's `getList` carries numbers, the edit page's arrays do not, and one
+regex covers both. Spot-checked against the real generator before writing any of
+this down: `3. e4`→e2e4, `d4!`→d2d4, `O-O`→e1g1, `exf6`→e5f6 (en passant),
+`a8=Q`→a7a8q, garbage→unresolved.
 
 ## 4. GROUND TRUTH (live, 2026-08-04)
 
@@ -656,7 +843,25 @@ states where a real control exists.
    a judgement nobody has made in a real study session.
 4. **`settleMs` / `stepMs`** — still guesses. `settleMs` now only ever runs on
    the manual path, since auto-play no longer pauses.
+4a. **`pressFloorMs` (550) on the device that reported the bug.** The value is
+   argued from section 13's measured ~450 ms; it has not been measured on a
+   phone, and the original report's hedge — Relaxed (700 ms) "started working,
+   not sure if 100%" — hints that an animation there can outlast even that.
+   Wanted from a live phone session: the `holding the first press N ms — the
+   board changed M ms ago` line (is M plausible, i.e. is the tracker's clock
+   even live in this mode?), and whether card 0 of a variation is now replayed
+   on the *fast* pace. If it still is not, the next suspect is not the floor but
+   `cardIsProven` — `noteAutoSkip` names the reason in one line per card, and
+   "not answered correctly yet this session" would mean proofs are not being
+   recorded at all, which is a different bug in a different section.
 5. ~~**The browse-state advance.**~~ Done, v0.74.0 — see §11.
 6. **Section 22's `advance()`** — the synthetic-key finding in §4 suggests it may
    not work. Worth a direct test; it is a shipped feature and unrelated to this
    one.
+7. ~~**The alternatives key (§2e) — does the lesson plan carry them at all?**~~
+   Answered 2026-08-05: no, and the fetch that replaces it is verified end to
+   end — see §2e. What is still NOT observed: a move with **two** alternatives
+   drawing two arrows (the test card had one; confirming a second would have
+   meant grading a real review card, which the mapping does not justify — the
+   `mid`+colour join and the 7-on-6 count are both verified), and the wording
+   with the course setting **on**, which no course tested has.

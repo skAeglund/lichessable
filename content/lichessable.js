@@ -433,7 +433,26 @@
       keys: {
         next:   ['2'],   // reveal, then "I knew it", then "next variation"
         wrong:  ['4'],   // "I didn't know it"
-        repeat: [],      // reserved for TTS (section 23's blindfold seam)
+        // "Was the move I thought of also accepted?" — asked AFTER the move has
+        // been shown, never before: at the think stage a set of arrows would be
+        // a list of candidate answers, i.e. the quiz given away. It is the one
+        // press here that is optional, which is why it does not break the "two
+        // presses per card" rule: you only spend it when the answer surprised
+        // you, and it still shows moves.
+        //
+        // SPACE is the ring's fourth button (the first hardware this mode has
+        // been driven from sends "1", "2", "4" and " "), and it is safe to take
+        // BECAUSE of where these listeners are: capture phase on `document`,
+        // preventDefault + stopPropagation on all three event types before
+        // anything else sees them. So space cannot scroll the page, re-fire a
+        // focused button, or reach MoveTrainer2's own shortcuts while the mode
+        // is running — and outside the mode it is not bound at all.
+        alts:   ['3', ' '],
+        // Reserved for TTS (section 23's blindfold seam): "say that again",
+        // i.e. the previous move. '1' is EARMARKED for it — the ring's fourth
+        // output, and the button next to the others — so do not spend it on
+        // something else.
+        repeat: [],
       },
       // Set false for blindfold practice: the driver is unchanged, nothing is
       // drawn, and announce() is the only thing that speaks. Not yet a UI
@@ -445,6 +464,36 @@
       // state transitions.
       settleMs: 400,
       stepMs: 350,
+      // NEVER PRESS INTO A BOARD THE TRAINER IS STILL MOVING. This is section
+      // 13's settle floor, arrived at by the same route: a press landing inside
+      // Chessable's own move animation is SWALLOWED, and this mode verifies
+      // nothing afterwards (deliberately — a refused move leaves the position
+      // exactly as it was, so a board diff cannot tell a swallowed press from a
+      // wrong answer), so the trainer simply never moves on. The card then sits
+      // there, `awaitingFen` never clears, and the user takes the variation over
+      // — which under `handedOver` costs auto-play the WHOLE variation, since it
+      // only ever replays a variation's opening run.
+      //
+      // The exposure is card 0 of every variation, where the trainer has just
+      // set the board up and auto-played its own opening plies, and it was
+      // INVISIBLE until v0.74.0: auto-play used to pause the clock like every
+      // other card and `resumeAndSettle` therefore bought it 400ms before every
+      // press. Dropping that pause (rightly — it was 410ms of dead time) dropped
+      // the accidental floor with it, leaving `reveal` as the entire wait: 150 /
+      // 260 / 420 / 700ms by pace. Reported from a phone as "not a single move
+      // is auto-played", cured by switching to Relaxed — i.e. the one pace whose
+      // reveal beat clears ~450ms on its own, which is section 13's measured
+      // figure for how long one animated trainer move owns the board.
+      //
+      // Counted from the last MOVE section 13's tracker observed, and applied to
+      // the FIRST press of a variation only — section 13's own condition, and
+      // the only place the race is. So it is bounded by this value ONCE per
+      // variation and mid-variation presses are untouched.
+      //
+      // v0.78.0 shipped this as a loop waiting for the board to go QUIET and
+      // that was strictly worse than the bug: see settleBoard's own comment.
+      // Set to 0 to disable the floor outright.
+      pressFloorMs: 550,
       // The glide on OUR board, as a USER SETTING (v0.76.0). It drives two
       // things that must not drift apart: the CSS transition on our pieces
       // (written as `--clo-sg-anim` on the board element, so `.clo-cr-piece`'s
@@ -506,6 +555,26 @@
       actMaxMs: 8000,
       injectClassMs: 150, // `clo-injecting` lifetime, as auto-play's injection
       minBoardPx: 80,     // below this the trainer board is mid-render
+      // --- accepted alternatives (the `alts` key) ------------------------
+      //
+      // THE TRAINER'S OWN LESSON PLAN DOES NOT CARRY THEM. Ground-truthed
+      // 2026-08-05 on course 453453 / variation 71087636, which HAS six moves
+      // with alternatives: `lessonPlan` and `lessonData.moves` have no alt
+      // field of any kind — MoveTrainer2 strips them building its plan — while
+      // this endpoint, the one that plan is built FROM, carries them intact.
+      // So it is a fetch or nothing, which the user sanctioned ("even if it
+      // takes a couple of seconds").
+      //
+      // `?uid&oid&bid` → `{ lesson: { moves: [...] } }`, one entry per FULL
+      // MOVE keyed by `mid`, carrying `move_white`/`move_black` (the SAN) and
+      // `alt_white`/`alt_black`. Our plies carry `mid` and `color`, so the join
+      // is exact and needs no matching on SAN.
+      //
+      // THE ALT VALUE IS A JSON-ENCODED STRING, not an array: `"[\"d5\"]"`,
+      // `null` when there are none. That is measured, not assumed, and it is
+      // why a correct field name alone would still have read as empty.
+      lessonPath: '/api/v1/getLesson',
+      altCacheMax: 24,    // variations remembered per session; a lesson is ~9 KB
     },
 
     // --- Touch-sized UI (section 6, applyTouchUiClass) ----------------------
@@ -4982,9 +5051,20 @@
 
   /** Colour is INLINE when given (the arrows editor, which must show
    *  Chessable's own four) and left to the CSS class when not (the quiz and
-   *  analysis boards, whose shapes are single-colour scratch work). */
+   *  analysis boards, whose shapes are single-colour scratch work).
+   *
+   *  TAKES EITHER of Chessable's four KEYS ('g'|'r'|'b'|'y') or an already
+   *  resolved CSS COLOUR. The second arm is not a convenience: section 23 reads
+   *  its arrow colour off a custom property (`--clo-attention`), which is a
+   *  value and not a key, and a key-only lookup dropped it SILENTLY — the shape
+   *  then fell back to the stylesheet's green, i.e. to exactly the colour the
+   *  caller was passing an argument to avoid. Ground-truthed 2026-08-05: the
+   *  amber "your turn to grade" arrow introduced in v0.77.0 had been rendering
+   *  `rgb(21,120,27)` since the day it shipped. */
   function paintShape(el, color, filled) {
-    const hex = color && SHAPE_COLOR_HEX[color];
+    if (!color) return el;
+    const hex = SHAPE_COLOR_HEX[color] ||
+      (/^(#|rgb|hsl)/i.test(String(color)) ? String(color) : null);
     if (!hex) return el;
     // style, NOT setAttribute: a CSS `stroke`/`fill` declaration (which
     // .clo-cr-shape carries, for the single-colour scratch marks) outranks a
@@ -7728,6 +7808,23 @@
   // holdKeys — placement + side only.
   let autoPlayIsHeld = null;
 
+  /**
+   * () => number — ms since the last MOVE section 13's tracker observed on
+   * Chessable's board, i.e. its own `vs.lastMoveAt`, which is stamped from the
+   * mutation itself (`frameTime`) and so is the accurate moment the board
+   * changed rather than the moment anything got round to looking.
+   *
+   * Read-only, and `Infinity` whenever there is no answer (module dead, nothing
+   * observed yet), which every caller must treat as "no reason to wait" — this
+   * may only ever ADD a delay, never remove one.
+   *
+   * DELIBERATELY THE MOVE CLOCK AND NOT `ap.mutationAt`: a mutation is any
+   * render — a running timer bar, a highlight class, React reconciling — so a
+   * caller waiting for that to go quiet waits for ever on a live board. That is
+   * exactly what v0.78.0 did and v0.78.1 undid.
+   */
+  let autoPlayBoardQuietMs = null;
+
   function initAutoPlay() {
     if (typeof CloSan === 'undefined') {
       warn('auto-play disabled: CloSan (engine/san.js) not loaded');
@@ -9452,6 +9549,13 @@
       if (!ap.holdKeys || !fen) return false;
       const pos = CloSan.parseFen(fen);
       return Boolean(pos && ap.holdKeys.has(placementFen(pos.board) + ' ' + pos.side));
+    };
+
+    // Section 23's settle floor — see the bridge's own doc comment. The tracker
+    // runs in that mode (only INJECTION is held off), so `lastMoveAt` is live.
+    autoPlayBoardQuietMs = () => {
+      if (ap.contextDead || !ap.vs || !ap.vs.lastMoveAt) return Infinity;
+      return Date.now() - ap.vs.lastMoveAt;
     };
 
     autoPlayNoteTypedMove = (from, to) => {
@@ -18858,6 +18962,22 @@
       // the mode looks alive and answers nothing. The watchdog in tick() is
       // what breaks that, and this is its clock.
       awaitingSince: 0,
+      // Has this variation been pressed yet? The settle floor (`settleBoard`)
+      // applies to the FIRST press only — section 13's condition, since that is
+      // the one that races the trainer's own opening moves.
+      actedOnce: false,
+      // The accepted alternatives for the card on screen, once asked for:
+      // [{san, from, to}], `from`/`to` -1 for a SAN that would not resolve.
+      // Per CARD and cleared on every reveal — an alternative belongs to the
+      // move it is an alternative TO.
+      altMoves: null,
+      altsAsked: false,
+      // The current variation's accepted alternatives, fetched once per
+      // variation: { oid, state:'idle'|'loading'|'ready'|'failed', byKey, setting }.
+      // `state` matters — "could not read them" and "there are none" are
+      // different answers and the key must not merge them.
+      alts: { oid: null, state: 'idle', byKey: null, setting: null },
+      altCache: new Map(),   // oid → byKey, for a variation seen twice
       announced: '',
     };
 
@@ -18995,6 +19115,7 @@
         sg.pressed = false;
         sg.prefixDone = false;
         sg.prefixEnd = 0;
+        sg.actedOnce = false;   // the next first press races the trainer again
         clearAutoTimer();
       }
       sg.plies = Array.isArray(plan.plies) ? plan.plies : [];
@@ -19005,6 +19126,7 @@
       // on a plan read it could have had already, which is the run reported as
       // shakiest on mobile.
       if (sg.plies.length && !sg.prefixDone) { sg.prefixDone = true; computePrefix(); }
+      if (newVariation) loadAlternatives(sg.oid, plan.bid || readQuickEditBid(), plan.altSetting);
       if (plan.fen !== sg.planFen) {
         sg.planFen = plan.fen;
         // The trainer has moved off the position we answered.
@@ -19030,6 +19152,93 @@
       serveCard();
     }
 
+    /** '<mid><color>' — the join between our plies and getLesson's rows. */
+    const altKeyOf = (mid, color) => String(mid) + color;
+
+    const altsForPly = (ply) => {
+      if (!ply || ply.mid == null || !sg.alts.byKey) return [];
+      return sg.alts.byKey.get(altKeyOf(ply.mid, ply.color)) || [];
+    };
+
+    /**
+     * `alt_white`/`alt_black` as a list of SAN, whatever shape it arrives in.
+     * MEASURED to be a JSON-encoded STRING (`"[\"d5\"]"`), null for none; the
+     * array arm is there so a value that is already parsed cannot read as empty
+     * if Chessable ever stops encoding it.
+     */
+    function parseAltField(v) {
+      let arr = v;
+      if (typeof v === 'string') {
+        const t = v.trim();
+        if (!t) return [];
+        try { arr = JSON.parse(t); } catch (err) { return []; }
+      }
+      if (!Array.isArray(arr)) return [];
+      return arr.filter((s) => typeof s === 'string' && s).slice(0, 12);
+    }
+
+    /**
+     * The variation's accepted alternatives, from the endpoint the trainer's
+     * own plan is built FROM.
+     *
+     * ONE FETCH PER VARIATION, started when the plan first lands so the key is
+     * instant by the time it is pressed; `showAlternatives` copes with being
+     * asked first. Cached per oid for the session — a retry pass or a
+     * re-quizzed variation must not pay twice — and the cache is capped, since
+     * a long session walks a lot of variations.
+     *
+     * Fails SOFT in every direction (no credentials, HTTP error, timeout,
+     * unexpected shape). The key then says it could not READ them, which is a
+     * different sentence from "there are none" and must stay one.
+     */
+    async function loadAlternatives(oid, bid, setting) {
+      sg.alts = { oid, state: 'loading', byKey: new Map(), setting };
+      const cached = sg.altCache.get(oid);
+      if (cached) { sg.alts = { oid, state: 'ready', byKey: cached, setting }; return; }
+      const cr = chessableCreds();
+      if (!cr || !bid) {
+        sg.alts.state = 'failed';
+        warn('show-and-grade: cannot look up alternatives —',
+          cr ? 'no course id' : 'no Chessable session');
+        return;
+      }
+      let body = null;
+      try {
+        body = await chessableApiFetch(
+          chessableApiUrl(C.lessonPath, { uid: cr.uid, oid, bid }),
+          { headers: chessableHeaders(cr), credentials: 'include' });
+      } catch (err) {
+        if (sg.alts.oid === oid) sg.alts.state = 'failed';
+        warn('show-and-grade: alternatives lookup failed:', String(err).slice(0, 120));
+        return;
+      }
+      const rows = body && body.lesson && Array.isArray(body.lesson.moves)
+        ? body.lesson.moves : null;
+      if (!rows) {
+        if (sg.alts.oid === oid) sg.alts.state = 'failed';
+        warn('show-and-grade: alternatives lookup returned an unexpected shape');
+        return;
+      }
+      const byKey = new Map();
+      let total = 0;
+      for (const row of rows) {
+        if (!row || row.mid == null) continue;
+        for (const color of ['w', 'b']) {
+          const sans = parseAltField(color === 'w' ? row.alt_white : row.alt_black);
+          if (sans.length) { byKey.set(altKeyOf(row.mid, color), sans); total += sans.length; }
+        }
+      }
+      if (sg.altCache.size >= C.altCacheMax) sg.altCache.delete(sg.altCache.keys().next().value);
+      sg.altCache.set(oid, byKey);
+      log('show-and-grade:', total, 'alternative move(s) on', byKey.size, 'move(s)' +
+        (setting === '0' ? ' — but alternative moves are switched OFF for this course' : ''));
+      // A variation change while the fetch was in flight: the answer is cached
+      // for when it comes round again, but it is not this variation's.
+      if (sg.alts.oid !== oid) return;
+      sg.alts = { oid, state: 'ready', byKey, setting };
+      if (sg.altsAsked && sg.phase === 'shown') showAlternatives(); // asked before it landed
+    }
+
     /**
      * Puts our board on the card the trainer is actually asking for.
      *
@@ -19049,6 +19258,8 @@
       sg.markedUnknown = false; // a verdict belongs to the card it was given on
       sg.autoGrading = false;   // …and so does an auto-play grade in flight
       sg.pressed = false;
+      sg.altMoves = null;
+      sg.altsAsked = false;
       sg.pos = CloSan.parseFen(ply.sourceFen);
       const prev = idx > 0 ? sg.plies[idx - 1] : null;
       sg.lastMove = (prev && prev.from && prev.to)
@@ -19275,6 +19486,17 @@
      *
      * Cleared by the grade: `leaveActing` and `finishAutoCard` both repaint, and
      * `advanceAfterGrade` paints from a phase that is no longer 'shown'.
+     *
+     * IT IS GREEN, and the amber it was supposed to wear from v0.77.0 to
+     * v0.80.0 is a decision that got to be tested by accident. `paintShape` was
+     * silently dropping the resolved custom property that carried it (v0.80.0's
+     * own note), so the arrow rendered the stylesheet's green for that entire
+     * time — and when the fix finally made it amber, it read as WORSE: on
+     * Chessable's own board image the amber blends into the board, which is the
+     * complaint the green was theorised to have. So the theory was wrong about
+     * which way round it went, and the version everyone had actually been
+     * looking at wins. The RING stays amber: it is not on the board image, and
+     * it is what says this board takes no input.
      */
     function paintArrow() {
       if (!sg.board) return;
@@ -19284,27 +19506,108 @@
       if (sg.phase !== 'shown' || sg.autoGrading || !ply) return;
       const from = squareIndexOf(ply.from), to = squareIndexOf(ply.to);
       if (from < 0 || to < 0) return;
-      const g = boardShapeArrow(from, to, sg.view, arrowHex());
+      // NO COLOUR ARGUMENT: the stylesheet's green, which is what this arrow
+      // has always actually rendered as — see the note above.
+      const g = boardShapeArrow(from, to, sg.view);
       g.setAttribute('class', 'clo-cr-shape');
       svg.appendChild(g);
+      paintAltArrows(svg);
     }
 
     /**
-     * THE RING'S OWN AMBER, read off the stylesheet rather than repeated here.
+     * The accepted ALTERNATIVES, once asked for (section 23's third key).
      *
-     * Not the quiz board's green, which this board wore until v0.76.0: it now
-     * wears Chessable's own board image, so a green arrow sits on green squares
-     * with the same lack of edge that made the 2px green ring unreadable. Amber
-     * is already this mode's "waiting for you" colour — the ring is drawn in it
-     * — and the arrow says exactly that, so they are deliberately one colour and
-     * one idea. `SHAPE_COLOR_HEX.y` is the fallback only if the variable cannot
-     * be resolved; those four are CHESSABLE's annotation colours and mean other
-     * things on a board the user also annotates.
+     * Drawn as extra arrows beside the course move's, on the board as it stands
+     * AFTER that move: the alternative's own from-square is nearly always a
+     * different piece's, so the arrow still starts on the piece it describes.
+     * Where it is the SAME piece (Nf3 against Ne2) the source square is now
+     * empty and the arrow is read from the panel's list instead — which is why
+     * the SAN is always announced as well, and why this is not the only output.
+     * That list is also the whole of it under `showBoard: false`.
+     *
+     * BLUE, and pointedly not green: green is what the main arrow stopped being
+     * in v0.77.0 because it vanished against Chessable's own board image, and
+     * amber is taken — it means "waiting for you to grade". Chessable's own
+     * annotation blue reads cleanly on every one of its board themes.
      */
-    function arrowHex() {
-      if (!sg.board) return SHAPE_COLOR_HEX.y;
-      const v = getComputedStyle(sg.board.el).getPropertyValue('--clo-attention').trim();
-      return v || SHAPE_COLOR_HEX.y;
+    function paintAltArrows(svg) {
+      if (!sg.altMoves || !sg.altMoves.length) return;
+      for (const alt of sg.altMoves) {
+        if (alt.from < 0 || alt.to < 0) continue;
+        // The KEY, not the hex: 'b' is one of Chessable's own four and is what
+        // paintShape's primary arm is for.
+        const g = boardShapeArrow(alt.from, alt.to, sg.view, 'b');
+        g.setAttribute('class', 'clo-cr-shape');
+        svg.appendChild(g);
+      }
+    }
+
+    /**
+     * "Was the move I thought of also right?" — the third key.
+     *
+     * The answer is FREE: MoveTrainer2 accepts an alternative with no network
+     * request, so the accepted set is already in the lesson plan we read every
+     * tick anyway (see pagestate.js `readAlts`). Nothing is fetched, no driver
+     * window opens, and it cannot be wrong about the current card, since it is
+     * the same plan entry `cardReady()` is checked against.
+     *
+     * Each SAN is resolved against the ply's OWN `sourceFen` — exact castling
+     * and en passant — so "O-O" and "exd6" become squares like any other move.
+     * One that will not resolve is still LISTED: the user asked what the course
+     * accepts, and "Chessable says Bc4 but we cannot draw it" is a better answer
+     * than silence.
+     */
+    function showAlternatives() {
+      const ply = cardPly();
+      if (!ply) return;
+      sg.altsAsked = true;
+      if (sg.alts.state === 'loading') {
+        // The prefetch is normally long finished; this is the first card of a
+        // variation answered fast. Re-runs itself when the answer lands.
+        announce('Looking up the alternatives…');
+        return;
+      }
+      if (sg.alts.state === 'failed') {
+        announce('Could not read the course’s alternatives');
+        return;
+      }
+      const sans = altsForPly(ply);
+      if (!sans.length) {
+        // TWO DIFFERENT ANSWERS, and saying the wrong one is what sent the last
+        // build looking in the wrong place. `altSetting` "0" means the user has
+        // alternative moves switched OFF for this course and colour, which is a
+        // thing they can act on — and, since the trainer is then never sent the
+        // accepted set at all, it is also why one of their own added
+        // alternatives would still be marked wrong.
+        announce(sg.alts.setting === '0'
+          ? 'Alternative moves are switched off for this course'
+          : 'No alternatives — ' + ply.san + ' is the only move accepted');
+        return;
+      }
+      const pos = CloSan.parseFen(ply.sourceFen);
+      const drawn = [];
+      for (const san of sans) {
+        // Displayed raw, resolved cleaned: a move number is not part of the
+        // move, and Chessable is not consistent about carrying one (§21's
+        // getList does, the edit page's arrays do not). Eval glyphs go the same
+        // way; sanToUci strips only check and mate for itself.
+        const bare = String(san).replace(/^\d+\.+\s*/, '').replace(/[!?]+$/, '').trim();
+        let uci = '';
+        try { uci = (pos && bare) ? sanToUci(pos, bare) : ''; } catch (err) { uci = ''; }
+        drawn.push({
+          san,
+          from: uci ? squareIndexOf(uci.slice(0, 2)) : -1,
+          to: uci ? squareIndexOf(uci.slice(2, 4)) : -1,
+        });
+      }
+      sg.altMoves = drawn;
+      paintArrow();
+      // With the setting off the course still LISTS them, and the honest
+      // wording says both facts without claiming what the trainer would do.
+      announce(sg.alts.setting === '0'
+        ? 'Course lists: ' + sans.join(', ') + ' (alternatives are off for this course)'
+        : 'Also accepted: ' + sans.join(', '));
+      syncPanel();
     }
 
     /**
@@ -19404,7 +19707,18 @@
       if (sg.panel.prompt.textContent !== text) sg.panel.prompt.textContent = text;
     }
 
-    function keyName(list) { return (list && list.length) ? list.join(' / ') : '—'; }
+    /**
+     * A binding as the user should READ it. `KeyboardEvent.key` is the right
+     * thing to MATCH on and the wrong thing to print: a space is a perfectly
+     * good binding whose name is invisible, which in a panel that exists to say
+     * which key does what is the whole message lost. Anything not in the map
+     * prints as itself, so a new digit needs no entry.
+     */
+    const KEY_LABEL = { ' ': 'Space', Enter: 'Enter', Escape: 'Esc' };
+    function keyName(list) {
+      if (!list || !list.length) return '—';
+      return list.map((k) => KEY_LABEL[k] || k).join(' / ');
+    }
 
     function syncPanel() {
       if (!sg.panel) return;
@@ -19419,9 +19733,16 @@
           // key can still decide it. Say so rather than offer a choice that is
           // already made — pressing here only takes the session back.
           ? 'Auto-play…   ·   any key takes over'
-          : sg.markedUnknown
+          // The alternatives key is offered on BOTH grade lines. It grades
+          // NOTHING and deliberately does not touch a verdict already given:
+          // clearing `markedUnknown` here would make the very next `next` press
+          // — which after a "wrong" at the think stage means only "advance" —
+          // silently grade the card CORRECT, and a false proof is worse than
+          // the wrinkle it would fix. The natural order asks first anyway.
+          : (sg.markedUnknown
             ? next + " — the opponent's reply (marked as not known)"
-            : next + " — I knew it   ·   " + wrong + " — I didn't know";
+            : next + " — I knew it   ·   " + wrong + " — I didn't know") +
+            '   ·   ' + keyName(C.keys.alts) + ' — also accepted?';
       } else if (sg.phase === 'browse') {
         keys = next + ' — next variation';
       } else if (sg.phase === 'acting') {
@@ -19448,6 +19769,8 @@
       if (sg.phase !== 'think' || !ply) return;
       sg.phase = 'shown';       // set BEFORE the move: paintArrow reads it
       sg.markedUnknown = Boolean(lost);
+      sg.altMoves = null;       // this card's question, not the last one's
+      sg.altsAsked = false;
       if (!playPlyOnBoard(ply)) {
         // Our board cannot play the card's own move, so the two are out of
         // step — a press landing inside a variation transition does it, where
@@ -19505,6 +19828,52 @@
     }
 
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    /**
+     * Hold the FIRST press of a variation until the trainer has stopped moving —
+     * see `pressFloorMs` for the whole argument and for what it cost.
+     *
+     * SECTION 13'S FLOOR, DOWN TO THE CONDITION, and v0.78.1 is what it cost to
+     * depart from it on either count:
+     *
+     *   * ONE delay computed once, never a loop that waits for the board to go
+     *     "quiet". A loop keyed on board CHURN never finished on a phone: the
+     *     per-move clock is running during an auto-played card (maintainPause
+     *     skips those deliberately), so its bar plus React's own re-renders kept
+     *     re-arming the floor, every press paid the whole 1500ms cap on top of
+     *     the resume, further key presses were swallowed by the 'acting' phase
+     *     meanwhile — and that clock is short enough that cards then start
+     *     recording `timeUp`, i.e. grading themselves WRONG. Reported as "it
+     *     stopped working completely", which it had.
+     *   * The clock is the last observed MOVE (`vs.lastMoveAt`), not the last
+     *     board mutation. Same distinction, same reason: a mutation is any
+     *     render, a move is a move.
+     *   * FIRST PRESS ONLY, which is section 13's own condition ("nothing
+     *     observed yet this variation, or the trainer drove the last user-colour
+     *     move") and the only place the bug lives. Mid-variation our press
+     *     follows the opponent's reply, chess gives the trainer no second move
+     *     to race us with, and section 13 has always injected there with no
+     *     floor at all — so those presses go out exactly as they did in v0.77.0.
+     *
+     * The whole thing is therefore bounded by `pressFloorMs` ONCE per variation,
+     * and every unknown — no tracker, a throw, a stale stamp — resolves to not
+     * waiting. Setting `pressFloorMs` to 0 disables it outright.
+     */
+    async function settleBoard() {
+      if (sg.actedOnce) return;            // mid-variation: our press follows a reply
+      sg.actedOnce = true;
+      let quiet = Infinity;
+      try {
+        if (autoPlayBoardQuietMs) quiet = autoPlayBoardQuietMs();
+      } catch (err) { return; }            // never let the floor cost a press
+      // ONE delay, computed once, and at most `pressFloorMs` of it. Infinity or
+      // any other non-number reads as "no reason to wait".
+      const ms = quiet >= 0 ? Math.min(C.pressFloorMs, C.pressFloorMs - quiet) : 0;
+      if (!(ms > 0)) return;
+      log('show-and-grade: holding the first press', Math.round(ms),
+        'ms — the board changed', Math.round(quiet), 'ms ago');
+      await wait(ms);
+    }
 
     /**
      * Re-reads the lesson plan FAST for as long as we are waiting for Chessable
@@ -19576,6 +19945,11 @@
       if (!ply) return false;
       markActed();
       await resumeAndSettle();
+      if (!sg.active) return false;
+      // AFTER the resume, not instead of it: they answer different questions
+      // (is the board live at all / has it stopped moving), and the resume's own
+      // settle usually satisfies this one for free on the manual path.
+      await settleBoard();
       if (!sg.active) return false;
       const board = getReviewBoard();
       const fromEl = board && board.querySelector(SELECTORS.reviewSquare.replace('%s', ply.from));
@@ -19940,12 +20314,21 @@
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
       const isNext = C.keys.next.includes(e.key);
       const isWrong = C.keys.wrong.includes(e.key);
-      if (!isNext && !isWrong) return;
+      const isAlts = (C.keys.alts || []).includes(e.key);
+      if (!isNext && !isWrong && !isAlts) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.type !== 'keydown') return; // one action per press, on the way down
       if (sg.phase === 'acting') return;
       if (sg.phase === 'browse') { if (isNext) advance(); return; }
+      // THE ALTERNATIVES KEY GRADES NOTHING and answers only once the move is
+      // on screen. At the think stage it would be a set of arrows over the
+      // candidate answers, which is the quiz handed over; during auto-play the
+      // card is already answered and there is no verdict left for it to inform.
+      if (isAlts) {
+        if (sg.phase === 'shown' && !sg.autoGrading) showAlternatives();
+        return;
+      }
       // TWO PRESSES PER CARD, AND EVERY PRESS SHOWS A MOVE. First press: your
       // move. Second press: the opponent's, which is also what grades the card.
       // Both keys have that same shape — "wrong" pressed at the think stage
@@ -20014,7 +20397,9 @@
       btn.textContent = 'Show & grade';
       btn.title = 'Answer this session with two keys instead of the board: ' +
         keyName(C.keys.next) + ' shows the move and confirms you knew it, ' +
-        keyName(C.keys.wrong) + ' marks it as not known.';
+        keyName(C.keys.wrong) + ' marks it as not known.\n' +
+        keyName(C.keys.alts) + ' asks whether the move you had in mind is also ' +
+        'accepted here (once the move has been shown).';
       btn.addEventListener('click', () => {
         if (sg.active) stop('stopped'); else startMode();
         btn.blur(); // or the next space/Enter would toggle it again
