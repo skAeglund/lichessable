@@ -123,7 +123,26 @@ body {
 
 .hx-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
 .hx-hidden-note { color: var(--hx-dim); font-size: 11px; font-style: italic; }
-</style>
+
+    /* Stand-ins for Chessable's own board image (which the real .clo-sg-board
+       copies off the live page). Harness-only: the classes below are hx-*. */
+    .hx-sgdemo .clo-cr-sq--light,
+    .hx-sgdemo .clo-cr-sq--dark { background: none; }
+    .hx-sgdemo {
+      background-image:
+        linear-gradient(45deg, #779952 25%, transparent 25%, transparent 75%, #779952 75%),
+        linear-gradient(45deg, #779952 25%, transparent 25%, transparent 75%, #779952 75%);
+      background-color: #ebecd0;
+      background-size: 55px 55px;
+      background-position: 0 0, 27.5px 27.5px;
+    }
+    .hx-sgdemo--light {
+      background-image:
+        linear-gradient(45deg, #d8cbb0 25%, transparent 25%, transparent 75%, #d8cbb0 75%),
+        linear-gradient(45deg, #d8cbb0 25%, transparent 25%, transparent 75%, #d8cbb0 75%);
+      background-color: #f6f0e2;
+    }
+  </style>
 </head>
 <body>
 
@@ -692,6 +711,7 @@ body {
           <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
           <span class="clo-review-grp clo-sg">
             <button type="button" class="clo-sg-btn">Show &amp; grade</button>
+            <button type="button" class="clo-sg-cog">&#9881;</button>
           </span>
           <span class="clo-review-grp clo-mx">
             <button type="button" class="clo-mx-btn">Mistakes (3)</button>
@@ -709,6 +729,7 @@ body {
           <span class="clo-review-grp clo-sg">
             <button type="button" class="clo-sg-btn clo-rowprimary">Stop</button>
             <button type="button" class="clo-sg-auto">Auto</button>
+            <button type="button" class="clo-sg-cog">&#9881;</button>
           </span>
           <span class="clo-review-grp clo-mx">
             <button type="button" class="clo-mx-btn">Mistakes (3)</button>
@@ -728,6 +749,7 @@ body {
           <span class="clo-review-grp clo-sg">
             <button type="button" class="clo-sg-btn clo-rowprimary">Stop</button>
             <button type="button" class="clo-sg-auto clo-sg-auto--on">Auto</button>
+            <button type="button" class="clo-sg-cog">&#9881;</button>
           </span>
         </div>
         <p class="hx-note" style="margin:0 10px">Auto-play ON. The toggle carries its own state —
@@ -741,6 +763,7 @@ body {
           <span class="clo-review-grp clo-sg">
             <button type="button" class="clo-sg-btn clo-rowprimary">Stop</button>
             <button type="button" class="clo-sg-auto">Auto</button>
+            <button type="button" class="clo-sg-cog">&#9881;</button>
           </span>
           <span class="clo-review-grp clo-os">
             <button type="button" class="clo-review-btn">Overstudy</button>
@@ -752,6 +775,73 @@ body {
         <p class="hx-note" style="margin:0 10px">The one refusal the mode can hand back mid-card.
           Amber text on the row's own status line, like every other status here (§3.2) — never
           inline among the controls.</p>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Show and grade &mdash; the board ring (section 23)</h3>
+      <p class="hx-note">In the real thing this board wears <em>Chessable's own board image</em>,
+        copied off the live page, so it follows whichever theme the user has picked. The checkerboard
+        below stands in for it. The ring is <strong>4px amber plus a 1px dark edge</strong>: at 2px it
+        sat on a busy green border and read as part of the board rather than as a frame. Thicker
+        rather than a new colour, because the colour carries meaning &mdash; amber is "this board
+        takes no input", against the green of the drill and the line quiz, which do.</p>
+      <div class="hx-stage" style="display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap">
+        <div class="clo-cr-board clo-sg-board hx-pos hx-sgdemo" style="width:200px;height:200px"
+             data-hx-board="rnbqkbnr/pp1ppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR w"
+             data-hx-sq="d2:last|d4:last"
+             data-hx-shapes="arrow:d2:d4:var(--clo-attention)"></div>
+        <div class="clo-cr-board clo-sg-board hx-pos hx-sgdemo" style="width:200px;height:200px"
+             data-hx-board="rnbqkbnr/pp1ppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR w"
+             data-hx-sq="d2:last|d4:last"></div>
+        <div class="clo-cr-board clo-sg-board hx-pos hx-sgdemo hx-sgdemo--light"
+             style="width:200px;height:200px"
+             data-hx-board="rnbqkbnr/pp1ppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR w"
+             data-hx-sq="d2:last|d4:last"
+             data-hx-shapes="arrow:d2:d4:var(--clo-attention)"></div>
+        <div class="clo-cr-board hx-pos" style="width:200px;height:200px"
+             data-hx-board="rnbqkbnr/pp1ppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR w"
+             data-hx-sq="d2:last|d4:last"></div>
+      </div>
+      <p class="hx-note" style="margin:10px 0 0">Left to right: <strong>your card</strong> &mdash; the
+        arrow is up, and it means <em>the board has stopped and is waiting for you to grade</em>, not
+        "this is the move" (the piece and the two tinted squares already said that). Then the
+        <strong>same card auto-played</strong>: no arrow, because it grades itself a beat later and
+        there is no decision to point at. Then your card over a light theme. Then the <em>quiz</em>
+        board for comparison &mdash; green ring, our own squares, and it takes moves.</p>
+      <p class="hx-note" style="margin:6px 0 0">The arrow is the <em>ring's</em> amber, read off
+        <code>--clo-attention</code> rather than repeated in JS: one colour, one idea &mdash; "waiting
+        for you". It was the quiz board's green until v0.77.0, which on Chessable's own green board
+        image had the same lack of edge that made the 2px ring unreadable.</p>
+    </div>
+
+    <div class="hx-card">
+      <h3>Show and grade — the replay-speed popover (section 23)</h3>
+      <p class="hx-note">Behind the cog, because both are persistent preferences and everything else
+        in this row acts on the session in front of you (DESIGN-ui-inventory &sect;F4). Body-mounted
+        and fixed in the real thing &mdash; inside the row it would change the widget's height, which
+        the Lichess panel, the alt-check chip and the heads-up all anchor below. Pace is the beat
+        before each move is shown; animation is how long a piece takes to slide, and the advance beat
+        is floored at it so the two cannot be set against each other into one blurred move.</p>
+      <div class="hx-stage" style="display:flex;gap:16px;align-items:flex-start">
+        <div class="clo-sg-menu hx-pos" style="position:relative">
+          <label class="clo-sg-menu-row">Pace
+            <select class="clo-sg-pace">
+              <option>Brisk (0.3s a card)</option>
+              <option selected>Fast (0.5s a card)</option>
+              <option>Normal (0.8s a card)</option>
+              <option>Relaxed (1.3s a card)</option>
+            </select>
+          </label>
+          <label class="clo-sg-menu-row">Animation
+            <select class="clo-sg-anim">
+              <option>Instant</option>
+              <option>Fast (120ms)</option>
+              <option selected>Normal (180ms)</option>
+              <option>Slow (320ms)</option>
+            </select>
+          </label>
+        </div>
       </div>
     </div>
 
@@ -1836,7 +1926,10 @@ body {
     // and sized inline by its caller; the .hx-pos neutraliser puts it in flow.
     var board = host;
     var styled = host.classList.contains('clo-cr-mini') ||
-                 host.classList.contains('clo-qe-board');
+                 host.classList.contains('clo-qe-board') ||
+                 // section 23's board: it ADDS to .clo-cr-board (ring + no input),
+                 // so its markup carries both classes and must survive verbatim.
+                 host.classList.contains('clo-sg-board');
     if (!styled) {
       board.className = 'clo-cr-board hx-pos';
       if (size) { board.style.width = size + 'px'; board.style.height = size + 'px'; }

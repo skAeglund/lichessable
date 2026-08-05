@@ -2674,8 +2674,186 @@ Currently working (v0.18.x).
   reaches an unproven move the user waits for Chessable anyway, so the board
   would show move 12 with the trainer on move 4 and the first thing the user does
   is sit and wait. Gain nothing, risk grading the wrong card. ONE card at a time,
-  gated on `cardReady()`; the floor is Chessable's own (~440ms + ~480ms) exactly
-  as section 13's is.
+  gated on `cardReady()`; the floor is Chessable's own exactly as section 13's is.
+  IT WAS 3x SLOWER THAN SECTION 13 AND NONE OF IT WAS THAT FLOOR (v0.74.0).
+  Reported as "really inconsistent and slow", with using Chessable's own board
+  for the replay offered as the way out. MEASURED FIRST, live 2026-08-04 (course
+  453453, overstudy of 70382663, seven fully proven cards): a flat 2494-2505ms
+  per card — 420 reveal + 395 advance + 410 resume/settle + 551 Chessable +
+  **718 waiting for the poll to notice the next card**. So 1128ms of every 2499
+  was DEAD, the rearchitecture would have bought nothing the dead time was not
+  already costing, and the previous note here — "the cycle's real floor is
+  Chessable's own, so shaving the beats buys nothing" — was reasoning from a
+  floor that was mostly our own waiting. THREE fixes, in order of what they were
+  worth:
+  * SERVE OFF THE PLAN READ, NOT THE NEXT TICK (~500ms). `refreshPlan` is async,
+    so the tick that STARTS a read cannot use its answer — the card only became
+    ready on the FOLLOWING tick. The per-card work is now `serveCard()` (pause
+    decision, announce, `maybeAutoPlay`), called from `applyPlan` as well as
+    `tick`, idempotent, so the poll stays the safety net it always was.
+  * CHASE THE PLAN WHILE WAITING FOR AN ACT (~200ms more, and it kills the
+    JITTER). `startChase` re-reads every `chaseMs` (110) from the moment an act
+    presses until the next card is up, capped at `chaseMaxMs`. Bounded on
+    purpose: a plan read is a JSON round trip through the MAIN world carrying
+    the whole variation, fine for the half-second after an act and not something
+    to run all session. MANUAL play gets it too — the same 718ms sat between a
+    human's grade and the next card, and that path measured 1320ms → 770ms.
+  * DO NOT PAUSE A CLOCK AUTO-PLAY IS ABOUT TO HAND BACK (410ms).
+    `maintainPause` returns early on `willAutoPlay()`, and `resumeAndSettle`
+    waits `settleMs` only when it actually resumed something. The clock exists
+    to protect the user's THINKING time and auto-play does not think — its whole
+    cycle is under a second. The moment the user takes over, `handedOver` goes
+    true and `onKey` pauses explicitly rather than waiting for the next tick,
+    because thinking starts at that press.
+  Beats trimmed 420/380 → 260/240 with the same measurement as the argument:
+  they are now ~60% of what is left rather than a rounding error on dead time,
+  and both stay well clear of `animMs` (180) so each move is still a visible
+  glide. RESULT, same variation, same seven cards: 657-876ms per card, zero
+  pause/resume events, 100% accuracy, the variation's own timer 1 min → 15 sec.
+  TWO STALLS FIXED ALONGSIDE, and they are the "inconsistent" half of the
+  report — both ended with the mode alive and answering nothing:
+  * A SWALLOWED PRESS STOPPED THE SESSION DEAD. Pressing the board while it is
+    still paused resumes the session and CONSUMES the press (this file has
+    always said so), so nothing moves, the trainer's fen never changes,
+    `awaitingFen` never clears, `anchor()` stays blocked and every later grade is
+    refused with "Waiting for the board…" for the rest of the session. Nothing
+    could break that loop — every part of it waits on the one thing that will not
+    happen. `sg.awaitingSince` + a watchdog in `tick` now drops the wait after
+    `actMaxMs` and forces a re-anchor (`failAct`'s recovery, on a clock). The
+    browse branch clears the wait itself, since the LAST card of a variation is
+    answered and no card follows — the trainer is finished, not stuck, and
+    without that the watchdog warned at the end of every variation.
+  * AN AUTO GRADE REFUSED FOR BEING EARLY ENDED THE REPLAY. The auto timer called
+    `gradeKnown`, which bails on `!cardReady()` with a status and leaves the card
+    in 'shown' — a phase nothing else moves on. One slow reply and the rest of
+    the variation never replayed. `sg.autoGrading` marks a grade auto-play owns
+    and `tick` retries it once the trainer catches up; `gradeKnown` goes to
+    'acting' synchronously once its checks pass, so it cannot double-fire.
+  THEN OVERLAPPED, TO CHESSABLE'S OWN FLOOR (v0.75.0). Asked for as "use the
+  Chessable board for auto-play and transition into ours when it ends" — i.e.
+  hand the replay to section 13. REFUSED, and the reason is the report itself:
+  section 13 is what is shaky on mobile, so adopting it adopts the problem. It
+  would also put TWO writers on Chessable's board with a handoff, which the three
+  hold flags exist to prevent and which this very module got wrong once already
+  (v0.71 → v0.73), and cost the blindfold seam its clock for the whole prefix.
+  There is also a structural reason to prefer our own: section 13 is
+  OBSERVATION-driven (board mutation → rAF → decide, the chain that runs 100-300ms
+  late on a phone, with a board DOM that can hold stale duplicate pieces), while
+  this is PLAN-driven — the moves come from data already in memory and no frame
+  has to be seen to know what to play next. One fewer failure mode, and it is the
+  one that bites on mobile. NOT MEASURED on a phone; the argument is structural.
+  What was done instead is a ONE-CARD-DEEP overlap plus two supporting changes:
+  * THE PRESS GOES OUT AT THE REVEAL, not at the advance beat — auto path only
+    (`autoReveal` → `autoPress` → `finishAutoCard`, with `pressCourseMove`
+    extracted as the one place this mode writes to the session). Exactly as safe:
+    `reveal()` only runs with `cardReady()` true, so Chessable is standing on the
+    card either way, and in auto-play there is no decision between the two
+    moments to lose — the verdict is "correct" by construction. Chessable's
+    ~350ms round trip then runs UNDER the beat we were showing anyway:
+    `reveal + advance + Chessable` becomes `reveal + max(advance, Chessable)`.
+    THE MANUAL PATH KEEPS ITS PRESS AT THE GRADE and must — the user has to be
+    able to answer "I didn't know" AFTER seeing the move.
+    ONE CARD is all the depth worth having: our pace and Chessable's are within a
+    beat of each other, so a deeper buffer would hold verdicts it cannot apply
+    any sooner while making a failed act mis-file everything behind it. A buffer
+    is only ever safe for AUTO-PLAY's verdicts (known-correct, deterministic
+    prefix) and never for the user's — that distinction is the whole argument.
+    `sg.pressed`/`sg.pressing` are what stop a key press opening a SECOND act on
+    a card already answered; `markActed` was split out of `enterActing` because
+    the early press must not change the phase — 'shown' is the move being looked
+    at. `failAct` now FORCES 'think', since an early press fails from 'shown',
+    which nothing else moves on.
+  * THE PREFIX IS DECIDED ONCE, when the variation's plan first lands
+    (`computePrefix`/`plyIsProven`, replacing a per-card `cardIsProven` that
+    re-derived from `sg.pos`). Both inputs are already in memory and neither
+    moves under us — the plan is fixed, and the record only ever gains moves we
+    are about to play OURSELVES, never a card still ahead. Asking card by card
+    made the FIRST card of every variation wait on a read it could have had
+    already, which is the run reported as shakiest. It also reads the position
+    from each ply's own `sourceFen` rather than the live board, so a promotion
+    now ENDS the prefix instead of being refused at the last moment — which,
+    with the auto grade retried by tick, would otherwise have looped.
+  * THE CHASE IS ADAPTIVE and self-scheduling (`chaseInterval`, floor
+    `chaseMs`, cap `chaseMaxIntervalMs`): never ask again inside twice what the
+    last read actually cost. A fixed 110ms is right on a desktop and on a phone
+    would just queue reads behind each other and add to the jank it is trying to
+    see through. `chaseStep` must SERVE before it stops — applyPlan cannot,
+    because the plan now regularly lands while our board is still in 'shown'
+    (the whole advance beat), and returning without serving hands the card back
+    to the 500ms poll, i.e. puts back the lag the chase exists to remove.
+  FOUR FOLLOW-UPS FROM USING IT (v0.76.0), all reported from a real session:
+  * THE ARROW IS A "YOUR TURN TO GRADE" MARKER (dropped in v0.76.0, back with a
+    rule in v0.77.0). Dropping it was right about the fact and wrong about the
+    job: as a statement of WHICH move it was, it is the same thing a third time
+    — the move is played on this board and its two squares are tinted — but what
+    it actually earns its place doing is marking the moment the board has stopped
+    and is waiting for you. So it is SUPPRESSED DURING AUTO-PLAY, where the card
+    grades itself a beat later and there is no decision to point at. The test is
+    therefore `sg.autoGrading`, not the phase alone: an auto card sits in exactly
+    the same 'shown' phase a manual one does. `autoReveal` sets that flag BEFORE
+    calling `reveal`, so an auto card's first paint already knows.
+    ITS COLOUR IS THE RING'S AMBER, read off `--clo-attention` through
+    `arrowHex()` rather than repeated in JS — one colour, one idea ("waiting for
+    you"). NOT the quiz board's green, which it wore until v0.77.0: on
+    Chessable's own green board image that has exactly the lack of edge that made
+    the 2px green ring unreadable. `SHAPE_COLOR_HEX`'s four are CHESSABLE's
+    annotation colours and mean other things on a board the user also annotates,
+    so they are the fallback only.
+  * THE RING IS 4px + a 1px dark edge. At 2px, against the board image it now
+    wears, amber sat on a busy green border and read as part of the board.
+    THICKER RATHER THAN A NEW COLOUR: the colour carries meaning — amber is
+    "this board takes no input", against the green of the drill and the line
+    quiz, which do — so recolouring would spend that distinction on a contrast
+    problem. The dark outer ring is what makes it read as a ring on a LIGHT
+    theme too, where amber has as little edge as it had on green.
+  * CHESSABLE'S PER-MOVE CLOCK IS HIDDEN for the mode's duration
+    (`applyTimerBar`, `SELECTORS.trainerTimerBar`). It flickers — the clock is
+    paused and resumed around each card — and it cannot tell the user anything
+    they can act on, because running out of time is exactly what the pausing
+    makes impossible. `visibility`, NEVER `display`: the bar is inside the board
+    footer, so taking it out of flow would move the footer and everything
+    anchored below the widget. Re-applied every tick (a React re-render drops our
+    inline style) and restored in `stop()`, which is the one path every exit
+    takes.
+  * BOTH SPEEDS ARE USER SETTINGS, behind a cog (`.clo-sg-cog`/`.clo-sg-menu`,
+    section 13's §F4 pattern and its popover discipline: body-mounted and fixed,
+    swallows keys — OURS TOO, or '2' would grade a card while a select has focus
+    — closes on an outside pointerdown in capture by containment, dismissed on
+    resize). `cloShowGradePace` picks a `{reveal, advance}` pair from `C.paces`
+    (brisk/fast/normal/relaxed; fast = the v0.74.0 constants, normal = the
+    v0.73.0 ones), `cloShowGradeAnim` picks a glide from `C.anims`. The
+    measurement said what was WASTED, not what is comfortable — "may even be a
+    bit too fast" is an answer only the person watching can give.
+    THE GLIDE IS ONE NUMBER DRIVING TWO THINGS: the CSS transition (written as
+    `--clo-sg-anim` on the board element, so `.clo-cr-piece`'s shared 180ms rule
+    is left alone for the continuation board, the drill and the mini board) and
+    the delay before the DOM is reconciled — a reconcile shorter than the
+    transition cuts the animation off mid-flight, so they cannot drift.
+    `advanceMs()` is FLOORED at the glide: the two settings are independent and
+    a brisk pace with a slow animation would play the reply while your own move
+    was still sliding, reading as one blurred movement instead of two moves.
+    Every read goes through a lookup with a fallback (`animMs`, `paceOf`), never
+    raw — a value from an older build must degrade to the default rather than put
+    `undefined` into a setTimeout.
+  OUR BOARD WEARS CHESSABLE'S OWN (`applyBoardTheme`, `.clo-sg-board--themed`).
+  This board covers theirs for a WHOLE SESSION, so a palette of our own reads as
+  "something has taken over the page" — the opposite of the continuation quiz,
+  whose own colours are deliberate because there "this is a different board" IS
+  the message. Hence a class of ours, never a change to `.clo-cr-sq--light/--dark`,
+  which the drill and the line quiz share. Ground-truthed 2026-08-05: every
+  `.square-55d63` computes to a TRANSPARENT background — the checkers are a
+  themed background IMAGE (`Green.<hash>.png`) on an ancestor two levels up, at
+  `background-size: cover`. So there is no square colour to read, and the class
+  carrying it names the THEME, which is why `boardThemeEl()` walks ancestors
+  instead of matching a selector: a selector would only ever work for one theme.
+  Copying the image follows the user's chosen theme for free and leaves no
+  third-party colour to keep in step; `100% 100%` rather than `cover` so our 8x8
+  maps exactly onto the image's own, and `positionBoard` measures the THEME
+  element (inset a couple of px inside the board container by their border) so
+  our grid lines up with the checkers being borrowed. The AMBER RING STAYS — it
+  is what says this board takes no input, in the same place as two boards that
+  do — and the tints are untouched, being `box-shadow: inset` rather than
+  `background`.
   HAND-BACK IS SECTION 13'S RULE: only a variation's OPENING run is replayed,
   never a jump back in after the user has taken a card (`sg.handedOver`, set in
   `onKey` and deliberately NOT in `reveal()`, which auto-play itself calls).

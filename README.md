@@ -270,11 +270,44 @@ not proven you would be sitting waiting for the real board to catch up — with 
 board showing a position several moves further on. Going at Chessable's pace is
 both the safer and, in practice, the faster-feeling of the two.
 
+Until v0.74.0 it was also, wrongly, about three times slower than the ordinary
+auto-play: a card took a flat 2.5 s, of which 1.1 s was the extension waiting for
+its own half-second poll to notice that Chessable had finished moving, and
+pausing a clock it was about to hand straight back. Both are gone, and a replayed
+card now takes 0.7–0.9 s — the same variation that took Chessable's timer a
+minute takes fifteen seconds. Since v0.75.0 a replayed card also tells Chessable
+the answer as the move is *shown* rather than after, so its own round trip runs
+underneath the beat you are watching instead of after it.
+
+Our board also wears **Chessable's own board image**, copied off the live page —
+so it follows whichever board theme you have chosen, rather than being a green of
+ours sitting on top of a green of theirs. The amber ring around it stays: that is
+what tells you this particular board does not take moves.
+
+**The replay speed is yours to set**, behind the cog beside *Auto*. *Pace* is the
+beat before each move appears; *Animation* is how long a piece takes to slide.
+Both apply to auto-played cards and to your own, and the pace is floored at the
+animation so the two can never be set against each other into one blurred move.
+
+The **arrow on the move means "your turn to grade"**, not "this is the move" —
+the piece and its two highlighted squares already said that. So it appears on
+cards you are answering and stays away during auto-play, where the card grades
+itself a moment later and there is nothing waiting on you. It is drawn in the
+same amber as the ring, which is this mode's colour for *waiting for you*.
+
+One smaller thing while the mode runs: **Chessable's per-move clock is hidden**.
+It has nothing
+to tell you here: your thinking time is not charged to the card, so you cannot
+lose one on time, and the bar otherwise blinks in and out as the clock is paused
+and restarted around every card.
+
 **Your thinking time is not charged to the card.** Chessable's per-move clock is
 short, and a card that runs out is recorded as a failure with the move played for
 you — so a move you actually knew would be graded wrong, which is the one thing
 this mode exists to control. The session timer is therefore paused while you
-think and started again only to play the move.
+think and started again only to play the move. Cards that *auto-play* takes never
+pause it at all — nobody is thinking — and the moment you take a card over
+yourself the clock stops on that very press.
 
 **Nothing here invents a wrong move to make a card fail.** *I didn't know it*
 drives Chessable's own **I don't know** control, which is what records the

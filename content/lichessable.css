@@ -2776,13 +2776,114 @@ html.clo-injecting .legal-square-capture-mt2 {
      never does. The ring is the one thing distinguishing it at a glance from
      the drill and the clickable-line quiz, which sit in exactly the same place.
 */
+/* THE RING IS 4px AND DOUBLE (v0.76.0). At 2px, against the board image this
+   now wears, amber sat on a busy green edge and read as part of the board
+   rather than as a frame around it — reported as blending in. Thicker is the
+   fix rather than a new colour, because the colour is carrying meaning: amber
+   is "this board takes no input", against the green of the two boards that do,
+   and swapping it would cost that distinction to solve a contrast problem.
+
+   The second, darker ring outside it is what makes the first one read as a ring
+   at ANY board theme: amber on the pale squares of a light theme has as little
+   edge as amber on green had. It separates the board from the page as well,
+   which the 2px version relied on the old flat colour for. */
 .clo-sg-board {
   pointer-events: none;
-  box-shadow: 0 0 0 2px var(--clo-attention);
+  box-shadow:
+    0 0 0 4px var(--clo-attention),
+    0 0 0 5px rgba(0, 0, 0, 0.45);
 }
+
+/* The glide, as a USER SETTING — set on the board element by applyAnimSetting.
+   Scoped to THIS board on purpose: `.clo-cr-piece`'s own 180ms rule is shared
+   with the continuation quiz, the drill and the heads-up's mini board, none of
+   which this setting is about. The fallback keeps a board built before the
+   preference has been read looking exactly as it always did. */
+.clo-sg-board .clo-cr-piece {
+  transition-duration: var(--clo-sg-anim, 180ms);
+}
+
+/* WEARING CHESSABLE'S OWN BOARD. Set by applyBoardTheme when their themed
+   background image could be read off the live board — the image itself goes on
+   as an inline style, so this only has to get the squares out of its way.
+
+   Why this board and not `.clo-cr-board` generally: this one covers theirs for
+   a whole SESSION, so a palette of our own reads as "something has taken over
+   the page"; the continuation quiz's own colours are deliberate, because there
+   "this is a different board" is exactly the message. Same reason the amber
+   ring above stays — it is what says this board accepts no move.
+
+   The TINTS are untouched: they are `box-shadow: inset`, not `background`, so
+   the last-move highlight still paints over whichever theme is showing. */
+.clo-sg-board--themed .clo-cr-sq--light,
+.clo-sg-board--themed .clo-cr-sq--dark { background: none; }
 
 .clo-sg-panel {
   gap: 10px;
+}
+
+/* Replay speed lives behind a cog — section 13's pattern (DESIGN-ui-inventory
+   §F4) for its reason: these are persistent preferences and everything else in
+   this row acts on the session in front of you. Neutral, never a fill: a fill
+   in this row means "the one thing to do next", which a setting never is. */
+.clo-sg-cog {
+  border: 1px solid var(--clo-line);
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.2;
+  font-family: inherit;
+}
+
+.clo-sg-cog:hover,
+.clo-sg-cog--open {
+  border-color: var(--clo-line-hover);
+  color: var(--clo-text-bright);
+}
+
+/* Body-mounted and fixed, like every other popover here: inside the row it
+   would change the widget's HEIGHT, and the Lichess panel, the alt-check chip
+   and the heads-up all anchor below the widget. */
+.clo-sg-menu {
+  position: fixed;
+  z-index: 100001;
+  box-sizing: border-box;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  border: 1px solid var(--clo-bg-sunken);
+  border-radius: 4px;
+  background: var(--clo-bg);
+  color: var(--clo-text);
+  font-size: 12px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+.clo-sg-menu[hidden] { display: none; }
+
+.clo-sg-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--clo-text-dim);
+  white-space: nowrap;
+}
+
+.clo-sg-menu select {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 4px;
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text);
 }
 
 /* The move, or what the opponent just played — the panel's one loud line, and

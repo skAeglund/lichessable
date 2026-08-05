@@ -164,8 +164,154 @@ moment the replay reaches an unproven move the user has to wait for Chessable
 anyway, so the board would be showing move 12 while the trainer is on move 4 and
 the first thing the user does is sit and wait. The gain is nothing; the failure
 mode is grading the wrong card. So it advances ONE card at a time, gated on
-`cardReady()`, and the cycle's floor is Chessable's own (~440 ms for our move to
-land plus ~480 ms for its reply) exactly as section 13's is.
+`cardReady()`, and the cycle's floor is Chessable's own exactly as section 13's
+is.
+
+**…but the floor was never what made it slow (v0.74.0).** Reported as "really
+inconsistent and slow compared to the regular auto-playing", with "use the
+Chessable board for auto-play and transition into our board when it ends"
+offered as the way out. Measured before deciding — live 2026-08-04, course
+453453, overstudy of 70382663, seven fully proven cards, a flat **2494–2505 ms
+per card**:
+
+| term | ms | |
+|---|---|---|
+| reveal beat | 420 | deliberate |
+| advance beat | 395 | deliberate |
+| resume + `settleMs` | 410 | **dead** |
+| Chessable (our move + its reply) | 551 | irreducible |
+| waiting for the 500 ms poll to notice the new card | 718 | **dead** |
+
+1128 ms of every 2499 was our own waiting, so the rearchitecture would have
+bought nothing that removing the dead time did not. Three fixes: **serve off the
+plan read rather than the next tick** (`serveCard`, called from `applyPlan` too —
+`refreshPlan` is async, so the tick that starts a read cannot use its answer);
+**chase the plan** while an act is outstanding (`startChase`, every `chaseMs`,
+bounded — a plan read is a whole-variation JSON round trip through the MAIN
+world); and **do not pause a clock auto-play is about to hand straight back**
+(`willAutoPlay()`, plus `resumeAndSettle` waiting only when it actually resumed).
+The clock exists to protect *thinking* time, and auto-play does not think.
+
+Beats then trimmed 420/380 → 260/240, on the same evidence: they are now ~60% of
+what is left rather than a rounding error on dead time, and both stay clear of
+`animMs` (180) so each move is still a visible glide. Re-measured, same
+variation: **657–876 ms per card**, no pause/resume at all, 100 % accuracy,
+Chessable's own timer for the variation 1 min → 15 sec. Manual play got the
+chase too: 1320 ms → 770 ms from grade to next card.
+
+### …and then overlapped, one card deep (v0.75.0)
+
+The proposal on the table was to hand the replay to **section 13** — let regular
+auto-play drive Chessable's board and transition into ours when it hands back.
+Refused, on the report itself: section 13 is what is shaky on mobile, so adopting
+it adopts the problem. It would also put two writers on Chessable's board with a
+handoff (the thing the three hold flags exist to prevent, and which this module
+got wrong once already, v0.71 → v0.73), and cost the blindfold seam its clock for
+the whole prefix.
+
+There is a structural reason to prefer ours, too. The two replays fail
+differently: section 13 is **observation-driven** — board mutation → rAF →
+decide, the chain that runs 100–300 ms late on a phone, over a board DOM that can
+hold stale duplicate pieces after a rollback — while this one is **plan-driven**,
+taking its moves from data already in memory and never needing to see a frame to
+know what comes next. One fewer failure mode, and it is the one that bites on
+mobile. *Not measured on a phone; the argument is structural.*
+
+What replaced it is a **one-card-deep overlap**:
+
+- **The press goes out at the reveal**, auto path only. Exactly as safe —
+  `reveal()` only runs with `cardReady()` true — and in auto-play there is no
+  decision between the two moments to lose, the verdict being "correct" by
+  construction. Chessable's ~350 ms then runs *under* the beat we were showing
+  anyway: `reveal + advance + Chessable` → `reveal + max(advance, Chessable)`.
+  The manual path keeps its press at the grade, and must.
+- **One card is all the depth worth having.** Our pace and Chessable's are within
+  a beat of each other, so a deeper buffer holds verdicts it cannot apply any
+  sooner while making a failed act mis-file everything behind it. A buffer is
+  safe for *auto-play's* verdicts (known-correct, deterministic prefix) and never
+  for the *user's* — that distinction is the whole argument, and it is why there
+  is no queue, no sync barrier and no rewind policy.
+- **The prefix is decided once**, when the plan first lands. Both inputs are in
+  memory and neither moves under us — the record only ever gains moves we are
+  about to play ourselves, never a card still ahead. Asking card by card made the
+  first card of every variation wait on a read it could have had already, which
+  is the run reported as shakiest.
+- **The chase adapts** to what a read costs on the device, and must *serve*
+  before it stops: the plan now regularly lands while our board is still in
+  'shown', where applyPlan cannot serve, and returning without serving hands the
+  card back to the 500 ms poll.
+
+Expected ≈ 610 ms/card against a ~500 ms floor set by the beats themselves.
+
+### Four follow-ups from using it (v0.76.0)
+
+All four came out of a real session rather than a measurement.
+
+**The arrow is a "your turn to grade" marker** (removed in v0.76.0, restored with
+a rule in v0.77.0). Removing it was right about the fact and wrong about the job.
+As a statement of *which* move it was, it is the same thing a third time — the
+move is played on this board and its two squares are tinted. What it earns its
+place doing is marking the moment the board has stopped and is waiting for you.
+
+So it is **suppressed during auto-play**, where the card grades itself a beat
+later and there is no decision to point at. The test is `sg.autoGrading` rather
+than the phase, because an auto card sits in exactly the same `'shown'` phase a
+manual one does; `autoReveal` sets that flag *before* calling `reveal`, so the
+first paint already knows.
+
+Its colour is the **ring's amber**, read off `--clo-attention` rather than
+repeated in JS: one colour, one idea. It was the quiz board's green until
+v0.77.0, which on Chessable's own green board image has the same lack of edge
+that made the 2px green ring unreadable. The four `SHAPE_COLOR_HEX` values are
+*Chessable's* annotation colours and mean other things on a board the user also
+annotates, so they are only the fallback.
+
+**A 4px ring plus a 1px dark edge.** At 2px, against the board image it now
+wears, amber sat on a busy green border and read as part of the board. Thicker
+rather than a new colour, because the colour is carrying meaning: amber is *this
+board takes no input*, against the green of the drill and the line quiz, which
+do. The dark outer ring is what makes it read as a ring on a light theme too.
+
+**Chessable's per-move clock is hidden** while the mode runs. It flickers — the
+clock is paused and resumed around each card — and it cannot say anything the
+user can act on, since running out of time is exactly what the pausing makes
+impossible. `visibility`, never `display`: the bar lives in the board footer, so
+taking it out of flow would move the footer and everything anchored below the
+widget. Restored in `stop()`, the one path every exit takes.
+
+**Both speeds are user settings**, behind a cog. `cloShowGradePace` chooses a
+`{reveal, advance}` pair, `cloShowGradeAnim` the glide. The measurement said what
+was *wasted*, not what is comfortable — "may even be a bit too fast" is an answer
+only the person watching can give.
+
+The glide is deliberately **one number driving two things**: the CSS transition
+(as `--clo-sg-anim` on the board element, leaving `.clo-cr-piece`'s shared 180 ms
+rule alone for the other three boards) and the delay before the DOM is
+reconciled, which must never be shorter than the transition or the animation is
+cut off mid-flight. And `advanceMs()` is floored at the glide, because the two
+settings are independent: a brisk pace with a slow animation would play the reply
+while your own move was still sliding, reading as one blurred movement rather
+than two moves.
+
+### Wearing Chessable's own board
+
+Our board covers theirs for a whole session, so a palette of our own reads as
+"something has taken over the page" — the opposite of the continuation quiz,
+whose colours are deliberately ours because there *this is a different board* is
+the message. Hence `.clo-sg-board--themed`, never a change to the shared
+`.clo-cr-sq--light/--dark`.
+
+Ground truth (2026-08-05): every `.square-55d63` computes to a **transparent**
+background. The checkers are a themed background **image**
+(`Green.<hash>.png`) on an ancestor two levels up, `background-size: cover`. So
+there is no square colour to read — and the class carrying it names the *theme*,
+which is why `boardThemeEl()` walks ancestors rather than matching a selector: a
+selector would only ever work for one theme. Copying the image follows the user's
+own theme for free. `100% 100%` rather than `cover` so our 8×8 maps exactly onto
+the image's, and `positionBoard` measures the *theme* element — inset a couple of
+px inside the board container by their border — so our grid lines up with the
+checkers being borrowed. The **amber ring stays**: it is what says this board
+takes no input, in the same place as two boards that do.
 
 **Hand-back is section 13's rule**: only a variation's OPENING run is ever
 replayed, never a jump back in after the user has taken a card themselves
@@ -461,12 +607,38 @@ reproduction of `pressSquare` had failed during the ground-truthing, and that
 turned out to be an artefact of the reproduction, not of the shipped recipe),
 the give-up path, the timer pause, and `giveUpButton()`'s find-by-exclusion.
 
+**Auto-play, end to end (v0.74.0, 2026-08-04)** — course 453453, overstudy of
+70382663, a variation proven earlier in the same session. All seven cards were
+recognised from section 13's record, revealed, graded and played without a
+press; Chessable recorded 100 % accuracy and the console shows the tracker
+picking each one back up (`auto-play: recorded c7c5 (opponent replied)` …), so
+the record round-trips through a real session rather than only through the
+simulation. Also confirmed: with the extension reloaded — which clears
+`chrome.storage.session` and therefore the proofs — every card correctly
+declines with `auto-play passed on c5 — not answered correctly yet this session`.
+
+**The browse-state advance** — `advance()` works there, via its *fallback*: the
+browse state renders no `[data-testid="nextMovesButton"]`, so `nextButton()` is
+null and the synthetic `n` on `document` is what moved the session on. That is
+the first evidence that MoveTrainer2 *does* accept a synthetic key here, against
+the §4 finding that it did not in the study state — so the answer is
+state-dependent, and §12.6's doubt about section 22's `advance()` stands for the
+states where a real control exists.
+
 ## 12. Still to verify live
 
-1. **Auto-play (§2b)** — that a proven card is recognised, replayed and graded
-   without a press, and that it hands back cleanly at the first unproven move.
-   The logic is simulated (5 cases) but the bridge into section 13's record has
-   never run against a real session record.
+1. ~~**Auto-play (§2b)** — that a proven card is recognised, replayed and
+   graded without a press.~~ Done, v0.74.0 — see §11. What is still *not*
+   observed is the **hand-back** at the first unproven move: every card of the
+   test variation was proven, so the replay never had to stop mid-line.
+1c. **The v0.75.0 overlap, end to end.** Syntax-checked and traced, and the
+   theme copy was confirmed live (`clo-sg-board--themed`, the right image,
+   `100% 100%`, squares transparent) — but the replay itself was NOT re-measured
+   after the change: the test window went occluded, and `tick()` returns on
+   `document.hidden`, so the mode simply stops under automation. Wanted: the
+   per-card cycle (expected ~610 ms), that a card is still graded exactly once,
+   the prefix log line naming the right count, that hand-back at an unproven move
+   still pauses the clock, and that our grid lines up with their checkers.
 1a. **A retry pass driven from the two keys (§2d)** — end to end, and in
    particular that auto-play stops at the held move rather than playing it. Also
    unverified: how section 17's **transition shield** (v0.54.0) and our board
@@ -479,12 +651,12 @@ the give-up path, the timer pause, and `giveUpButton()`'s find-by-exclusion.
 2. **The no-flicker change (§2c)** — that the board really does stay dark across
    a variation change rather than showing the previous position, and that it
    comes back promptly rather than lingering blank.
-3. **`autoRevealMs` / `autoAdvanceMs`** — guesses at a comfortable replay
-   rhythm. Likely to need tuning by feel.
-4. **`settleMs` / `stepMs`** — still guesses, though the flows they pace are now
-   known to work.
-5. **The browse-state advance.** `nextMovesButton` was verified in the *study*
-   state, not the browse state.
+3. **`autoRevealMs` / `autoAdvanceMs`** — 260/240 since v0.74.0, chosen against
+   a measurement rather than by feel, but the *comfort* of that rhythm is still
+   a judgement nobody has made in a real study session.
+4. **`settleMs` / `stepMs`** — still guesses. `settleMs` now only ever runs on
+   the manual path, since auto-play no longer pauses.
+5. ~~**The browse-state advance.**~~ Done, v0.74.0 — see §11.
 6. **Section 22's `advance()`** — the synthetic-key finding in §4 suggests it may
    not work. Worth a direct test; it is a shipped feature and unrelated to this
    one.
