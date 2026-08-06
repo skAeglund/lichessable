@@ -237,8 +237,9 @@ still have to be played on the board.
 
 ### Show and grade (two-button review)
 
-Off by default; turn on **Show and grade** in the options page, then press
-**Show & grade** on the widget during a **Review** session. In this mode you
+On by default since v0.81.0 (uncheck **Show and grade** in the options page to
+hide it): press **Show & grade** on the widget during a **Review** session —
+nothing about the mode happens until you do. In this mode you
 never make a move — the whole session runs from two keys, which is what makes it
 studiable from a Bluetooth ring with the screen out of reach.
 
@@ -277,6 +278,17 @@ answered correctly this session is shown and graded for you, and it hands back a
 the first move you have *not* proven yet. As with the ordinary auto-play, only a
 variation's opening run is ever replayed: once you have answered a card yourself,
 the rest of that variation is yours.
+
+Two things about that used to make it look as though auto-play only started
+working a variation or two late, both fixed in v0.81.0. **Pressing *next* on a
+card auto-play has already claimed no longer counts as taking the variation
+over** — the beat before a replayed move appears is 260 ms at the default pace,
+i.e. well inside the rhythm of someone pressing a ring steadily, so agreeing with
+auto-play used to cost you the entire rest of the line; now that press simply
+makes it get on with it. Pressing *wrong* still hands over, because it
+contradicts the very proof the card was picked on. And key **auto-repeat is
+ignored** — holding the advance key a fraction too long fired again inside the
+next variation and took that one over before its first card had even been served.
 
 It advances one card at a time rather than racing ahead of Chessable. It could
 replay the line on our board at its own pace, but every card still has to be
@@ -365,8 +377,9 @@ through one `announce()` call and the board can be switched off wholesale.
 
 Trainer sessions — review and learn alike — can also **auto-play moves you
 already proved this session**
-(the *Auto-play* toggle behind the widget's **cog**, off by default, with a
-Fast/Normal/Relaxed pace select and a *Clear* alongside it — they are
+(the *Auto-play* toggle behind the widget's **cog**, on by default since v0.81.0
+and at the **Fast** pace, with a Fast/Normal/Relaxed pace select and a *Clear*
+alongside it — they are
 preferences, so as of v0.59.0 they live with the other preferences rather than
 among the actions. The cog itself turns green while auto-play is on, and says so
 in its tooltip, since that is the one thing tucking a toggle away would
@@ -1373,7 +1386,16 @@ enough not to run, the ↻ button is the only way back.
   completion block already up — where the frame reader stands down, browse
   navigation not being play. Without that read the last move of a line never
   earned a proof, which showed up as auto-play replaying a whole variation on a
-  retry pass and then handing the board back for its very final move;
+  retry pass and then handing the board back for its very final move. That read
+  is on the 500 ms poll, and since v0.81.0 the answer is **also committed on the
+  way out of a variation** (`resetVariation`), because the variation-change check
+  runs *before* the completion branch on the same tick and on every board frame —
+  so the moment the drawer's active row flipped, the last answer was thrown away
+  with the rest of the per-variation state. Same for a run that ends without a
+  completion block at all ("Time's up" renders none) and for leaving the trainer
+  path mid-line. It is safe because a pending answer only ever survives a move
+  the board *accepted and kept*: a guess taken back clears it, and a refused move
+  usually never reaches the board at all. Finally,
   user-colour with no pointer input ⇒ trainer-played (solution replays,
   Key-Moves prefixes) and never recorded. The record lives in
   `chrome.storage.session` keyed on placement+side+castling per course, so

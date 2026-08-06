@@ -1067,8 +1067,16 @@ Currently working (v0.18.x).
   (`vs.handedOver`), auto-play never resumes later in that SAME variation even
   if a transposition reaches a proven position again — jumping back in mid-line
   was reported as jarring; only a variation's opening run ever replays. UI = a
-  cluster appended to the overstudy widget (toggle `cloAutoPlayEnabled` off by
-  default, speed `cloAutoPlaySpeed`, a "Clear" button, status chip).
+  cluster appended to the overstudy widget (toggle `cloAutoPlayEnabled`, speed
+  `cloAutoPlaySpeed`, a "Clear" button, status chip).
+  ON BY DEFAULT AT THE 'fast' SPEED since v0.81.0, and the KEY IS NOW OPT-OUT:
+  absent means ON, so every read is `!== false` and never `Boolean(...)`. There
+  are FOUR readers and they must agree — the pref load, the `storage.onChanged`
+  listener, and section 17's `prevAutoPlay` (which SAVES the user's setting to
+  put it back when a pass ends; reading an absent value as `false` there would
+  switch auto-play off for the rest of the session at the end of every pass).
+  `ap.enabled` still initialises to `false`: that is what an unreadable pref read
+  leaves behind, and it lasts only until the read lands.
   THE STATUS CHIP IS NOT IN THAT CLUSTER (v0.57.0) — it is appended to the
   widget's own `.clo-review-status` line through `reviewStatusHost()`, and so is
   the retry pass's (section 17). Inline among the controls, every message
@@ -1181,6 +1189,22 @@ Currently working (v0.18.x).
     tracker is suspended on the next line) and no wrong-guess capture (the
     variation is over) — and a frame that is not exactly one legal move on is
     left alone, since the browse board may already have been navigated.
+  - …AND THE ANSWER IS ALSO COMMITTED ON THE WAY OUT (`resetVariation`,
+    v0.81.0). The read above is on the 500 ms POLL, and `syncVariation()` — which
+    detects the variation change and replaces `ap.vs` wholesale — runs BEFORE the
+    browse branch on that same tick AND on every board frame. So the instant the
+    drawer's active row flips, the still-uncommitted last answer goes with the
+    rest of the per-variation state. Same for a run that ends with NO browse
+    state at all (a "Time's up" finish renders no `practiceProgress` block, so
+    `reviewBrowseReady()` never goes true) and for leaving the trainer path
+    mid-line. `resetVariation` therefore calls `confirmPendingRecord('variation
+    changed')` first. SAFE, and for a reason worth writing down: a pending record
+    only ever survives a move the board ACCEPTED AND KEPT — `rollbackTo` clears
+    both it and the pointer credit when a guess is taken back, and a refused move
+    usually never commits to the DOM at all, so there is nothing to roll back and
+    nothing pending. It is also why a trainer solution replay after "Time's up"
+    cannot sneak through: `rollbackTo` has already zeroed `ap.lastPointerAt`, so
+    that move is classified 'trainer' and never becomes pending.
   - `noteDeadContext(err)`: after an extension reload, every `chrome.*` call in
     the still-running content script throws "Extension context invalidated".
     Such an orphan holds a record it can neither refresh nor save and could
@@ -2543,7 +2567,13 @@ Currently working (v0.18.x).
 - Show and grade (section 23, v0.71.0; design + the whole live read in
   DESIGN-show-and-grade.md): a `/practice/` REVIEW card answered with two keys
   and no move — the mode that makes a session studiable from a Bluetooth ring,
-  and the seam for blindfold practice. Opt-IN (`cloShowGrade`, storage.local).
+  and the seam for blindfold practice. `cloShowGrade`, storage.local — OPT-OUT
+  since v0.81.0 (absent = ON, only an explicit `false` is stored as off, the
+  `cloLineHeadsUp` shape). It was opt-IN because the mode takes two keys off
+  MoveTrainer2 for a whole session and answers real SRS cards; none of that
+  happens until the ROW'S BUTTON is pressed, so the preference only ever decides
+  whether that button is offered. `sg.enabled` still initialises to `false` for
+  the unreadable-pref case.
   IMPLEMENTED BUT NOT YET VERIFIED LIVE — §11 of the design doc is the list, and
   the injection in the "I knew it" path is the item everything else rests on.
   THE FEATURE IS MOSTLY A CONSEQUENCE OF ONE GROUND TRUTH (2026-08-04, course
@@ -2768,16 +2798,28 @@ Currently working (v0.18.x).
     the early press must not change the phase — 'shown' is the move being looked
     at. `failAct` now FORCES 'think', since an early press fails from 'shown',
     which nothing else moves on.
-  * THE PREFIX IS DECIDED ONCE, when the variation's plan first lands
+  * THE PREFIX IS DECIDED WHEN THE VARIATION'S PLAN FIRST LANDS
     (`computePrefix`/`plyIsProven`, replacing a per-card `cardIsProven` that
-    re-derived from `sg.pos`). Both inputs are already in memory and neither
-    moves under us — the plan is fixed, and the record only ever gains moves we
-    are about to play OURSELVES, never a card still ahead. Asking card by card
-    made the FIRST card of every variation wait on a read it could have had
-    already, which is the run reported as shakiest. It also reads the position
-    from each ply's own `sourceFen` rather than the live board, so a promotion
-    now ENDS the prefix instead of being refused at the last moment — which,
-    with the auto grade retried by tick, would otherwise have looped.
+    re-derived from `sg.pos`). Both inputs are already in memory, so asking card
+    by card is what made the FIRST card of every variation wait on a read it
+    could have had already, which is the run reported as shakiest. It also reads
+    the position from each ply's own `sourceFen` rather than the live board, so a
+    promotion now ENDS the prefix instead of being refused at the last moment —
+    which, with the auto grade retried by tick, would otherwise have looped.
+    IT IS NO LONGER THE LAST WORD (v0.81.0). The argument for never asking again
+    was that "the record only ever gains moves we are about to play OURSELVES,
+    never a card still ahead". FALSE: it also gains the PREVIOUS variation's
+    answers, and the last of those is committed by section 13's own 500 ms poll
+    (`confirmPendingRecord('variation completed')`) — a different timer from the
+    plan read that computes this. A proof landing on the wrong side of that race
+    was invisible for the whole of the next variation, i.e. auto-play a variation
+    late, which is exactly how this was reported. So `cardIsProven` RE-WALKS when
+    the cursor has run out of prefix, at most once per card (`sg.prefixAt`), and
+    `computePrefix` goes quiet unless the answer actually changed
+    (`sg.prefixLogged`) — one line per card saying the same thing would bury the
+    ones that matter. It can only ever EXTEND the answer, and the opening-run rule
+    is `handedOver`'s job, not this one's, so a late proof still cannot restart a
+    replay the user has taken over.
   * THE CHASE IS ADAPTIVE and self-scheduling (`chaseInterval`, floor
     `chaseMs`, cap `chaseMaxIntervalMs`): never ask again inside twice what the
     last read actually cost. A fixed 110ms is right on a desktop and on a phone
@@ -2980,6 +3022,25 @@ Currently working (v0.18.x).
   Simulated over 5 cases: nothing proven, a proven prefix (hands back at the
   first new move), all proven, only the MIDDLE proven (⇒ no auto-play at all —
   the opening-run rule), and proven-again-after-a-hand-back (⇒ still manual).
+  TWO PRESSES THAT WERE NOT HAND-OVERS AND WERE TREATED AS ONE (v0.81.0), both
+  reported as "auto-play only kicks in a variation or two late":
+  * "NEXT" ON A CARD AUTO-PLAY HAS ALREADY CLAIMED means "get on with it", not
+    "I'll take over". A pending `sg.autoTimer` IS `maybeAutoPlay` having decided
+    this exact card is proven and being about to reveal it and grade it correct —
+    which is what the press is asking for too. The reveal beat is 260 ms at the
+    DEFAULT pace, i.e. comfortably inside the rhythm of someone pressing a ring
+    steadily, so agreeing with auto-play cost the user the whole rest of the line
+    and the feature only appeared to work on a variation they happened to sit
+    out. Now that press clears the timer and calls `autoReveal()` at once (whose
+    own guards re-check phase and `cardReady()`; if it refuses, the card stays in
+    'think' with no timer and the next `serveCard` re-arms it — no stall).
+    "WRONG" IS STILL A HAND-OVER and must be: it contradicts the very proof the
+    card was picked on. So is any press with no auto card pending.
+  * AUTO-REPEAT IS NOT A PRESS (`e.repeat`). Still SWALLOWED — the trainer must
+    not see it either — but never acted on. Holding a key fires keydown every
+    ~30 ms once the platform's repeat delay is up, and the ADVANCE press is the
+    one held longest, so the repeats landed in the NEXT variation's 'think' phase
+    and took it over before its first card had been served.
   NO FLICKER AT A VARIATION CHANGE (v0.71.0): the board used to keep showing the
   position the PREVIOUS variation ended on until the trainer settled, then jump.
   `applyPlan` nulls `sg.pos` on a variation change and

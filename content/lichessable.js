@@ -420,7 +420,12 @@
     // makes a move, so a whole review session runs from two buttons — which is
     // what makes it playable from a Bluetooth ring.
     showGrade: {
-      key: 'cloShowGrade',    // chrome.storage.local; absent = off (opt-IN)
+      // chrome.storage.local; absent = ON (opt-OUT, v0.81.0 — it used to be
+      // opt-IN). Only an explicit `false` is ever stored as "off", the shape
+      // CONFIG.continuation.headsUpKey already uses. The mode still does
+      // nothing until the row's button is pressed, so the preference only
+      // decides whether that button is offered at all.
+      key: 'cloShowGrade',
       pollMs: 500,
       // The two bindings. ARRAYS, not strings, so a second spelling of the same
       // intention (a ring that sends MediaTrackNext rather than "2") is one
@@ -679,7 +684,11 @@
 
     // --- Auto-play already-mastered moves in review (section 13) -----------
     autoPlay: {
-      enabledKey: 'cloAutoPlayEnabled', // chrome.storage.local; off by default
+      // chrome.storage.local; absent = ON (opt-OUT since v0.81.0). Only an
+      // explicit `false` is ever stored as "off" — the headsUpKey shape — so
+      // every read of this key is `!== false` and never `Boolean(...)`. Section
+      // 17 reads it too, to put the user's own setting back when a pass ends.
+      enabledKey: 'cloAutoPlayEnabled',
       speedKey:   'cloAutoPlaySpeed',   // chrome.storage.local; 'fast'|'normal'|'relaxed'
       recordKey:  'cloAutoPlayRecord',  // chrome.storage.session; per-course position records
       recordTtlMs: 12 * 3600 * 1000,    // entries older than this are ignored and pruned
@@ -703,7 +712,7 @@
         normal:  { move: 450, settle: 700 },
         relaxed: { move: 900, settle: 900 },
       },
-      defaultSpeed: 'normal',
+      defaultSpeed: 'fast',
       // Both waits above are counted from the BOARD CHANGE, not from the
       // moment the evaluation happens to run — see evaluateAutoPlay. The two
       // constants below are what keeps that clock honest on a phone, where
@@ -7839,7 +7848,8 @@
     const currentSpeed = () => C.speeds[ap.speed] || C.speeds[C.defaultSpeed];
 
     const ap = {
-      enabled: false,          // the toggle (persisted; off by default)
+      enabled: false,          // the toggle (persisted; ON unless explicitly off —
+                               // false only until the preference read lands)
       speed: C.defaultSpeed,   // extra pause before each auto-played move
       record: null,            // { posKey: entry } for the current course
       recordBid: null,
@@ -8279,6 +8289,20 @@
 
     function resetVariation(oid, bid) {
       const vs = ap.vs;
+      // COMMIT THE ANSWER ON THE WAY OUT, or the LAST move of a variation can
+      // lose its proof (v0.81.0). Nothing else confirms it: there is no opponent
+      // reply after it, so it rides on `confirmPendingRecord('variation
+      // completed')` in tick's browse branch — and `syncVariation()` runs BEFORE
+      // that branch on the same tick AND on every board frame, so the instant
+      // the drawer's active row flips, this function replaces `ap.vs` and the
+      // pending answer goes with it. Same for a variation that ends without a
+      // browse state at all ("Time's up" renders no practiceProgress block) and
+      // for leaving the trainer path mid-line.
+      //
+      // Safe, because a pending record only ever survives a move the board
+      // ACCEPTED and kept: `rollbackTo` clears it (and the pointer credit) when
+      // a guess is taken back, and a refused move usually never commits at all.
+      confirmPendingRecord('variation changed');
       clearTimeout(vs.injectTimer);
       clearTimeout(vs.verifyTimer);
       clearTimeout(vs.oracleTimer);
@@ -9579,7 +9603,7 @@
     (async () => {
       try {
         const stored = await chrome.storage.local.get([C.enabledKey, C.speedKey]);
-        ap.enabled = Boolean(stored[C.enabledKey]);
+        ap.enabled = stored[C.enabledKey] !== false;
         const speed = stored[C.speedKey];
         ap.speed = typeof speed === 'string' && Object.prototype.hasOwnProperty.call(C.speeds, speed)
           ? speed : C.defaultSpeed;
@@ -9592,7 +9616,7 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       if (changes[C.enabledKey]) {
-        ap.enabled = Boolean(changes[C.enabledKey].newValue);
+        ap.enabled = changes[C.enabledKey].newValue !== false;
         if (!ap.enabled) stopReplaying();
         syncUi();
       }
@@ -11503,10 +11527,14 @@
       // as firmly as the other two force it on — either way the user's own
       // setting is put back when the pass ends.
       const want = mode !== 'whole';
-      let prevAutoPlay = false;
+      // The user's own setting, to be put back when the pass ends. `!== false`,
+      // not `Boolean(...)`: the key is opt-OUT (see CONFIG.autoPlay.enabledKey),
+      // so an ABSENT value means ON and reading it as off would silently switch
+      // auto-play off for the rest of the session at the end of every pass.
+      let prevAutoPlay = true;
       try {
         const got = await chrome.storage.local.get(CONFIG.autoPlay.enabledKey);
-        prevAutoPlay = Boolean(got[CONFIG.autoPlay.enabledKey]);
+        prevAutoPlay = got[CONFIG.autoPlay.enabledKey] !== false;
         await chrome.storage.local.set({ [CONFIG.autoPlay.enabledKey]: want });
       } catch (err) {
         if (noteDead(err)) return false;
@@ -18889,6 +18917,10 @@
     const SG_MENU_ID = 'lichessable-sg-menu';
 
     const sg = {
+      // The PREFERENCE is opt-OUT (see CONFIG.showGrade.key), but this starts
+      // false all the same: it is what an unreadable preference read leaves
+      // behind, and an orphaned content script offering a button that can never
+      // drive Chessable is worse than one that shows nothing.
       enabled: false,
       active: false,
       // 'off' | 'think' | 'shown' | 'acting' | 'browse'
@@ -18917,11 +18949,14 @@
       // would otherwise grade this card must check it first.
       pressed: false,
       pressing: false,
-      // How far into THIS variation auto-play may replay, decided once when the
-      // plan lands rather than card by card. Exclusive: the user ply at index i
-      // is auto-playable iff i < prefixEnd.
+      // How far into THIS variation auto-play may replay: decided when the plan
+      // lands, so card 0 never waits on a read, and re-walked by cardIsProven at
+      // any card the answer does not reach (see its own note). Exclusive: the
+      // user ply at index i is auto-playable iff i < prefixEnd.
       prefixEnd: 0,
       prefixDone: false,
+      prefixAt: -1,        // the card the last re-walk was done for — one per card
+      prefixLogged: false, // …and whether this variation's count has been said once
       handedOver: false,
       lastAutoSkip: '',  // dedupe key for noteAutoSkip
       chaseTimer: 0,
@@ -19115,16 +19150,19 @@
         sg.pressed = false;
         sg.prefixDone = false;
         sg.prefixEnd = 0;
+        sg.prefixAt = -1;
+        sg.prefixLogged = false;
         sg.actedOnce = false;   // the next first press races the trainer again
         clearAutoTimer();
       }
       sg.plies = Array.isArray(plan.plies) ? plan.plies : [];
       // DECIDE THE WHOLE PREFIX ON THE FIRST READ OF THE VARIATION, before any
-      // card has been served. Both inputs are already in hand and neither moves
-      // under us, so there is nothing to gain by asking card by card — and
-      // asking card by card is what made the FIRST card of every variation wait
-      // on a plan read it could have had already, which is the run reported as
-      // shakiest on mobile.
+      // card has been served. Both inputs are already in hand, so asking card by
+      // card is what made the FIRST card of every variation wait on a plan read
+      // it could have had already, which is the run reported as shakiest on
+      // mobile. It is no longer the LAST word, though — cardIsProven re-walks at
+      // any card this answer does not reach, because the record can still gain
+      // the previous variation's final answer after this read (v0.81.0).
       if (sg.plies.length && !sg.prefixDone) { sg.prefixDone = true; computePrefix(); }
       if (newVariation) loadAlternatives(sg.oid, plan.bid || readQuickEditBid(), plan.altSetting);
       if (plan.fen !== sg.planFen) {
@@ -20062,7 +20100,30 @@
      * our own.
      */
     function cardIsProven() {
-      return sg.cardIdx >= 0 && sg.cardIdx < sg.prefixEnd;
+      if (sg.cardIdx < 0) return false;
+      // THE PREFIX IS DECIDED ONCE PER VARIATION, AND THAT WAS ONE PREMISE TOO
+      // FAR (v0.81.0). Deciding it up front is right — both inputs are in memory
+      // and card 0 must not wait on a plan read it could have had already — but
+      // the argument for never asking again was that "the record only ever gains
+      // moves we are about to play OURSELVES, never a card still ahead". It also
+      // gains the PREVIOUS variation's answers, and the last of those is
+      // committed by section 13's own 500ms poll
+      // (`confirmPendingRecord('variation completed')`), which is a different
+      // timer from the plan read that computes this. A proof landing on the
+      // wrong side of that race was invisible for the whole of the next
+      // variation — auto-play one variation late, which is exactly how this was
+      // reported.
+      //
+      // So re-walk when we have run OUT of prefix, at most once per card. It is
+      // a synchronous walk over plies already in memory, and it can only ever
+      // extend the answer: `handedOver` — not this — is what enforces section
+      // 13's opening-run rule, so a later proof cannot restart a replay the user
+      // has taken over.
+      if (sg.cardIdx >= sg.prefixEnd && sg.prefixAt !== sg.cardIdx) {
+        sg.prefixAt = sg.cardIdx;
+        computePrefix();
+      }
+      return sg.cardIdx < sg.prefixEnd;
     }
 
     const isPromotion = (ply) => Boolean(ply && ply.san && /=/.test(ply.san));
@@ -20103,6 +20164,7 @@
      * us — so one walk is as good as one per card and arrives sooner.
      */
     function computePrefix() {
+      const was = sg.prefixEnd;
       sg.prefixEnd = sg.plies.length;
       const cards = sg.plies.filter((p) => p && p.isUserMove).length;
       let proven = 0;
@@ -20114,6 +20176,11 @@
         break;
       }
       if (!cards) return;
+      // Quiet when the re-walk found nothing new: cardIsProven asks again at
+      // every card it cannot answer, and one line per card saying the same thing
+      // would bury the ones that matter.
+      if (sg.prefixLogged && sg.prefixEnd === was) return;
+      sg.prefixLogged = true;
       log('show-and-grade: ' + proven + ' of ' + cards + ' card(s) proven this session' +
         (sg.autoPlay ? '' : ' (auto-play is off)'));
     }
@@ -20319,6 +20386,13 @@
       e.preventDefault();
       e.stopPropagation();
       if (e.type !== 'keydown') return; // one action per press, on the way down
+      // AUTO-REPEAT IS NOT A PRESS. Swallowed like any of our keys — the trainer
+      // must not see it either — but never acted on: holding a key down (or a
+      // ring button that bounces) fires keydown every ~30ms once the platform's
+      // repeat delay is up, and the advance press is the one held longest, so
+      // the repeats land in the NEXT variation and take it over before its first
+      // card has been served.
+      if (e.repeat) return;
       if (sg.phase === 'acting') return;
       if (sg.phase === 'browse') { if (isNext) advance(); return; }
       // THE ALTERNATIVES KEY GRADES NOTHING and answers only once the move is
@@ -20340,6 +20414,24 @@
       // (resuming mid-line was reported as jarring). Set HERE and not in
       // reveal(), which auto-play itself calls.
       if (sg.phase === 'think') {
+        // "NEXT" ON A CARD AUTO-PLAY HAS ALREADY CLAIMED IS "GET ON WITH IT",
+        // NOT "I'LL TAKE OVER" (v0.81.0). The pending timer means maybeAutoPlay
+        // decided this exact card is proven and is about to reveal and grade it
+        // as correct — which is what the press is asking for too, so handing the
+        // variation over would cost the user the whole replay for agreeing with
+        // it. And it did: at the default pace the reveal beat is 260ms, i.e.
+        // comfortably inside a ring user's own rhythm, so pressing steadily
+        // meant auto-play never ran at all and the feature looked like it only
+        // "kicked in" on a variation the user happened to sit out.
+        //
+        // "WRONG" IS STILL A HAND-OVER, and must be: it contradicts the very
+        // proof the card was picked on, so the user is genuinely taking this
+        // line back. Same for a press with no auto card pending.
+        if (isNext && sg.autoTimer) {
+          clearAutoTimer();
+          autoReveal();       // its own guards re-check phase and cardReady()
+          return;
+        }
         sg.handedOver = true;
         sg.autoGrading = false;
         clearAutoTimer();
@@ -20624,6 +20716,8 @@
       sg.pressing = false;
       sg.prefixDone = false;
       sg.prefixEnd = 0;
+      sg.prefixAt = -1;
+      sg.prefixLogged = false;
       sg.handedOver = false;
       sg.announced = '';
       // Nothing about the last run may survive into this one: the cursor is an
@@ -20866,7 +20960,7 @@
     (async () => {
       try {
         const stored = await chrome.storage.local.get([C.key, C.autoKey, C.paceKey, C.animKey]);
-        sg.enabled = stored[C.key] === true;
+        sg.enabled = stored[C.key] !== false;
         sg.autoPlay = stored[C.autoKey] === true;
         sg.pace = C.paces[stored[C.paceKey]] ? stored[C.paceKey] : C.defaultPace;
         sg.anim = typeof C.anims[stored[C.animKey]] === 'number'
@@ -20896,11 +20990,11 @@
           syncAutoUi();
         }
         if (!changes[C.key]) return;
-        sg.enabled = changes[C.key].newValue === true;
+        sg.enabled = changes[C.key].newValue !== false;
         if (!sg.enabled) stop('turned off');
         else tick();
       });
-    } catch (err) { /* orphaned context — off, which is the default anyway */ }
+    } catch (err) { /* orphaned context — `sg.enabled` stays false, see its own note */ }
 
     document.addEventListener('keydown', onKey, true);
     document.addEventListener('keypress', onKey, true);

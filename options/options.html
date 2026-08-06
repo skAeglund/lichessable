@@ -113,7 +113,10 @@
     pinned, so a phone cannot scale the board off the screen around it.
   </p>
 
-  <label class="inline"><input type="checkbox" id="showGrade"> Show and grade (two-button review)</label>
+  <!-- `checked` in the markup because the preference is opt-OUT (absent = on):
+       init() overwrites this from storage, so it only shows if that read fails,
+       and then the effective default is what it should say. -->
+  <label class="inline"><input type="checkbox" id="showGrade" checked> Show and grade (two-button review)</label>
 
   <p class="fineprint">
     Adds a <strong>Show &amp; grade</strong> button to the in-session widget in

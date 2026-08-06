@@ -382,8 +382,10 @@ singleton, positioned under the board for the whole trainer session, never
 inside Chessable's React tree — with one new cluster:
 
 - **Auto-play toggle** (`aria-pressed`, persisted in `chrome.storage.local`
-  key `cloAutoPlayEnabled`, **off by default**).
-- **Speed select** (Fast / Normal / Relaxed, `cloAutoPlaySpeed`).
+  key `cloAutoPlayEnabled`, **on by default since v0.81.0** — the key is opt-OUT,
+  so an absent value means ON and every read is `!== false`).
+- **Speed select** (Fast / Normal / Relaxed, `cloAutoPlaySpeed`, **Fast** by
+  default since v0.81.0).
 - A small status chip while acting: `▶ replaying known moves… (click to
   stop)` — clicking it (or any user mousedown on the board) cancels
   auto-play for the current variation and hands control back instantly.

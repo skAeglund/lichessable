@@ -231,11 +231,18 @@ What replaced it is a **one-card-deep overlap**:
   safe for *auto-play's* verdicts (known-correct, deterministic prefix) and never
   for the *user's* — that distinction is the whole argument, and it is why there
   is no queue, no sync barrier and no rewind policy.
-- **The prefix is decided once**, when the plan first lands. Both inputs are in
-  memory and neither moves under us — the record only ever gains moves we are
-  about to play ourselves, never a card still ahead. Asking card by card made the
-  first card of every variation wait on a read it could have had already, which
-  is the run reported as shakiest.
+- **The prefix is decided when the plan first lands**, because both inputs are in
+  memory and asking card by card made the first card of every variation wait on a
+  read it could have had already, which is the run reported as shakiest. It is
+  **no longer decided *once*** (v0.81.0): the justification for never asking
+  again was that "the record only ever gains moves we are about to play
+  ourselves, never a card still ahead", and that is false — it also gains the
+  *previous* variation's answers, the last of which is committed by section 13's
+  own 500 ms poll, a different timer from this read. A proof landing on the wrong
+  side of that race was invisible for the whole of the next variation, i.e.
+  auto-play one variation late. `cardIsProven` re-walks at any card the standing
+  answer does not reach, at most once per card; it can only extend the prefix,
+  and `handedOver` is what enforces the opening-run rule regardless.
 - **The chase adapts** to what a read costs on the device, and must *serve*
   before it stops: the plan now regularly lands while our board is still in
   'shown', where applyPlan cannot serve, and returning without serving hands the
@@ -402,6 +409,25 @@ auto-play itself calls). Reset per variation.
 auto-play stops at the first new move; all proven → the whole variation replays;
 only the MIDDLE proven → no auto-play at all, which is the opening-run rule; and
 a position proven again after a hand-back → still manual.
+
+**Two presses that were not hand-overs and were counted as one** (v0.81.0). Both
+reported as "it takes at least one extra variation before auto-play kicks in".
+
+- ***next* on a card auto-play has already claimed** means "get on with it", not
+  "I'll take over". A pending `sg.autoTimer` *is* `maybeAutoPlay` having decided
+  this exact card is proven and being about to reveal it and grade it correct —
+  which is what the press is asking for too. The reveal beat is 260 ms at the
+  default pace, comfortably inside the rhythm of someone pressing a ring
+  steadily, so agreeing with auto-play cost the whole rest of the line and the
+  feature appeared to work only on a variation the user happened to sit out.
+  That press now clears the timer and calls `autoReveal()` at once. ***wrong* is
+  still a hand-over** and must be: it contradicts the very proof the card was
+  picked on.
+- **Auto-repeat is not a press** (`e.repeat`) — swallowed like any of our keys,
+  since the trainer must not see it either, but never acted on. Held keys fire
+  keydown every ~30 ms past the repeat delay, and the *advance* press is the one
+  held longest, so the repeats landed in the next variation's 'think' phase and
+  took it over before its first card had been served.
 
 ## 2c. No flicker at a variation change
 
@@ -752,8 +778,12 @@ tooltip. Never a fill: §3.2 reserves that for the one thing to do next, and thi
 is a preference. Measured in the harness: it adds 41px of width and **no** row
 height (38px collapsed, unchanged).
 
-Opt-IN, `cloShowGrade` in `chrome.storage.local`, options-page checkbox, watched
-through `chrome.storage.onChanged`. Auto-play's own key is
+**Opt-OUT since v0.81.0** (absent = ON; only an explicit `false` is stored as
+off): `cloShowGrade` in `chrome.storage.local`, options-page checkbox, watched
+through `chrome.storage.onChanged`. It was opt-IN on the grounds that the mode
+takes two keys off MoveTrainer2 for a whole session and answers real SRS cards —
+but none of that happens until the row's own button is pressed, so the preference
+only ever decides whether that button is offered. Auto-play's own key is
 `cloShowGradeAutoPlay`, written by the row toggle rather than the options page —
 it is a per-session working preference, not a setup decision.
 
@@ -854,6 +884,18 @@ states where a real control exists.
    `cardIsProven` — `noteAutoSkip` names the reason in one line per card, and
    "not answered correctly yet this session" would mean proofs are not being
    recorded at all, which is a different bug in a different section.
+4b. **The v0.81.0 hand-over fixes, and whether they were the whole of it.** All
+   three changes (the *next*-while-claimed press, `e.repeat`, and the prefix
+   re-walk) are reasoned from the code and syntax-checked; none has been seen in
+   a session. The discriminator is already in the console, one line per card:
+   `show-and-grade: auto-play passed on <san> — you have taken this variation
+   over` means a press did it (the first two fixes), `— not answered correctly
+   yet this session` means the proof is not in the record (the third, or a
+   recording bug in section 13), and no line at all with a replay that still does
+   not happen means the card was never served. Also worth reading in the same
+   session: `show-and-grade: N of M card(s) proven this session` on the second
+   variation of a session whose first was answered perfectly — it should name the
+   shared prefix, and if it says 0 the problem is upstream of everything here.
 5. ~~**The browse-state advance.**~~ Done, v0.74.0 — see §11.
 6. **Section 22's `advance()`** — the synthetic-key finding in §4 suggests it may
    not work. Worth a direct test; it is a shipped feature and unrelated to this

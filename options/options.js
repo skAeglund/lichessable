@@ -16,9 +16,12 @@ const AUTO_REVIEW_KEY = 'cloAutoReviewClickables';
 // takes the keyboard from MoveTrainer's own single-key shortcuts while it is
 // focused, which is not something to hand anyone who did not ask for it.
 const TEXT_MOVE_KEY = 'cloTextMove';
-// must match CONFIG.showGrade.key in content/lichessable.js. Opt-IN, and it has
-// to be: the mode takes two keys off MoveTrainer2 for the whole session and
-// answers real SRS cards on the user's behalf.
+// must match CONFIG.showGrade.key in content/lichessable.js. Opt-OUT since
+// v0.81.0 (absent = ON, so only an explicit false is ever stored as "off"). It
+// used to be opt-IN because the mode takes two keys off MoveTrainer2 for a whole
+// session and answers real SRS cards — but none of that happens until the row's
+// "Show & grade" button is pressed, so this preference only decides whether that
+// button is offered at all.
 const SHOW_GRADE_KEY = 'cloShowGrade';
 // must match CONFIG.touch.modeKey / CONFIG.touch.deviceKey in
 // content/lichessable.js. The MODE is the user's override ('auto' unless they
@@ -52,7 +55,7 @@ async function init() {
   $('headsUp').checked = stored[HEADS_UP_KEY] !== false;
   $('autoReview').checked = stored[AUTO_REVIEW_KEY] === true;
   $('textMove').checked = stored[TEXT_MOVE_KEY] === true;
-  $('showGrade').checked = stored[SHOW_GRADE_KEY] === true;
+  $('showGrade').checked = stored[SHOW_GRADE_KEY] !== false;
   const touch = stored[TOUCH_KEY];
   $('touchUi').value = touch === 'touch' || touch === 'desktop' ? touch : 'auto';
   // Worth stating: it is the answer to "why is this still/not large?", and the
