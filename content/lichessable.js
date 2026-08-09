@@ -564,6 +564,15 @@
         slow:    320,
       },
       defaultAnim: 'normal',
+      // The course move's own arrow. This board is NOT an annotation layer: the
+      // arrow sits over the piece it points at, on a board wearing Chessable's
+      // own theme image, and at chessground's full weight it read as heavier
+      // than the move it was describing. So the head is drawn at three quarters
+      // of BOARD_SHAPE's size (see boardShapeArrow's `headScale`) and the whole
+      // shape is softened in CSS. SECTION 23 ONLY — the continuation board, the
+      // drill and the quick-edit arrows editor all keep the measured geometry,
+      // the editor because what it draws must be what Chessable renders.
+      arrowHeadScale: 0.75,
       // --- auto-play (this mode's own, independent of section 13's toggle) ---
       autoKey: 'cloShowGradeAutoPlay', // chrome.storage.local; opt-IN
       // The two beats of an auto-played card, so a replay reads as moves rather
@@ -5242,16 +5251,26 @@
    *  rather than an L, which is all an annotation layer needs.
    *
    *  Geometry is chessground's, measured — see BOARD_SHAPE. */
-  function boardShapeArrow(from, to, view, color) {
+  function boardShapeArrow(from, to, view, color, headScale) {
     const a = boardSquareCentre(from, view), b = boardSquareCentre(to, view);
     const dx = b.x - a.x, dy = b.y - a.y;
     const len = Math.hypot(dx, dy);
     const g = svgEl('g');
     if (!len) return g;
     const ux = dx / len, uy = dy / len;
+    // `headScale` shrinks the HEAD only, both dimensions together so it keeps
+    // its proportions, and defaults to chessground's own size — the three other
+    // surfaces that draw arrows want their measurements untouched, the
+    // quick-edit editor most of all, since what it draws is meant to be what
+    // Chessable will render after the save. Section 23 is the one caller that
+    // passes it: its arrow sits on a board it shares with the piece it points
+    // at, not on an annotation layer of its own.
+    const scale = Number.isFinite(headScale) && headScale > 0 ? headScale : 1;
+    const headL = BOARD_SHAPE.headL * scale;
+    const headW = BOARD_SHAPE.headW * scale;
     // Tip ON the destination centre; base one head-length back from it.
     const tipX = b.x, tipY = b.y;
-    const baseX = b.x - ux * BOARD_SHAPE.headL, baseY = b.y - uy * BOARD_SHAPE.headL;
+    const baseX = b.x - ux * headL, baseY = b.y - uy * headL;
     // The shaft runs from the source centre and stops one stroke-width short of
     // the destination — so it ends INSIDE the head, which is drawn over it,
     // exactly as their marker sits over the end of their line. Ending it at the
@@ -5268,7 +5287,7 @@
     line.setAttribute('class', 'clo-cr-shape clo-cr-shape--line');
 
     // Perpendicular to the shaft, so the head sits square on the target.
-    const px = -uy * (BOARD_SHAPE.headW / 2), py = ux * (BOARD_SHAPE.headW / 2);
+    const px = -uy * (headW / 2), py = ux * (headW / 2);
     const head = svgEl('polygon');
     head.setAttribute('points', [
       tipX + ',' + tipY,
@@ -21325,9 +21344,13 @@
       const from = squareIndexOf(ply.from), to = squareIndexOf(ply.to);
       if (from < 0 || to < 0) return;
       // NO COLOUR ARGUMENT: the stylesheet's green, which is what this arrow
-      // has always actually rendered as — see the note above.
-      const g = boardShapeArrow(from, to, sg.view);
-      g.setAttribute('class', 'clo-cr-shape');
+      // has always actually rendered as — see the note above. The head is drawn
+      // smaller than chessground's and the group is softened by
+      // `.clo-sg-arrow`; both are section 23's alone, and the class is what
+      // scopes the opacity to this one arrow rather than to `.clo-cr-shape`,
+      // which three other surfaces share.
+      const g = boardShapeArrow(from, to, sg.view, undefined, C.arrowHeadScale);
+      g.setAttribute('class', 'clo-cr-shape clo-sg-arrow');
       svg.appendChild(g);
       paintAltArrows(svg);
     }

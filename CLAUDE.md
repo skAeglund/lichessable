@@ -3246,6 +3246,23 @@ Currently working (v0.18.x).
     therefore `sg.autoGrading`, not the phase alone: an auto card sits in exactly
     the same 'shown' phase a manual one does. `autoReveal` sets that flag BEFORE
     calling `reveal`, so an auto card's first paint already knows.
+    IT IS DRAWN LIGHTER THAN CHESSGROUND'S (v0.93.0): `opacity: 0.75` on the
+    group via `.clo-sg-arrow`, and the HEAD at 0.75 of `BOARD_SHAPE`'s size
+    through `boardShapeArrow`'s new `headScale`. This board is not an annotation
+    layer — the arrow sits over the piece it points at, on a board wearing
+    Chessable's own theme image — where the full-weight shape read as heavier
+    than the move it describes. BOTH are section 23's alone: the class scopes the
+    opacity away from `.clo-cr-shape`, which the continuation quiz, the drill and
+    the quick-edit editor share, and `headScale` defaults to 1 for every other
+    caller — the editor above all, since what it draws is meant to be what
+    Chessable renders after the save. The opacity goes on the GROUP because
+    `paintShape` sets `stroke` on the shaft and `fill` on the head per element,
+    so one declaration softens both and can collide with neither. Measured off
+    the real function: head area 0.75², length and width each 0.75, tip still on
+    the destination centre, shaft coordinates and stroke-width unchanged, and
+    every unusable `headScale` (0, negative, NaN, non-numeric) falling back to 1.
+    The BLUE alternatives arrows are deliberately untouched — they are a
+    different statement and were not what was asked for.
     IT IS GREEN — the stylesheet's, by passing NO colour argument at all — and
     the amber it was meant to wear from v0.77.0 to v0.80.0 is a decision that got
     tested by accident. `paintShape` was silently dropping the resolved custom

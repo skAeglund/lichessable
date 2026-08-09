@@ -2630,6 +2630,21 @@ html.clo-injecting .legal-square-capture-mt2 {
   stroke: none;
 }
 
+/* Section 23's course-move arrow only. On that board the arrow is not an
+   annotation over a quiet surface: it sits on Chessable's own theme image with
+   the piece it points at underneath, where chessground's full-strength ink read
+   as heavier than the move itself. Softened here and drawn with a smaller head
+   in JS (`CONFIG.showGrade.arrowHeadScale`).
+
+   On the GROUP, so the shaft's `stroke` and the head's `fill` are both softened
+   by one declaration and neither is overridden — paintShape sets those two
+   properties per element, and an opacity here cannot collide with either.
+   Scoped by its own class rather than by `.clo-cr-shape`, which the continuation
+   quiz, the drill and the quick-edit arrows editor all share. */
+.clo-sg-arrow {
+  opacity: 0.75;
+}
+
 /* Every element below is shown/hidden through its `hidden` ATTRIBUTE, and an
    author `display` rule beats the UA stylesheet's `[hidden] { display: none }`
    — so each one that sets `display` needs this guard, or it stays visible while
