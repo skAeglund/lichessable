@@ -546,6 +546,20 @@ for a decision, so its two buttons have nothing to compete with.
 > in the browse state, where the heads-up also runs (v0.37.0) and the row is
 > expanded.
 
+**Its weight is now settled by opacity rather than by tier (v0.84.0).** Reported
+as *"somewhat annoying"*, which is a fair reading of a panel nobody asked for
+sitting beside a board you are being quizzed on. The two green-outline buttons
+stay exactly as they are — the fix is not a tier change, because the buttons are
+right about what they do; it is that the whole panel rests at `opacity: 0.55`
+and goes to 1 on hover or focus-within. A group holding a line marked "!" rests
+at 0.82, so §18c's amber survives the dimming rather than being its first
+casualty. Touch dims too, at 0.75 / 0.9 — the rest value follows whether a
+**lift is available**, not whether the device is touch, since a phone is where
+this panel covers the most screen and so where the complaint bites hardest.
+**One** exemption, measured in the harness and enforced with `!important`:
+covering the comment box, where transparency would let the quizzed lines read
+through — the spoiler rule of F10 again, one layer down.
+
 ---
 
 ## 4. Change list, cheapest first

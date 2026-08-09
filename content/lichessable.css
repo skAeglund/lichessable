@@ -1681,7 +1681,9 @@ html.clo-injecting .legal-square-capture-mt2 {
 /* Full strength here, unlike the overlay board's translucent scratch marks:
    these are the annotations being SAVED, and the point of the tab is to show
    what the course will look like. */
-.clo-qe-board .clo-cr-shape { opacity: 1; }
+/* (The quick-edit board used to force `opacity: 1` here, because an arrow drawn
+   in that popup is meant to be exactly the one Chessable saves. Every board now
+   draws at 1, so the override has nothing left to do.) */
 /* The overlay board's glyph fallback is sized for a full-size board. */
 .clo-qe-board .clo-cr-piece--glyph { font-size: 26px; }
 /* Nothing here animates: the position never changes while the tab is open. */
@@ -2567,10 +2569,15 @@ html.clo-injecting .legal-square-capture-mt2 {
   overflow: visible;
 }
 
+/* Opacity 1, which is what lichess.org actually renders (`opacity="1"` on every
+   shape, measured 2026-08-09). Ours was 0.72, and softening the ink is half of
+   what made our arrows read differently from theirs — the other half being the
+   geometry in BOARD_SHAPE. The colour is unchanged and stays ours: #15781b is
+   chessground's green, which we already used. */
 .clo-cr-shape {
   fill: none;
   stroke: #15781b;
-  opacity: 0.72;
+  opacity: 1;
   stroke-linecap: round;
 }
 
@@ -2589,6 +2596,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cr-panel[hidden],
 .clo-cr-actions[hidden],
 .clo-cr-chooser[hidden],
+.clo-cr-nav[hidden],
 .clo-cr-list[hidden],
 .clo-cr-anprefix[hidden],
 .clo-cr-anstatus[hidden],
@@ -2689,6 +2697,18 @@ html.clo-injecting .legal-square-capture-mt2 {
   margin-top: auto;
   align-self: stretch;
   max-width: 260px;
+}
+
+/* Browse mode's walk controls ("Navigate", section 18). Sits directly under the
+   move list and ABOVE the actions row, whose `margin-top: auto` collects the
+   panel's free space — so the four glyphs stay with the moves they step
+   through rather than being pushed down beside Exit. Deliberately the same
+   glyphs as the analysis row further down: both are a cursor in a straight line
+   of moves, and the two are never on screen together. */
+.clo-cr-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .clo-cr-btn {
@@ -3104,6 +3124,66 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: var(--clo-text);
   font-size: 13px;
   font-family: inherit;
+  /* QUIET AT REST. This panel raises ITSELF — nobody asked for it — beside a
+     board the user is being quizzed on, and at full strength it competes with
+     the card being answered. So it sits back until the pointer is on it and
+     comes up the moment it is: NOTICING it and READING it are different acts,
+     and only the second is deliberate.
+
+     DARKER, NOT TRANSPARENT (v0.87.0). This was `opacity`, and opacity was the
+     wrong property for it twice over. It made the panel TRANSLUCENT, so
+     whatever sat under it showed through — muddy over Chessable's UI, and
+     outright dangerous over the comment box, where what shows through is the
+     answers to the very lines the panel is offering to quiz. That needed an
+     exemption, and the exemption needed `!important` to survive the touch rule,
+     which needed an exemption of its own because a phone has no hover to lift
+     the dimming with. `filter: brightness()` keeps the surface fully OPAQUE and
+     only takes the light out of it: the spoiler question does not arise, and
+     the whole tangle goes with it — the panel now sits back the same way in
+     every placement and on every device. */
+  --clo-heads-rest: 0.78;
+  filter: brightness(var(--clo-heads-rest));
+  transition: filter 120ms ease-out;
+}
+
+/* :focus-within as well as :hover — the two buttons are reachable by keyboard,
+   and a panel that stays dim while one of them has focus is at its least
+   readable exactly when it is about to be pressed. */
+.clo-cr-heads:hover,
+.clo-cr-heads:focus-within {
+  filter: brightness(1);
+}
+
+/* An author's "!" is the whole reason a line is worth interrupting for, so an
+   important group rests brighter than an ordinary one — the mark (section 18c)
+   still has to read THROUGH the dimming, not be the first casualty of it. */
+.clo-cr-heads--important {
+  --clo-heads-rest: 0.92;
+}
+
+/* IT FADES IN (v0.87.0). The panel arrives beside a board the user is already
+   looking at, and something that simply pops into the corner of the eye reads
+   as an alarm; half a second of fade says "this appeared" without demanding the
+   glance. An ANIMATION rather than a transition, because the element is REUSED
+   — it is unhidden, never created — so there is no property change for a
+   transition to run from. showHeadsUp restarts it by hand.
+
+   THE ONE PLACE IT DOES NOT FADE is over the comment box. A fade IS opacity, by
+   definition, and for that half second the clickable lines underneath would be
+   legible through it — which is the whole reason the panel is put there. So the
+   spoiler placement gets the panel at once and fully opaque instead, and that
+   is now all `--cover` is for: the resting dim no longer needs an exemption. */
+@keyframes clo-heads-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.clo-cr-heads--in {
+  animation: clo-heads-in 0.5s ease-out;
+}
+
+.clo-cr-heads--cover.clo-cr-heads--in {
+  animation: none;
 }
 
 .clo-cr-heads__head {
@@ -3908,6 +3988,15 @@ html.clo-touch .clo-cr-heads,
 html.clo-touch .clo-cr-heads__move {
   font-size: 16px;
 }
+
+/* No touch exemption for the dimming any more. Both earlier attempts existed
+   only because it was done with `opacity`: v0.84.0 left touch at full strength
+   (there is no hover to come back from), v0.85.0 rested it higher instead. With
+   `filter: brightness()` the panel is opaque and readable as it stands, so a
+   phone can simply have the same resting dim as everything else — which is also
+   where it is most wanted, this being the screen the panel covers most of. It
+   also stops a purely visual preference hanging off `cloTouchDevice`, which
+   LATCHES and is never cleared automatically. */
 
 html.clo-touch .clo-cr-heads__x {
   font-size: 24px;

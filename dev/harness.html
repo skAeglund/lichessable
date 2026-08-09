@@ -1280,6 +1280,7 @@ body {
           <div class="clo-cr-prompt">Black to play</div>
           <div class="clo-cr-progress">1…d5 2.exd5</div>
           <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Navigate</button>
             <button type="button" class="clo-cr-btn">Hint</button>
             <button type="button" class="clo-cr-btn">Skip line</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
@@ -1294,6 +1295,7 @@ body {
           <div class="clo-cr-prompt">Black to play — either move</div>
           <div class="clo-cr-progress">Move 2 of 3</div>
           <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Navigate</button>
             <button type="button" class="clo-cr-btn">Hint</button>
             <button type="button" class="clo-cr-btn">Skip line</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
@@ -1304,6 +1306,7 @@ body {
           <div class="clo-cr-prompt clo-cr-prompt--bad">Not that one — try again</div>
           <div class="clo-cr-progress">1…d5 2.exd5 Nf6</div>
           <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Navigate</button>
             <button type="button" class="clo-cr-btn">Hint</button>
             <button type="button" class="clo-cr-btn">Skip line</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
@@ -1314,8 +1317,142 @@ body {
           <div class="clo-cr-prompt clo-cr-prompt--ok">Line complete</div>
           <div class="clo-cr-progress">3.c3! d5 4.exd5 Qxd5</div>
           <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Navigate</button>
             <button type="button" class="clo-cr-btn">Hint</button>
             <button type="button" class="clo-cr-btn">Skip line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Quiz panel — show and grade on a clickable line (v0.85.0)</h3>
+      <p class="hx-note">Section 23's two keys, on the clickable-line quiz as well as the drill.
+         The prompt carries them rather than a row of its own — the panel is one column wide and
+         this is the same sentence the prompt already answers. A "didn't know" sends the line
+         round again at the end of the run, once, and the copy's title says <em>· again</em>.
+         The longest string here is the reveal on a combined line; check it does not stretch the
+         panel.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px">
+        <div class="clo-cr-panel hx-pos" style="width:280px">
+          <div class="clo-cr-title">Continuation 1 of 3</div>
+          <div class="clo-cr-prompt">Black to play — or 2 to see it</div>
+          <div class="clo-cr-progress">Move 2 of 5</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Navigate</button>
+            <button type="button" class="clo-cr-btn">Hint</button>
+            <button type="button" class="clo-cr-btn">Skip line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+        <!-- The reveal. The move is played on our board and the two keys become
+             the verdict; pressing "wrong" at the THINK stage above counts too,
+             so the verdict can be given before the move is even looked at. -->
+        <div class="clo-cr-panel hx-pos" style="width:280px">
+          <div class="clo-cr-title">Continuation 1 of 3</div>
+          <div class="clo-cr-prompt">Nf6 — 2 knew it · 4 didn't</div>
+          <div class="clo-cr-progress">Move 3 of 5</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Navigate</button>
+            <button type="button" class="clo-cr-btn">Hint</button>
+            <button type="button" class="clo-cr-btn">Skip line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+        <!-- A COMBINED line (mergeUserAlternatives): the reveal plays the line's
+             own move and NAMES the other accepted answer. That is the whole of
+             "would my move have been taken?", answered without a press — which
+             is why section 23's alternatives key is not bound in this module. -->
+        <div class="clo-cr-panel hx-pos" style="width:280px">
+          <div class="clo-cr-title">Continuation 2 of 4 · again</div>
+          <div class="clo-cr-prompt">O-O (or Qc7) — 2 knew it · 4 didn't</div>
+          <div class="clo-cr-progress">Move 2 of 4</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Navigate</button>
+            <button type="button" class="clo-cr-btn">Hint</button>
+            <button type="button" class="clo-cr-btn">Skip line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Quiz panel — browse mode ("Navigate")</h3>
+      <p class="hx-note">A flag inside the quiz, not a mode of its own: the same run, the same
+         line, the same cr.path — only nothing is asked for. The move list and its numbering are
+         the analysis board's (renderMoveList, shared), the walk row is new, and Hint is hidden
+         because there is nothing being answered to hint at. "Skip line" reads "Next line" here:
+         walking to the end of a line does not move on by itself.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px">
+        <div class="clo-cr-panel hx-pos" style="width:280px">
+          <div class="clo-cr-title">Continuation 1 of 3</div>
+          <div class="clo-cr-prompt">Nf6</div>
+          <div class="clo-cr-progress">Move 3 of 5</div>
+          <div class="clo-cr-list">
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">5.</span>
+              <button type="button" class="clo-cr-mv">Nb3</button>
+              <button type="button" class="clo-cr-mv clo-cr-mv--on">Nf6</button>
+            </div>
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">6.</span>
+              <button type="button" class="clo-cr-mv">Bg5</button>
+              <button type="button" class="clo-cr-mv">e6</button>
+            </div>
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">7.</span>
+              <button type="button" class="clo-cr-mv">Qd2</button>
+            </div>
+          </div>
+          <div class="clo-cr-nav">
+            <button type="button" class="clo-cr-btn">⏮</button>
+            <button type="button" class="clo-cr-btn">◀</button>
+            <button type="button" class="clo-cr-btn">▶</button>
+            <button type="button" class="clo-cr-btn">⏭</button>
+          </div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Quiz</button>
+            <button type="button" class="clo-cr-btn">Next line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+        <!-- At the start of a line that begins on Black's move: the leading "…"
+             comes from the shared renderer, and both back controls are dead. The
+             prompt says where we are rather than naming a move, since none has
+             been played. A COMBINED line (mergeUserAlternatives) names the other
+             accepted answer beside the one walked — nothing is being quizzed
+             here, so there is nothing to give away. -->
+        <div class="clo-cr-panel hx-pos" style="width:280px">
+          <div class="clo-cr-title">Continuation 2 of 3</div>
+          <div class="clo-cr-prompt">Start of the line</div>
+          <div class="clo-cr-progress">Move 1 of 4</div>
+          <div class="clo-cr-list">
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">7.</span>
+              <span class="clo-cr-mv clo-cr-mv--gap">…</span>
+              <button type="button" class="clo-cr-mv">b5</button>
+            </div>
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">8.</span>
+              <button type="button" class="clo-cr-mv">Bb3</button>
+              <button type="button" class="clo-cr-mv">Bb7</button>
+            </div>
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">9.</span>
+              <button type="button" class="clo-cr-mv">Re1</button>
+            </div>
+          </div>
+          <div class="clo-cr-nav">
+            <button type="button" class="clo-cr-btn" disabled>⏮</button>
+            <button type="button" class="clo-cr-btn" disabled>◀</button>
+            <button type="button" class="clo-cr-btn">▶</button>
+            <button type="button" class="clo-cr-btn">⏭</button>
+          </div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Quiz</button>
+            <button type="button" class="clo-cr-btn">Next line</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
           </div>
         </div>
@@ -1360,6 +1497,16 @@ body {
   <p>Raised while a variation is being played, the moment the comment column offers a line
      branching where the user is standing. Only the branching ply is printed — the rest is what
      the review would ask for.</p>
+  <p class="hx-note"><strong>Dimmed at rest, and opaque</strong> (v0.87.0): it raises itself
+     beside a board the user is being quizzed on, so it sits back until the pointer is on it —
+     hover any panel below to see it come up. Done with <code>filter: brightness()</code>, not
+     <code>opacity</code>: the surface stays solid, so nothing underneath can read through it
+     and no placement needs an exemption. An important group rests brighter (0.92 against 0.78),
+     so the "!" still reads through the dimming.<br>
+     It also <strong>fades in over 0.5s</strong> when it appears — except over the comment box,
+     where a fade IS opacity and would make the clickable lines underneath legible for half a
+     second. (The fade only plays on show, so it will not be visible in this static page; the
+     <code>--cover</code> replica below is the one that declines it.)</p>
 
   <div class="hx-grid">
     <div class="hx-card">
@@ -1430,7 +1577,7 @@ body {
          the same measurement as fitHeadsUpMini. With the review queue empty there is nothing to
          add to, so the end-of-variation panel offers only "Review now".</p>
       <div class="hx-stage">
-        <div class="clo-cr-heads hx-pos hx-fit" style="width:506px;height:385px">
+        <div class="clo-cr-heads clo-cr-heads--cover hx-pos hx-fit" style="width:506px;height:385px">
           <div class="clo-cr-heads__head">
             <span class="clo-cr-heads__title">Continuation</span>
             <button type="button" class="clo-cr-heads__off">Turn off</button>
@@ -1850,7 +1997,9 @@ body {
     bK: '♚', bQ: '♛', bR: '♜', bB: '♝', bN: '♞', bP: '♟'
   };
   // Mirrors BOARD_SHAPE in content/lichessable.js.
-  var SHAPE = { lineW: 0.16, headW: 0.44, headL: 0.42, tailGap: 0.26, tipOver: 0.06 };
+  // Chessground's geometry, measured off lichess.org — keep in step with
+  // BOARD_SHAPE in content/lichessable.js (this file does not update itself).
+  var SHAPE = { lineW: 0.15625, headW: 0.625, headL: 0.46875, ringR: 0.46875, ringW: 0.0625 };
 
   function svgEl(name) { return document.createElementNS(SVG_NS, name); }
 
@@ -1891,13 +2040,15 @@ body {
     var g = svgEl('g');
     if (!len) return g;
     var ux = dx / len, uy = dy / len;
-    var tipX = b.x + ux * SHAPE.tipOver, tipY = b.y + uy * SHAPE.tipOver;
-    var baseX = tipX - ux * SHAPE.headL, baseY = tipY - uy * SHAPE.headL;
-    var startX = a.x + ux * SHAPE.tailGap, startY = a.y + uy * SHAPE.tailGap;
+    // Tip ON the destination centre, shaft from the source centre stopping one
+    // stroke-width short of it — so the shaft ends inside the head.
+    var tipX = b.x, tipY = b.y;
+    var baseX = b.x - ux * SHAPE.headL, baseY = b.y - uy * SHAPE.headL;
+    var endX = b.x - ux * SHAPE.lineW,  endY = b.y - uy * SHAPE.lineW;
 
     var line = svgEl('line');
-    line.setAttribute('x1', startX); line.setAttribute('y1', startY);
-    line.setAttribute('x2', baseX);  line.setAttribute('y2', baseY);
+    line.setAttribute('x1', a.x);   line.setAttribute('y1', a.y);
+    line.setAttribute('x2', endX);  line.setAttribute('y2', endY);
     line.setAttribute('stroke-width', SHAPE.lineW);
     line.setAttribute('class', 'clo-cr-shape clo-cr-shape--line');
     // One property per element, exactly as the real code does: `stroke` on the
@@ -1924,8 +2075,8 @@ body {
     var el = svgEl('circle');
     el.setAttribute('cx', c.x);
     el.setAttribute('cy', c.y);
-    el.setAttribute('r', 0.42);
-    el.setAttribute('stroke-width', SHAPE.lineW);
+    el.setAttribute('r', SHAPE.ringR);
+    el.setAttribute('stroke-width', SHAPE.ringW);
     el.setAttribute('class', 'clo-cr-shape');
     if (color) el.style.stroke = color;
     return el;

@@ -9,7 +9,19 @@ Ordering is by independence, not priority — 1-4 are small and self-contained,
 
 ---
 
-## 1. Clickable-line panel: navigation and dimming
+## 1 DONE (v0.84.0)
+
+Both halves landed. **(a) went to the QUIZ panel** (`.clo-cr-panel`) as
+`cr.browse` — a flag inside the quiz mode, not a fourth `cr.mode`; **(b) went to
+the mid-quiz/browse HEADS-UP** (`.clo-cr-heads`) as a resting opacity. Harness
+figures and the reasoning are in CLAUDE.md sections 18 and 18b.
+
+Not yet checked in a live session: the CSS and layout were measured in
+`dev/harness.html`, but every JS behaviour (entering/leaving browse, the
+resume-from-here, the arrow keys, `--cover` being set by `placeHeadsUp`) needs a
+real trainer session and an extension reload.
+
+<details><summary>original note</summary>
 
 Covers notes:
 - *"Inside the panel that shows clickable lines during review: add option to simply
@@ -47,9 +59,25 @@ Covers notes:
 > spoiler. Check the result in `dev/harness.html` (bust the stylesheet cache) and
 > report measured opacity/rects, not "looks fine".
 
+</details>
+
 ---
 
-## 2. Arrows should look like Lichess's
+## 2 DONE (v0.86.0)
+
+Ground-truthed on a live lichess.org analysis board 2026-08-09 (four shapes drawn
+with synthetic right-button events, `svg.cg-shapes` read back), not from
+chessground's source. The numbers are in CLAUDE.md section 18's 11c paragraph.
+What was wrong with ours: the shaft started 0.26 out of the source centre and the
+tip overshot the target by 0.06 (theirs: centre to centre), and the head was 0.44
+wide against their 0.625 — a thin dart rather than an arrow. Also adopted their
+opacity (1, was 0.72) and their circle (r 0.46875 / stroke 0.0625). Colours
+unchanged. Kept as line + polygon rather than a `<marker>`, so `paintShape`'s
+one-property-per-element contract is untouched.
+
+All five callers checked in the harness; **not yet seen in a live session**.
+
+<details><summary>original note</summary>
 
 Covers note: *"Make our board's arrow look the same as the original chessable board's"*
 — **revised 2026-08-07: copy Lichess, not Chessable. Chessable's arrows look bad.**
@@ -89,6 +117,8 @@ Covers note: *"Make our board's arrow look the same as the original chessable bo
 > Five callers share this: the line quiz, the drill, the heads-up mini board,
 > show-and-grade (green course arrow + blue alternatives) and the quick-edit arrows
 > editor. Check all five in `dev/harness.html`.
+
+</details>
 
 ---
 
@@ -151,47 +181,14 @@ Covers note: *"Alternative clickable lines doesn't work fully:
 > the bug is elsewhere.
 >
 > I'll give you the real variation to test against if you need one. Do the
-> reasoning against the real `walkLine` in a headless harness first (`py` + the
-> harness pattern in CLAUDE.md — there's no node on this machine), then ground-truth
-> live before writing anything into CLAUDE.md.
+> reasoning against the real `walkLine` in a headless harness first, then
+> ground-truth live before writing anything into CLAUDE.md.
+> (Correction, 2026-08-09: **node IS on this machine** — v24.14.1, and
+> `node --check` is what CLAUDE.md's verification block already assumes. The
+> "no node" claim above was wrong.)
 
 ---
-
-## 5. Show and grade: don't show the reply during mistake repetitions — DONE (v0.83.0), NOT VERIFIED LIVE
-
-Covers note: *"In 'show and grade' mode: during Chessable's mistake repetitions that
-happens after you make a mistake and then finish the review — our board shows the
-opponent's next move after our mistake was corrected (not necessary)."*
-
-> In show-and-grade (section 23), during Chessable's own mistake repetitions — the
-> ones it runs after you miss a move and finish the variation — our board shows the
-> opponent's next move after the corrected mistake. That reply isn't wanted there:
-> the repetition is a single move being re-asked, not a line being walked.
->
-> Work out first how that state is distinguishable from an ordinary card:
-> what the lesson plan looks like during a repetition, whether the plan has a
-> following ply at all, and what `anchor()` / `applyPlan` / `sg.plies` /
-> `sg.cursor` see. Then decide whether the fix is "no reply ply exists, so don't
-> advance past the grade" or an explicit repetition state.
->
-> The governing rule for this mode is EVERY PRESS SHOWS A MOVE (CLAUDE.md section
-> 23) — so if the reply press goes away here, say what the second press does
-> instead, or make the card a one-press card and make sure `advanceAfterGrade` /
-> `cardReady` / `awaitingFen` all stay consistent. A card that grades without the
-> trainer standing on it is the one mistake this mode must never make.
-
-**Done in v0.83.0.** The lesson plan was never read for this: Claude in Chrome
-was not connected, so instead of guessing at `progress.isQuizCurrentlyInRetry`
-the state is derived from OUR OWN board — `sg.reached`, the high-water mark of
-`sg.cursor`, makes "the reply to this card has already been shown once this
-variation" exact, and that is right whether or not the repetition's plan carries
-a following ply. Kept as two presses (the verdict is still given after seeing the
-move); the panel says `Your move — repeat` and the line that promised a reply now
-reads `on to the next card`. Six sequences simulated. **Still wants one live
-session**: the console prints `repeat of <san> — no reply to show`, once per
-repetition — if that line never appears while a repetition is on screen, the
-premise (that the trainer re-asks by anchoring back onto the same plan) is wrong
-and `progress.isQuizCurrentlyInRetry` is the next thing to try.
+## 5 DONE
 
 ---
 
@@ -218,7 +215,23 @@ Covers note: *"'Show and grade' idea: hold down 'correct' (2) to auto-play moves
 
 ---
 
-## 7. Extend show and grade to clickable-line review
+## 7 DONE (v0.85.0)
+
+`drillShowGradeKey` → `showGradeKey`, serving the drill and the clickable-line
+quiz from the one listener. The three open questions were answered as:
+
+- **the verdict** re-queues the line once at the end of the run (`requeueLine`,
+  `cr.sgAgain`), which is the drill verdict's shape scoped to something that does
+  not outlive the run — rather than a verdict that does nothing.
+- **combined lines**: the reveal plays the line's own move and NAMES the others,
+  so the alternatives key is deliberately not bound here (the accepted set is
+  already on the ply; a review session has to fetch it).
+- **the timer** needs nothing — `holdTrainer()` is called only from `reviewNow`,
+  i.e. from exactly the runs with a live card being timed.
+
+Panel states measured in the harness; the key behaviour is NOT yet live-verified.
+
+<details><summary>original note</summary>
 
 Covers note: *"lets extend the show and grade mode to review clickable lines"*
 
@@ -239,6 +252,8 @@ Covers note: *"lets extend the show and grade mode to review clickable lines"*
 > - combined lines (`mergeUserAlternatives`) accept either of two moves — which one
 >   does the reveal show, and does the alternatives key (3/space) apply?
 > - whether the trainer timer needs holding, as `holdTrainer` does for "Review now".
+
+</details>
 
 ---
 

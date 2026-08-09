@@ -1570,7 +1570,33 @@ Currently working (v0.18.x).
   SVG's default of 1 — which in a `viewBox="0 0 8 8"` is one whole SQUARE of
   outline, i.e. an arrow tip several times its intended size, v0.52.1. The
   polygon's `getBoundingClientRect()` does NOT show it: a bbox excludes stroke,
-  so this measured correct while looking wrong),
+  so this measured correct while looking wrong.
+  THE ARROW GEOMETRY IS CHESSGROUND'S, MEASURED (v0.86.0) — read off a live
+  lichess.org analysis board on 2026-08-09 by drawing four shapes with synthetic
+  right-button mouse events and reading the `svg.cg-shapes` it produced, NOT
+  taken from chessground's source. Their overlay is `viewBox="-4 -4 8 8"`, board
+  units like ours, so the numbers transfer directly. Two rules, and ours broke
+  both: the shaft starts ON the source square's CENTRE (we started 0.26 out of
+  it) and stops exactly ONE STROKE-WIDTH short of the destination centre, where
+  the head puts its TIP (we overshot the centre by 0.06). The shortening is a
+  flat one stroke-width in every case — confirmed on e2-e4, d1-d8, b1-c3 and,
+  notably, UNCHANGED when the destination square is OCCUPIED: there is no
+  special case for a piece standing on it. `markerUnits` is absent from their
+  marker, so it defaults to `strokeWidth` and the head is 3 stroke-widths long
+  by 4 wide — i.e. 0.625 wide against the 0.44 we had, which is most of why ours
+  read as a thin dart rather than an arrow. `refX=2.05` of 3 puts their tip 0.05
+  of a stroke-width short of the centre; we put it ON the centre, a 0.6px
+  difference on a 616px board, and say so rather than carrying the artefact.
+  Kept as line + polygon rather than adopting their `<marker>`: `paintShape`
+  colours the two independently, which is the contract above, and a marker needs
+  a per-colour `<defs>` entry with a unique id in every document that draws one,
+  the quick-edit popup included. COLOURS ARE UNCHANGED — the shape was copied,
+  not the palette — except `opacity`, which was 0.72 and is now the 1 they
+  actually render; that softening was the other half of the difference. The
+  circle is theirs too (r 0.46875 with a 0.0625 stroke, outer edge flush with the
+  square's boundary); ours inset `r` by half the stroke, drawing a smaller ring.
+  `dev/harness.html` keeps its OWN copy of these numbers and does not update
+  itself — change one, change both),
   and OUR panel
   COVERING `SELECTORS.reviewCommentBox` — not decoration: the lines being
   quizzed are printed there, so covering them IS the quiz. Nothing of ours ever
@@ -1828,6 +1854,42 @@ Currently working (v0.18.x).
   capture) — the square colour is ours on purpose, the affordances are theirs.
   A refused move needs NO rollback — our position only ever advances on the
   correct move. Two misses spell the answer out (`wrongHintAfter`).
+  WALKING A LINE INSTEAD OF BEING ASKED FOR IT ("Navigate", `cr.browse`,
+  v0.84.0): a FLAG INSIDE the quiz, deliberately not a fourth `cr.mode`. It is
+  the same run — same queue, same line, same `cr.path` — and everything that
+  branches on `cr.mode` (`closeReview`'s `navigateToLineEnd`, the
+  `--important` class, the drill's card bookkeeping) must keep reading 'quiz';
+  a mode of its own would have had to duplicate every one of those branches to
+  arrive back where it started. Only TWO things change: `moverColor()` returns
+  null (so the click and drag paths accept nothing, with no knowledge of browse
+  in either) and `step()` is not driving — `startLine` skips it, which is what
+  keeps the flag alive across a line change.
+  `browseGoto(i)` is `anGoto`'s shape: every ply ALREADY carries the position
+  after it (`fen`, from `walkLine`/`drillPlies` via `fenAfterUci`), so a jump is
+  one `parseFen` and is exact, where replaying the moves would only be as good
+  as the replay. The one step FORWARD is special-cased through `applyMove` —
+  that is what GLIDES the piece; a rebuild teleports it.
+  Leaving browse resumes the quiz FROM WHERE THE BOARD STANDS rather than
+  restarting the line: `cr.pos` and `cr.plyIdx` are already consistent, so
+  `step()` needs no help, and "walk to the interesting move, then be asked from
+  there" is the gesture worth having. Per RUN, not a preference (`beginRun` and
+  `closeReview` both clear it) — the launcher was pressed to be quizzed.
+  The move list is the analysis board's, extracted as `renderMoveList(moves,
+  idx, startFen, emptyText)`: both are "a straight line of moves with a cursor
+  in it", and the numbering — continuing the source game, with the leading "…"
+  when the line starts on Black's move — is exactly what a second copy would get
+  wrong. Items need nothing but `san`. The keys are the analysis board's too
+  (arrows/Home/End), which were free: that handler returns on any mode but
+  'analysis', so nothing in a quiz was ever bound to them.
+  NOT OFFERED ON A DRILL CARD: its whole content IS the move being asked for, so
+  "navigate" there is just the answer — and section 23's two keys already reveal
+  that one. Hint is hidden while browsing (nothing is being answered), and
+  "Skip line" reads "Next line", since walking to the end of a line does not
+  move on by itself. Measured in the harness: the 4-button quiz row fits one
+  line from 276px (368px under `html.clo-touch`) and wraps below that, as that
+  row has always been built to; the browse panel keeps its controls on screen
+  with a 20-ply line at the live comment box's 506x385, the list scrolling
+  inside `flex: 1 1 auto`.
   ENDING A REVIEW LEAVES THEIR BOARD ON THE LINE (v0.38.0): `closeReview(why,
   navEnd)` — true only for a user-driven end (finished, Exit, Escape; NEVER a
   teardown the trainer forced, where the variation it would click in has gone) —
@@ -2040,6 +2102,50 @@ Currently working (v0.18.x).
   waiting the window out. Verified live that with auto-play merely ENABLED (the
   common case) the panel still appears: every guard above is false until a move
   is actually injected.
+  QUIET AT REST (v0.84.0). This panel RAISES ITSELF — nobody asked for it —
+  beside a board the user is being quizzed on, and at full strength it competes
+  with the card being answered; it was reported as "somewhat annoying". So it
+  rests dimmed and comes up on hover, because NOTICING it and READING it are
+  different acts and only the second is deliberate. `:focus-within` is in the
+  same rule as `:hover`: both buttons are keyboard-reachable, and a panel still
+  dim while one of them has focus is at its least readable exactly when it is
+  about to be pressed.
+  DARKER, NOT TRANSPARENT (v0.87.0) — `filter: brightness(var(--clo-heads-rest))`
+  on an opaque surface, where v0.84-0.86 used `opacity`. Opacity was the wrong
+  property twice over, and the whole of the tangle it created is now GONE:
+  * it made the panel TRANSLUCENT, so whatever sat under it showed through —
+    muddy over Chessable's UI, and outright dangerous over the comment box,
+    where what shows through is the answers to the very lines being offered. So
+    that placement needed an exemption…
+  * …and the exemption needed `!important` to outrank the TOUCH rule, which
+    itself existed only because a phone has no hover to lift the dimming with —
+    two releases of exemptions (v0.84.0 exempted touch outright, v0.85.0 rested
+    it higher instead) that were both about opacity and neither about touch.
+  An opaque panel raises none of that: the resting dim is now the SAME in every
+  placement and on every device. Measured in the harness: ordinary
+  `brightness(0.78)`, IMPORTANT `0.92` — an author's "!" is the whole reason a
+  line is worth interrupting for, so its mark (18c) must read THROUGH the
+  dimming rather than be the first casualty of it — and `brightness(1)` on
+  hover/focus, with `opacity` staying 1 throughout.
+  IT FADES IN over 0.5s (`@keyframes clo-heads-in`, class `.clo-cr-heads--in`).
+  An ANIMATION, not a transition, because the element is REUSED — `showHeadsUp`
+  unhides it rather than creating it, so there is no property change for a
+  transition to run from; that function restarts the animation by removing the
+  class, forcing a reflow (`void el.offsetWidth`) and adding it back. Without the
+  reflow the browser coalesces the pair and nothing restarts.
+  `.clo-cr-heads--cover` SURVIVES, for the fade and nothing else: a fade IS
+  opacity by definition, so over the comment box it would make the clickable
+  lines legible for half a second — which is what that placement exists to
+  prevent. There the panel simply appears, at once and fully opaque. Set by
+  `placeHeadsUp`, the only code that knows which placement it took, and only for
+  the SPOILER — never for the mid-quiz COLUMN, which prints one sentence and
+  hides nothing. It logs which branch it took, on the change only (it runs on
+  every scroll and every tick).
+  NOTE FOR MEASURING THIS: the dim carries a 120ms transition, and
+  `getComputedStyle` returns the ANIMATING value — in a browser pane that is not
+  compositing frames the transition never advances at all, so a probe reads the
+  resting value for ever and the rule looks dead. Set `transition: none` on the
+  element before reading (that is how the figures above were taken).
   PLACEMENT — IN THE BROWSE STATE IT COVERS THE COMMENT (v0.60.0), for the same
   reason the QUIZ panel always has: the lines it is offering to quiz are PRINTED
   THERE. A completed variation's comment regularly ends with the whole line
@@ -3182,7 +3288,9 @@ Currently working (v0.18.x).
   alone), and they are BORN HIDDEN in `buildBoard()`, since a board is only ever
   built before it has a position and an empty 8x8 for a frame is the same
   flicker at the other end.
-  IT COVERS BOTH MISTAKE FLOWS (v0.72.0), and they needed opposite amounts of
+  IT COVERS BOTH MISTAKE FLOWS (v0.72.0) — and, since v0.85.0, the
+  CLICKABLE-LINE QUIZ as well (third bullet, beside the drill it shares a
+  listener with). The two mistake flows needed opposite amounts of
   work — the retry pass is an ordinary trainer session on another ROUTE, the
   drill is our own board with no Chessable in it at all.
   * RETRY (17): `onPractice()` became `inSession()` = `isTrainerPath()`. Both
@@ -3217,10 +3325,83 @@ Currently working (v0.18.x).
     second way to answer rather than a mode to be in. Gated on
     `showGradeEnabled()` — the PREFERENCE, not a running session, since a drill
     is not a trainer session and the row's button does not apply to it.
+  * CLICKABLE LINES (18), v0.85.0 — the same listener, the same two presses, and
+    `drillShowGradeKey` renamed `showGradeKey` because it now serves both. What
+    made this cheap is what made the drill cheap: NEITHER HOST GRADES CHESSABLE,
+    so there is no card to keep in step with and no scheduled move to get wrong.
+    The hosts differ in exactly ONE thing, and it is structural rather than a
+    setting: a drill card ENDS on the move being asked for, so its verdict is
+    followed by `nextLine()`; a clickable line CARRIES ON, so its verdict is
+    followed by `step()` — which plays the opponent's reply and stops at the next
+    move asked for. That reply is the second press's own move to look at, which
+    is the rule the whole mode rests on: no press that shows nothing. It is why
+    `step()` is the right call rather than a bespoke advance — the pause before
+    the reply is the module's own, the same one a hand-played move gets.
+    WHAT THE VERDICT DOES, which was the open question: a clickable line
+    reschedules nothing and records nothing — its defining property — so the
+    verdict has only THIS RUN to act on. A line holding a move the user did not
+    know is pushed back onto `cr.queue` (`requeueLine`), i.e. it comes round
+    again at the end. That is the same SHAPE the drill's verdict has ("does this
+    leave the list?"), scoped to something that does not outlive the run, and it
+    is what stops the second key being a press for nothing. ONCE per line
+    (`cr.sgAgain`, keyed on `line.key`, cleared by `beginRun` and `closeReview`):
+    a repeat that can re-queue itself is a run with no end, and the user has
+    already said they did not know it — saying so twice must not cost them the
+    exit. The queued entry is a shallow COPY carrying `sgRepeat`, so the title
+    can say "· again"; the two passes are otherwise indistinguishable, the queue
+    being an array that is still growing. Everything the copy is read for
+    (`plies`, `moveIdx`, `startFen`, `label`, `key`) is on it, and nothing
+    compares lines by identity.
+    COMBINED LINES: the reveal plays the line's OWN move and NAMES the rest
+    (`ply.alts` in the prompt — "O-O (or Qc7)"), which is exactly what browse
+    mode does and for the same reason. So section 23's ALTERNATIVES key is
+    deliberately NOT bound in this module: the accepted set is already on the
+    ply, where a review session has to fetch `getLesson` for it — a press to ask
+    a question that has already been answered on screen is the wasted press
+    v0.70.0 removed.
+    THE TIMER NEEDS NOTHING. `holdTrainer()` is called from `reviewNow` and
+    nowhere else, i.e. from exactly the runs that happen mid-quiz with a live
+    card being timed; a browse-state run has no card to charge. So the two keys
+    make a run slower without making it cost anything.
+    NOT while `cr.browse` — nothing is being asked for there and the walk owns
+    the keyboard. A HAND-PLAYED line is never re-queued (and a hinted one is not
+    either): the verdict exists only on the key path, and playing the move
+    correctly IS knowing it.
   The POSITION is the trainer's own `ctx.fen` through `readLessonLine()` —
   section 18b's rule for section 18b's reason. Playing is auto-play's recipe plus
   `autoPlayNoteTypedMove`, without which the move is filed as trainer-played and
   never remembered as proven. Promotions refused with a sentence.
+  THE `next` KEY ALSO STARTS THE MODE (v0.87.0, `maybeStartFromKey`). `onKey` no
+  longer returns on `!sg.active`; it routes there instead, and "2" does what the
+  row's button does. The reason is the reason the mode exists: a ring has four
+  buttons and no way to press one on a web page, so needing a mouse click to
+  BEGIN was the one gap in "a whole session without letting go of it". Gated on
+  exactly what the button is gated on (`sg.enabled` + `inSession()`, with
+  `continuationActive()` as belt-and-braces), and the key is swallowed ONLY when
+  it is going to act — outside the mode these belong to MoveTrainer2. The press
+  is spent on starting and does NOT also reveal the first card: there is no board
+  on screen when it lands, and a key that means two things depending on state is
+  what this mode avoids everywhere else.
+  SPACE TAKES THE HEADS-UP'S "REVIEW NOW" (v0.87.0), and the two bindings DO
+  overlap — the assumption that they could not is wrong and worth spelling out.
+  Section 18b's panel is clocked on the TRAINER's position, and the trainer does
+  not move until the card is graded, so a panel raised at the card's own position
+  is still standing all the way through the reveal, i.e. through exactly the
+  'shown' window where the alternatives key is live. `headsUpTick` has no
+  stand-down for this mode either. Resolved by priority rather than by hoping:
+  * inside 'shown' (and not `autoGrading`) the press means ALTERNATIVES, because
+    it is about the card being answered right now;
+  * everywhere else `onKey` hands it to `continuationReviewNow`, the new
+    null-safe bridge, which takes the offer if a panel is up and answers false
+    otherwise.
+  The continuation module owns the same key when the mode is NOT running, in a
+  listener of its own — the existing one is gated on `cr.active`, and a heads-up
+  is not an active review. That listener STANDS DOWN on `showGradeActive()`, and
+  that is load-bearing rather than tidy: `start()` runs `initContinuationReview`
+  BEFORE `initShowGrade`, so as the earlier capture-phase listener it would
+  otherwise swallow space before section 23 ever saw it. Both listeners test for
+  a panel BEFORE swallowing, since MoveTrainer2 binds space itself and with
+  nothing on screen that shortcut is still the user's.
   KEYS are `CONFIG.showGrade.keys`, a set of ARRAYS so a second spelling is an
   entry rather than a code change — which is exactly what SPACE on the
   alternatives key cost (v0.79.0): the first ring this mode has been driven from

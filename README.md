@@ -239,7 +239,10 @@ still have to be played on the board.
 
 On by default since v0.81.0 (uncheck **Show and grade** in the options page to
 hide it): press **Show & grade** on the widget during a **Review** session —
-nothing about the mode happens until you do. In this mode you
+nothing about the mode happens until you do. Or **just press `2`** (v0.87.0):
+in a session, with the mode switched on, the key starts it, so the ring never
+needs the mouse to begin. That press only starts it — the next one reveals the
+first move, as it would have anyway. In this mode you
 never make a move — the whole session runs from two keys, which is what makes it
 studiable from a Bluetooth ring with the screen out of reach.
 
@@ -608,11 +611,47 @@ chess site: drag for an arrow, click a square for a circle, draw the same one
 again to remove it. They are scratch marks — the next press on the board, or the
 next move, wipes them. Only the square colour is
 deliberately ours, so it is always obvious which board you are on.
+
+**The arrows are shaped like Lichess's** (v0.86.0), which is to say chessground's:
+the shaft starts on the middle of the square you drag from and the head lands on
+the middle of the square you drag to, and the head is a good deal broader than
+it used to be — ours was a thin dart that started well clear of the piece and
+overshot the target. The geometry was measured off a real lichess.org board
+rather than guessed at, and it applies everywhere we draw one: the clickable-line
+quiz, the mistake drill, the mini board on the heads-up panel, show and grade's
+move arrows, and the quick-edit arrows editor. The **colours are unchanged** —
+only the shape was copied.
 Our panel covers the comment column while the quiz runs, for the
 obvious reason that the lines are printed there — **Exit** gives Chessable its
 screen back, as does Escape, finishing the last line, or the variation changing
 underneath. **Hint** shows the move; two wrong tries and it appears by itself.
 The pause before the opponent's replies follows the auto-play speed dropdown.
+
+**Or answer it with two keys.** If **show and grade** is on, the same two keys
+work here as in a review session (v0.85.0): press **2** and the line's next move
+is played on our board for you, press **2** again if you knew it or **4** if you
+didn't — and that second press plays the opponent's reply, so no press ever
+shows you nothing. The board still takes a played move, so the keys are a second
+way to answer rather than a mode you have to be in.
+
+A "didn't know" anywhere in a line sends **that line round again at the end of
+the run** — once, however many times you say it — and its title then reads
+*Continuation 3 of 4 · again*. Nothing leaves the run: a clickable line
+reschedules nothing and records nothing, so the verdict has only the run to act
+on. Where the author accepted two answers, the reveal plays the line's own move
+and names the other beside it — *"O-O (or Qc7)"* — so there is nothing left for
+the alternatives key to ask.
+
+**Or just walk it.** **Navigate** turns the quiz into a browse: the line's moves
+are listed in the panel, `⏮ ◀ ▶ ⏭` (and the arrow keys, Home and End) step
+through them, and clicking a move in the list jumps straight to it. Nothing is
+asked for and the board takes no moves while you are walking. **Quiz** switches
+back, and it carries on **from wherever the board now stands** — so "step to the
+interesting move, then be asked for the rest" is one gesture. It is per review,
+not a setting: pressing the launcher again starts a quiz, as it always did.
+Where the author offered two answers at the same move, the walk follows the
+first and names the other beside it. Not offered on a mistake drill, where the
+card *is* the move being asked for.
 
 **You are left where the line ended.** When the review closes, Chessable's own
 board is put on the position the line you were last playing reached — the same
@@ -731,6 +770,24 @@ and you are in the middle of a move.
 Ignore it and it goes away on its own the moment you play
 your next move; **×** dismisses it for that position, and the end-of-variation
 button still offers everything as before.
+
+**It fades in, and it sits back until you look at it.** Nobody asked for this
+panel and it appears beside a board you are being quizzed on, so it arrives over
+half a second rather than popping into the corner of your eye, and it rests
+slightly darkened — coming up to full the moment the pointer is on it (or the
+keyboard reaches one of its buttons). A group holding a line marked **!** rests
+brighter, so the mark still reads through. The panel is **opaque** throughout
+(v0.87.0): nothing underneath shows through it, on any device. The one thing
+that changes is where it **covers the comment** — there it appears at once
+instead of fading, because a fade would make the clickable lines underneath
+readable for that half second, which is the very thing covering them prevents.
+
+**Space plays the line on the spot.** While the panel is up, pressing space is
+**Review now** — the same as the button. It gives the ring a way to take the
+offer without reaching for the mouse. If show and grade is running and you have
+just revealed a move, space keeps its other meaning there ("was my move also
+accepted?"), since that is about the card in front of you; everywhere else it
+takes the panel's offer.
 
 **Review now** plays the line on the spot, without waiting for the variation to
 end. Chessable's session timer is **paused** first, so the minute you spend in a

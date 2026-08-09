@@ -4941,19 +4941,45 @@
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const svgEl = (name) => document.createElementNS(SVG_NS, name);
 
+  /**
+   * CHESSGROUND'S OWN ARROW GEOMETRY, in squares — measured off a live
+   * lichess.org analysis board on 2026-08-09 rather than taken from its source,
+   * by drawing four shapes with synthetic right-button events and reading the
+   * `svg.cg-shapes` it produced. Their overlay is `viewBox="-4 -4 8 8"`, i.e.
+   * board units like ours, so the numbers transfer directly.
+   *
+   * What they actually render for e2-e4:
+   *   <marker markerWidth=4 markerHeight=4 refX=2.05 refY=2>
+   *     <path d="M0,0 V4 L3,2 Z">
+   *   <line stroke-width=.15625 stroke-linecap=round marker-end=…
+   *         x1=.5 y1=2.5 x2=.5 y2=.65625>
+   *
+   * THE TWO RULES THAT MAKE IT LOOK RIGHT, and both differ from what we had:
+   *  - the shaft starts ON the source square's CENTRE (we started .26 out of
+   *    it), and stops exactly ONE STROKE-WIDTH short of the destination centre.
+   *    Confirmed four times over: e2-e4 shaft 1.84375 of 2, d1-d8 6.84375 of 7,
+   *    b1-c3 2.0798 of √5, and unchanged when the destination is OCCUPIED —
+   *    there is no special case for a piece standing on it.
+   *  - the head's TIP lands ON the destination centre (we overshot it by .06).
+   *    `markerUnits` is absent, so it defaults to `strokeWidth`: the head is
+   *    3 stroke-widths long and 4 wide. refX=2.05 of 3 puts the tip .95 of a
+   *    stroke-width past the line's end, i.e. .05 short of the centre — near
+   *    enough that we simply put it ON the centre and say so.
+   * The head is therefore both LONGER and much WIDER than ours was (.44 wide),
+   * which is most of why ours read as a thin dart rather than an arrow.
+   *
+   * Kept as a polygon + line rather than a <marker>: `paintShape` colours the
+   * two independently (stroke on the shaft, fill on the head), which is the
+   * contract section 11c documents, and a marker would need a per-colour <defs>
+   * entry with a unique id in every document that draws one — including the
+   * quick-edit popup.
+   */
   const BOARD_SHAPE = {
-    lineW: 0.16,    // arrow shaft width, in squares
-    headW: 0.44,    // arrow head width and length
-    headL: 0.42,
-    tailGap: 0.26,  // shaft starts this far out of the source centre
-    // …and the tip reaches this far PAST the target centre. The head's base is
-    // therefore headL - tipOver = 0.36 squares back from that centre, i.e.
-    // comfortably inside the target square. It used to stop 0.08 SHORT of the
-    // centre, which put the base at exactly 0.5 — flush with the square's own
-    // edge, where a straight arrow reads as if it stopped one square early.
-    tipOver: 0.06,
-    ringR: 0.44,    // circle radius
-    ringW: 0.09,
+    lineW: 0.15625,  // 10/64 of a square
+    headW: 0.625,    // 4 x lineW
+    headL: 0.46875,  // 3 x lineW
+    ringR: 0.46875,  // 30/64 — the circle's own measured radius…
+    ringW: 0.0625,   // …and 4/64 of stroke, much finer than the .09 we had
   };
 
   // Chessable's own four annotation colours and its one-letter codes for them
@@ -5096,14 +5122,20 @@
     const el = svgEl('circle');
     el.setAttribute('cx', String(x));
     el.setAttribute('cy', String(y));
-    el.setAttribute('r', String(BOARD_SHAPE.ringR - BOARD_SHAPE.ringW / 2));
+    // Their `r` is the attribute VALUE, not an outer edge to inset from — with
+    // the stroke centred on it the ring's outer edge lands at .5, i.e. flush
+    // with the square's own boundary. We used to inset by half the stroke,
+    // which drew a visibly smaller circle inside the square.
+    el.setAttribute('r', String(BOARD_SHAPE.ringR));
     el.setAttribute('stroke-width', String(BOARD_SHAPE.ringW));
     el.setAttribute('class', 'clo-cr-shape clo-cr-shape--ring');
     return paintShape(el, color, false);
   }
 
   /** Straight shaft + triangular head; knight moves are drawn as one line
-   *  rather than an L, which is all an annotation layer needs. */
+   *  rather than an L, which is all an annotation layer needs.
+   *
+   *  Geometry is chessground's, measured — see BOARD_SHAPE. */
   function boardShapeArrow(from, to, view, color) {
     const a = boardSquareCentre(from, view), b = boardSquareCentre(to, view);
     const dx = b.x - a.x, dy = b.y - a.y;
@@ -5111,15 +5143,21 @@
     const g = svgEl('g');
     if (!len) return g;
     const ux = dx / len, uy = dy / len;
-    const tipX = b.x + ux * BOARD_SHAPE.tipOver, tipY = b.y + uy * BOARD_SHAPE.tipOver;
-    const baseX = tipX - ux * BOARD_SHAPE.headL, baseY = tipY - uy * BOARD_SHAPE.headL;
-    const startX = a.x + ux * BOARD_SHAPE.tailGap, startY = a.y + uy * BOARD_SHAPE.tailGap;
+    // Tip ON the destination centre; base one head-length back from it.
+    const tipX = b.x, tipY = b.y;
+    const baseX = b.x - ux * BOARD_SHAPE.headL, baseY = b.y - uy * BOARD_SHAPE.headL;
+    // The shaft runs from the source centre and stops one stroke-width short of
+    // the destination — so it ends INSIDE the head, which is drawn over it,
+    // exactly as their marker sits over the end of their line. Ending it at the
+    // head's base instead would be tidier and is not what they do; it also
+    // leaves a seam wherever the two are painted in different colours.
+    const endX = b.x - ux * BOARD_SHAPE.lineW, endY = b.y - uy * BOARD_SHAPE.lineW;
 
     const line = svgEl('line');
-    line.setAttribute('x1', String(startX));
-    line.setAttribute('y1', String(startY));
-    line.setAttribute('x2', String(baseX));
-    line.setAttribute('y2', String(baseY));
+    line.setAttribute('x1', String(a.x));
+    line.setAttribute('y1', String(a.y));
+    line.setAttribute('x2', String(endX));
+    line.setAttribute('y2', String(endY));
     line.setAttribute('stroke-width', String(BOARD_SHAPE.lineW));
     line.setAttribute('class', 'clo-cr-shape clo-cr-shape--line');
 
@@ -12805,6 +12843,11 @@
   // accept input in the browse state at all.
   let continuationAnalysisPlay = null;
 
+  // () => boolean — takes the mid-quiz heads-up's "Review now" offer, false when
+  // there is no panel on screen to take. Section 23 delegates to it: both bind
+  // the same space, and while that mode runs it is the one deciding (v0.87.0).
+  let continuationReviewNow = null;
+
   function initContinuationReview() {
     if (typeof CloSan === 'undefined') {
       warn('continuation review disabled: CloSan (engine/san.js) not loaded');
@@ -12831,6 +12874,14 @@
       // exactly as it did before — and the drill, whose cards ARE quiz lines,
       // rides that default nearly everywhere.
       mode: 'quiz',
+      // "Navigate" rather than "Quiz": the line is walked by hand, nothing is
+      // asked for. A FLAG INSIDE the quiz mode and deliberately not a fourth
+      // cr.mode — it is the same run, the same queue, the same cr.path, and
+      // everything that branches on cr.mode (closeReview's navigateToLineEnd,
+      // the important-line class, the drill's card bookkeeping) must keep
+      // reading 'quiz'. Only two things change: moverColor() accepts nothing,
+      // and step() is not driving.
+      browse: false,
       // Started from the heads-up in the MIDDLE of a variation ("Review now",
       // 18b), so this run lives outside the browse state every other one needs:
       // the trainer's quiz is still standing behind our board, paused.
@@ -12878,6 +12929,10 @@
       analyseBtn: null,   // "Analyse" (section 19)
       varBtn: null,       // …and its variation-page twin, in the panel header (19b)
       drillBtn: null,     // "Drill mistakes" (section 20)
+      // Lines already sent round again by a "didn't know" verdict (section 23
+      // on a clickable line), by line key. Per RUN, and the whole of what stops
+      // a second pass re-queueing itself for ever.
+      sgAgain: new Set(),
       // --- mistake drill (section 20) --------------------------------------
       // Only a tally: a drill card carries its own log entry on the line.
       drill: { done: 0, clean: 0 },
@@ -12913,6 +12968,9 @@
         offTimer: 0,
         hideTimer: 0,     // the panel taking itself away after a line was queued
         coverRect: null,  // the comment box we are covering, if any (placeHeadsUp)
+        // Whether that cover is the SPOILER — which is what decides the resting
+        // opacity. null so the first placement always logs its answer.
+        covering: null,
         fit: '',          // signature of the layout fitHeadsUpMini last measured
       },
     };
@@ -13935,6 +13993,9 @@
     function moverColor() {
       if (!cr.pos) return null;
       if (cr.mode === 'analysis') return cr.pos.side;
+      // Browsing asks for nothing, so the board accepts nothing — which is the
+      // whole of what the click and drag paths need to be told.
+      if (cr.browse) return null;
       const ply = currentPly();
       return ply && ply.color === cr.userColor ? cr.userColor : null;
     }
@@ -14007,7 +14068,10 @@
       reconcilePieces();
       paint();
       syncUi();
-      step();
+      // Browsing survives the line change — a user who chose to walk line 1 by
+      // hand means it for line 2 as well — and while it is on, step() must not
+      // run: it would auto-play the opponent's first ply out from under them.
+      if (!cr.browse) step();
     }
 
     function nextLine() {
@@ -14070,6 +14134,77 @@
       cr.hint = false;
       syncUi();
       paint();
+    }
+
+    // --- browse ("Navigate") ---------------------------------------------------
+    //
+    // The second way to meet a clickable line: walk it instead of being asked
+    // for it. Nothing here is new machinery — the line, the path and the board
+    // are the quiz's, and the only difference is who decides when the next ply
+    // is played. That is why it is a flag rather than a mode (see cr.browse).
+
+    /**
+     * Puts our board on the position after `i` plies of the line (clamped).
+     *
+     * Nothing is re-derived: every ply already carries the position AFTER it
+     * (`fen`, written by walkLine through fenAfterUci, or by drillPlies), so a
+     * jump is one parseFen — the same shape as the analysis board's anGoto, and
+     * exact where replaying moves would only be as good as the replay.
+     *
+     * The one step FORWARD from where we stand is special-cased through
+     * applyMove, which is what GLIDES the piece; a rebuild teleports it.
+     */
+    function browseGoto(i) {
+      if (!cr.line || !cr.pos) return;
+      const path = linePath();
+      const idx = Math.max(0, Math.min(i, path.length));
+      if (idx === cr.plyIdx) return;
+      if (idx === cr.plyIdx + 1) {
+        const ply = currentPly();
+        if (ply) { applyMove(ply); cr.plyIdx = idx; syncUi(); return; }
+      }
+      const last = idx > 0 ? path[idx - 1] : null;
+      const pos = CloSan.parseFen(last ? last.fen : cr.line.startFen);
+      if (!pos) {
+        warn('continuation: line', cr.line.key, 'has no usable position at ply', idx,
+          '— board left where it was');
+        return;
+      }
+      cr.pos = pos;
+      cr.plyIdx = idx;
+      cr.lastMove = last
+        ? { from: squareIndexOf(last.uci.slice(0, 2)), to: squareIndexOf(last.uci.slice(2, 4)) }
+        : null;
+      cr.sel = null;
+      cr.promo = null;
+      hidePromo();
+      clearShapes(); // annotations belong to the position they were drawn on
+      reconcilePieces();
+      paint();
+      syncUi();
+    }
+
+    /**
+     * Turns walking on and off. Leaving it resumes the quiz FROM WHERE THE
+     * BOARD STANDS rather than restarting the line — "walk to the interesting
+     * move, then be asked from there" is the gesture worth having, and cr.pos
+     * and cr.plyIdx are already consistent, so step() needs no help.
+     */
+    function setBrowse(on) {
+      if (cr.browse === Boolean(on)) return;
+      cr.browse = Boolean(on);
+      clearTimer();
+      // Browsing has no opponent move in flight and no feedback pause, so
+      // whatever step() was waiting on is over.
+      cr.busy = false;
+      cr.sel = null;
+      cr.attempts = 0;
+      cr.hint = false;
+      cr.promo = null;
+      hidePromo();
+      paint();
+      syncUi();
+      if (!cr.browse) step();
     }
 
     function onSquare(idx) {
@@ -14773,10 +14908,25 @@
     /** The one-line move list: SAN pairs, the current move highlighted, click
      *  to jump. Rebuilt whole — it is at most a few dozen short rows. */
     function renderAnalysisMoves() {
+      renderMoveList(cr.an.moves, cr.an.idx, cr.an.startFen,
+        'No moves yet — play one on the board.');
+    }
+
+    /**
+     * The panel's move list: one clickable button per ply, numbered from the
+     * position the line starts on, with the ply the board is standing on
+     * highlighted and scrolled to.
+     *
+     * Shared by the analysis board (section 19) and browse mode — both are "a
+     * straight line of moves with a cursor in it", and the numbering (which
+     * continues the source game, and needs the leading "…" when the line starts
+     * on Black's move) is exactly the part a second copy would get wrong. Items
+     * need nothing but `san`, which analysis moves and line plies both carry.
+     */
+    function renderMoveList(moves, idx, startFen, emptyText) {
       const list = cr.ui.list;
       list.textContent = '';
-      const an = cr.an;
-      const startPos = CloSan.parseFen(an.startFen);
+      const startPos = CloSan.parseFen(startFen);
       // Numbering continues the game the variation came from, so a tactics line
       // starting at move 25 reads as move 25 here too.
       let number = startPos ? startPos.fullmove : 1;
@@ -14797,21 +14947,23 @@
         }
         list.appendChild(row);
       };
-      an.moves.forEach((move, i) => {
+      moves.forEach((move, i) => {
         if (white || !row) addRow();
         const el = document.createElement('button');
         el.type = 'button';
-        el.className = 'clo-cr-mv' + (i + 1 === an.idx ? ' clo-cr-mv--on' : '');
+        // The cursor sits AFTER the move it names, so ply i is "on" when i+1
+        // plies have been played.
+        el.className = 'clo-cr-mv' + (i + 1 === idx ? ' clo-cr-mv--on' : '');
         el.textContent = move.san;
         el.dataset.ply = String(i + 1);
         row.appendChild(el);
         if (!white) number++;
         white = !white;
       });
-      if (!an.moves.length) {
+      if (!moves.length && emptyText) {
         const empty = document.createElement('div');
         empty.className = 'clo-cr-empty';
-        empty.textContent = 'No moves yet — play one on the board.';
+        empty.textContent = emptyText;
         list.appendChild(empty);
       }
       const on = list.querySelector('.clo-cr-mv--on');
@@ -15088,6 +15240,19 @@
       const actions = document.createElement('div');
       actions.className = 'clo-cr-actions';
 
+      // Walk the line instead of being asked for it, and back again. Offered on
+      // clickable lines only (syncUi hides it elsewhere): a drill card's whole
+      // content IS the move being asked for, and section 23's two keys already
+      // reveal that one.
+      const browseBtn = document.createElement('button');
+      browseBtn.type = 'button';
+      browseBtn.className = 'clo-cr-btn';
+      // syncUi rewrites both, but only once a line is running — without a
+      // resting label a state that returns before then shows an empty button.
+      browseBtn.textContent = 'Navigate';
+      browseBtn.title = 'Step through this line instead of being asked for it';
+      browseBtn.addEventListener('click', (e) => { setBrowse(!cr.browse); blurButton(e); });
+
       const hint = document.createElement('button');
       hint.type = 'button';
       hint.className = 'clo-cr-btn';
@@ -15114,7 +15279,29 @@
       exit.title = 'Close the continuation review and give Chessable its board back';
       exit.addEventListener('click', () => closeReview('exited', true));
 
-      actions.append(hint, skip, exit);
+      actions.append(browseBtn, hint, skip, exit);
+
+      // The walk controls, shown only while browsing. Same glyph vocabulary as
+      // the analysis row below — both are a cursor in a straight line of moves,
+      // they are never on screen together, and a second spelling of "one move
+      // back" in one panel would be a distinction that means nothing.
+      const nav = document.createElement('div');
+      nav.className = 'clo-cr-nav';
+      nav.hidden = true;
+      const navBtn = (label, title, onClick) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'clo-cr-btn';
+        btn.textContent = label;
+        btn.title = title;
+        btn.addEventListener('click', (e) => { onClick(); blurButton(e); });
+        nav.appendChild(btn);
+        return btn;
+      };
+      const navStart = navBtn('⏮', 'Back to the start of the line (Home)', () => browseGoto(0));
+      const navBack = navBtn('◀', 'One move back (left arrow)', () => browseGoto(cr.plyIdx - 1));
+      const navFwd = navBtn('▶', 'One move forward (right arrow)', () => browseGoto(cr.plyIdx + 1));
+      const navEnd = navBtn('⏭', 'To the end of the line (End)', () => browseGoto(linePath().length));
 
       // --- analysis mode (section 19): its own move list and controls, shown
       // INSTEAD of the quiz's prompt/actions. Built once, with the quiz.
@@ -15123,7 +15310,9 @@
       list.hidden = true;
       list.addEventListener('click', (e) => { // delegated: our own buttons only
         const el = e.target.closest('[data-ply]');
-        if (el) anGoto(Number(el.dataset.ply));
+        if (!el) return;
+        const n = Number(el.dataset.ply);
+        if (cr.browse) browseGoto(n); else anGoto(n);
       });
 
       const anActions = document.createElement('div');
@@ -15212,7 +15401,7 @@
       // The prefix field and the status go LAST: the actions rows carry
       // `margin-top: auto`, so the panel's free space collects above them — put
       // earlier, they would float far from the button they belong to.
-      panel.append(title, prompt, progress, list, chooser, actions, anPrefix, anActions, anStatus);
+      panel.append(title, prompt, progress, list, nav, chooser, actions, anPrefix, anActions, anStatus);
 
       document.body.append(boardEl, panel);
       cr.boardEl = boardEl;
@@ -15220,6 +15409,7 @@
       cr.ui = {
         grid, layer, shapes, promo, title, prompt, progress, actions, hint, skip, exit,
         chooser, chooseAll, chooseFinal,
+        browseBtn, nav, navStart, navBack, navFwd, navEnd,
         list, anActions, anStart, anBack, anFwd, anCut, anAdd, anPrefix, anStatus,
       };
       cr.orientation = null; // the grid is built on the first startLine
@@ -15284,7 +15474,12 @@
       // is reached by a different path.
       cr.panel.classList.toggle('clo-cr-panel--important',
         !analysing && cr.mode !== 'drill' && importantLine(cr.line));
-      cr.ui.list.hidden = !analysing;
+      // Browse mode is a flag inside the QUIZ (cr.browse), so it can never be
+      // true here alongside analysis or without a line — the picker has neither
+      // a line to walk nor a list to print.
+      const browsing = cr.browse && cr.mode === 'quiz' && Boolean(cr.line);
+      cr.ui.list.hidden = !analysing && !browsing;
+      cr.ui.nav.hidden = !browsing;
       cr.ui.anActions.hidden = !analysing;
       if (!analysing) { cr.ui.anStatus.hidden = true; cr.ui.anPrefix.hidden = true; }
       if (analysing) {
@@ -15324,10 +15519,50 @@
         // unambiguously, and it costs nothing here — the title is one line of
         // uppercase label with room to spare.
         const what = importantLine(cr.line) ? 'Important continuation' : 'Continuation';
-        cr.ui.title.textContent = total > 1
+        // "· again" for the copy a "didn't know" verdict put back on the queue
+        // (requeueLine): the total grows when that happens, and without this the
+        // user meets a line they have already played with nothing saying why.
+        const again = cr.line.sgRepeat ? ' · again' : '';
+        cr.ui.title.textContent = (total > 1
           ? what + ' ' + (cr.lineIdx + 1) + ' of ' + total
-          : what;
+          : what) + again;
         cr.ui.progress.textContent = 'Move ' + Math.min(done + 1, plies) + ' of ' + plies;
+      }
+
+      // The toggle is for clickable lines only: a drill card's whole content is
+      // the move being asked for, so "navigate" there would just be the answer.
+      cr.ui.browseBtn.hidden = drilling;
+      cr.ui.browseBtn.textContent = browsing ? 'Quiz' : 'Navigate';
+      cr.ui.browseBtn.title = browsing
+        ? 'Be asked for the rest of the line from where the board now stands'
+        : 'Step through this line instead of being asked for it';
+      cr.ui.hint.hidden = browsing;
+
+      // --- browsing: the line walked by hand, nothing asked for --------------
+      if (browsing) {
+        const path = linePath();
+        // The move the board is standing ON, not one being asked for. Where the
+        // line was COMBINED (mergeUserAlternatives) the walk follows its primary
+        // branch, so the answer the author also accepted is named beside it —
+        // nothing is being quizzed, so there is nothing to give away.
+        const shown = cr.plyIdx > 0 ? path[cr.plyIdx - 1] : null;
+        const also = (shown && shown.alts) ? shown.alts.map((a) => a.san) : [];
+        cr.ui.prompt.textContent = shown
+          ? shown.san + (shown.annot || '') +
+            (also.length ? ' (or ' + also.join(' or ') + ')' : '')
+          : 'Start of the line';
+        cr.ui.prompt.className = 'clo-cr-prompt';
+        renderMoveList(path, cr.plyIdx, cr.line.startFen, '');
+        cr.ui.navStart.disabled = cr.plyIdx === 0;
+        cr.ui.navBack.disabled = cr.plyIdx === 0;
+        cr.ui.navFwd.disabled = cr.plyIdx >= plies;
+        cr.ui.navEnd.disabled = cr.plyIdx >= plies;
+        // Walking to the end of a line does not move on by itself — nothing was
+        // answered — so this is the way forward rather than a way of giving up.
+        cr.ui.skip.hidden = total < 2;
+        cr.ui.skip.textContent = 'Next line';
+        cr.ui.skip.title = 'Go on to the next continuation';
+        return;
       }
 
       const ply = currentPly();
@@ -15336,11 +15571,12 @@
       // the move they were about to play is also right (section 18).
       const alts = (ply && ply.alts) || null;
       const answers = alts ? [ply.san].concat(alts.map((a) => a.san)) : (ply ? [ply.san] : []);
-      // Section 23's two keys, offered on a drill card. Written into the prompt
-      // rather than given a row of their own: the panel is one column wide and
-      // this is the same sentence ("what do I do now?") the prompt already
-      // answers, just with a second way of answering it.
-      const sgKeys = drilling && showGradeEnabled && showGradeEnabled()
+      // Section 23's two keys, offered on a drill card AND on a clickable line.
+      // Written into the prompt rather than given a row of their own: the panel
+      // is one column wide and this is the same sentence ("what do I do now?")
+      // the prompt already answers, just with a second way of answering it.
+      // Everything but 'quiz' and 'drill' has returned by here.
+      const sgKeys = showGradeEnabled && showGradeEnabled()
         ? { next: CONFIG.showGrade.keys.next[0], wrong: CONFIG.showGrade.keys.wrong[0] }
         : null;
       let prompt;
@@ -15348,14 +15584,24 @@
         // The move just shown is the one BEFORE the cursor — applyMove advanced
         // plyIdx past it.
         const shownPly = linePath()[cr.plyIdx - 1];
+        // Where the author accepted MORE THAN ONE answer here
+        // (mergeUserAlternatives), the reveal plays the line's own move and
+        // NAMES the rest. That is the whole of "would my move have been taken?",
+        // answered without a press — which is why section 23's alternatives key
+        // is deliberately not bound in this module: the accepted set is already
+        // in hand on the ply, where a review session has to fetch it.
+        const also = (shownPly && shownPly.alts) ? shownPly.alts.map((a) => a.san) : [];
         prompt = ((shownPly && shownPly.san) || '') +
+          (also.length ? ' (or ' + also.join(' or ') + ')' : '') +
           ' — ' + sgKeys.next + ' knew it · ' + sgKeys.wrong + " didn't";
       } else if (cr.plyIdx >= plies) prompt = drilling ? 'Correct.' : 'Line complete.';
       else if (!ply || ply.color !== cr.userColor) prompt = '…';
       else if (cr.hint) prompt = 'Play ' + answers.join(' or ');
       else if (cr.attempts) prompt = 'Not that one — try again';
-      else if (alts) prompt = (cr.userColor === 'w' ? 'White' : 'Black') + ' to play — either move';
-      else {
+      else if (alts) {
+        prompt = (cr.userColor === 'w' ? 'White' : 'Black') + ' to play — either move';
+        if (sgKeys) prompt += ' · ' + sgKeys.next + ' to see it';
+      } else {
         prompt = (cr.userColor === 'w' ? 'White' : 'Black') + ' to play';
         if (sgKeys) prompt += ' — or ' + sgKeys.next + ' to see it';
       }
@@ -15373,19 +15619,27 @@
     /** Variation names run long, and the panel is one column wide. */
     const shortDrillTitle = (t) => (t.length > 34 ? t.slice(0, 33) + '…' : t);
 
-    // --- section 23 inside the drill -----------------------------------------
+    // --- section 23 on our own board -----------------------------------------
     //
     // Two presses, exactly as in a review session: the first SHOWS the move, the
     // second says whether it was known and moves on. It is additive — the board
     // still takes a played move, so the keys are an extra way to answer a card
     // and not a mode the user has to be in.
     //
-    // Simpler than the review version in one important way: a drill grades only
-    // OUR OWN mistake list. Nothing is sent to Chessable, nothing is
-    // rescheduled, there is no timer to pause and no card to keep in step with —
-    // so the whole of it is "play the move on our board, then mark or don't".
+    // Simpler than the review version in one important way, and it is what makes
+    // the keys safe to bind on the PREFERENCE rather than on a running
+    // show-and-grade session: neither host grades Chessable. A drill grades only
+    // our own mistake list; a clickable line grades nothing at all. There is no
+    // card to keep in step with and no scheduled move to get wrong.
+    //
+    // The two hosts differ in ONE thing, and it is structural rather than a
+    // setting: a drill card ENDS on the move being asked for, so its verdict is
+    // followed by nextLine(); a clickable line CARRIES ON, so its verdict is
+    // followed by step() — which plays the opponent's reply and stops at the
+    // next move asked for. That reply is the second press's own move to look at,
+    // which is the rule section 23 is built on: no press that shows nothing.
 
-    function drillShowGradeKey(lost) {
+    function showGradeKey(lost) {
       if (cr.busy || cr.promo) return;
       const ply = currentPly();
       if (!cr.sgShown) {
@@ -15399,16 +15653,49 @@
         syncUi();
         return;
       }
-      // SECOND PRESS — the verdict, and on to the next card. The user's own
-      // answer is authoritative here, so it overrides finishDrillCard's
-      // "no miss, no hint" test: nothing was missed or hinted, it was shown.
+      // SECOND PRESS — the verdict. The user's own answer is authoritative here,
+      // so it overrides the "no miss, no hint" test: nothing was missed or
+      // hinted, the move was simply shown. Pressing "wrong" at EITHER stage
+      // counts, so the verdict can be given before the move is even looked at.
       const known = !lost && !cr.sgLost;
-      finishDrillCard(known);
-      log('mistake drill:', (cr.line && cr.line.label) || '',
-        known ? '— knew it' : '— not known');
       cr.sgShown = false;
       cr.sgLost = false;
-      nextLine();
+      if (cr.mode === 'drill') {
+        finishDrillCard(known);
+        log('mistake drill:', (cr.line && cr.line.label) || '',
+          known ? '— knew it' : '— not known');
+        nextLine();
+        return;
+      }
+      // A clickable line reschedules nothing and records nothing — that is the
+      // feature's defining property — so the verdict has only THIS RUN to act
+      // on: a line holding a move the user did not know comes round AGAIN at the
+      // end of it. Which is the same shape the drill's verdict has (does this
+      // leave the list?), scoped to something that does not outlive the run.
+      if (!known) requeueLine();
+      log('continuation review:', (cr.line && cr.line.label) || '',
+        known ? '— knew it' : '— not known');
+      step();
+    }
+
+    /**
+     * Puts the line being played back on the end of this run's queue.
+     *
+     * ONCE per line, whatever it was called for (`cr.sgAgain`, keyed on the
+     * line's own key): a repeat that can re-queue itself is a run with no end,
+     * and the user has already said they did not know it — saying so a second
+     * time must not cost them the way out. The queued entry is a shallow COPY
+     * carrying `sgRepeat`, so the panel can say "again" without the two passes
+     * being told apart by their position in an array that is still growing.
+     */
+    function requeueLine() {
+      const line = cr.line;
+      if (!line) return;
+      const id = line.key || lineSig(line);
+      if (cr.sgAgain.has(id)) return;
+      cr.sgAgain.add(id);
+      cr.queue.push({ ...line, sgRepeat: true });
+      log('continuation review: queued', line.label, 'to come round again');
     }
 
     /** The lines this feature offers: everything discovered MINUS the ones the
@@ -15569,6 +15856,11 @@
     function beginRun(queue, spot) {
       if (!queue.length) { closeReview('nothing selected'); return; }
       cr.choosing = false;
+      // Walking is a per-run gesture, not a preference: every run starts as the
+      // quiz it was launched as. (closeReview clears it too, for the runs that
+      // begin without one — beginRun off the picker, with cr.active already up.)
+      cr.browse = false;
+      cr.sgAgain.clear(); // …and so is "you already had this one round again"
       cr.queue = queue;
       cr.midQuiz = Boolean(spot) && !reviewBrowseReady();
       if (!spot) {
@@ -15738,6 +16030,8 @@
       if (wasActive && navEnd && wasQuiz) navigateToLineEnd(lastLine, played, lastPath);
       // Back to the quiz's own defaults, so the next launcher press is a quiz.
       cr.mode = 'quiz';
+      cr.browse = false;
+      cr.sgAgain.clear();
       cr.view = null;
       // A save in flight is the worker's job now and finishes (or times out)
       // there; dropping the state just means its result finds no one waiting.
@@ -16544,6 +16838,15 @@
       if (!placeHeadsUp()) return;
       cr.hu.shown = group;
       cr.hu.el.hidden = false;
+      // Restart the fade-in by hand: the element is REUSED rather than created,
+      // so an animation left on it from the last time would not run again. The
+      // reflow between the two lines is what makes the removal take effect
+      // before the class goes back on — without it the browser coalesces the
+      // pair and nothing restarts. (CSS declines the animation outright where
+      // the panel covers the comment box; see the stylesheet.)
+      cr.hu.el.classList.remove('clo-cr-heads--in');
+      void cr.hu.el.offsetWidth;
+      cr.hu.el.classList.add('clo-cr-heads--in');
       // The board can only be fitted against a laid-out panel, and everything
       // above ran on a display:none one — so the measuring pass is here, once
       // the panel is really up.
@@ -16554,6 +16857,12 @@
       if (cr.hu.shown) cr.hu.seen.add(cr.hu.shown.sig);
       hideHeadsUp();
       blurButton(e);
+    }
+
+    /** True when a heads-up is on screen with a line to play — i.e. when
+     *  "Review now" is a thing the keyboard can take. */
+    function headsUpOffered() {
+      return Boolean(!cr.active && cr.hu.shown && cr.hu.el && !cr.hu.el.hidden);
     }
 
     // --- "Turn off", from inside the session ---------------------------------
@@ -16814,6 +17123,20 @@
       // covering — the content-sized placements below are better.
       const column = spoiler ? null : usable(SELECTORS.reviewCommentCol, C.headsUpCoverMinPx);
       const cover = spoiler || column;
+      // The resting dim is opaque and applies everywhere, so this class no
+      // longer gates it — it gates the FADE-IN, which is opacity by definition
+      // and would make the comment underneath legible for half a second. Only
+      // for the SPOILER: the mid-quiz COLUMN prints one sentence and hides
+      // nothing, so a panel over it may fade in like any other.
+      const covering = Boolean(spoiler);
+      el.classList.toggle('clo-cr-heads--cover', covering);
+      // On the CHANGE only — this runs on every scroll and every tick.
+      if (cr.hu.covering !== covering) {
+        cr.hu.covering = covering;
+        log('continuation: heads-up', covering
+          ? 'is covering the comment — shown at once (a fade would leak the lines under it)'
+          : 'is not covering the comment — fades in');
+      }
       if (cover) {
         const at = { left: cover.left + sx, top: cover.top + sy, width: cover.width };
         // The spoiler is covered ENTIRELY; the column is not. Down there nothing
@@ -17115,17 +17438,31 @@
           return;
         }
         if (e.key === 'Escape') { closeReview('escaped', true); return; }
-        // Section 23 in the mistake drill: the same two keys, the same two
-        // presses, so a drill can be worked through from a ring exactly like a
-        // review session. Nothing here touches Chessable — a drill grades only
-        // our own mistake list — so this is the whole of it.
-        if (cr.mode === 'drill' && showGradeEnabled && showGradeEnabled()) {
+        // Section 23 on our own board: the same two keys and the same two
+        // presses on a mistake drill AND on a clickable line, so either can be
+        // worked through from a ring exactly like a review session. Not while
+        // BROWSING — nothing is being asked for there, and the walk owns the
+        // keyboard.
+        if (!cr.browse && (cr.mode === 'drill' || cr.mode === 'quiz') &&
+            showGradeEnabled && showGradeEnabled()) {
           const K = CONFIG.showGrade.keys;
           if (K.next.includes(e.key) || K.wrong.includes(e.key)) {
             e.preventDefault();
-            drillShowGradeKey(K.wrong.includes(e.key));
+            showGradeKey(K.wrong.includes(e.key));
             return;
           }
+        }
+        // Browse mode (section 18): the analysis board's navigation keys, on the
+        // line being walked. Free to take — the handler below returns on any
+        // mode but 'analysis', so nothing in a quiz was ever bound to them.
+        if (cr.browse && cr.mode === 'quiz') {
+          if (e.key === 'ArrowLeft') browseGoto(cr.plyIdx - 1);
+          else if (e.key === 'ArrowRight') browseGoto(cr.plyIdx + 1);
+          else if (e.key === 'Home') browseGoto(0);
+          else if (e.key === 'End') browseGoto(linePath().length);
+          else return;
+          e.preventDefault(); // arrows would otherwise scroll the page
+          return;
         }
         if (cr.mode !== 'analysis') return;
         // Analysis navigation. Swallowed above already, so the trainer's own
@@ -17140,6 +17477,47 @@
         e.preventDefault(); // arrows would otherwise scroll the page
       }, true);
     }
+
+    // Section 18b's "Review now", from the keyboard (v0.87.0). Space is the
+    // ring's fourth button, and while a heads-up is up "play this line now" is
+    // the one thing on screen worth doing with it.
+    //
+    // A SEPARATE listener from the one above, which is gated on `cr.active`: a
+    // heads-up is not an active review, so that one never fires while only the
+    // panel is showing.
+    //
+    // IT STANDS DOWN WHILE SHOW-AND-GRADE IS RUNNING, and that is not a
+    // courtesy. Space is also section 23's alternatives key, and THIS listener
+    // is registered FIRST (start() runs initContinuationReview before
+    // initShowGrade), so without the check it would swallow the press before
+    // that mode ever saw it. While the mode runs, ITS handler decides — and
+    // hands the press back here through `continuationReviewNow` whenever it is
+    // not one it wants. The two really do overlap: the panel's clock is the
+    // TRAINER's position, and the trainer does not move until the card is
+    // graded, so a heads-up raised at the card's own position is still standing
+    // through the reveal.
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      document.addEventListener(type, (e) => {
+        if (cr.active || e.ctrlKey || e.metaKey || e.altKey) return;
+        if (showGradeActive && showGradeActive()) return;
+        const tag = e.target && e.target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+        if (!CONFIG.showGrade.keys.alts.includes(e.key)) return;
+        // Tested BEFORE the swallow: MoveTrainer2 binds space itself, and with
+        // no panel up that shortcut is still the user's.
+        if (!headsUpOffered()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (type !== 'keydown' || e.repeat) return;
+        reviewNow();
+      }, true);
+    }
+
+    continuationReviewNow = () => {
+      if (!headsUpOffered()) return false;
+      reviewNow();
+      return true;
+    };
 
     // Section 19: a database move row plays that move on the analysis board.
     // Bubble phase — the panel is our own element and nothing else reacts to
@@ -20666,9 +21044,10 @@
     // else still reaches the trainer.
 
     function onKey(e) {
-      if (!sg.active || e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
       const tag = e.target && e.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+      if (!sg.active) { maybeStartFromKey(e); return; }
       const isNext = C.keys.next.includes(e.key);
       const isWrong = C.keys.wrong.includes(e.key);
       const isAlts = (C.keys.alts || []).includes(e.key);
@@ -20698,6 +21077,12 @@
       // `finishAutoCard`, which is the branch below.
       if (sg.phase === 'browse' || (sg.phase === 'think' && reviewBrowseReady())) {
         if (isNext) advance();
+        // The browse state is exactly where the heads-up's FINAL-position offer
+        // lives (18b raises a continuation of the user's own colour only once
+        // the variation is over), so this branch has to hand the key on as well
+        // — it returns before the alternatives branch below, and alternatives
+        // mean nothing here anyway.
+        else if (isAlts && continuationReviewNow) continuationReviewNow();
         return;
       }
       // THE ALTERNATIVES KEY GRADES NOTHING and answers only once the move is
@@ -20705,7 +21090,16 @@
       // candidate answers, which is the quiz handed over; during auto-play the
       // card is already answered and there is no verdict left for it to inform.
       if (isAlts) {
-        if (sg.phase === 'shown' && !sg.autoGrading) showAlternatives();
+        if (sg.phase === 'shown' && !sg.autoGrading) { showAlternatives(); return; }
+        // Not a press this mode wants — so hand it to the mid-quiz heads-up,
+        // which binds the same key for "Review now" and is stood down for the
+        // whole time this mode runs (v0.87.0). The two genuinely overlap: that
+        // panel's clock is the TRAINER's position, and the trainer does not move
+        // until the card is graded, so a panel raised at the card's own position
+        // is still up through the reveal. Alternatives win inside their window
+        // because they are about the card being answered right now; everywhere
+        // else the press has nothing else to mean.
+        if (continuationReviewNow) continuationReviewNow();
         return;
       }
       // TWO PRESSES PER CARD, AND EVERY PRESS SHOWS A MOVE. First press: your
@@ -21057,6 +21451,37 @@
     }
 
     // --- lifecycle -----------------------------------------------------------
+
+    /**
+     * The mode's own key STARTS it (v0.87.0): in a trainer session, with the
+     * preference on and nothing else owning the keyboard, `next` does what the
+     * row's button does.
+     *
+     * Worth having for the reason the mode exists at all — a Bluetooth ring has
+     * four buttons and no way to press one on a web page, so needing a mouse
+     * click to begin was the one gap in "a whole session without letting go".
+     *
+     * The press is spent on STARTING and does not also reveal the first card.
+     * There is no board on screen when it lands, and a key that does two
+     * different things depending on state is what this mode avoids everywhere
+     * else; the next press reveals, as it would have anyway.
+     */
+    function maybeStartFromKey(e) {
+      if (!C.keys.next.includes(e.key)) return;
+      // Exactly where the row's button would be offered. startMode() re-checks
+      // both, but silently — and this must not swallow a key it is not going to
+      // act on, since outside the mode these are MoveTrainer2's to bind.
+      if (!sg.enabled || !inSession()) return;
+      // One of our own boards owns the keyboard (a clickable-line quiz, a drill,
+      // the analysis board). Belt and braces — that module's listener is
+      // registered first and stops propagation while it is up — but the answer
+      // must not depend on registration order.
+      if (continuationActive && continuationActive()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.type !== 'keydown' || e.repeat) return;
+      startMode();
+    }
 
     function startMode() {
       // `sg.enabled` as well as the route: syncUi hides the whole group when the
