@@ -356,6 +356,7 @@ what tells you this particular board does not take moves.
 beat before each move appears; *Animation* is how long a piece takes to slide.
 Both apply to auto-played cards and to your own, and the pace is floored at the
 animation so the two can never be set against each other into one blurred move.
+The same cog holds the **audio** and **blindfold** settings (below).
 
 The pace no longer decides whether auto-play *works*, which on a phone it did
 until v0.78.1. Chessable swallows a press that lands while its own board is still
@@ -412,9 +413,87 @@ you would rather.
 
 The keys are `2` and `4` for now;
 support for a ring's media buttons needs a capture of what a real ring emits,
-since on most platforms those never reach a web page as key presses at all. The
-mode is also the groundwork for blindfold practice: everything it says goes
-through one `announce()` call and the board can be switched off wholesale.
+since on most platforms those never reach a web page as key presses at all.
+
+#### It reads the moves out loud (v0.88.0)
+
+Tick **Read the moves out** behind the cog and every move is spoken: your move
+when you reveal it, the opponent's reply when you advance, and the accepted
+alternatives when you ask for them. **`1` reads the last move again** — the "say
+that again" the key had been kept free for. It is the one press that grades
+nothing and can be used at any point in a card.
+
+SAN is written for the eye, so it is turned into words rather than read out as it
+stands: `Nxf7+` is *"Knight takes F7, check"*, `O-O-O` is *"castles long"*,
+`exd8=Q` is *"Pawn E takes D8, promotes to Queen"*, and a disambiguated move gets
+a *from* — `Nbd2` is *"Knight from B to D2"*. Squares are said as one token
+("F3") because a lone lower-case file letter is the one thing a speech engine
+reliably mispronounces.
+
+**The voice says less than the panel** (v0.89.0). *"Your move"* and *"Opponent
+played…"* are not spoken: the first is on screen with the arrow up and the board
+stopped, the second spends a second and a half saying two words the press itself
+already said. Both still appear in the panel. What the voice does say beyond the
+moves is the news: **"Variation completed"** or **"Variation completed with
+mistakes"** at the end of each line, and a word when a mistake repetition has no
+reply to show — the one press that would otherwise be silent.
+
+That verdict is Chessable's own count, not ours, so it includes a move you ran out
+of time on and one you failed before starting the mode. It also appears on the
+widget row, with the number of moves missed, since the panel is already down by
+then. (A line that ends in *Time's up* renders no completion block at all, and
+that is the one case with no verdict — the same gate the browse-state launchers
+have always had.)
+
+**Reading speed** is its own setting beside it, because a spoken card *is* the
+pace: a move phrase takes about 1.7 s at normal speed, and there is a further
+~0.2–0.6 s before any voice starts at all, so the audio trails the board slightly
+however fast you set it. A new move interrupts whatever is still being said,
+while the *Your move* prompt queues behind the reply — the reply is the half that
+matters, and it must never be cut off.
+
+**Auto-play waits for the sentence.** A replayed card's beats are a fraction of a
+second and a spoken move is over a second, so with the audio on each beat is held
+open until the move has been read out — otherwise a replay would be a string of
+first syllables, which is exactly the case you would want to listen to. It only
+ever slows a beat down, only with the audio on, and it gives up after a couple of
+seconds so a misbehaving voice cannot stall the replay.
+
+It uses the browser's own speech engine, so it needs no permission, no download
+and no network, and it picks an English voice on its own (the vocabulary is
+English). If your browser has no voices at all, the row says so.
+
+One thing to know if it is ever silent: Chrome will not speak on a page you have
+not interacted with yet — it treats speech like autoplay. Starting the mode counts
+(a click or a key press both do), so in normal use you will never see it, but if it
+does happen the row now says **"Click the page once to let the voice speak"**
+instead of leaving you guessing.
+
+#### Blindfold practice (v0.88.0)
+
+Set **Board** to *Blindfold* and the pieces come off — the board itself stays,
+empty, wearing Chessable's theme. That is deliberate rather than a compromise:
+our board is what **covers** Chessable's, so *not* drawing it would leave their
+position on screen, which is blindfold practice with the answer in front of you.
+
+Everything else stays: the panel still names each move, the last-move squares are
+still tinted and the arrow still appears, because all of those say *which move was
+just played* — which the mode announces in words anyway. It is the position that
+is hidden, and only the position. So it works with the audio off too, read off
+the panel as text, and the two settings are independent.
+
+The one thing blindfold needs that the ordinary mode does not is the run-up: a
+variation usually starts several plies in, and those moves are played by the
+trainer without being announced. With blindfold on they are read out once, at the
+first card of the variation — *"Moves so far: E4, C5, Knight F3, D6"* — and `1`
+repeats the whole line. A variation that does not begin from the initial position
+(a tactics course, a middlegame chapter) says *"From a set position"* rather than
+implying the moves are the whole story; reading a placement out square by square
+is a bigger feature than this one.
+
+The two keys in the **Drill** and in the clickable-line quiz are not spoken: those
+are the continuation board's own panels, not this mode's, and nothing there
+reaches Chessable at all.
 
 Trainer sessions — review and learn alike — can also **auto-play moves you
 already proved this session**

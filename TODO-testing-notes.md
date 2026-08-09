@@ -321,3 +321,5 @@ have above 90% and hasn't failed recently"*
 > Settle the threshold as a SETTING, not a constant, and say where the percentage
 > comes from — if the endpoint doesn't give one, the session's own mistake log
 > (section 16) is a much weaker substitute and the feature may need to wait.
+
+</details>

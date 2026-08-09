@@ -69,7 +69,10 @@ of the keyboard. A review session can also be answered WITHOUT PLAYING AT ALL
 key reveals the answer and a second key says whether it was known — the move is
 then played for the user, or marked wrong through Chessable's OWN "I don't know"
 control and played. Two keys for a whole session, so it can be studied from a
-Bluetooth ring, and the groundwork for blindfold practice with TTS.
+Bluetooth ring. That mode also READS THE MOVES OUT (section 23b): the browser's
+own speech engine, SAN spelled into words, `1` to hear the last move again, and a
+BLINDFOLD setting that takes the pieces off our board — the board itself has to
+stay, since it is what covers Chessable's own.
 Currently working (v0.18.x).
 
 ## Structure
@@ -3435,6 +3438,143 @@ Currently working (v0.18.x).
   `CONFIG.showGrade.showBoard` (default true) stops anything being drawn. In
   place before there is anything to speak, deliberately — retrofitting it once
   the drawing calls are scattered through the driver is the expensive version.
+  AUDIO (section 23b, v0.88.0) IS WHAT THAT SEAM WAS FOR, and it cashed in: the
+  driver did not move. `announce(text, speech, isMove)` gained two arguments and
+  everything else here is new code beside it. TWO INDEPENDENT SETTINGS in the same
+  cog, `cloShowGradeAudio` (opt-IN) and `cloShowGradeBlindfold` (opt-IN), plus
+  `cloShowGradeRate` — all storage.local, all watched through
+  `chrome.storage.onChanged` in the established shape. The listener NEVER writes
+  back (`applyBlindfold` is the write-free half of `setBlindfold`): Chrome fires
+  onChanged for a write of an UNCHANGED value too, so two open trainer tabs would
+  ping-pong for ever.
+  * WEB SPEECH API (`speechSynthesis`), not `chrome.tts`, which would want a
+    manifest permission. No permission, no remote code, no vendored voice.
+    MEASURED 2026-08-09 (Windows Chrome, six local SAPI voices): `getVoices()`
+    returns an EMPTY list on the first synchronous call and six ~600 ms later — so
+    `pickVoice` is LAZY and caches only a non-empty answer, since a voice resolved
+    at init would be null for the session; ~200 ms from `speak()` to `onstart`
+    warm and ~580-670 ms cold, i.e. the audio trails the board by up to half a
+    second and nothing can be done about that; a move phrase is ~1.7 s of speech
+    at rate 1, which is why the RATE is a user setting rather than a constant;
+    and `cancel()` drops the queue SILENTLY (a queued utterance fires no event at
+    all) while letting an immediately following `speak()` start normally.
+  * NOTHING IS SPOKEN WITHOUT AN EXPLICIT `speech` ARGUMENT (v0.89.0) — there is
+    no fallback to the written text, and that inversion IS the design: the panel
+    and the voice want different things and the voice wants LESS. "Your move" is
+    on screen with the arrow up and the board stopped; "Opponent played" spends a
+    second and a half on two words the press itself already said. So the voice is
+    the MOVES (`sanSpeech` alone, no prefix) plus the statements that carry NEWS:
+    the variation's verdict, a repetition having no reply (the one press that
+    shows no move, so silence would read as a dead key), the alternatives answer
+    and its two failure lines. A new announce is silent until someone decides it
+    is worth hearing.
+  * `announceCompletion()` — "Variation completed" / "…with mistakes" — is THE
+    TRAINER'S OWN RECORD, not a tally of ours: `progress.quizIncorrectAttempts` /
+    `quizIncorrectTotal` per ply (section 16's field), so it counts a "timeUp", a
+    move failed before the mode was started, and Chessable's own repetitions,
+    none of which a flag set by `gradeUnknown` would know. CALLED ONLY FROM A
+    FRESH PLAN READ (`applyPlan`, below the newVariation return so it can never
+    describe the NEXT variation's plan, which swaps in ~90 ms early): the final
+    card's failure reaches that record AFTER the read taken while it was being
+    answered, so a cached count says "completed" about a line that ended on a
+    mistake. tick's browse branch keeps asking for reads until it has spoken.
+    It also writes the ROW'S STATUS LINE, with the count, because the browse
+    branch has already taken both overlays down — without that the verdict exists
+    only in the audio, i.e. not at all with the audio off; cleared at the next
+    variation change so it cannot sit over a line being played. A "Time's up"
+    finish renders no `practiceProgress` block, so `reviewBrowseReady()` never
+    goes true and there is NO verdict — the browse-state gate's own limitation.
+  * A MOVE INTERRUPTS, EVERYTHING ELSE QUEUES, and that split is the whole of how
+    speech keeps up with a board it cannot match for speed. "Opponent played e5"
+    followed a beat later by "Your move" must not be cut off — the reply is the
+    half that matters — so the prompt queues; and a replay faster than speech must
+    not build an unbounded backlog, so each new move cancels what is left. Same
+    latest-wins discipline as the engine and the explorer fetches.
+  * `afterBeat(ms, fn)` HOLDS AUTO-PLAY'S TWO BEATS OPEN while a sentence is still
+    running, and it is what makes the audio usable in the place it matters most —
+    a blindfold session listening to a proven prefix go past. At the fast pace
+    those beats are 260 and 240 ms against a phrase of over a second, and since
+    moves interrupt, one syllable of each is all you would hear. It only ever
+    LENGTHENS a beat, only while the audio is on (`speechBusy()` is false
+    otherwise, so it is the plain setTimeout it replaced), and it is capped at
+    `speechWaitMs` past the beat — a stuck or silent engine must cost a replay one
+    beat, never the session. It keeps `sg.autoTimer` SET throughout, since that
+    flag is what tells `onKey` and `tick` that auto-play has claimed the card.
+  * `sanSpeech` turns SAN into words ("Nxf7+" → "Knight takes F7, check";
+    "O-O-O" → "castles long"; "Nbd2" → "Knight from B to D2" — the "to" only
+    when disambiguated, since "takes" is already the word between the halves;
+    "exd8=Q" → "Pawn E takes D8, promotes to Queen", named as a pawn so the
+    sentence does not open on a single letter). SQUARES ARE ONE UPPERCASE TOKEN
+    ("F3"): a lone lower-case file letter is the one thing an engine reliably
+    mispronounces ("a" as the article). Pure, and spot-checked over 26 cases by
+    evaluating the REAL source out of the file — but PRONUNCIATION IS THE ONE
+    THING NO MEASUREMENT HERE CAN CHECK, it needs an ear, so anything that reads
+    wrong is a change to that one function and nowhere else.
+  * BLINDFOLD TAKES THE PIECES OFF, NOT THE BOARD, and reading it the other way
+    round is the trap: OUR BOARD IS WHAT COVERS CHESSABLE'S, so not drawing it
+    leaves their position on screen — blindfold practice with the answer in front
+    of you. So `reconcile()` is the ONE place the setting changes anything (it
+    removes every piece and returns), and the board, its theme, its ring, the
+    panel, the last-move tint and the arrows all stay. Those say WHICH MOVE was
+    played, which the mode announces in words anyway; it is the POSITION that is
+    hidden. That is also why blindfold needs no coupling to the audio — the moves
+    are printed in the panel — and why the two settings are independent with no
+    guard in either direction.
+  * `announceRunUp()` is blindfold's one extra statement, and it is not a nicety:
+    a variation usually starts several plies in and those plies are played by the
+    TRAINER, so nothing announces them and a blindfold player has no position at
+    all. Read once per variation (`sg.runUpSaid`, cleared on the variation change
+    along with `sg.lastMoveSpeech`), marked as a MOVE so the repeat key re-reads
+    the line, and suppressed when the pieces are shown — eight moves read aloud
+    over a position you can see is noise. A variation not starting from the
+    initial position says "From a set position" rather than implying the moves are
+    the whole story: reading a placement out square by square is a bigger feature.
+  * `1` IS `keys.repeat`, and it re-reads the LAST MOVE (`sg.lastMoveSpeech`), not
+    the last utterance — the most recent thing said is regularly "Your move" or an
+    alternatives list, which nobody presses that key for. At the think stage the
+    last move spoken is the opponent's reply that led here, which is exactly the
+    one a blindfold player loses. Handled BEFORE the phase gate in `onKey` (it
+    grades nothing and touches no state, so it is safe even mid-act) and SWALLOWED
+    ONLY WHILE THE AUDIO IS ON — with nothing to re-read the key is
+    MoveTrainer2's, the rule `maybeStartFromKey` already follows.
+  * A REFUSED UTTERANCE IS NOT A THROWN ONE (`noteSpeechError`, v0.89.1), and
+    finding that out cost a live session: `speak()` returns quietly and the
+    failure arrives on the utterance's own `onerror`, so the whole feature can be
+    silent with NOTHING in the console. Ground-truthed 2026-08-09 on
+    chessable.com: in a document driven only by synthetic clicks, EVERY utterance
+    came back `not-allowed` at `error@0`; one real click anywhere and the same
+    probe read `start@168`. It is Chrome's autoplay gate, and it is NOT a simple
+    per-document activation rule — a later document of the same origin spoke with
+    no gesture at all (the engagement score having risen in between), so the
+    honest statement is that speech MAY be refused when the page has had no real
+    interaction. Ordinary use never meets it (the mode is started by a click or a
+    key press, both activations); the reporting exists because the failure is
+    otherwise invisible. `canceled`/`interrupted` are OUR OWN (every move
+    interrupts) and must never be reported — that would be one line per move — and
+    a successful `onstart` clears the diagnosis, plus OUR status message only.
+  * Everything else fails SOFT too: `sg.speechDead` stands the audio down for the
+    page after one throw with one warning, `stop()` and `pagehide` cancel (speech
+    outlives a page unload otherwise), and a browser with no engine says so in the
+    status line. Measured in the harness: the menu is 213x144 (262x214 under
+    `html.clo-touch`, where the checkbox goes 13→18px), and the three-item keys
+    line fits one line from 372px — the live comment box is 506px.
+  * VERIFIED LIVE 2026-08-09 (course 453453, /learn/ overstudy of 70382641 and an
+    in-session switch to 71087636 — the routes that reschedule nothing), by
+    driving the keys synthetically and recording `speechSynthesis.speaking`
+    transitions from the page world (the queue state IS visible across the world
+    boundary, which is what makes the audio observable at all — the utterance TEXT
+    is not): the repeat key re-read the last move (1.68 s utterance); a grade press
+    produced EXACTLY ONE utterance of 1455 ms — the bare move, where "Opponent
+    played …" measures ~2.2 s — and the following "Your move" produced NONE; a
+    mistake repetition printed "Repeat — no reply follows" and spoke; the verdict
+    read "Variation completed with mistakes (2)" in the panel AND the row status,
+    counting a `timeUp` that happened before the mode was even started, which is
+    the whole argument for reading the trainer's record instead of a flag of ours;
+    blindfold showed 0 pieces on our board over their 29, board-for-board; the
+    run-up spoke once (2.57 s) at a fresh variation's first card with no press;
+    and auto-play + audio ran one utterance per replayed move with 41-129 ms
+    between them — i.e. `afterBeat` holding each beat for the sentence — handing
+    back at the first unproven move.
   ROW: `.clo-sg` at `order: 2`, beside the move field (both act on the card being
   answered); mistakes/practice/overstudy/settings each shifted up one. Green
   OUTLINE idle, and `.clo-rowprimary` while running, when it reads "Stop" — a

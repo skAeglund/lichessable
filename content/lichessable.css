@@ -2903,7 +2903,18 @@ html.clo-injecting .legal-square-capture-mt2 {
   border: 1px solid var(--clo-line);
   border-radius: 3px;
   background: var(--clo-bg-sunken);
+  background-image: none; /* Chessable styles bare selects with its own caret */
   color: var(--clo-text);
+}
+
+/* The audio switch (section 23b). A checkbox rather than a select because it is
+   a plain yes/no, unlike Board — which has a NAME for its off state
+   ("Blindfold") and would lose it as an unlabelled tick. `margin: 0` because the
+   row is a flex line and the UA margin puts the box off the right edge. */
+.clo-sg-menu input[type="checkbox"] {
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--clo-accent);
 }
 
 /* The move, or what the opponent just played — the panel's one loud line, and
@@ -4275,4 +4286,29 @@ html.clo-touch .clo-tm-input {
 
 html.clo-touch .clo-tm-status {
   font-size: 16px;
+}
+
+/* --- show and grade's settings popover (sections 23 / 23b) -----------------
+   The one surface of this mode a phone actually TOUCHES: everything else about
+   it is answered with keys, which is the whole point of it. 16px on the selects
+   for section 22's reason (anything smaller and mobile Chrome zooms the page in
+   on focus), and a 13px checkbox is not a tap target — 18px matches the
+   coverage panel's, which was measured for the same job. */
+
+html.clo-touch .clo-sg-menu {
+  font-size: 15px;
+}
+
+html.clo-touch .clo-sg-menu select {
+  font-size: 16px;
+  padding: 5px 6px;
+}
+
+html.clo-touch .clo-sg-menu input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
+html.clo-touch .clo-sg-menu-row {
+  padding: 3px 0;
 }

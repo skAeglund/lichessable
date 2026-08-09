@@ -790,7 +790,7 @@ body {
         <div class="clo-cr-board clo-sg-board hx-pos hx-sgdemo" style="width:200px;height:200px"
              data-hx-board="rnbqkbnr/pp1ppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR w"
              data-hx-sq="d2:last|d4:last"
-             data-hx-shapes="arrow:d2:d4:var(--clo-attention)"></div>
+             data-hx-shapes="arrow:d2:d4"></div>
         <div class="clo-cr-board clo-sg-board hx-pos hx-sgdemo" style="width:200px;height:200px"
              data-hx-board="rnbqkbnr/pp1ppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR w"
              data-hx-sq="d2:last|d4:last"></div>
@@ -798,7 +798,11 @@ body {
              style="width:200px;height:200px"
              data-hx-board="rnbqkbnr/pp1ppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR w"
              data-hx-sq="d2:last|d4:last"
-             data-hx-shapes="arrow:d2:d4:var(--clo-attention)"></div>
+             data-hx-shapes="arrow:d2:d4"></div>
+        <div class="clo-cr-board clo-sg-board hx-pos hx-sgdemo" style="width:200px;height:200px"
+             data-hx-board="8/8/8/8/8/8/8/8 w"
+             data-hx-sq="d2:last|d4:last"
+             data-hx-shapes="arrow:d2:d4"></div>
         <div class="clo-cr-board hx-pos" style="width:200px;height:200px"
              data-hx-board="rnbqkbnr/pp1ppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR w"
              data-hx-sq="d2:last|d4:last"></div>
@@ -807,22 +811,32 @@ body {
         arrow is up, and it means <em>the board has stopped and is waiting for you to grade</em>, not
         "this is the move" (the piece and the two tinted squares already said that). Then the
         <strong>same card auto-played</strong>: no arrow, because it grades itself a beat later and
-        there is no decision to point at. Then your card over a light theme. Then the <em>quiz</em>
+        there is no decision to point at. Then your card over a light theme. Then the same card in
+        <strong>blindfold</strong> (section 23b): the pieces are gone and everything else stays &mdash;
+        the board itself is what covers Chessable's, and the tint and the arrow say which move was
+        played, which the mode announces in words anyway. Then the <em>quiz</em>
         board for comparison &mdash; green ring, our own squares, and it takes moves.</p>
-      <p class="hx-note" style="margin:6px 0 0">The arrow is the <em>ring's</em> amber, read off
-        <code>--clo-attention</code> rather than repeated in JS: one colour, one idea &mdash; "waiting
-        for you". It was the quiz board's green until v0.77.0, which on Chessable's own green board
-        image had the same lack of edge that made the 2px ring unreadable.</p>
+      <p class="hx-note" style="margin:6px 0 0">The arrow is <strong>green</strong> &mdash; the
+        stylesheet's own, drawn with no colour argument at all. An amber one (matching the ring, the
+        theory being that one colour should mean "waiting for you") was tried in v0.77.0&ndash;0.80.0
+        and blends into Chessable's own green board image; the ring keeps the amber because it is not
+        on the board image. This replica said amber until v0.88.0, which was simply stale.</p>
     </div>
 
     <div class="hx-card">
-      <h3>Show and grade — the replay-speed popover (section 23)</h3>
-      <p class="hx-note">Behind the cog, because both are persistent preferences and everything else
+      <h3>Show and grade — the settings popover (section 23)</h3>
+      <p class="hx-note">Behind the cog, because these are persistent preferences and everything else
         in this row acts on the session in front of you (DESIGN-ui-inventory &sect;F4). Body-mounted
         and fixed in the real thing &mdash; inside the row it would change the widget's height, which
         the Lichess panel, the alt-check chip and the heads-up all anchor below. Pace is the beat
         before each move is shown; animation is how long a piece takes to slide, and the advance beat
         is floored at it so the two cannot be set against each other into one blurred move.</p>
+      <p class="hx-note" style="margin:6px 0 0">The last three are the AUDIO (section 23b, v0.88.0).
+        Three rows and not one, because they are independent: reading the moves out with the pieces up
+        is the ordinary way to use it, and <em>Blindfold</em> works with the audio off too, since the
+        moves are printed in the panel. Blindfold takes the PIECES off our board rather than the
+        board &mdash; our board is what covers Chessable's, so not drawing it would leave their
+        position on screen, which is blindfold practice with the answer in front of you.</p>
       <div class="hx-stage" style="display:flex;gap:16px;align-items:flex-start">
         <div class="clo-sg-menu hx-pos" style="position:relative">
           <label class="clo-sg-menu-row">Pace
@@ -841,6 +855,23 @@ body {
               <option>Slow (320ms)</option>
             </select>
           </label>
+          <label class="clo-sg-menu-row">Read the moves out
+            <input type="checkbox" class="clo-sg-audio" checked>
+          </label>
+          <label class="clo-sg-menu-row">Reading speed
+            <select class="clo-sg-rate">
+              <option>Calm (&times;0.9)</option>
+              <option>Normal (&times;1.1)</option>
+              <option selected>Quick (&times;1.4)</option>
+              <option>Brisk (&times;1.8)</option>
+            </select>
+          </label>
+          <label class="clo-sg-menu-row">Board
+            <select class="clo-sg-board-sel">
+              <option selected>Pieces shown</option>
+              <option>Blindfold (empty board)</option>
+            </select>
+          </label>
         </div>
       </div>
     </div>
@@ -850,13 +881,21 @@ body {
       <p class="hx-note">Our board covers Chessable's, and this panel covers the comment column, the
          same slot the clickable-line quiz uses. AMBER ring on the board rather than the quiz's
          green: it sits in exactly the same place as the drill and the line quiz but accepts no
-         input at all, and the ring is what says so at a glance. In a blindfold build the board is
-         not drawn and this prompt is what <code>announce()</code> speaks.</p>
+         input at all, and the ring is what says so at a glance. In BLINDFOLD mode this panel is
+         unchanged &mdash; only the pieces come off the board, so the moves can still be read here
+         even with the audio off. With the audio on, every line below is also what the speech engine
+         says, the moves with their SAN spelled into words ("Bishop C4"). The second panel is the
+         same card with the audio on: the repeat key is listed only where it does something.</p>
       <div class="hx-stage" style="display:flex;gap:16px;flex-wrap:wrap">
         <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
           <div class="clo-cr-title">Show and grade</div>
           <div class="clo-cr-prompt clo-sg-prompt">Opponent played Bc4</div>
           <div class="clo-sg-keys">2 — show me the move   ·   4 — I don't know it</div>
+        </div>
+        <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
+          <div class="clo-cr-title">Show and grade</div>
+          <div class="clo-cr-prompt clo-sg-prompt">Opponent played Bc4</div>
+          <div class="clo-sg-keys">2 — show me the move   ·   4 — I don't know it   ·   1 — read it again</div>
         </div>
         <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
           <div class="clo-cr-title">Show and grade</div>
@@ -868,6 +907,17 @@ body {
           <div class="clo-cr-prompt clo-sg-prompt">e6</div>
           <div class="clo-sg-keys">2 — the opponent's reply (marked as not known)</div>
         </div>
+      </div>
+      <p class="hx-note">The VOICE says less than these lines (v0.89.0): <em>Your move</em> and the
+         <em>Opponent played</em> prefix are on screen only &mdash; the board has stopped, the arrow
+         is up, and the prefix is two words the press itself already said. What it adds instead is the
+         variation's verdict, which lands on the widget's own STATUS line (with the number of moves
+         missed) because both overlays are down by the time it is given. It is Chessable's own count,
+         so it includes a move you ran out of time on.</p>
+      <div class="hx-stage" style="display:flex;gap:16px;flex-wrap:wrap">
+        <span class="clo-sg-status">👁 Variation completed</span>
+        <span class="clo-sg-status">👁 Variation completed with mistakes (2)</span>
+        <span class="clo-sg-status">👁 Nothing read out yet on this card</span>
       </div>
       <p class="hx-note">And the same panel during one of Chessable's own MISTAKE REPETITIONS — the
          single move it re-asks after you fail one and finish the variation. Nothing follows a

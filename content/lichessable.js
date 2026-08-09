@@ -453,16 +453,64 @@
         // focused button, or reach MoveTrainer2's own shortcuts while the mode
         // is running — and outside the mode it is not bound at all.
         alts:   ['3', ' '],
-        // Reserved for TTS (section 23's blindfold seam): "say that again",
-        // i.e. the previous move. '1' is EARMARKED for it — the ring's fourth
-        // output, and the button next to the others — so do not spend it on
-        // something else.
-        repeat: [],
+        // "Say that again" — re-reads the last MOVE that was spoken, which is
+        // what a ring user reaches for when they lost it (section 23b). It was
+        // earmarked for exactly this before there was anything to speak, and it
+        // is the ring's fourth output, next to the others.
+        //
+        // OURS ONLY WHILE THE AUDIO IS ON: with nothing to re-read this key is
+        // MoveTrainer2's, and swallowing a key we are not going to act on is
+        // what the whole capture-phase listener has to be careful about.
+        repeat: ['1'],
       },
-      // Set false for blindfold practice: the driver is unchanged, nothing is
-      // drawn, and announce() is the only thing that speaks. Not yet a UI
-      // setting — TTS is the update that gives it a reason to be one.
+      // Set false to draw NOTHING — no board, no panel. The escape hatch, not
+      // the blindfold switch: `blindfoldKey` below is that, and it is a different
+      // thing (see its own note).
       showBoard: true,
+      // --- audio (section 23b) -------------------------------------------
+      //
+      // The Web Speech API (`speechSynthesis`), which is the only choice here
+      // that costs NOTHING: no manifest permission, no remote code, no vendored
+      // voice. `chrome.tts` would want a permission, and this extension does not
+      // add those without asking.
+      //
+      // MEASURED 2026-08-09 (Windows Chrome, the six local SAPI voices):
+      //  * `getVoices()` returns an EMPTY list on the first synchronous call and
+      //    six ~600 ms later, so a voice can only ever be picked LAZILY — one
+      //    resolved at init would be null for the whole session.
+      //  * ~200 ms from `speak()` to `onstart` with the engine warm, ~580-670 ms
+      //    cold. So the audio trails the board by up to half a second and there
+      //    is nothing to be done about it; every announce speaks as early as it
+      //    can for that reason.
+      //  * `cancel()` followed immediately by `speak()` works — the new
+      //    utterance starts normally — and silently DROPS anything still queued,
+      //    which is why only a MOVE interrupts (see `speak`).
+      audioKey: 'cloShowGradeAudio',   // chrome.storage.local; opt-IN
+      // BLINDFOLD, and it hides the PIECES rather than the board. Absent = off.
+      //
+      // "Do not draw our board" would be the obvious reading and is exactly
+      // wrong: our board is what COVERS Chessable's, so not drawing it leaves
+      // their position on screen — blindfold practice with the answer in front of
+      // you. So the board stays, wearing their theme, with no pieces on it.
+      //
+      // The move HIGHLIGHTS stay too (the last-move tint, the grade arrow, the
+      // alternatives): what they show is which move was just played, which this
+      // mode announces in words anyway. It is the POSITION that is hidden, not
+      // the moves. The panel stays for the same reason, which is also what makes
+      // this usable with the audio off — the moves are then read off it as text.
+      blindfoldKey: 'cloShowGradeBlindfold',
+      // How fast it reads. A real setting because the whole point of a spoken
+      // card is that the speech is the pace, and 1 is slow once the vocabulary
+      // is familiar (a move phrase is ~1.7 s of speech at 1, plus the latency
+      // above). Resolved through a lookup with a fallback, like the other two.
+      rateKey: 'cloShowGradeRate',
+      rates: { calm: 0.9, normal: 1.1, quick: 1.4, brisk: 1.8 },
+      defaultRate: 'quick',
+      // The vocabulary is English ("Knight", "takes", "castles short"), so the
+      // voice must be too: on a browser whose default voice is not English the
+      // engine would read our words with the wrong phonetics. `lang` alone is
+      // usually enough; `pickVoice` also names one when it can.
+      speechLang: 'en-US',
       // Resuming the timer hands the board back to Chessable; a press issued in
       // the same breath can land on the outgoing render. Also the gap between
       // the two footer presses of the give-up flow, which are separate React
@@ -555,6 +603,12 @@
       chaseMs: 110,
       chaseMaxIntervalMs: 400,
       chaseMaxMs: 4000,
+      // …and how much longer an auto-played card's beat may be held open while the
+      // speech engine is still mid-sentence, plus how often that is asked (see
+      // `afterBeat`). The cap matters: a stuck or silent engine must cost a replay
+      // one beat, not the session. Zero disables the hold outright.
+      speechWaitMs: 2500,
+      speechPollMs: 120,
       // A press that changes nothing must not strand the mode with the board
       // covered and the timer paused. Every act is watchdogged to this.
       actMaxMs: 8000,
@@ -19352,8 +19406,15 @@
   // The user never makes a move. They are shown the opponent's reply, they
   // think, they press ONE key to see the answer, and a second key says whether
   // they knew it. That is the whole session — which is what makes it playable
-  // from a Bluetooth ring with the screen out of reach, and the groundwork for
-  // blindfold practice with TTS (see `announce` and `showBoard`).
+  // from a Bluetooth ring with the screen out of reach.
+  //
+  // 23b: AND SINCE v0.88.0 IT READS THE MOVES OUT (`speak`, `sanSpeech`), which
+  // is what the `announce` seam was built for — the driver did not move an inch
+  // for it. Two independent settings behind the cog, because they answer two
+  // different questions: the audio ("is it read out loud", opt-IN) and BLINDFOLD
+  // ("is the position hidden"), the latter taking the PIECES off our board rather
+  // than the board, since our board is what covers Chessable's own. `1` re-reads
+  // the last move — the "say that again" the key was earmarked for.
   //
   // GROUND-TRUTHED LIVE 2026-08-04, /practice/ review of course 453453. Three
   // facts, and the feature is mostly a consequence of them:
@@ -19424,6 +19485,22 @@
       autoPlay: false,
       pace: '',          // key into C.paces; '' until the preference is read
       anim: '',          // key into C.anims
+      // --- audio (section 23b) ---
+      audio: false,      // opt-IN; the moves are read out loud
+      blindfold: false,  // …and the pieces come off the board (see blindfoldKey)
+      rate: '',          // key into C.rates
+      voice: null,       // resolved LAZILY — getVoices() is empty at first
+      voiceFor: '',      // …and only re-resolved when the language changes
+      // The last thing SPOKEN, and the last MOVE spoken. Two, because the
+      // repeat key means "read the move again" and the most recent utterance is
+      // regularly "Your move" or an alternatives list — neither of which is the
+      // thing anyone presses that key for.
+      lastSpeech: '',
+      lastMoveSpeech: '',
+      speechDead: false, // the API threw once; do not try again this session
+      speechErr: '',     // …and the last REFUSAL, reported once per kind
+      runUpSaid: false,  // …and the line's opening plies, once per variation
+      completionSaid: false, // …and its verdict, likewise once
       menuOpen: false,
       autoTimer: 0,
       // True from an auto-play reveal until the grade it owns has been taken.
@@ -19520,27 +19597,333 @@
 
     // --- the blindfold seam --------------------------------------------------
     //
-    // Every user-visible statement this mode makes goes through these two, so a
-    // TTS build is a body for `announce` and `showBoard: false` — not a hunt
-    // through the driver for the places that happen to draw. Deliberately in
-    // place before there is anything to speak: retrofitting it once the drawing
-    // calls are scattered is exactly the expensive version.
+    // Every user-visible statement this mode makes goes through these two, and
+    // v0.88.0 is what they were built for: the speech is a BODY for `announce`
+    // and nothing else had to move for it — no hunt through the driver for the
+    // places that happen to draw, which is exactly the expensive version of this
+    // change and the reason the seam went in before there was anything to speak.
 
     /**
-     * The ONE place this mode says anything. Deliberately independent of the
-     * panel: with `showBoard: false` there is no panel at all, and an announce
-     * that quietly did nothing in exactly that configuration would make the
-     * blindfold seam dead on arrival — which is the failure this indirection
-     * exists to prevent. TTS hangs off here; `setPrompt` is merely the output
-     * that happens to exist today, and it does its own null check.
+     * The ONE place this mode says anything — in writing AND, since v0.88.0,
+     * out loud. Deliberately independent of the panel: with the board switched
+     * off there is no panel at all, and an announce that quietly did nothing in
+     * exactly that configuration would make the blindfold seam dead on arrival,
+     * which is the failure this indirection exists to prevent.
+     *
+     * `speech` is what a voice should SAY, and NOTHING IS SPOKEN WITHOUT IT
+     * (v0.89.0). There is no fallback to the written text, deliberately: the
+     * panel and the voice want different things, and the voice wants LESS. "Your
+     * move" is on the screen, in the prompt, and after the third card nobody
+     * needs to be told again — while "Opponent played Bishop C4" spends a second
+     * and a half saying two words that the press itself already said. So the
+     * voice is down to the MOVES plus the two statements that carry news (a
+     * repetition having no reply, and the variation's verdict), and a new
+     * announce is silent until someone decides it is worth hearing.
+     *
+     * SAN also has to be spelled into words — "Nxf7+" read out as it stands is
+     * noise — which is what `sanSpeech` is for.
+     *
+     * `isMove` marks the statements the repeat key is about, and is what makes
+     * one utterance INTERRUPT the queue — see `speak`.
      */
-    function announce(text) {
+    function announce(text, speech, isMove) {
       if (!text || text === sg.announced) return;
       sg.announced = text;
       setPrompt(text);
+      if (!speech) return;
+      speak(speech, isMove);
+      if (isMove) sg.lastMoveSpeech = speech;
     }
 
     const drawing = () => C.showBoard !== false;
+
+    // --- reading it out loud (section 23b) -----------------------------------
+    //
+    // Web Speech API, for the reasons in CONFIG.showGrade.audioKey. Everything
+    // here fails SOFT and silently after one warning: a session that stops
+    // answering because a voice engine threw would be far worse than a silent
+    // one, and the panel (when it is drawn) says the same thing anyway.
+
+    const audible = () => Boolean(sg.audio) && !sg.speechDead &&
+      typeof speechSynthesis !== 'undefined';
+
+    const rateOf = () => {
+      const r = C.rates[sg.rate];
+      return typeof r === 'number' ? r : C.rates[C.defaultRate];
+    };
+
+    /**
+     * An English voice, resolved LAZILY.
+     *
+     * `getVoices()` is measured to return an EMPTY list on the first call of a
+     * document's life and to fill in a few hundred ms later, so a voice picked
+     * at init would be null for the whole session — hence a cached answer that
+     * is only kept once a list actually existed, and a null that simply means
+     * "not yet, ask again next utterance". `lang` on the utterance is the
+     * fallback and is usually enough on its own.
+     */
+    function pickVoice() {
+      if (sg.voice && sg.voiceFor === C.speechLang) return sg.voice;
+      let list = [];
+      try { list = speechSynthesis.getVoices() || []; } catch (err) { return null; }
+      if (!list.length) return null;
+      const lang = C.speechLang.toLowerCase();
+      const base = lang.split('-')[0];
+      const exact = list.find((v) => String(v.lang).toLowerCase() === lang);
+      const same = list.find((v) => String(v.lang).toLowerCase().startsWith(base));
+      sg.voice = exact || same || null;
+      sg.voiceFor = C.speechLang;
+      return sg.voice;
+    }
+
+    /**
+     * Say it.
+     *
+     * A MOVE INTERRUPTS, EVERYTHING ELSE QUEUES, and that split is the whole of
+     * how the audio keeps up with a board it cannot possibly match for speed
+     * (~200 ms of latency warm, ~600 ms cold, ~1.7 s for a move phrase at rate
+     * 1 — all measured). The two cases it has to get right:
+     *
+     *  * "Opponent played e5" followed a beat later by "Your move" must not cut
+     *    the reply off — the reply is the half that matters, and the prompt is
+     *    the half nobody needs. So the prompt queues behind it.
+     *  * a replay running faster than speech must not build an unbounded backlog
+     *    of moves nobody is listening to any more. Each new move cancels what is
+     *    left, so the audio is always about the position on the board — the same
+     *    latest-wins discipline the engine and the explorer fetches use.
+     *
+     * `cancel()` was verified to drop the queue silently AND to let an
+     * immediately following `speak()` start normally, which is what makes that
+     * work in one step.
+     */
+    function speak(text, interrupt) {
+      if (!audible() || !text) return;
+      sg.lastSpeech = text;
+      try {
+        if (interrupt) speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = C.speechLang;
+        const voice = pickVoice();
+        if (voice) u.voice = voice;
+        u.rate = rateOf();
+        // A REFUSAL IS NOT A THROW — see noteSpeechError, and the live session
+        // that found this the hard way.
+        u.onerror = (e) => noteSpeechError(e && e.error);
+        u.onstart = () => {
+          if (!sg.speechErr) return;
+          // Whatever was wrong is not wrong any more. Clear our own message only
+          // — the status line is shared.
+          if (sg.speechErr === 'not-allowed') setStatus('');
+          sg.speechErr = '';
+        };
+        speechSynthesis.speak(u);
+      } catch (err) {
+        sg.speechDead = true;
+        warn('show-and-grade: the speech engine failed — audio off for this page:', err);
+      }
+    }
+
+    /**
+     * A REFUSED utterance, which is NOT a thrown one: `speak()` returns quietly
+     * and the failure arrives on the utterance.
+     *
+     * GROUND-TRUTHED LIVE 2026-08-09 on chessable.com, and it is why this
+     * function exists: in a document that has never had a real user gesture,
+     * Chrome answers EVERY utterance with `not-allowed` — measured, `error@0` —
+     * and `speak()` itself throws nothing. So the mode ran, the panel filled in,
+     * the board moved, and the audio was silent with an empty console. One real
+     * click anywhere unlocks it for the rest of that document's life (Chrome's
+     * sticky activation; verified by clicking once and re-running the probe:
+     * `start@168`), which is why ordinary use never meets this — the mode is
+     * started by a click on the row or by a key press, both of which are
+     * activations. It is reachable all the same, and a silent audio feature with
+     * nothing in the console is the one outcome worth a sentence.
+     *
+     * `canceled`/`interrupted` are OUR OWN doing — every move interrupts the
+     * queue and `stop()` cancels — so they are not errors and must never be
+     * reported, or a replay would print one line per move.
+     */
+    function noteSpeechError(err) {
+      const kind = String(err || 'unknown');
+      if (kind === 'canceled' || kind === 'interrupted') return;
+      if (sg.speechErr === kind) return;   // one line per KIND, not per utterance
+      sg.speechErr = kind;
+      if (kind === 'not-allowed') {
+        setStatus('Click the page once to let the voice speak');
+        warn('show-and-grade: the browser will not speak until this page has had a real click ' +
+          'or key press of its own — click anywhere on the page once');
+        return;
+      }
+      warn('show-and-grade: the speech engine refused an utterance:', kind);
+    }
+
+    function stopSpeaking() {
+      if (typeof speechSynthesis === 'undefined') return;
+      try { speechSynthesis.cancel(); } catch (err) { /* nothing to give back */ }
+    }
+
+    /** Mid-sentence, or with something still queued behind it. */
+    function speechBusy() {
+      if (!audible()) return false;
+      try {
+        return Boolean(speechSynthesis.speaking || speechSynthesis.pending);
+      } catch (err) { return false; }
+    }
+
+    /**
+     * The repeat key: "say that again."
+     *
+     * THE LAST MOVE, not the last utterance — the most recent thing said is
+     * regularly "Your move" or a list of alternatives, and nobody presses this
+     * for those. At the think stage the last move spoken is the OPPONENT'S reply
+     * that led here, which is exactly the one a blindfold player loses.
+     *
+     * It interrupts, unlike every other statement: the user asked for it now.
+     */
+    function repeatLast() {
+      const text = sg.lastMoveSpeech || sg.lastSpeech;
+      if (!text) { setStatus('Nothing read out yet on this card'); return; }
+      speak(text, true);
+    }
+
+    const START_PLACEMENT = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
+
+    /**
+     * "Variation completed", or "…with mistakes" — the one verdict this mode has
+     * to offer, and the second thing worth speaking.
+     *
+     * IT IS THE TRAINER'S OWN RECORD, not a tally of ours, and that is the point:
+     * `progress.quizIncorrectAttempts` / `quizIncorrectTotal` are per-LESSON
+     * counters kept by MoveTrainer2 itself (section 16 reads the same field), so
+     * this counts a "timeUp", a move failed before the mode was even started and
+     * Chessable's own repetitions — none of which a flag set by `gradeUnknown`
+     * would know about.
+     *
+     * CALLED ONLY FROM A FRESH PLAN READ (`applyPlan`), because a stale one is
+     * wrong in exactly the case that matters: the last card's failure lands in
+     * the record after the read that was taken while it was still being answered,
+     * so a cached count would say "completed" about a variation that ended on a
+     * mistake. tick's browse branch keeps asking for reads until this has spoken.
+     *
+     * The COUNT goes on screen but not into the voice: it is worth a glance and
+     * not worth a second and a half of speech.
+     */
+    function announceCompletion() {
+      if (sg.completionSaid || !sg.plies.length) return;
+      sg.completionSaid = true;
+      let missed = 0;
+      for (const ply of sg.plies) {
+        const p = ply && ply.progress;
+        if (!p) continue;
+        if (p.quizIncorrectTotal > 0 ||
+            (p.quizIncorrectAttempts && p.quizIncorrectAttempts.length)) missed++;
+      }
+      const spoken = missed ? 'Variation completed with mistakes' : 'Variation completed';
+      const written = missed ? spoken + ' (' + missed + ')' : spoken;
+      announce(written, spoken);
+      // AND THE ROW'S STATUS LINE, because the panel is hidden by the time this
+      // is said: the browse branch takes both overlays down so Chessable's own
+      // completion block is readable. Without this the verdict exists only in the
+      // audio, i.e. not at all for anyone who has it switched off. Cleared at the
+      // next variation change, so it cannot describe a line being played.
+      setStatus(written);
+    }
+
+    /**
+     * BLINDFOLD ONLY: the moves that got us here.
+     *
+     * A variation rarely starts on the card you are asked for — the trainer plays
+     * the line's opening plies itself — and this mode announces only the moves it
+     * SHOWS, which is right when the pieces are on the board and leaves a
+     * blindfold player with no position at all. So the run-up is read out once,
+     * at the first card of the variation.
+     *
+     * Not when the pieces are shown: those moves are on the board, and eight of
+     * them read aloud over a position you can see is noise. Marked as a MOVE
+     * statement, so the repeat key re-reads the whole line — which at the first
+     * card is exactly what "say that again" means.
+     *
+     * A variation that does NOT start from the initial position (a tactics
+     * course, a middlegame chapter) says so rather than implying the moves are
+     * the whole story: reading a placement out square by square is a bigger
+     * feature than this, and pretending is worse than admitting it.
+     */
+    function announceRunUp() {
+      if (!sg.blindfold || sg.runUpSaid || sg.cardIdx <= 0) return;
+      sg.runUpSaid = true;
+      const before = sg.plies.slice(0, sg.cardIdx);
+      if (!before.length) return;
+      const first = before[0];
+      const fromStart = typeof first.sourceFen === 'string' &&
+        first.sourceFen.startsWith(START_PLACEMENT);
+      const moves = before.map((p) => sanSpeech(p.san)).filter(Boolean).join(', ');
+      if (!moves) return;
+      const text = (fromStart ? 'Moves so far: ' : 'From a set position: ') + moves;
+      announce(text, text, true);
+    }
+
+    const PIECE_WORD = { K: 'King', Q: 'Queen', R: 'Rook', B: 'Bishop', N: 'Knight' };
+
+    /**
+     * SAN as a sentence a speech engine can say: "Nxf7+" → "Knight takes F7,
+     * check".
+     *
+     * SAN is written for the eye and every part of it is a trap for a voice: a
+     * bare "N" is a letter, "x" is a letter, "+" is silent, and "O-O" is read as
+     * two letters and a hyphen. So it is parsed rather than patched — one regex
+     * over the move core, with the annotations stripped and the check/mate and
+     * promotion suffixes turned into words.
+     *
+     * SQUARES ARE ONE UPPERCASE TOKEN ("F3"), deliberately: a lone lowercase
+     * file letter is the one thing a speech engine reliably gets wrong ("a" as
+     * the article rather than the letter), and a two-character token cannot be
+     * mistaken for a word. Pronunciation is also the one thing about this that a
+     * measurement CANNOT check — it needs an ear — so anything that turns out to
+     * read wrong is a change to this function and nowhere else.
+     *
+     * Pure, and spot-checked over the awkward cases: both castles, a pawn move
+     * and a pawn capture, file and rank disambiguation, promotion with and
+     * without check, mate, and a SAN it cannot parse at all.
+     */
+    function sanSpeech(san) {
+      let s = String(san == null ? '' : san).trim();
+      if (!s) return '';
+      s = s.replace(/[!?]+$/, '');            // eval glyphs are not spoken
+      let suffix = '';
+      if (s.endsWith('#')) { suffix = ', checkmate'; s = s.slice(0, -1); }
+      else if (s.endsWith('+')) { suffix = ', check'; s = s.slice(0, -1); }
+      // Castling, in both spellings the world uses (letter O and digit zero).
+      const castle = s.replace(/0/g, 'O');
+      if (castle === 'O-O') return 'castles short' + suffix;
+      if (castle === 'O-O-O') return 'castles long' + suffix;
+      const m = s.match(/^([KQRBN])?([a-h])?([1-8])?(x)?([a-h])([1-8])(?:=([KQRBN]))?$/);
+      // Unparseable is spoken as it stands rather than dropped: a move we cannot
+      // read out properly is still a move the user asked to hear, and silence
+      // here would be indistinguishable from a press that did nothing.
+      if (!m) return s + suffix;
+      const [, piece, fromFile, fromRank, capture, toFile, toRank, promo] = m;
+      const dest = (toFile + toRank).toUpperCase();
+      const tail = (promo ? ', promotes to ' + PIECE_WORD[promo] : '') + suffix;
+      // A PAWN CAPTURE leads with a bare file ("exd5"), so it is named as a pawn
+      // — otherwise the sentence opens on one letter, which is where an engine's
+      // pronunciation is least dependable.
+      if (!piece) {
+        return (capture ? 'Pawn ' + fromFile.toUpperCase() + ' takes ' : '') + dest + tail;
+      }
+      let out = PIECE_WORD[piece];
+      // Disambiguation is spoken as "from … to", which is the only way it reads
+      // unambiguously out loud: "Knight from B D2" is two squares and a guess,
+      // and "Knight B D2" is worse. A capture needs no "to" — "takes" is already
+      // the word between the two halves.
+      let joiner = capture ? ' takes ' : ' ';
+      if (fromFile || fromRank) {
+        out += ' from ' + (fromFile
+          ? (fromRank ? (fromFile + fromRank).toUpperCase() : fromFile.toUpperCase())
+          : 'rank ' + fromRank);
+        if (!capture) joiner = ' to ';
+      }
+      return out + joiner + dest + tail;
+    }
 
     // --- the two speed settings ----------------------------------------------
     //
@@ -19650,6 +20033,15 @@
         sg.handedOver = false;
         sg.handoverLogged = false;
         sg.markedUnknown = false;
+        // Nothing has been read out about THIS line yet: the blindfold run-up is
+        // owed again, and the previous variation's last move must not be what the
+        // repeat key answers with on the first card of this one.
+        sg.runUpSaid = false;
+        sg.lastMoveSpeech = '';
+        sg.completionSaid = false;
+        // …and the last variation's verdict comes off the row: left there it
+        // would sit over the line now being played.
+        setStatus('');
         sg.autoGrading = false;
         sg.pressed = false;
         sg.prefixDone = false;
@@ -19704,6 +20096,11 @@
       if (newVariation) { sg.awaitingFen = ''; anchor(); serveCard(); return; }
       if ((sg.phase === 'think' || sg.phase === 'browse') && !sg.awaitingFen &&
           !reviewBrowseReady()) anchor();
+      // The variation's verdict, off THIS read — see announceCompletion for why it
+      // may only ever be said from a fresh one. Below the newVariation return, so
+      // the plan being read is the completed variation's own and never the next
+      // one's (which swaps in ~90 ms before its first move animates).
+      if (reviewBrowseReady()) announceCompletion();
       // SERVE OFF THE READ, not off the next tick. `refreshPlan` is async, so
       // the tick that starts a read cannot use its answer: the card became
       // "ready" only when the FOLLOWING tick came round, which measured 718ms
@@ -20026,9 +20423,23 @@
       return true;
     }
 
+    /**
+     * Make the DOM match `sg.pos` — or, in BLINDFOLD, make sure it does not.
+     *
+     * The ONE place the blindfold setting changes what is drawn, and that is the
+     * whole of the feature: the board itself stays (it is what covers
+     * Chessable's), the panel stays, the highlights stay, and only the pieces
+     * come off. `playPlyOnBoard` glides a piece that in blindfold is not there,
+     * which is a no-op it already handles — it looks the moving element up and
+     * does nothing when there is none.
+     */
     function reconcile() {
       const board = sg.pos ? sg.pos.board : null;
       if (!board || !sg.board) return;
+      if (sg.blindfold) {
+        for (const [idx, el] of [...sg.pieces]) { el.remove(); sg.pieces.delete(idx); }
+        return;
+      }
       for (const [idx, el] of [...sg.pieces]) {
         const letter = board[idx];
         if (!letter || el.dataset.code !== pieceCodeOf(letter)) {
@@ -20138,7 +20549,10 @@
      * Where it is the SAME piece (Nf3 against Ne2) the source square is now
      * empty and the arrow is read from the panel's list instead — which is why
      * the SAN is always announced as well, and why this is not the only output.
-     * That list is also the whole of it under `showBoard: false`.
+     * That list is also the whole of it with the board switched off outright
+     * (`showBoard: false`), and the spoken half of it is what a blindfold session
+     * has — where the arrows land on an empty board and say only which squares,
+     * which is what the SAN says too.
      *
      * BLUE, and pointedly not green: green is what the main arrow stopped being
      * in v0.77.0 because it vanished against Chessable's own board image, and
@@ -20179,14 +20593,18 @@
       if (sg.alts.state === 'loading') {
         // The prefetch is normally long finished; this is the first card of a
         // variation answered fast. Re-runs itself when the answer lands.
-        announce('Looking up the alternatives…');
+        // Both of these ARE spoken, unlike the prompts: the user pressed a key to
+        // ask a question, and silence in answer to a press reads as a dead key.
+        announce('Looking up the alternatives…', 'Looking them up');
         return;
       }
       if (sg.alts.state === 'failed') {
-        announce('Could not read the course’s alternatives');
+        announce('Could not read the course’s alternatives',
+          'Could not read the alternatives');
         return;
       }
       const sans = altsForPly(ply);
+      const spoken = (list) => list.map((s) => sanSpeech(s)).join(', ');
       if (!sans.length) {
         // TWO DIFFERENT ANSWERS, and saying the wrong one is what sent the last
         // build looking in the wrong place. `altSetting` "0" means the user has
@@ -20196,7 +20614,10 @@
         // alternatives would still be marked wrong.
         announce(sg.alts.setting === '0'
           ? 'Alternative moves are switched off for this course'
-          : 'No alternatives — ' + ply.san + ' is the only move accepted');
+          : 'No alternatives — ' + ply.san + ' is the only move accepted',
+          sg.alts.setting === '0'
+            ? 'Alternative moves are switched off for this course'
+            : 'No alternatives. ' + sanSpeech(ply.san) + ' is the only move accepted');
         return;
       }
       const pos = CloSan.parseFen(ply.sourceFen);
@@ -20221,7 +20642,10 @@
       // wording says both facts without claiming what the trainer would do.
       announce(sg.alts.setting === '0'
         ? 'Course lists: ' + sans.join(', ') + ' (alternatives are off for this course)'
-        : 'Also accepted: ' + sans.join(', '));
+        : 'Also accepted: ' + sans.join(', '),
+        sg.alts.setting === '0'
+          ? 'Course lists ' + spoken(sans) + ', but alternatives are off for this course'
+          : 'Also accepted: ' + spoken(sans));
       syncPanel();
     }
 
@@ -20342,6 +20766,10 @@
       let keys = '';
       if (sg.phase === 'think') {
         keys = next + ' — show me the move   ·   ' + wrong + " — I don't know it";
+        // The repeat key is only offered where it does something, which is only
+        // while the audio is on — and this is the stage it is FOR: the last move
+        // spoken is the opponent's reply that led to the card being answered.
+        if (audible()) keys += '   ·   ' + keyName(C.keys.repeat) + ' — read it again';
       } else if (sg.phase === 'shown') {
         keys = sg.autoGrading
           // Auto-play's card: the grade went out with the reveal, so neither
@@ -20404,7 +20832,7 @@
       }
       sg.cursor = sg.cardIdx + 1;
       noteReached();
-      announce(ply.san);
+      announce(ply.san, sanSpeech(ply.san), true);
       syncPanel();
     }
 
@@ -20441,7 +20869,9 @@
         log('show-and-grade: repeat of', (ply && ply.san) || 'a failed move',
           '— no reply to show');
         sg.cardIdx = -1;
-        announce('Repeat — no reply follows');
+        // SPOKEN, where "Your move" is not: this is the one press that shows no
+        // move, so without a word it reads as a press that did nothing.
+        announce('Repeat — no reply follows', 'No reply — next card');
         return;
       }
       const reply = sg.plies[sg.cursor];
@@ -20452,7 +20882,10 @@
       // Whatever comes next is the next card; anchor() confirms it against the
       // trainer on a later tick and fixes the cursor if we have drifted.
       sg.cardIdx = sg.cursor;
-      announce('Opponent played ' + reply.san);
+      // THE MOVE ONLY, out loud: the panel says who played it, and "Opponent
+      // played" is a second and a half of voice spent on something the press
+      // itself already said — this key IS the reply.
+      announce('Opponent played ' + reply.san, sanSpeech(reply.san), true);
     }
 
     /**
@@ -20707,6 +21140,34 @@
     }
 
     /**
+     * One of auto-play's two beats — HELD OPEN while the speech engine is still
+     * mid-sentence.
+     *
+     * Without this the audio is useless during a replay, which is the one place
+     * it would matter most (a blindfold session listening to the shared prefix go
+     * past): at the fast pace the two beats are 260 and 240 ms while a move phrase
+     * takes over a second to say, and since every MOVE interrupts the queue you
+     * would hear the first syllable of each and nothing else. The pace settings are
+     * about how fast a card can be WATCHED, and speech has its own floor.
+     *
+     * Only ever LENGTHENS a beat, never shortens one, and only when the audio is
+     * on: with it off `speechBusy()` is false and this is the plain `setTimeout` it
+     * replaces. Capped at `speechWaitMs` past the beat, so a stuck engine costs a
+     * replay one beat rather than stalling it — and it keeps `sg.autoTimer` set
+     * throughout, since that flag is what tells `onKey` and `tick` that auto-play
+     * has claimed this card.
+     */
+    function afterBeat(ms, fn) {
+      const deadline = Date.now() + ms + C.speechWaitMs;
+      const step = () => {
+        sg.autoTimer = 0;
+        if (!speechBusy() || Date.now() >= deadline) { fn(); return; }
+        sg.autoTimer = setTimeout(step, C.speechPollMs);
+      };
+      sg.autoTimer = setTimeout(step, ms);
+    }
+
+    /**
      * Is the card on screen one the user has already proven this session — and
      * one auto-play is allowed to take?
      *
@@ -20836,7 +21297,7 @@
           : 'not answered correctly yet this session');
         return;
       }
-      sg.autoTimer = setTimeout(autoReveal, revealMs());
+      afterBeat(revealMs(), autoReveal);
     }
 
     /**
@@ -20884,9 +21345,10 @@
       if (!ok || !sg.active || sg.phase !== 'shown') return;
       sg.pressed = true;
       // The advance beat hangs off the PRESS, because that is what it is a beat
-      // of: time to look at the move now that it has been committed.
+      // of: time to look at the move now that it has been committed — or to hear
+      // it out, when the audio is on.
       clearAutoTimer();
-      sg.autoTimer = setTimeout(finishAutoCard, advanceMs());
+      afterBeat(advanceMs(), finishAutoCard);
     }
 
     /** The second half of an auto-played card: the opponent's reply, on our board. */
@@ -21051,7 +21513,11 @@
       const isNext = C.keys.next.includes(e.key);
       const isWrong = C.keys.wrong.includes(e.key);
       const isAlts = (C.keys.alts || []).includes(e.key);
-      if (!isNext && !isWrong && !isAlts) return;
+      // ONLY OURS WHILE THE AUDIO IS ON. With nothing being read out there is
+      // nothing to read again, and a key we are not going to act on belongs to
+      // MoveTrainer2 — the same rule `maybeStartFromKey` follows.
+      const isAgain = audible() && (C.keys.repeat || []).includes(e.key);
+      if (!isNext && !isWrong && !isAlts && !isAgain) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.type !== 'keydown') return; // one action per press, on the way down
@@ -21062,6 +21528,10 @@
       // the repeats land in the NEXT variation and take it over before its first
       // card has been served.
       if (e.repeat) return;
+      // "SAY THAT AGAIN" — before the phase gate, deliberately: it grades
+      // nothing, drives nothing and touches no state, so it is the one press
+      // that is safe (and useful) even while an act is still in flight.
+      if (isAgain) { repeatLast(); return; }
       if (sg.phase === 'acting') return;
       // CHESSABLE'S OWN STATE DECIDES THIS ONE, not our phase flag (v0.82.0).
       // `anchor()` can legitimately put us in 'think' on the next variation's
@@ -21245,7 +21715,10 @@
         keyName(C.keys.next) + ' shows the move and confirms you knew it, ' +
         keyName(C.keys.wrong) + ' marks it as not known.\n' +
         keyName(C.keys.alts) + ' asks whether the move you had in mind is also ' +
-        'accepted here (once the move has been shown).';
+        'accepted here (once the move has been shown).\n' +
+        'The cog can have the moves read out loud — with the pieces, or with the ' +
+        'board left empty for blindfold practice — and ' + keyName(C.keys.repeat) +
+        ' then reads the last move again.';
       btn.addEventListener('click', () => {
         if (sg.active) stop('stopped'); else startMode();
         btn.blur(); // or the next space/Enter would toggle it again
@@ -21336,7 +21809,52 @@
       anim.addEventListener('change', () => setAnim(anim.value));
       animRow.appendChild(anim);
 
-      menu.append(paceRow, animRow);
+      // --- audio (section 23b) ---
+      //
+      // In the same cog as the two speeds, and for the same reason: these are
+      // persistent preferences, and everything else in this row acts on the card
+      // in front of you. Three rows rather than one, because "read the moves out"
+      // and "take the pieces off" are genuinely independent — the audio with the
+      // pieces up is the ordinary way to use it, and blindfold without the audio
+      // still works, since the moves are printed in the panel.
+      const audioRow = document.createElement('label');
+      audioRow.className = 'clo-sg-menu-row';
+      audioRow.textContent = 'Read the moves out';
+      const audio = document.createElement('input');
+      audio.type = 'checkbox';
+      audio.className = 'clo-sg-audio';
+      audio.addEventListener('change', () => setAudio(audio.checked));
+      audioRow.appendChild(audio);
+
+      const rateRow = document.createElement('label');
+      rateRow.className = 'clo-sg-menu-row';
+      rateRow.textContent = 'Reading speed';
+      const rate = document.createElement('select');
+      rate.className = 'clo-sg-rate';
+      for (const [key, mult] of Object.entries(C.rates)) {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = key[0].toUpperCase() + key.slice(1) + ' (×' + mult + ')';
+        rate.appendChild(opt);
+      }
+      rate.addEventListener('change', () => setRate(rate.value));
+      rateRow.appendChild(rate);
+
+      const boardRow = document.createElement('label');
+      boardRow.className = 'clo-sg-menu-row';
+      boardRow.textContent = 'Board';
+      const board = document.createElement('select');
+      board.className = 'clo-sg-board-sel';
+      for (const [value, label] of [['on', 'Pieces shown'], ['off', 'Blindfold (empty board)']]) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = label;
+        board.appendChild(opt);
+      }
+      board.addEventListener('change', () => setBlindfold(board.value === 'off'));
+      boardRow.appendChild(board);
+
+      menu.append(paceRow, animRow, audioRow, rateRow, boardRow);
       // MoveTrainer2 binds single-key shortcuts on `document` and does not skip
       // them while a control has focus — so with a select focused, "n" would
       // jump to the next variation. Same swallow as every other popup here.
@@ -21398,6 +21916,71 @@
       } catch (err) { /* orphaned context — the in-memory value still applies */ }
     }
 
+    function setAudio(on) {
+      sg.audio = Boolean(on);
+      sg.speechDead = false;   // a fresh answer deserves a fresh attempt
+      sg.speechErr = '';       // …and a fresh diagnosis
+      if (!sg.audio) stopSpeaking();
+      syncAutoUi();
+      syncPanel();
+      if (sg.audio && typeof speechSynthesis === 'undefined') {
+        setStatus('This browser has no speech engine');
+      } else if (sg.audio) {
+        // SPEAK ON THE PRESS THAT TURNED IT ON. It confirms the engine works and
+        // which voice you got — the alternative is finding out at the first card
+        // of the next variation — and it warms the engine up, which is worth ~400
+        // ms on the first real utterance.
+        speak('Reading the moves out loud', true);
+      }
+      try {
+        chrome.storage.local.set({ [C.audioKey]: sg.audio });
+      } catch (err) { /* orphaned context — the in-memory flag still applies */ }
+    }
+
+    function setRate(key) {
+      if (typeof C.rates[key] !== 'number') return;
+      sg.rate = key;
+      syncAutoUi();
+      // At this speed, on the words it will be saying: a rate is not a number
+      // anyone can judge in the abstract.
+      speak('Knight takes F7, check', true);
+      try {
+        chrome.storage.local.set({ [C.rateKey]: key });
+      } catch (err) { /* orphaned context — the in-memory value still applies */ }
+    }
+
+    /**
+     * Blindfold: the pieces come off our board (see `blindfoldKey`).
+     *
+     * Deliberately INDEPENDENT of the audio, with no coupling in either
+     * direction: the panel is still drawn, so the moves can be read off it as
+     * text, and the two settings answer two different questions ("is the position
+     * hidden" and "is it read out loud"). It is the pairing everyone will want,
+     * not a dependency — and quietly changing a second setting under someone is
+     * worth avoiding when nothing forces it.
+     */
+    function setBlindfold(on) {
+      applyBlindfold(on);
+      try {
+        chrome.storage.local.set({ [C.blindfoldKey]: sg.blindfold });
+      } catch (err) { /* orphaned context — the in-memory flag still applies */ }
+    }
+
+    /**
+     * The state and the DOM half of the above, WITHOUT the storage write — which
+     * is what the `storage.onChanged` listener needs. Chrome fires that listener
+     * for a write of an unchanged value too, so a listener that wrote back would
+     * ping-pong between two open trainer tabs for ever.
+     */
+    function applyBlindfold(on) {
+      sg.blindfold = Boolean(on);
+      // The pieces are added and removed by `reconcile`, so this is one repaint
+      // and no rebuild: the board element, its theme and its placement are the
+      // same board either way.
+      if (sg.active) render();
+      syncAutoUi();
+    }
+
     /**
      * The glide, onto the board as a custom property. NOT a change to
      * `.clo-cr-piece`'s own 180ms rule: that is shared with the continuation
@@ -21430,12 +22013,22 @@
       if (!sg.ui.cog) return;
       sg.ui.menu.querySelector('.clo-sg-pace').value = sg.pace || C.defaultPace;
       sg.ui.menu.querySelector('.clo-sg-anim').value = sg.anim || C.defaultAnim;
+      sg.ui.menu.querySelector('.clo-sg-audio').checked = sg.audio;
+      sg.ui.menu.querySelector('.clo-sg-rate').value = sg.rate || C.defaultRate;
+      sg.ui.menu.querySelector('.clo-sg-board-sel').value = sg.blindfold ? 'off' : 'on';
       // The cog says what it is set to: hiding a setting is precisely what
       // costs you the ability to read it off the row.
       sg.ui.cog.title = 'Replay speed — pace ' + (sg.pace || C.defaultPace) +
         ', animation ' + (sg.anim || C.defaultAnim) + ' (' + animMs() + 'ms).\n' +
         'Pace is the beat before each move is shown; animation is how long a ' +
-        'piece takes to slide. Both apply to auto-played cards and to your own.';
+        'piece takes to slide. Both apply to auto-played cards and to your own.\n' +
+        (sg.audio
+          ? 'The moves are read out loud (' + (sg.rate || C.defaultRate) + '); ' +
+            keyName(C.keys.repeat) + ' reads the last one again.'
+          : 'The moves are not read out loud.') + '\n' +
+        (sg.blindfold
+          ? 'Blindfold: the board is empty — the moves are all you get.'
+          : 'The pieces are shown.');
     }
 
     function syncUi() {
@@ -21508,6 +22101,10 @@
       sg.handedOver = false;
       sg.handoverLogged = false;
       sg.announced = '';
+      sg.runUpSaid = false;
+      sg.completionSaid = false;
+      sg.lastMoveSpeech = '';
+      sg.lastSpeech = '';
       // Nothing about the last run may survive into this one: the cursor is an
       // index into a plan that has almost certainly changed.
       sg.plies = [];
@@ -21550,6 +22147,9 @@
       if (sg.timerPaused) { resumeTrainerTimer(); sg.timerPaused = false; }
       applyTimerBar(false); // give their clock back, whatever else went wrong
       if (autoPlayShowGradeHold) autoPlayShowGradeHold(false);
+      // Nothing half-spoken outlives the mode: whatever is still queued is about
+      // a card that is no longer on screen.
+      stopSpeaking();
       hideBoard();
       setStatus('');
       log('show-and-grade: stopped (' + why + ')');
@@ -21633,10 +22233,15 @@
       if (sg.phase !== 'think' || !cardPly() || !cardReady()) return;
       if (reviewBrowseReady()) return;
       maintainPause();
+      // Blindfold: the line's opening plies, before anything is asked about the
+      // position they made. Once per variation, and a no-op with a board up.
+      announceRunUp();
       // Say WHICH kind of card this is: on a repeat the second press will not
-      // show a reply, and the blindfold seam has no other way to know that is
-      // coming. (`announce` is the only user-visible statement this mode makes,
-      // so this is also the only place to put it.)
+      // show a reply, and the panel has no other way to say that is coming.
+      // ON SCREEN ONLY — no speech argument. The board has stopped, the arrow is
+      // up and the prompt is right there, so "Your move" out loud is a second and
+      // a half of voice per card saying what the silence already said; and on a
+      // repeat, the press that shows no move speaks for itself when it comes.
       announce(isRepeat() ? 'Your move — repeat' : 'Your move');
       maybeAutoPlay();
     }
@@ -21713,6 +22318,12 @@
         // resetVariation's). Here it is simply known.
         sg.awaitingFen = '';
         commitProof();
+        // Keep reading until the verdict has been given: the counters this reads
+        // land in the trainer's own record a beat after the final answer, so the
+        // plan we already hold can be one answer out of date. Stops of its own
+        // accord — `announceCompletion` sets the flag on its first pass — and
+        // `refreshPlan` will not queue a second read behind the first.
+        if (!sg.completionSaid) refreshPlan();
         setBoardVisible(false);
         syncPanel();
         return;
@@ -21768,12 +22379,17 @@
 
     (async () => {
       try {
-        const stored = await chrome.storage.local.get([C.key, C.autoKey, C.paceKey, C.animKey]);
+        const stored = await chrome.storage.local.get([C.key, C.autoKey, C.paceKey,
+          C.animKey, C.audioKey, C.blindfoldKey, C.rateKey]);
         sg.enabled = stored[C.key] !== false;
         sg.autoPlay = stored[C.autoKey] === true;
         sg.pace = C.paces[stored[C.paceKey]] ? stored[C.paceKey] : C.defaultPace;
         sg.anim = typeof C.anims[stored[C.animKey]] === 'number'
           ? stored[C.animKey] : C.defaultAnim;
+        sg.audio = stored[C.audioKey] === true;              // both opt-IN
+        sg.blindfold = stored[C.blindfoldKey] === true;
+        sg.rate = typeof C.rates[stored[C.rateKey]] === 'number'
+          ? stored[C.rateKey] : C.defaultRate;
         applyAnimSetting();
         syncAutoUi();
       } catch (err) {
@@ -21798,6 +22414,18 @@
           applyAnimSetting();
           syncAutoUi();
         }
+        if (changes[C.audioKey]) {
+          sg.audio = changes[C.audioKey].newValue === true;
+          sg.speechDead = false;
+          if (!sg.audio) stopSpeaking();
+          syncAutoUi();
+          syncPanel();   // the repeat key is only listed while it does something
+        }
+        if (changes[C.rateKey] && typeof C.rates[changes[C.rateKey].newValue] === 'number') {
+          sg.rate = changes[C.rateKey].newValue;
+          syncAutoUi();
+        }
+        if (changes[C.blindfoldKey]) applyBlindfold(changes[C.blindfoldKey].newValue === true);
         if (!changes[C.key]) return;
         sg.enabled = changes[C.key].newValue !== false;
         if (!sg.enabled) stop('turned off');
