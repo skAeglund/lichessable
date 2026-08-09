@@ -542,6 +542,79 @@ The move list auto-play checks against is the trainer's own: MoveTrainer2
 already holds the current variation's full line in memory before it plays the
 first move, so nothing is fetched, cached or waited for.
 
+### Difficult moves only
+
+A second switch in that same cog menu, off by default. It gives auto-play a
+second reason to play a move: not only "you answered this correctly earlier
+today", but **"Chessable's own lifetime record says you are reliably good at
+this one"** — so a Review session stops only on the moves you actually find
+hard, and plays everything else. Without it a fresh session has nothing proven
+yet and so replays nothing at all; with it, the first pass through a line is
+already mostly automatic.
+
+Start it from **Difficult moves**, the button under Chessable's own Review
+button on a course page — it says how many of that course's variations hold a
+move you find hard, and starts an ordinary Review session with the mode on.
+(The same switch is in the auto-play ⚙ if you want it mid-session.)
+
+**Variations with nothing difficult in them are skipped, not auto-played.** They
+are never opened, so they are never answered and **stay due** — you review them
+normally another time. That is the point: auto-playing a whole variation would
+mark it passed and push its interval out without your recall ever being tested,
+which is what a review is for. It is most of a session, not a corner case: on
+one test course only 12 of 80 variations hold any move ever missed. So the mode
+is really a way of *prioritising* the lines that need you.
+
+Inside a variation it does open, a move you have **never missed** is played. One
+you have missed is played only if it is at or above the accuracy bar *and* the
+last miss is older than the window — both on the extension's options page, 90%
+and 7 days to start with, and a window of `0` goes by accuracy alone. So a bad
+session yesterday puts a move back in your hands whatever its lifetime figure
+says. Control comes back at each hard move and is taken up again after it, so
+mistakes at moves 8 and 12 mean two hand-overs in one line, not an end to the
+replay.
+
+**A hard move is hard in every line it appears in.** Chessable records mistakes
+per variation, so the same move can be marked hard in one line and have no
+record at all in another — the mode looks at the *position*, so once a move is
+hard you are asked for it wherever it turns up.
+
+**Moves you have only just learned are asked for too.** A move you have never
+missed might simply be one you met yesterday, and there is no attempt count
+available for it anywhere — so the mode uses Chessable's own spaced-repetition
+level instead, and anything below level 3 is played by hand. A variation whose
+moves are *all* new has nothing difficult in it and is skipped, which is what
+you want: it comes back in an ordinary session.
+
+**Running out of time does not count as a mistake**, even though Chessable's own
+Difficult Moves page counts it — most recorded failures there are timeouts
+rather than wrong moves, which measures the clock rather than what you know.
+(Answering *I don't know* in show-and-grade does count: that is a statement about
+the move.) The effect is not small: on the test account it moved a third of the
+listed moves into a different bracket.
+
+**Review sessions only** (`/practice/`). In a *learn* session a move you have
+never missed may simply be one you have never been shown, and auto-playing brand
+new material would skip the teaching — so the switch does nothing there. A move
+it decides is hard is never auto-played even if you did answer it correctly
+earlier the same session, which is the point: the mode would otherwise switch
+itself off on exactly the moves you turned it on for. The figures are read once
+per course per session from the same data as Chessable's own
+[Difficult Moves](https://www.chessable.com/difficult-moves/) page, and if they
+cannot be read nothing extra is played.
+
+**Nothing is rescheduled behind your back.** A variation you never open records
+nothing at all — verified against Chessable's own traffic: skipping past one
+sends no progress, the course's due count does not move, and a fresh session
+offers it again.
+
+**When the difficult moves run out it tells you, and it matters.** A notice
+appears on the widget — *"No difficult moves left — N variation(s) still due.
+Leave the session to keep them that way."* — and stays until you dismiss it.
+Those variations are still due precisely because the mode never opened them, so
+carrying on and playing them now is what would reschedule them. Leaving the
+session keeps them for an ordinary review, which is the whole point.
+
 You can also **quick-edit a move**: hover a mainline move and a small pencil
 appears; its popup has four tabs. **Append** lets you type a note and add it
 as a PGN comment after that move (with the same "For this variation only"

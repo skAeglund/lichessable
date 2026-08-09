@@ -4,8 +4,16 @@ Status: **Layer 1 implemented in v0.29.0** — the mistake log (section 16) and 
 retry runner (section 17) in `content/lichessable.js`, plus the extra fields
 `content/pagestate.js` now reads. **Layer 2 (§3.2) landed in v0.45.0** as
 section 20, but built differently from the sketch below — see the note there.
-The optional difficult-moves diff backstop of §3.1 is still NOT implemented, and
-neither the drill nor anything else reads `/difficult-moves`. Ground-truthed live on the test account
+The optional difficult-moves diff backstop of §3.1 is still NOT implemented; the
+drill does not read `/difficult-moves` either, but **section 13b does since
+v0.90.0** — for a different question than this document imagined. It uses the
+endpoint not as a backstop for the session's mistake log but as the *lifetime*
+record behind "difficult moves only", where a move's accuracy and last failure
+decide whether auto-play plays it or hands the board over. Two things learned
+there correct §2.2 below: the `lid=-1` sentinel is **mandatory** (without it the
+server silently returns a subset — 34 rows against the page's own 38), and the
+row's own `accuracy` counts timeouts as mistakes, which on the test account was
+65% of all recorded failures. See CLAUDE.md section 13b. Ground-truthed live on the test account
 against course **453453** on 2026-07-26. Everything in "Findings" below was
 observed, not inferred; everything in "Open questions" was not.
 
@@ -101,7 +109,15 @@ hooking `fetch` would break the read-only rule `content/pagestate.js` is built o
 GET /ajax/difficult-moves-ajax.php      → { draw, recordsFiltered, recordsTotal, data: [...] }
 ```
 
-Row shape (all courses at once, no parameters):
+Corrected 2026-08-09: it is **parameterised**, and one of the two matters.
+`bid` is the course picker (`0` = all courses) and `lid` the chapter picker
+(`-1` = all chapters), both applied server-side. **Omitting `lid` silently
+under-reports** — 34 rows against the page's own 38 on the test account, the
+missing four being two whole variations of one course, reproducible and not a
+cache or auth artefact. Always send `lid=-1`. The DataTable is
+`serverSide: false`, so one GET returns the lot and its paging is client-side.
+
+Row shape:
 
 ```json
 { "name": "repeating same piece test1 (move 1)", "attempted": "7",
@@ -352,11 +368,15 @@ move and can add it as an alternative.
   `overstudied` and `overstudyPoints` separately from `points`/`level`, which
   says no, but it was not observed end-to-end. Also unknown: whether a mistake
   made during overstudy feeds the Difficult Moves stats (it plausibly does).
-* Does `/ajax/difficult-moves-ajax.php` cap its row count for a heavy account
-  (the test account returned 9 → 12 rows, no pagination parameters)? And is
-  every failed move listed, or only those under some accuracy bar? Every move
-  failed in the test session appeared, including one at 91.67% lifetime
-  accuracy.
+* ~~Is every failed move listed, or only those under some accuracy bar?~~
+  **Answered 2026-08-09: there is no bar.** The listing goes up to 93.33% on the
+  test account (7 rows in 90-95%), so the list is "ever failed", not "currently
+  bad" — which is what lets section 13b read *absence* as "never missed".
+* Does `/ajax/difficult-moves-ajax.php` cap its row count for a heavy account?
+  Still unknown — the largest set observed is 38 rows / 26 KB (~686 bytes per
+  row), and there are no wire pagination parameters, the DataTable being
+  client-side. Extrapolating, a 1000-move account would be one ~670 KB request.
+  Section 13b fetches per course (`bid`), which bounds it in practice.
 * End-of-session recap: `ctx` exposes `isSessionEnd`, `recapShown` and
   `sessionStats` (aggregates: `quizUniqueTotal`, `quizUniqueFlawless` — counts,
   not identities). Worth a look for where the "Retry mistakes" entry point feels

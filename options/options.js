@@ -30,6 +30,15 @@ const SHOW_GRADE_KEY = 'cloShowGrade';
 // never clears it, so this page only ever reads it back.
 const TOUCH_KEY = 'cloTouchUi';
 const TOUCH_DEVICE_KEY = 'cloTouchDevice';
+// must match CONFIG.autoPlay.difficult.thresholdKey / .recentKey in
+// content/lichessable.js. The MODE's own on/off switch is deliberately not
+// here — it lives in the in-session auto-play menu, because it is the sort of
+// thing you turn on partway through a session. These two are the numbers
+// behind it, which are set once and then left alone.
+const DIFFICULT_THRESHOLD_KEY = 'cloDifficultThreshold';
+const DIFFICULT_RECENT_KEY = 'cloDifficultRecentDays';
+const DIFFICULT_DEFAULT_THRESHOLD = 90;
+const DIFFICULT_DEFAULT_RECENT_DAYS = 7;
 const $ = (id) => document.getElementById(id);
 
 // NOTE: there is deliberately no reload hook on this page. An options page
@@ -48,7 +57,8 @@ async function init() {
   $('loadedVersion').textContent = chrome.runtime.getManifest().version;
   const stored = await chrome.storage.local.get(
     [TOKEN_KEY, BUILD_KEY, HEADS_UP_KEY, AUTO_REVIEW_KEY, TEXT_MOVE_KEY,
-     SHOW_GRADE_KEY, TOUCH_KEY, TOUCH_DEVICE_KEY]);
+     SHOW_GRADE_KEY, TOUCH_KEY, TOUCH_DEVICE_KEY,
+     DIFFICULT_THRESHOLD_KEY, DIFFICULT_RECENT_KEY]);
   if (stored[TOKEN_KEY]) $('token').value = stored[TOKEN_KEY];
   const build = stored[BUILD_KEY];
   $('engineBuild').value = build === 'full' || build === 'lite' ? build : 'auto';
@@ -63,6 +73,20 @@ async function init() {
   $('touchUiState').textContent = stored[TOUCH_DEVICE_KEY] === true
     ? 'This browser is remembered as running on a touch device.'
     : 'This browser has not been detected as a touch device yet.';
+  $('difficultThreshold').value =
+    numberPref(stored[DIFFICULT_THRESHOLD_KEY], DIFFICULT_DEFAULT_THRESHOLD, 0, 100);
+  $('difficultRecentDays').value =
+    numberPref(stored[DIFFICULT_RECENT_KEY], DIFFICULT_DEFAULT_RECENT_DAYS, 0, 3650);
+}
+
+/**
+ * Same rule as the content script's own reader: anything unusable degrades to
+ * the default rather than writing NaN into a setting the replay decides on.
+ */
+function numberPref(value, fallback, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min || n > max) return fallback;
+  return n;
 }
 
 $('autoReview').addEventListener('change', async () => {
@@ -99,6 +123,26 @@ $('showGrade').addEventListener('change', async () => {
   setStatus($('showGrade').checked
     ? 'Show and grade on — the button appears in Review sessions.'
     : 'Show and grade off.');
+});
+
+// Both saved on `change` (i.e. on commit, not per keystroke) and clamped back
+// into the field, so an out-of-range entry is visibly corrected rather than
+// silently ignored. The content script's storage listener re-decides every
+// move from the new number in any open trainer tab.
+$('difficultThreshold').addEventListener('change', async () => {
+  const v = numberPref($('difficultThreshold').value, DIFFICULT_DEFAULT_THRESHOLD, 0, 100);
+  $('difficultThreshold').value = v;
+  await chrome.storage.local.set({ [DIFFICULT_THRESHOLD_KEY]: v });
+  setStatus('Difficult-moves threshold saved: ' + v + '%.');
+});
+
+$('difficultRecentDays').addEventListener('change', async () => {
+  const v = numberPref($('difficultRecentDays').value, DIFFICULT_DEFAULT_RECENT_DAYS, 0, 3650);
+  $('difficultRecentDays').value = v;
+  await chrome.storage.local.set({ [DIFFICULT_RECENT_KEY]: v });
+  setStatus(v > 0
+    ? 'Difficult-moves window saved: ' + v + ' day(s).'
+    : 'Difficult-moves window off — accuracy alone decides.');
 });
 
 $('touchUi').addEventListener('change', async () => {

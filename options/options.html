@@ -164,6 +164,51 @@
     browser sessions.
   </p>
 
+  <h2>Difficult moves only</h2>
+
+  <p class="fineprint">
+    Switched on and off in the auto-play settings (the ⚙ on the in-session
+    widget). It gives auto-play a second reason to play a move: not just
+    “you answered this correctly earlier today”, but <em>“Chessable's own
+    lifetime record says you are reliably good at this one”</em> — so a review
+    session stops only on the moves you actually find hard. The two numbers
+    below are what “reliably good” means.
+  </p>
+
+  <label for="difficultThreshold">Play moves at or above this lifetime accuracy</label>
+  <input type="number" id="difficultThreshold" min="0" max="100" step="1">
+
+  <label for="difficultRecentDays">…unless missed within this many days</label>
+  <input type="number" id="difficultRecentDays" min="0" max="3650" step="1">
+
+  <p class="fineprint">
+    A move you have <strong>never</strong> missed is always played. One you have
+    missed is played only if it is above the accuracy bar <em>and</em> the last
+    miss is older than the window — so a bad session yesterday puts a move back
+    in your hands whatever its lifetime figure says. Set the window to
+    <code>0</code> to go by accuracy alone.
+  </p>
+
+  <p class="fineprint">
+    <strong>Running out of time does not count as a mistake</strong> here, even
+    though Chessable's own Difficult Moves page counts it: most recorded
+    failures are timeouts rather than wrong moves, and that measures the clock
+    rather than what you know. Answering <em>I don't know</em> in show-and-grade
+    does count — it is a statement about the move.
+  </p>
+
+  <p class="fineprint">
+    <strong>Review sessions only</strong> (<code>/practice/</code>). In a
+    <em>learn</em> session a move you have never missed may simply be one you
+    have never been shown, and auto-playing brand-new material would skip the
+    teaching; the switch has no effect there. A move it decides is hard is never
+    auto-played even if you did answer it correctly earlier the same session.
+    The figures are read once per course per session from the same data as
+    Chessable's own
+    <a href="https://www.chessable.com/difficult-moves/" target="_blank" rel="noopener">Difficult Moves</a>
+    page; if they cannot be read, nothing extra is played.
+  </p>
+
   <p class="fineprint">
     The token is stored only in this browser's extension storage
     (<code>chrome.storage.local</code>) and is sent only to

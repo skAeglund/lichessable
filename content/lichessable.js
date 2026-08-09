@@ -795,6 +795,58 @@
       pageStateTimeoutMs: 1500, // wait for content/pagestate.js to answer a line request
       oracleRetryMs: 400,      // back-off before re-reading the plan (trainer mid-variation-swap)
       oracleMaxTries: 6,       // consecutive unusable reads before the variation goes manual
+
+      // --- "Difficult moves only" (section 13b) ----------------------------
+      // A SECOND PROOF SOURCE for the replay above, from Chessable's own
+      // lifetime per-move record, so a review session stops only on the moves
+      // that are actually hard. Everything here was ground-truthed live
+      // 2026-08-09 against the real endpoint; see CLAUDE.md section 13b.
+      difficult: {
+        enabledKey:  'cloDifficultOnly',        // storage.local; absent = OFF (opt-in)
+        thresholdKey:'cloDifficultThreshold',   // storage.local; percent, below which a move is hard
+        recentKey:   'cloDifficultRecentDays',  // storage.local; failed this recently ⇒ hard
+        cacheKey:    'cloDifficultMoves',       // storage.session: { bid: { at, v, rows } }
+        // Bump whenever a stored row gains a field. A cached shape that predates
+        // one parses fine and is quietly missing it — v2 added `pk`, without
+        // which the position veto silently does nothing.
+        cacheVersion: 2,
+        // The Difficult Moves page's own feed. `lid` is NOT optional: the
+        // chapter picker's "All Chapters" sentinel is -1, and WITHOUT it the
+        // server quietly drops rows (34 of 38 on the test account, two whole
+        // variations of one course). Under-reporting is the one direction that
+        // matters here — a missing row reads as "easy" and gets auto-played.
+        ajaxPath:    '/ajax/difficult-moves-ajax.php',
+        allChapters: '-1',   // the `lid` picker's "All Chapters" (`bid`'s is "0")
+        defaultThreshold: 90,   // the feature request's own number
+        defaultRecentDays: 7,
+        // TIMEOUTS ARE NOT MISTAKES, by decision: 65% of the recorded failures
+        // on the test account were `timeU`, i.e. the clock rather than the
+        // move, and section 23 pauses that clock anyway. `giveU` — section
+        // 23's honest "I don't know" — DOES count: it is the purest difficulty
+        // signal there is. Excluding timeouts moved 13 of 38 rows a bucket and
+        // took the ≥90% set from 7 to 18, so this is not a rounding decision.
+        ignoreWrongMoves: ['timeU'],
+        fetchTimeoutMs: 8000,
+        cacheTtlMs: 12 * 3600 * 1000, // the auto-play record's own TTL
+
+        // SKIPPING WHOLE VARIATIONS (13c). A variation with nothing difficult
+        // in it is passed over rather than auto-played: auto-playing it would
+        // mark every move passed and RESCHEDULE it without the user's recall
+        // ever being tested, which is the one thing a review is for.
+        // Ground-truthed 2026-08-09 on course 453453 — see CLAUDE.md 13c.
+        skipSettleMs:   900,   // let a newly served variation settle before judging it
+        skipCooldownMs: 1200,  // …and let one drawer click land before the next
+        skipMaxClicks:  60,    // runaway guard: a session cannot be longer than its drawer
+
+        // The barely-learned guard. A move the user has never MISSED is absent
+        // from the feed and so reads 'easy' — including one they were taught
+        // yesterday and have answered twice. `getLesson` carries a per-move SRS
+        // level, which is the only "how well is this known" figure available
+        // for a move with no failures; below this floor the move is asked for
+        // rather than replayed. 0 disables the guard.
+        minLevel: 3,
+        levelCacheMax: 40,     // per-oid level maps kept in memory
+      },
     },
 
     // --- Wrong-guess alternative check (section 15) ------------------------
@@ -8003,6 +8055,37 @@
       mutationAt: 0,           // when the board DOM last changed (stamped in the observer
                                // callback itself — see frameTime)
       vs: null,                // per-variation state, see freshVariationState
+      // Section 13b, "difficult moves only". `dm.rows` is Chessable's own
+      // lifetime record for this course, keyed "oid:mid"; null until the one
+      // fetch of the session lands, and left null for ever if it fails — the
+      // mode then simply never grants anything (see difficultVerdict).
+      dm: {
+        on: false,             // the preference (storage.local, opt-in)
+        threshold: C.difficult.defaultThreshold,
+        recentDays: C.difficult.defaultRecentDays,
+        rows: null,            // Map "oid:mid" → { acc, failedAt, san }
+        bid: null,             // …which course those rows are for
+        fetching: false,
+        failed: false,         // the fetch failed; do not retry it every 500 ms
+        logged: new Set(),     // one console line per (oid:mid, verdict)
+        hardOids: null,        // memo: Set of oids holding at least one hard move
+        hardPositions: null,   // memo: Set of four-field keys a hard move is played from
+        // 13c, the variation skipper. All document-local — unlike section 17's
+        // pass this needs no storage and no ownership, because a drawer click
+        // in a live session is a pushState and never destroys the document
+        // (measured).
+        seenAt: new Map(),     // oid → when this document first saw it served
+        decided: new Set(),    // …and the oids already judged, so each is judged once
+        clicks: 0,             // runaway guard
+        lastClickAt: 0,
+        done: false,           // nothing difficult left to visit — stand down
+        leftCount: 0,          // …and how many variations that leaves still due
+        noteDismissed: false,  // the user has read the notice and closed it
+        // The barely-learned guard: oid → Map(mid → level), from getLesson.
+        levels: new Map(),
+        levelPending: new Set(),
+        noteEl: null,          // the "nothing difficult left" notice (13c)
+      },
     };
     ap.vs = freshVariationState(null, null);
 
@@ -8443,6 +8526,557 @@
       }
       document.documentElement.setAttribute('data-clo-session', JSON.stringify(out));
     });
+
+    // --- 13b) "difficult moves only" -----------------------------------------
+    //
+    // A SECOND PROOF SOURCE for the replay above. Ordinary auto-play plays a
+    // move only after watching the user answer it correctly THIS session, so
+    // at a review session's start `ap.record` is empty and nothing replays;
+    // this mode adds "Chessable's own lifetime record says you are reliably
+    // good at this move" as an independent reason to play it, so a session
+    // stops only on the moves that are actually hard.
+    //
+    // IT IS TWO HALVES AND BOTH ARE LOAD-BEARING (see evaluateAutoPlay):
+    //   GRANT — a move Chessable's record calls easy is played even though
+    //     this session has never seen it answered. This is the whole feature:
+    //     a hold-only design (the shape the TODO sketched) does nothing at
+    //     all, because with an empty record there is nothing to hold BACK.
+    //   VETO — a move it calls hard is NEVER played, even when this session
+    //     did prove it. Otherwise answering a hard move once early on would
+    //     auto-play past it for the rest of the session, which is the one
+    //     thing this mode exists to prevent.
+    //
+    // /practice/ ONLY. Absence from Chessable's list means "never failed",
+    // which in a scheduled review is the same as "reliable" — everything a
+    // review asks for has been learned. In /learn/ it would also mean "never
+    // presented", and auto-playing brand-new material is not a thing to get
+    // wrong. `getLesson`'s per-move `level_b` could tell the two apart at the
+    // cost of a ~640 ms fetch per variation; not needed for review, and the
+    // scope gate is cheaper than the fetch.
+    //
+    // THE KEY IS (oid, mid), NEVER A POSITION. Chessable's record is per
+    // move-in-a-variation while a position is shared between lines — on the
+    // test account 38 rows collapsed to 18 distinct FENs — so a position key
+    // would make one hard move stop every line passing through it, including
+    // ones the user plays perfectly.
+
+    const difficultKey = (oid, mid) => String(oid) + ':' + String(mid);
+
+    /** Is the mode actually driving right now? Preference + scope + data. */
+    function difficultOnlyActive() {
+      return ap.dm.on && !ap.dm.failed &&
+        location.pathname.startsWith(CONFIG.review.pathPrefix);
+    }
+
+    /**
+     * Chessable's lifetime per-move record for one course, from the feed
+     * behind its own Difficult Moves page. Same origin and cookie-borne, so
+     * this is a plain content-script fetch with no host permission and no JWT
+     * (verified: the Bearer header changes nothing).
+     *
+     * ONE call per course per session, cached in storage.session so a mid-
+     * session refetch cannot move the goalposts under a running replay — and
+     * so the numbers stay the ones the session started with, which is what
+     * makes the mode's behaviour explicable while it runs.
+     *
+     * FAILS CLOSED, which is the opposite of the rest of this file: an
+     * unreadable list leaves `rows` null and `difficultVerdict` then grants
+     * NOTHING, so the mode degrades to ordinary auto-play. Failing open would
+     * mean "we could not check, so play it anyway" — auto-playing the moves
+     * the user is worst at.
+     */
+    async function loadDifficultMoves(bid) {
+      if (!bid || ap.dm.fetching) return;
+      if (ap.dm.rows && String(ap.dm.bid) === String(bid)) return;
+      // A different course is a fresh question, so a previous course's failure
+      // must not answer it — `failed` is "give up on THIS course", not on the
+      // feature (chessable.com navigates SPA-style, so one document really does
+      // see several courses' sessions).
+      if (String(ap.dm.bid || '') !== String(bid)) ap.dm.failed = false;
+      ap.dm.fetching = true;
+      try {
+        const cached = await readDifficultCache(bid);
+        const rows = cached || await fetchDifficultMoves(bid);
+        if (!rows) { ap.dm.failed = true; return; }
+        ap.dm.rows = rows;
+        ap.dm.bid = String(bid);
+        ap.dm.failed = false;
+        ap.dm.logged.clear();
+        ap.dm.hardOids = null;
+        ap.dm.hardPositions = null;   // memoised from these rows
+        resetDifficultRun();     // a different course is a different session
+        log('auto-play: difficult-moves record ready — ' + rows.size +
+          ' move(s) with a mistake on file for course ' + bid +
+          (cached ? ' (cached)' : ''));
+      } catch (err) {
+        ap.dm.failed = true;
+        warn('auto-play: could not read the difficult-moves record — ' +
+          '"difficult moves only" will not replay anything:', err);
+      } finally {
+        ap.dm.fetching = false;
+      }
+    }
+
+    async function readDifficultCache(bid) {
+      try {
+        const got = await chrome.storage.session.get(C.difficult.cacheKey);
+        const hit = (got[C.difficult.cacheKey] || {})[String(bid)];
+        if (!hit || Date.now() - hit.at > C.difficult.cacheTtlMs) return null;
+        // A stored shape that predates a field is a MISS, not a partial answer.
+        // v1 rows carry no `pk`, so honouring them would silently disable the
+        // position veto for up to 12 h after an upgrade — the failure being
+        // fixed here, brought back by the cache.
+        if (hit.v !== C.difficult.cacheVersion) return null;
+        return rowsToIndex(hit.rows);
+      } catch (err) {
+        if (noteDeadContext(err)) return null;
+        return null; // an unreadable cache is just a miss
+      }
+    }
+
+    async function writeDifficultCache(bid, rows) {
+      try {
+        const got = await chrome.storage.session.get(C.difficult.cacheKey);
+        const all = got[C.difficult.cacheKey] || {};
+        const now = Date.now();
+        for (const [key, val] of Object.entries(all)) {
+          if (!val || now - val.at > C.difficult.cacheTtlMs ||
+              val.v !== C.difficult.cacheVersion) delete all[key];
+        }
+        all[String(bid)] = { at: now, v: C.difficult.cacheVersion, rows };
+        await chrome.storage.session.set({ [C.difficult.cacheKey]: all });
+      } catch (err) {
+        if (!noteDeadContext(err)) warn('auto-play: difficult-moves cache write failed:', err);
+      }
+    }
+
+    /**
+     * `bid` scopes it server-side; `lid` is the chapter picker and its "All
+     * Chapters" sentinel (-1) is MANDATORY — without it the server silently
+     * returns a subset (34 of 38 rows on the test account, two whole
+     * variations of one course simply absent). A missing row reads as "easy"
+     * here, so an under-report is exactly the failure this mode must not have.
+     */
+    async function fetchDifficultMoves(bid) {
+      const D = C.difficult;
+      const url = new URL(location.origin + D.ajaxPath);
+      url.searchParams.set('bid', String(bid));
+      url.searchParams.set('lid', D.allChapters);
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), D.fetchTimeoutMs);
+      try {
+        const res = await fetch(url.toString(), { signal: ctl.signal });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const body = await res.json();
+        if (!body || !Array.isArray(body.data)) throw new Error('unexpected shape');
+        const rows = body.data.map(reduceDifficultRow).filter(Boolean);
+        await writeDifficultCache(bid, rows);
+        return rowsToIndex(rows);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    /**
+     * One stored row: the join key, the re-scored accuracy and when it last
+     * went wrong. Everything else in the payload (the FEN, the wrong moves,
+     * the course name) is the Difficult Moves page's business, not ours.
+     *
+     * THE ACCURACY IS RE-COMPUTED, not read off `accuracy`. Chessable counts a
+     * timeout as a mistake and the test account's failures were 65% `timeU` —
+     * the clock rather than the move, and section 23 pauses that clock anyway,
+     * so history and future are not measuring the same thing. Excluding them
+     * needs both halves of the fraction to drop those attempts, which the data
+     * supports exactly: `sum(wrongMoves.amount) === totalamount` held on all
+     * 38 rows, so the timed-out attempts are countable. `giveU` is deliberately
+     * NOT excluded — section 23's "I don't know" is an honest statement that
+     * the move was not known, which is precisely what this mode looks for.
+     */
+    function reduceDifficultRow(row) {
+      if (!row || row.openingId == null || row.moveId == null) return null;
+      const attempts = Number(row.attempted);
+      const failures = Number(row.totalamount);
+      if (!Number.isFinite(attempts) || !Number.isFinite(failures) || attempts <= 0) return null;
+      let ignored = 0;
+      if (Array.isArray(row.wrongMoves)) {
+        for (const w of row.wrongMoves) {
+          if (w && C.difficult.ignoreWrongMoves.includes(w.move)) ignored += Number(w.amount) || 0;
+        }
+      }
+      const successes = attempts - failures;
+      const realFailures = Math.max(0, failures - ignored);
+      const counted = successes + realFailures;
+      return {
+        k: difficultKey(row.openingId, row.moveId),
+        // A move whose every failure was a timeout has nothing left to score
+        // against: it has never actually been played wrong, so it is 100%.
+        acc: counted > 0 ? (successes / counted) * 100 : 100,
+        at: parseDifficultDate(row.lastUpdatedNum),
+        san: typeof row.correctMove === 'string' ? row.correctMove : '',
+        // The position BEFORE the move, four fields — what makes a hard move
+        // hard everywhere it occurs and not only in the line that recorded it.
+        pk: typeof row.fen === 'string' && row.fen ? cacheKey(row.fen) : '',
+      };
+    }
+
+    const rowsToIndex = (rows) =>
+      new Map((rows || []).filter((r) => r && r.k).map((r) => [r.k, r]));
+
+    /**
+     * "2026-08-09 15:42:57" — the server's own local time, which is not
+     * necessarily the browser's. Parsed as local anyway: the recency window is
+     * measured in DAYS, so a few hours of skew cannot change a verdict, and
+     * aligning the two clocks would mean reading Chessable's session stats out
+     * of page state for no gain.
+     */
+    function parseDifficultDate(text) {
+      if (typeof text !== 'string') return 0;
+      const m = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+      if (!m) return 0;
+      return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+    }
+
+    /**
+     * 'easy' | 'hard' | null — null meaning "no answer", which grants nothing
+     * and vetoes nothing, so the ordinary session-record path decides.
+     *
+     * ABSENCE FROM THE LIST IS THE COMMON CASE AND MEANS EASY: the feed lists
+     * only moves that have failed at least once (there is no accuracy bar —
+     * rows up to 93.33% were listed), and in a scheduled review everything
+     * else has been answered correctly every time it was asked.
+     */
+    function difficultVerdict(oid, mid, fen) {
+      if (!difficultOnlyActive()) return null;
+      if (mid == null || oid == null) return null;   // no join key ⇒ no opinion
+      if (!ap.dm.rows) return null;                   // not loaded yet / unreadable
+      // THE GRANT IS SCOPED TO VARIATIONS THE MODE CHOSE TO OPEN (v0.92.0).
+      // Without this, any variation the skipper marked `decided` WITHOUT
+      // skipping — nothing difficult left to move to, the runner already stood
+      // down, the card already touched — had every move read 'easy' and played
+      // itself out in full. Once the session ran out of difficult variations
+      // that was every remaining variation, which is exactly the "several
+      // variations auto-played fully" that was reported. A variation this mode
+      // did not deliberately open gets NO opinion at all, so the ordinary
+      // session-record path decides it, exactly as with the mode off.
+      if (!variationWorthVisiting(oid)) return null;
+      // …and the rows must be THIS COURSE'S. Oids are course-specific, so a
+      // previous course's list misses every move of this one and would answer
+      // 'easy' to all of them — i.e. auto-play the whole session. One SPA
+      // navigation between two courses' sessions is all that takes.
+      if (String(ap.dm.bid) !== String(ap.vs.bid)) return null;
+      const row = ap.dm.rows.get(difficultKey(oid, mid));
+      if (row) {
+        if (row.acc < ap.dm.threshold) return 'hard';
+        const days = ap.dm.recentDays;
+        if (days > 0 && row.at && Date.now() - row.at < days * 86400000) return 'hard';
+      }
+      // A MOVE IS HARD WHEREVER IT IS PLAYED, not only in the variation whose
+      // row records the failure (v0.92.0). Chessable's record is per
+      // (variation, move), so a move failed in variation A carries NO row under
+      // variation B — and a course that answers one position from several lines
+      // (38 rows collapse to 18 positions on the test account) would replay in
+      // B the very move it hands over in A. Reported, and correctly diagnosed
+      // as shared difficult moves.
+      //
+      // Keyed on the POSITION rather than the SAN so a transposition counts
+      // too, and it only ever ADDS hand-overs — it cannot make the mode replay
+      // something it otherwise would not.
+      if (fen && difficultHardPositions().has(cacheKey(fen))) return 'hard';
+      // BARELY LEARNED IS ALSO HARD (13c). Reached whether or not the move is
+      // in the feed: a move with one old failure can still be one the user has
+      // only just met. A null level is "no answer yet" — the lesson is still
+      // being fetched, or could not be — and must NOT read as a low level, or
+      // every move would be hard for the first second of every variation.
+      const floor = C.difficult.minLevel;
+      if (floor > 0) {
+        const level = difficultLevelOf(oid, mid);
+        if (level === null) return null;      // no opinion; the record decides
+        if (level < floor) return 'hard';
+      }
+      return 'easy';
+    }
+
+    // --- 13c) skipping the variations with nothing difficult in them --------
+    //
+    // Auto-playing a whole variation marks every move passed and RESCHEDULES
+    // it — recall asserted from history rather than tested, which is what a
+    // review is for. So a variation holding no difficult move is passed over
+    // instead, and stays due for an ordinary session. On the test course only
+    // 12 of 80 variations hold anything difficult, so this is most of a
+    // session, not an edge case.
+    //
+    // GROUND TRUTH (2026-08-09, course 453453, a real 14-card review session):
+    //   * the /practice/ drawer lists EXACTLY that session's due variations,
+    //     each carrying `oid` and `lid`;
+    //   * a plain untrusted `.click()` on a row switches the trainer to it
+    //     in-session — pushState to /practice/<bid>/<oid>/<lid>, NO document
+    //     load, so this whole module can be document-local;
+    //   * leaving a served card unanswered POSTs NO progress. Only `getReview`
+    //     and `getRating` fired; the course's due count stayed at 14, and a
+    //     fresh session served the skipped variation first again.
+    // That last point is the entire safety of this feature and is why it was
+    // measured before anything was written. It also corrects the older note by
+    // the retry runner: the CLICK reschedules nothing, ANSWERING does.
+
+    /**
+     * "This variation has not been judged yet." True only while the skipper
+     * could still act on it, so it can gate the replay without ever latching:
+     * once `decided` holds the oid — or the runner has stood down — it is false
+     * for good.
+     */
+    function difficultSkipPending() {
+      const dm = ap.dm;
+      if (!difficultOnlyActive() || !dm.rows || dm.done) return false;
+      if (String(dm.bid) !== String(ap.vs.bid)) return false;
+      const oid = String(ap.vs.oid || '');
+      return Boolean(oid) && !dm.decided.has(oid);
+    }
+
+    /** Everything the skipper learned about a course/session, dropped as one. */
+    function resetDifficultRun() {
+      ap.dm.seenAt.clear();
+      ap.dm.decided.clear();
+      ap.dm.clicks = 0;
+      ap.dm.lastClickAt = 0;
+      ap.dm.done = false;
+      ap.dm.leftCount = 0;
+      ap.dm.noteDismissed = false;
+    }
+
+    /** True when this row is hard under the user's current two settings. */
+    function difficultRowIsHard(row) {
+      if (row.acc < ap.dm.threshold) return true;
+      return ap.dm.recentDays > 0 && Boolean(row.at) &&
+        Date.now() - row.at < ap.dm.recentDays * 86400000;
+    }
+
+    /**
+     * The POSITIONS a hard move is played from, four-field keyed. Memoised
+     * beside hardOids and dropped by the same events — see the note in
+     * difficultVerdict for why difficulty has to travel with the position and
+     * not only with the (variation, move) row that recorded it.
+     */
+    function difficultHardPositions() {
+      if (ap.dm.hardPositions) return ap.dm.hardPositions;
+      const out = new Set();
+      if (ap.dm.rows) {
+        for (const row of ap.dm.rows.values()) {
+          if (row.pk && difficultRowIsHard(row)) out.add(row.pk);
+        }
+      }
+      ap.dm.hardPositions = out;
+      return out;
+    }
+
+    /** Oids holding at least one move that is hard right now. Memoised. */
+    function difficultHardOids() {
+      if (ap.dm.hardOids) return ap.dm.hardOids;
+      const out = new Set();
+      if (ap.dm.rows) {
+        for (const [key, row] of ap.dm.rows) {
+          const oid = key.slice(0, key.indexOf(':'));
+          if (out.has(oid)) continue;
+          if (difficultRowIsHard(row)) out.add(oid);
+        }
+      }
+      ap.dm.hardOids = out;
+      return out;
+    }
+
+    /**
+     * Deliberately the FEED only, never the level guard below. A variation
+     * whose moves are merely new is one to leave for an ordinary review — that
+     * is exactly what "skip newly learned variations" asks for — so being new
+     * must not be a reason to VISIT one. The level guard's job is different:
+     * it stops a barely-learned move being replayed inside a variation we open
+     * for some OTHER move's sake.
+     */
+    const variationWorthVisiting = (oid) => difficultHardOids().has(String(oid));
+
+    /** The drawer rows of this session, in Chessable's own order. */
+    function difficultDrawerRows() {
+      return [...document.querySelectorAll(SELECTORS.reviewDrawerRow)]
+        .map((el) => ({ el, oid: String(el.getAttribute('oid') || '') }))
+        .filter((r) => r.oid);
+    }
+
+    /**
+     * Called from the auto-play tick while a quiz is live. Judges the variation
+     * on screen ONCE and, if there is nothing difficult in it, clicks on to the
+     * next one that has.
+     */
+    function maybeSkipEasyVariation() {
+      const dm = ap.dm;
+      if (!difficultOnlyActive() || !dm.rows || dm.done) return;
+      if (String(dm.bid) !== String(ap.vs.bid)) return;   // rows are another course's
+      const oid = String(ap.vs.oid || '');
+      if (!oid) return;
+
+      // Judge a variation once, and only after it has settled: the trainer
+      // renders the drawer's active row a beat before the board is ready, and
+      // clicking on during that is how a switch gets lost.
+      if (!dm.seenAt.has(oid)) dm.seenAt.set(oid, Date.now());
+      if (Date.now() - dm.seenAt.get(oid) < C.difficult.skipSettleMs) return;
+      if (Date.now() - dm.lastClickAt < C.difficult.skipCooldownMs) return;
+      if (dm.decided.has(oid)) return;
+
+      // NEVER abandon a card the user has started answering. A skip is for a
+      // variation nobody has engaged with; anything else would throw away work
+      // AND leave the card in a state we did not measure.
+      if (ap.vs.handedOver || ap.vs.pendingRecord) { dm.decided.add(oid); return; }
+
+      if (variationWorthVisiting(oid)) { dm.decided.add(oid); return; }
+
+      const rows = difficultDrawerRows();
+      if (!rows.length) return;  // drawer not rendered yet — judge on a later tick
+      dm.decided.add(oid);
+
+      // Chessable's own order, starting after the one on screen, wrapping once:
+      // the session's order is the user's expectation and there is no reason of
+      // ours to reorder it.
+      const at = rows.findIndex((r) => r.oid === oid);
+      const ordered = at < 0 ? rows : rows.slice(at + 1).concat(rows.slice(0, at));
+      const next = ordered.find((r) => variationWorthVisiting(r.oid) && !dm.decided.has(r.oid));
+      if (!next) {
+        dm.done = true;
+        dm.leftCount = rows.filter((r) => !variationWorthVisiting(r.oid)).length;
+        dm.noteDismissed = false;   // a fresh session's answer is worth showing again
+        log('difficult-only: nothing difficult left in this session — ' + dm.leftCount +
+          ' variation(s) stay due for an ordinary review');
+        // NOT setStatus: that chip is auto-play's and the next evaluation
+        // overwrites it (with '▶ replaying…', or '' from injectMove), so this —
+        // the one message in the mode with a CONSEQUENCE attached — flashed up
+        // and was gone. It gets an element of its own that nothing else writes.
+        syncDifficultNote();
+        return;
+      }
+      if (++dm.clicks > C.difficult.skipMaxClicks) {
+        dm.done = true;
+        warn('difficult-only: too many variation switches — standing down');
+        return;
+      }
+      dm.lastClickAt = Date.now();
+      log('difficult-only: skipping ' + oid + ' (nothing difficult in it) → ' + next.oid);
+      setStatus('⏭ skipping a variation with nothing difficult', true);
+      // The recipe section 17 uses in /learn/, and measured here in /practice/:
+      // a plain untrusted click, no page load, no progress recorded.
+      next.el.click();
+    }
+
+    /**
+     * "There is nothing difficult left in this session." The one message this
+     * mode produces that the user has to ACT on — every remaining variation is
+     * still due, and playing them out now reschedules the very cards the mode
+     * was preserving — so it gets an element of its own rather than a turn on
+     * auto-play's status chip, which the next evaluation overwrites.
+     *
+     * It lives on `reviewStatusHost()`, NOT in a `.clo-review-grp`: the row is
+     * collapsed mid-quiz and this state arrives mid-quiz, and the status line is
+     * not a group, so it needs no fourth collapse exception. Dismissible,
+     * because it is a statement rather than a control and it should be possible
+     * to get it out of the way.
+     */
+    function syncDifficultNote() {
+      const dm = ap.dm;
+      const want = dm.done && !dm.noteDismissed && difficultOnlyActive() &&
+        String(dm.bid) === String(ap.vs.bid);
+      if (!want) {
+        if (dm.noteEl) dm.noteEl.hidden = true;
+        return;
+      }
+      const host = reviewStatusHost();
+      if (!host) return;
+      if (!dm.noteEl || !dm.noteEl.isConnected) {
+        const stale = host.querySelector('.clo-dm-note');
+        if (stale) stale.remove();
+        const note = document.createElement('button');
+        note.type = 'button';
+        note.className = 'clo-dm-note';
+        note.title = 'Click to dismiss.\n' +
+          'These variations were never opened, so nothing was recorded for them ' +
+          'and they are still due. Playing them now would reschedule them — leave ' +
+          'the session to keep them for an ordinary review.';
+        note.addEventListener('click', () => { // no inline handlers
+          dm.noteDismissed = true;
+          syncDifficultNote();
+        });
+        host.appendChild(note);
+        dm.noteEl = note;
+      }
+      // textContent, never innerHTML — and the CONSEQUENCE is spelled out,
+      // because that is the whole reason for saying anything at all.
+      dm.noteEl.textContent = '✓ No difficult moves left — ' + dm.leftCount +
+        ' variation(s) still due. Leave the session to keep them that way.';
+      dm.noteEl.hidden = false;
+    }
+
+    /**
+     * The barely-learned guard. A move never MISSED is absent from the feed and
+     * so reads 'easy' — including one taught yesterday and answered twice, which
+     * is exactly the move a replay should not be asserting. There is no attempt
+     * count anywhere for such a move (the feed only carries them for moves that
+     * have failed), so the SRS level from `getLesson` is the signal: it is what
+     * Chessable itself uses to decide how long a move can be left.
+     *
+     * Per variation, cached per oid, and NEVER awaited — a miss simply has no
+     * opinion this tick and the fetch fills it in for the next one.
+     */
+    function difficultLevelOf(oid, mid) {
+      const map = ap.dm.levels.get(String(oid));
+      if (!map) { loadDifficultLevels(oid); return null; }
+      const level = map.get(String(mid));
+      return Number.isFinite(level) ? level : null;
+    }
+
+    async function loadDifficultLevels(oid) {
+      const key = String(oid);
+      if (!oid || ap.dm.levels.has(key) || ap.dm.levelPending.has(key)) return;
+      ap.dm.levelPending.add(key);
+      try {
+        const cr = chessableCreds();
+        if (!cr) throw new Error('no credentials');
+        // Section 23b's endpoint, shared: one lesson answers both questions.
+        const body = await chessableApiFetch(
+          chessableApiUrl(CONFIG.showGrade.lessonPath, { uid: cr.uid, oid, bid: ap.vs.bid }),
+          { headers: chessableHeaders(cr) });
+        const moves = body && body.lesson && body.lesson.moves;
+        if (!Array.isArray(moves)) throw new Error('unexpected shape');
+        // The user's colour picks the column: a Black course carries `level_b`
+        // and leaves `level` null throughout (measured). The tracker's own
+        // `userColor` is the board's orientation, which is what decides it.
+        const black = ap.vs.userColor === 'b';
+        const map = new Map();
+        for (const m of moves) {
+          const level = black ? m.level_b : m.level;
+          if (m && m.mid != null && Number.isFinite(level)) map.set(String(m.mid), level);
+        }
+        if (ap.dm.levels.size >= C.difficult.levelCacheMax) {
+          ap.dm.levels.delete(ap.dm.levels.keys().next().value);
+        }
+        ap.dm.levels.set(key, map);
+        log('difficult-only: levels for ' + oid + ' — ' + map.size + ' move(s)');
+      } catch (err) {
+        // Fails CLOSED like the feed: an empty map means every move of this
+        // variation has no level, and `difficultVerdict` then declines to grant.
+        ap.dm.levels.set(key, new Map());
+        warn('difficult-only: could not read move levels for ' + oid + ':', err);
+      } finally {
+        ap.dm.levelPending.delete(key);
+      }
+    }
+
+    /** One line per (move, verdict) — a silent replay is indistinguishable from a bug. */
+    function logDifficult(oid, mid, verdict, san) {
+      const key = difficultKey(oid, mid) + ' ' + verdict;
+      if (ap.dm.logged.has(key)) return;
+      ap.dm.logged.add(key);
+      const row = ap.dm.rows && ap.dm.rows.get(difficultKey(oid, mid));
+      const how = row
+        ? row.acc.toFixed(1) + '% lifetime, last missed ' +
+          (row.at ? Math.round((Date.now() - row.at) / 86400000) + 'd ago' : 'unknown')
+        : 'never missed';
+      log('difficult-only: ' + san + ' is ' + verdict + ' (' + how + ')');
+    }
 
     // --- tracker -------------------------------------------------------------
 
@@ -9003,7 +9637,11 @@
       for (const ply of res.plies) {
         const pos = CloSan.parseFen(ply.sourceFen);
         if (!pos || pos.side !== ply.color) return retry('unparseable plan position');
-        line.push({ san: ply.san, color: ply.color });
+        // `mid` is OPTIONAL (pagestate.js may answer without it) and is the
+        // join onto Chessable's lifetime per-move record — section 13b's
+        // verdict needs (oid, mid), never a FEN, because the record is keyed
+        // per move-in-a-variation while a position is shared between lines.
+        line.push({ san: ply.san, color: ply.color, mid: ply.mid });
         // fen: the plan's own exact pre-ply FEN, kept verbatim — the alt
         // check (section 15) analyzes it instead of a reconstructed one.
         sim.push({ pos, key: placementKey(pos.board) + ' ' + pos.side, fen: ply.sourceFen });
@@ -9066,10 +9704,23 @@
       // A variation the user has played in is theirs for the rest of it —
       // unless a retry pass in "Only the mistakes" mode is driving, which wants
       // exactly this hand-over-and-take-back-over cycle (see autoPlaySetHold).
-      if (vs.handedOver && !ap.resumeAfterHandover) {
+      //
+      // "Difficult moves only" (13b) wants the same cycle for the same reason,
+      // and here it is the whole shape of the mode rather than an option
+      // within it: hard moves at plies 8 and 12 mean handing the board over
+      // twice, so a rule that ends the replay at the first one would leave the
+      // user playing out every line's tail by hand — which is exactly what the
+      // mode is for not doing.
+      if (vs.handedOver && !ap.resumeAfterHandover && !difficultOnlyActive()) {
         logHandback('user has taken over this variation');
         return;
       }
+      // 13c INTERLOCK. Auto-play's own settle floor (500-900 ms) and the
+      // skipper's are close enough to race, and losing that race means playing
+      // a move into a card we are about to leave unanswered. So while a
+      // variation is still unjudged, nothing is replayed. Silent — it lasts
+      // one or two ticks and is an expected transient, like 'oracle pending'.
+      if (difficultSkipPending()) return;
       if (!vs.pos) tryAdoptAnchorPosition();
       if (!vs.pos || !vs.userColor || vs.pos.side !== vs.userColor) return;
       if (vs.injected || vs.injectTimer) return;
@@ -9088,7 +9739,17 @@
 
       const entry = ap.record[posKeyOf(vs.pos)];
       const now = Date.now();
-      if (!entry) { logHandback('no record for this position'); maybeHandback(); return; }
+      // Normally an unproven position ends it here. Under "difficult moves
+      // only" (13b) it cannot: that mode's whole point is playing moves this
+      // session has never watched, and its verdict needs the LINE's (oid, mid),
+      // which only the oracle below can supply — so fall through and let the
+      // verdict decide. A mode that grants nothing (list still loading, or
+      // unreadable) simply hands back a few lines further down instead.
+      if (!entry && !difficultOnlyActive()) {
+        logHandback('no record for this position');
+        maybeHandback();
+        return;
+      }
 
       if (vs.oracle === 'failed') { logHandback('line oracle failed'); return; }
       if (vs.oracle === 'pending') return; // no log — expected transient state
@@ -9134,14 +9795,44 @@
         maybeHandback();
         return;
       }
-      const proven = entry.moves[wanted];
-      if (!proven) {
-        logHandback('the line plays ' + expected.san + ' here — not proven yet');
+      // SECTION 13b, and it is asked HERE because this is the first point at
+      // which the line's own move is known: the verdict is keyed on
+      // (oid, mid), never on the position, since Chessable's record is per
+      // move-in-a-variation and one position is shared between lines.
+      //
+      // The VETO comes first and outranks a session proof: a hard move
+      // answered correctly earlier this session is still a hard move, and
+      // replaying past it would quietly undo the mode on exactly the moves it
+      // was turned on for.
+      // The plan's own exact pre-ply FEN, so the position veto is keyed on the
+      // real castling and en passant rather than anything reconstructed.
+      const verdict = difficultVerdict(vs.oid, expected.mid, vs.oracleSim[idx].fen);
+      if (verdict) logDifficult(vs.oid, expected.mid, verdict, expected.san);
+      if (verdict === 'hard') {
+        logHandback('difficult moves only: ' + expected.san + ' is one to play yourself');
         maybeHandback();
         return;
       }
-      if (now - proven.seenAt >= C.recordTtlMs) { logHandback('proof expired'); maybeHandback(); return; }
-      if (proven.promo) { logHandback('proven move is a promotion'); maybeHandback(); return; }
+
+      // The GRANT. An 'easy' verdict stands in for a session proof entirely —
+      // there is nothing to expire and no recorded promotion to refuse, and a
+      // promoting LINE was already turned away by the length test above. What
+      // injectMove wants is only a `uci`, so the granted move is the LINE's own
+      // (`wanted`), which is what the record would have had to agree with
+      // anyway: the line still chooses the move, 13b only vouches for it.
+      let move;
+      if (verdict === 'easy') {
+        move = { uci: wanted };
+      } else {
+        move = entry && entry.moves[wanted];
+        if (!move) {
+          logHandback('the line plays ' + expected.san + ' here — not proven yet');
+          maybeHandback();
+          return;
+        }
+        if (now - move.seenAt >= C.recordTtlMs) { logHandback('proof expired'); maybeHandback(); return; }
+        if (move.promo) { logHandback('proven move is a promotion'); maybeHandback(); return; }
+      }
 
       // Both waits are counted from the BOARD CHANGE that made it our turn
       // (vs.lastMoveAt), never from the moment this evaluation runs — the
@@ -9179,16 +9870,21 @@
       // safe, and its two presses still share one task (so the move animates,
       // not drags). Any real pause (variation-start settle floor) still defers.
       if (delay <= 0) {
-        injectMove(proven, expectKey);
+        injectMove(move, expectKey);
         return;
       }
       vs.injectTimer = setTimeout(() => {
         vs.injectTimer = 0;
-        injectMove(proven, expectKey);
+        injectMove(move, expectKey);
       }, delay);
     }
 
-    /** `proven` is ONE move of a position's set: {uci, promo, seenAt, count}. */
+    /**
+     * `proven` is ONE move of a position's set — {uci, promo, seenAt, count} —
+     * or, when section 13b granted it, a bare {uci}. Only `.uci` is read here,
+     * so the two are interchangeable; evaluateAutoPlay has already applied
+     * whatever checks the richer shape allows.
+     */
     function injectMove(proven, expectKey) {
       const vs = ap.vs;
       // The world may have changed during the speed delay — re-verify, and
@@ -9349,6 +10045,25 @@
         clearRecord();
       });
 
+      // Section 13b's switch. It belongs in THIS menu and not on the row: it
+      // is a persistent preference that changes what auto-play will play, so
+      // it sits with auto-play's other preferences — the argument the cog
+      // itself rests on (DESIGN-ui-inventory F4). A control of its own on the
+      // row would also have to claim one of the five meanings §3 allows, and
+      // "a setting" is not one of them.
+      const hard = document.createElement('button');
+      hard.type = 'button';
+      hard.className = 'clo-ap-hard';
+      hard.textContent = 'Difficult moves only';
+      hard.setAttribute('aria-pressed', 'false');
+      hard.addEventListener('click', () => { // no inline handlers
+        ap.dm.on = !ap.dm.on;
+        saveAutoPlayPref(C.difficult.enabledKey, ap.dm.on);
+        if (!ap.dm.on) stopReplaying();
+        syncUi();
+        evaluateAutoPlay();
+      });
+
       const status = document.createElement('button');
       status.type = 'button';
       status.className = 'clo-ap-status';
@@ -9375,7 +10090,7 @@
       // Body-mounted and fixed, like every other popup here: inside the row it
       // would grow the widget, and three surfaces anchor below this widget.
       const menu = buildMenu();
-      menu.append(toggle, speed, clear);
+      menu.append(toggle, speed, hard, clear);
 
       root.append(cog);
       widget.appendChild(root);
@@ -9389,7 +10104,7 @@
         if (staleStatus) staleStatus.remove();
         statusHost.appendChild(status);
       }
-      ap.ui = { root, cog, menu, toggle, speed, clear, status };
+      ap.ui = { root, cog, menu, toggle, speed, hard, clear, status };
       disarmClear(); // a re-mount (React re-render) must not inherit a pending confirm
       syncUi();
     }
@@ -9467,13 +10182,28 @@
       ap.ui.speed.value = ap.speed;
       ap.ui.speed.hidden = !ap.enabled;
       ap.ui.clear.hidden = !ap.enabled;
+      ap.ui.hard.hidden = !ap.enabled;
+      ap.ui.hard.setAttribute('aria-pressed', String(ap.dm.on));
+      ap.ui.hard.classList.toggle('clo-ap-hard--on', ap.dm.on);
+      // The tooltip carries the SCOPE and the numbers, because both decide
+      // what the switch will actually do and neither is visible anywhere else.
+      // The /practice/ line is not a caveat to bury: switched on in a /learn/
+      // session this control changes nothing at all, and the user is entitled
+      // to know that before wondering why.
+      ap.ui.hard.title = 'Also auto-play moves you have never missed, or miss rarely — so a ' +
+        'review session stops only on the moves you find hard.\n' +
+        'Currently ' + (ap.dm.on ? 'ON' : 'off') + ': below ' + ap.dm.threshold +
+        '% lifetime, or missed in the last ' + ap.dm.recentDays + ' day(s), is played by hand.\n' +
+        'Timed-out attempts do not count as mistakes. Review sessions only (/practice/); ' +
+        'thresholds are on the extension’s options page.';
       // The cog is now the only part of this cluster in the row, so it carries
       // the state the toggle used to show — in colour AND in words, since the
       // whole point of hiding a toggle behind a cog is that its state stops
       // being legible for free.
       ap.ui.cog.classList.toggle('clo-ap-cog--on', ap.enabled);
       ap.ui.cog.title = 'Auto-play settings — currently ' +
-        (ap.enabled ? 'ON (' + ap.speed + ')' : 'off') + '.\n' +
+        (ap.enabled ? 'ON (' + ap.speed +
+          (ap.dm.on ? ', difficult moves only' : '') + ')' : 'off') + '.\n' +
         'Auto-play replays moves you already answered correctly this session and ' +
         'hands the board back at the first move you have not proven yet.';
       if (!ap.enabled) { ap.ui.status.hidden = true; disarmClear(); }
@@ -9613,11 +10343,26 @@
       if (ap.contextDead) return;
       if (!isTrainerPath()) {
         if (ap.vs.oid) resetVariation(null, null);
+        if (ap.dm.noteEl) ap.dm.noteEl.hidden = true;
         return;
       }
       ensureUi();
       syncVariation();
       ensureObserver();
+      // Every tick and in BOTH branches below, so it heals a React re-render
+      // that took the widget (and our notice with it) and comes down by itself
+      // when the mode, the course or the session changes.
+      syncDifficultNote();
+      // Section 13b's one fetch per course per session. Fired from the tick
+      // rather than from syncVariation because it is per COURSE, not per
+      // variation, and because it must also start for a session already under
+      // way when the preference is switched on. Idempotent and self-limiting:
+      // it returns at once once the rows are in, while it is in flight, and
+      // for ever after a failure.
+      if (difficultOnlyActive() && ap.vs.bid &&
+          (!ap.dm.rows || String(ap.dm.bid) !== String(ap.vs.bid))) {
+        loadDifficultMoves(ap.vs.bid);
+      }
       if (reviewBrowseReady()) {
         // Post-completion browse state: observe the line-ending move (the one
         // frame processFrame cannot take — see observeFinalFrame), confirm the
@@ -9636,6 +10381,10 @@
         // intervening oid change) — start over from a fresh anchor.
         resetVariation(ap.vs.oid, ap.vs.bid);
       }
+      // 13c, BEFORE the two below: if this variation is about to be skipped
+      // there is nothing here worth replaying, and letting auto-play start on
+      // it would play a move into a card we are leaving unanswered.
+      maybeSkipEasyVariation();
       processFrame();       // safety net for missed mutations
       evaluateAutoPlay();   // safety net for aborted/paused injections
     }
@@ -9804,20 +10553,34 @@
 
     // Prefs (shared across tabs via storage; off by default).
     (async () => {
+      const D = C.difficult;
       try {
-        const stored = await chrome.storage.local.get([C.enabledKey, C.speedKey]);
+        const stored = await chrome.storage.local.get(
+          [C.enabledKey, C.speedKey, D.enabledKey, D.thresholdKey, D.recentKey]);
         ap.enabled = stored[C.enabledKey] !== false;
         const speed = stored[C.speedKey];
         ap.speed = typeof speed === 'string' && Object.prototype.hasOwnProperty.call(C.speeds, speed)
           ? speed : C.defaultSpeed;
+        // Section 13b is opt-IN, so this one is `=== true` and not `!== false`.
+        ap.dm.on = stored[D.enabledKey] === true;
+        ap.dm.threshold = numberPref(stored[D.thresholdKey], D.defaultThreshold, 0, 100);
+        ap.dm.recentDays = numberPref(stored[D.recentKey], D.defaultRecentDays, 0, 3650);
       } catch (err) {
         warn('auto-play: pref read failed:', err);
       }
       syncUi();
     })();
 
+    /** A stored number that must degrade to the default, never to NaN. */
+    function numberPref(value, fallback, min, max) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < min || n > max) return fallback;
+      return n;
+    }
+
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
+      const D = C.difficult;
       if (changes[C.enabledKey]) {
         ap.enabled = changes[C.enabledKey].newValue !== false;
         if (!ap.enabled) stopReplaying();
@@ -9826,6 +10589,35 @@
       if (changes[C.speedKey]) {
         const v = changes[C.speedKey].newValue;
         if (typeof v === 'string' && Object.prototype.hasOwnProperty.call(C.speeds, v)) ap.speed = v;
+        syncUi();
+      }
+      if (changes[D.enabledKey]) {
+        ap.dm.on = changes[D.enabledKey].newValue === true;
+        // Turning it OFF mid-line must not leave a replay running on a proof
+        // the mode granted and no longer stands behind. Turning it either way
+        // restarts the skipper: its judgements were made under the old answer.
+        if (!ap.dm.on) stopReplaying();
+        resetDifficultRun();
+        syncUi();
+      }
+      // A threshold or window change re-decides every move, so BOTH memos are
+      // stale — what has been logged, and which oids count as hard — while the
+      // rows themselves are not, neither setting being part of the fetch. The
+      // skipper's own judgements go too: they were made on the old numbers.
+      if (changes[D.thresholdKey]) {
+        ap.dm.threshold = numberPref(changes[D.thresholdKey].newValue, D.defaultThreshold, 0, 100);
+        ap.dm.logged.clear();
+        ap.dm.hardOids = null;
+        ap.dm.hardPositions = null;
+        resetDifficultRun();
+        syncUi();
+      }
+      if (changes[D.recentKey]) {
+        ap.dm.recentDays = numberPref(changes[D.recentKey].newValue, D.defaultRecentDays, 0, 3650);
+        ap.dm.logged.clear();
+        ap.dm.hardOids = null;
+        ap.dm.hardPositions = null;
+        resetDifficultRun();
         syncUi();
       }
     });
@@ -22466,6 +23258,149 @@
   }
 
   // ==========================================================================
+  // ==========================================================================
+  // 13d) "Difficult moves" launcher (top document, /course/<bid>/)
+  //
+  // The mode's own way IN, under Chessable's own Review button, because that is
+  // where the decision is made: "review these 14" vs "review only the ones I
+  // find hard". Hidden in a settings popover it was a mode you had to remember
+  // existed, and the count here is also the answer to "is it worth it today".
+  //
+  // It sets the preference and follows Chessable's own Review link — no session
+  // of our own, no new URL form. Everything else is section 13b/13c's, in the
+  // trainer document that link lands on.
+  // ==========================================================================
+  function initDifficultLauncher() {
+    const BTN_ID = 'lichessable-dm-launch';
+    const COURSE_RE = /^\/course\/(\d+)(?:\/|$)/;
+    const D = CONFIG.autoPlay.difficult;
+    const dl = { btn: null, bid: null, counted: null, hardOids: null };
+
+    /** Chessable's own Review link for this course, as rendered. */
+    function reviewLink(bid) {
+      for (const a of document.querySelectorAll('a[href^="/practice/' + bid + '"]')) {
+        const r = a.getBoundingClientRect();
+        // The page renders the pair twice (a hidden copy in the sticky header),
+        // so take the one that actually occupies space.
+        if (r.width > 40 && r.height > 20) return { el: a, rect: r };
+      }
+      return null;
+    }
+
+    function build() {
+      const stale = document.getElementById(BTN_ID);
+      if (stale) stale.remove();
+      const btn = document.createElement('button');
+      btn.id = BTN_ID;
+      btn.type = 'button';
+      btn.className = 'clo-dm-launch';
+      btn.hidden = true;
+      btn.addEventListener('click', async () => { // no inline handlers
+        const link = reviewLink(dl.bid);
+        if (!link) return;
+        try {
+          await chrome.storage.local.set({ [D.enabledKey]: true });
+        } catch (err) {
+          warn('difficult-only: could not save the setting:', err);
+          return;
+        }
+        // Chessable's own link, followed the way a click on it would — the
+        // session URL is theirs and we have no business constructing one.
+        location.assign(link.el.getAttribute('href'));
+      });
+      document.body.appendChild(btn);
+      dl.btn = btn;
+    }
+
+    /**
+     * How many of the course's variations hold a move worth stopping at. Read
+     * from the same feed section 13b uses and cached in the same place, so
+     * opening a course page warms what the session then needs.
+     */
+    async function countHard(bid) {
+      if (dl.counted === String(bid)) return;
+      dl.counted = String(bid);
+      dl.hardOids = null;
+      try {
+        const url = new URL(location.origin + D.ajaxPath);
+        url.searchParams.set('bid', String(bid));
+        url.searchParams.set('lid', D.allChapters);
+        const res = await fetch(url.toString());
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const body = await res.json();
+        if (!body || !Array.isArray(body.data)) throw new Error('unexpected shape');
+        const prefs = await chrome.storage.local.get([D.thresholdKey, D.recentKey]);
+        const threshold = Number(prefs[D.thresholdKey]);
+        const days = Number(prefs[D.recentKey]);
+        const bar = Number.isFinite(threshold) ? threshold : D.defaultThreshold;
+        const window_ = Number.isFinite(days) ? days : D.defaultRecentDays;
+        const oids = new Set();
+        for (const row of body.data) {
+          const attempts = Number(row.attempted), failures = Number(row.totalamount);
+          if (!Number.isFinite(attempts) || attempts <= 0) continue;
+          let ignored = 0;
+          for (const w of (row.wrongMoves || [])) {
+            if (w && D.ignoreWrongMoves.includes(w.move)) ignored += Number(w.amount) || 0;
+          }
+          const successes = attempts - failures;
+          const real = Math.max(0, failures - ignored);
+          const counted = successes + real;
+          const acc = counted > 0 ? (successes / counted) * 100 : 100;
+          const at = Date.parse(String(row.lastUpdatedNum || '').replace(' ', 'T'));
+          const recent = window_ > 0 && Number.isFinite(at) &&
+            Date.now() - at < window_ * 86400000;
+          if (acc < bar || recent) oids.add(String(row.openingId));
+        }
+        dl.hardOids = oids;
+      } catch (err) {
+        // Fails quiet: the button still works, it just cannot say how many.
+        dl.hardOids = null;
+      }
+      sync();
+    }
+
+    function sync() {
+      if (!dl.btn) return;
+      const link = dl.bid && reviewLink(dl.bid);
+      if (!link) { dl.btn.hidden = true; return; }
+      const n = dl.hardOids ? dl.hardOids.size : null;
+      dl.btn.textContent = n === null ? 'Difficult moves' : 'Difficult moves ' + n;
+      dl.btn.title = (n === null
+        ? 'Review only the variations holding a move you find hard.'
+        : n + ' variation(s) in this course hold a move you find hard.') + '\n' +
+        'Starts Chessable\'s own Review, with the extension passing over every ' +
+        'variation that has nothing difficult in it — those stay due for an ' +
+        'ordinary session, so nothing is rescheduled behind your back.';
+      dl.btn.hidden = false;
+      // Under their Review button, matched to its width. Document coordinates
+      // and absolute, never fixed — the same rule every anchored surface here
+      // follows, so it stays put while the page scrolls.
+      const gap = 8;
+      setInlinePx(dl.btn, {
+        left: link.rect.left + window.scrollX,
+        top: link.rect.bottom + window.scrollY + gap,
+        width: link.rect.width,
+      });
+    }
+
+    function tick() {
+      const m = COURSE_RE.exec(location.pathname);
+      if (!m) {
+        if (dl.btn) dl.btn.hidden = true;
+        dl.bid = null;
+        return;
+      }
+      if (!dl.btn || !dl.btn.isConnected) build();
+      if (dl.bid !== m[1]) { dl.bid = m[1]; countHard(m[1]); }
+      sync();
+    }
+
+    setInterval(tick, CONFIG.review.pollMs);
+    window.addEventListener('resize', sync);
+    tick();
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -22522,6 +23457,7 @@
     initShowGrade();
     initChapterSort();
     initCoverage();
+    initDifficultLauncher();
   }
 
   // Dev lever: dispatching a `clo-dev-reload` DOM event on any Chessable page

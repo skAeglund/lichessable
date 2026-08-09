@@ -527,17 +527,48 @@ body {
           <div class="clo-ap-menu" style="position:static">
             <button type="button" class="clo-ap-toggle" aria-pressed="false">Auto-play</button>
             <select class="clo-ap-speed" hidden><option selected>Normal</option></select>
+            <button type="button" class="clo-ap-hard" hidden aria-pressed="false">Difficult moves only</button>
             <button type="button" class="clo-ap-clear" hidden>Clear</button>
           </div>
           <div class="clo-ap-menu" style="position:static">
             <button type="button" class="clo-ap-toggle clo-ap-toggle--on" aria-pressed="true">Auto-play</button>
             <select class="clo-ap-speed"><option>Fast</option><option selected>Normal</option><option>Relaxed</option></select>
+            <button type="button" class="clo-ap-hard" aria-pressed="false">Difficult moves only</button>
             <button type="button" class="clo-ap-clear">Clear</button>
           </div>
           <div class="clo-ap-menu" style="position:static">
             <button type="button" class="clo-ap-toggle clo-ap-toggle--on" aria-pressed="true">Auto-play</button>
             <select class="clo-ap-speed"><option selected>Normal</option></select>
+            <button type="button" class="clo-ap-hard clo-ap-hard--on" aria-pressed="true">Difficult moves only</button>
             <button type="button" class="clo-ap-clear clo-ap-clear--armed">Clear?</button>
+          </div>
+        </div>
+        <p class="hx-note" style="margin:8px 10px 0">Section 13b's switch is the third item: the
+          same switch shape as “Auto-play”, because both are booleans in the same menu — only the
+          order says which is subordinate. It is hidden entirely with auto-play off (first
+          replica), since it has nothing to modify there.</p>
+
+        <p class="hx-note" style="margin:12px 10px 0">Section 13c's “nothing difficult left”
+          notice. It shares the status LINE with auto-play's chip but is a separate element:
+          that chip is rewritten by the next evaluation, and this is the one message in the mode
+          with a consequence attached. Shown here beside the chip (the widest case) and alone:</p>
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-ap">
+            <button type="button" class="clo-ap-cog clo-ap-cog--on" aria-expanded="false">⚙</button>
+          </span>
+          <div class="clo-review-status">
+            <button type="button" class="clo-ap-status">▶ replaying known moves… (click to stop)</button>
+            <button type="button" class="clo-dm-note">✓ No difficult moves left — 5 variation(s) still due. Leave the session to keep them that way.</button>
+          </div>
+        </div>
+        <div class="clo-review hx-pos" style="margin-top:10px">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-ap">
+            <button type="button" class="clo-ap-cog clo-ap-cog--on" aria-expanded="false">⚙</button>
+          </span>
+          <div class="clo-review-status">
+            <button type="button" class="clo-dm-note">✓ No difficult moves left — 5 variation(s) still due. Leave the session to keep them that way.</button>
           </div>
         </div>
       </div>

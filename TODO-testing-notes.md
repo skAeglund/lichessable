@@ -294,7 +294,28 @@ from a specific variation it should included those moves + comments etc."*
 
 ---
 
-## 9. "Difficult moves only" mode
+## 9 DONE (v0.90.0)
+
+Landed as **section 13b**, inside auto-play rather than as a mode of its own —
+a second toggle in auto-play's cog menu. The endpoint report the note asked for
+is in CLAUDE.md section 13b and the corrections to `DESIGN-retry-mistakes.md`
+§2.2; the two decisions taken from it were to exclude timeouts from the accuracy
+and to scope the mode to `/practice/`.
+
+**The note's suggested shape does not work, and that is the main finding.**
+"Hold on the difficult positions, let auto-play cover everything else" is a no-op:
+§13 only plays a move it has watched you answer correctly *this* session, so at a
+review session's start there are no proofs and nothing to hold back. It had to be
+a second **proof source** (not-difficult ⇒ playable) plus a **veto** (difficult ⇒
+never played, even when this session proved it). `autoPlaySetHold` was unusable
+for a second reason too: it is section 17's exclusively, cleared from
+`applyHold()` in that tick's `finally` twice a second.
+
+Not yet verified in a live session: everything above was measured against the
+real endpoint and spot-checked over 27 cases on 29 real rows, and the harness
+figures are real, but no trainer session has run with the switch on.
+
+<details><summary>original note</summary>
 
 Covers note: *"Feature request: Difficult moves only mode. Auto-play all moves that
 have above 90% and hasn't failed recently"*

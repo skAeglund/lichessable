@@ -1417,7 +1417,13 @@
    positioned ::after would have to know the button's padding, which the
    html.clo-touch block changes. Everything here is in em, so that same block's
    font bump scales the switch with the text and needs no override of its own. */
-.clo-ap-toggle {
+/* TWO switches share this, and deliberately: "Auto-play" and section 13b's
+   "Difficult moves only" are both booleans in the same menu, so a second look
+   for the second one would say they are different kinds of thing when they are
+   not. Only the ORDER says which is subordinate — 13b is meaningless with
+   auto-play off, which is why syncUi hides it there. */
+.clo-ap-toggle,
+.clo-ap-hard {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1429,9 +1435,16 @@
   cursor: pointer;
   font-size: 12px;
   font-family: inherit;
+  /* LOAD-BEARING, the same trick .clo-move needs: the menu is a fixed popover
+     with no width, so it shrink-wraps to its widest item — but an inline-flex
+     button's label can shrink below its own max-content, so the menu sized to
+     "Auto-play" and wrapped "Difficult moves only" onto a second line inside a
+     button 88px wide. Measured: 106x174 wrapped, 168x160 with this. */
+  white-space: nowrap;
 }
 
-.clo-ap-toggle::before {
+.clo-ap-toggle::before,
+.clo-ap-hard::before {
   content: '';
   flex: none;
   width: 1.75em;
@@ -1442,23 +1455,27 @@
   transition: background-color 120ms ease;
 }
 
-.clo-ap-toggle:hover {
+.clo-ap-toggle:hover,
+.clo-ap-hard:hover {
   border-color: var(--clo-line-hover);
   color: var(--clo-text-bright);
 }
 
 /* On: the accent lives in the switch and the outline, never in a fill. */
-.clo-ap-toggle--on {
+.clo-ap-toggle--on,
+.clo-ap-hard--on {
   border-color: var(--clo-accent);
   color: var(--clo-accent-text);
 }
 
-.clo-ap-toggle--on::before {
+.clo-ap-toggle--on::before,
+.clo-ap-hard--on::before {
   background-color: var(--clo-accent);
   background-image: radial-gradient(circle at 1.25em 50%, #fff 0.32em, transparent 0.33em);
 }
 
-.clo-ap-toggle--on:hover {
+.clo-ap-toggle--on:hover,
+.clo-ap-hard--on:hover {
   background: rgba(98, 153, 36, 0.18);
   color: #fff;
 }
@@ -1508,8 +1525,35 @@
   white-space: nowrap;
 }
 
+/* Section 13c's "nothing difficult left" notice. On the status LINE beside
+   auto-play's chip, but a separate element on purpose: that chip is rewritten
+   by the next evaluation, and this is the one message here with a consequence
+   attached (every remaining variation is still due, and playing it now
+   reschedules it). Louder than the chip for the same reason — a border and a
+   tint rather than bare amber text — but still not a control, so no fill.
+
+   `line-height` is explicit for the reason the whole status line's children
+   have it: the text is emoji-prefixed, and differing ascents grow and shrink
+   the line box, which the Lichess panel below the widget then follows. */
+.clo-dm-note {
+  border: 1px solid var(--clo-attention);
+  background: rgba(217, 169, 66, 0.12);
+  color: var(--clo-attention);
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 16px;
+  font-family: inherit;
+  text-align: left;
+}
+
+.clo-dm-note:hover { background: rgba(217, 169, 66, 0.22); }
+
 .clo-ap-speed[hidden],
 .clo-ap-clear[hidden],
+.clo-ap-hard[hidden],
+.clo-dm-note[hidden],
 .clo-ap-status[hidden] {
   display: none;
 }
@@ -3395,6 +3439,39 @@ html.clo-injecting .legal-square-capture-mt2 {
    of theirs, so it is the one that gets to be a plain, scrollable panel parked
    in the corner. */
 
+/* Section 13d — under Chessable's own Review button on a course page, sized to
+   it by JS (measured live: theirs is 239x47). ABSOLUTE in document coordinates,
+   never fixed: it is anchored to page content, and a fixed element chases the
+   page from scroll events.
+
+   Deliberately NOT their green: this sits directly beneath their primary Review
+   button and a second green button of the same size would read as a rival for
+   the same action, when it is in fact a narrower version of it. Outlined in our
+   own accent says "related, secondary, ours" — the same weight the trainer
+   row's ordinary launchers wear (DESIGN-ui-inventory §3). */
+.clo-dm-launch {
+  position: absolute;
+  z-index: 99998;
+  box-sizing: border-box;
+  min-height: 40px;
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-bg);
+  color: var(--clo-accent-text);
+  padding: 7px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.clo-dm-launch:hover {
+  background: var(--clo-accent);
+  color: #fff;
+}
+
+.clo-dm-launch[hidden] { display: none; }
+
 .clo-cov-launch {
   position: fixed;
   right: 16px;
@@ -3935,6 +4012,7 @@ html.clo-touch .clo-engine-note {
 html.clo-touch .clo-settings-btn,
 html.clo-touch .clo-review-btn,
 html.clo-touch .clo-ap-toggle,
+html.clo-touch .clo-ap-hard,
 html.clo-touch .clo-ap-clear,
 html.clo-touch .clo-chapter-btn,
 html.clo-touch .clo-cr-open,
@@ -4044,6 +4122,14 @@ html.clo-touch .clo-ap-speed {
 
 html.clo-touch .clo-ap-status {
   font-size: 16px;
+  padding: 6px 8px;
+}
+
+/* The notice wraps to two lines on a phone, so its line-height goes up with the
+   type — otherwise the two lines sit on top of each other. */
+html.clo-touch .clo-dm-note {
+  font-size: 15px;
+  line-height: 20px;
   padding: 6px 8px;
 }
 
