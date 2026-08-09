@@ -429,6 +429,110 @@ reported as "it takes at least one extra variation before auto-play kicks in".
   held longest, so the repeats landed in the next variation's 'think' phase and
   took it over before its first card had been served.
 
+### …and it still did not work on a phone (v0.82.0)
+
+Same report, same session, one device apart: v0.81.0 cured it on a PC and changed
+nothing on a mid-tier Android. That is the diagnosis, not a complication — every
+one of the remaining causes is a RACE, and the machine is the only variable a
+race has. Four of them, plus one that costs proofs rather than presses.
+
+**HAND-OVER MEANS "THE USER ANSWERED A CARD THEMSELVES".** That is the definition
+the code now implements, and each of the three fixes below is a press that did not
+meet it and was counted as one anyway. They compound: any single one of them ends
+the replay for the rest of the variation, which is what "one extra variation"
+looks like from the outside.
+
+1. **A press with no card to show cost the whole variation.** Between a variation
+   change and the first card being served, `cardPly()` is null — the plan read has
+   not landed, or the trainer is still auto-playing its own opening plies — and a
+   press there set `handedOver` and then fell straight out of `reveal()`, drawing
+   nothing. A few hundred ms on a desktop; most of a second on a phone, at the
+   start of every variation, which is exactly where a steady presser is pressing.
+   It now costs nothing (and says "Waiting for the board…"). The same guard is
+   applied to `reveal()` REFUSING — it puts itself back in 'think', and the
+   hand-over is now RESTORED rather than left set, since an earlier card of the
+   variation may have handed over for real.
+2. **The exemption asked the wrong question.** v0.81.0 tested whether the reveal
+   TIMER was already pending, which is the same question as "would auto-play take
+   this card" only on a machine that has already *served* it — and serving is
+   itself what runs late on a phone, since it waits on an async plan read that
+   costs real time there. So the press regularly arrived while the answer was
+   still "auto-play has not been asked yet", and the exemption did not fire. It
+   now asks `willAutoPlay()`, the condition `maybeAutoPlay` itself acts on, so it
+   agrees with auto-play by construction instead of by winning a race.
+3. **The SECOND press had the same hole, and it is the likelier of the two.**
+   Pressing *next* while auto-play had already pressed the card set `handedOver`
+   on the reasoning that "the window is shorter than a human reaction". It is not:
+   that window is auto-play's ADVANCE BEAT — 240 ms on the fast pace, 620 ms on
+   the relaxed one — plus, on card 0, up to `pressFloorMs` (550) of settle inside
+   `autoPress`. So a user meeting auto-play halfway through its very first
+   replayed card ended the replay for everything after it. *next* there is now
+   agreement; only *wrong* takes the line back.
+
+   The hand-over that press was doing the job of has moved to where it belongs:
+   the **grade** press (gated on `cardReady()`, the same condition both grades bail
+   on, so a grade refused for being early still costs nothing). That also settles
+   the one case the reveal deliberately leaves open — our board may legitimately
+   be a card AHEAD of Chessable, and there `willAutoPlay()` cannot tell agreement
+   from override, because `cardReady()` is false either way.
+
+**And the proofs themselves stopped depending on the board.** Section 13 learns a
+proof by WATCHING: a user-colour move seen as exactly one legal step from the
+tracked position, held as `pendingRecord` until the opponent's reply confirms it.
+On a phone that chain has three ways to break inside the same half second — the
+mutation → rAF/32 ms → `processFrame` hop can arrive *after* the reply has also
+landed (two plies on, `findSingleMove` matches nothing, the tracker re-anchors and
+`startTracking` throws the pending answer away); a mid-animation snapshot is
+unreadable; the confirming reply has to be observed as its own frame. Losing the
+answer is invisible until the next variation, where auto-play then declines a move
+the user demonstrably knows.
+
+Under this mode none of that uncertainty exists: the move played is the COURSE'S
+OWN, taken from the lesson plan, pressed by us, from a position the plan states
+exactly. So section 23 ASSERTS the proof through a new write bridge,
+`autoPlayNoteProvenMove(fen, uci)` — the same merge, the same key and the same
+move-note veto as `confirmPendingRecord`, differing only in where the fact comes
+from. `sg.proof` is armed in `pressCourseMove` (so BOTH the manual "I knew it" and
+auto-play's own press arm it, and `gradeUnknown`, which never goes through there,
+cannot) and committed **only on the trainer's own evidence that the card was
+taken**: its fen moved off the position we answered, or the variation completed.
+A press can be swallowed whole and this mode verifies nothing afterwards, so every
+other exit — `failAct`, the "never moved on" watchdog, a variation change, `stop`
+— DROPS it. It also happens to give the last card of a variation a proof directly,
+the one answer no opponent reply ever confirms and which section 13 needs three
+separate mechanisms to catch.
+
+Section 13 got the matching repair on its own side (`findMovePair`): a frame that
+arrives a whole reply late now has BOTH plies applied instead of re-anchoring, so
+the user's answer is still classified, held and confirmed. Exactly one pair of
+legal moves must produce the placement; any ambiguity falls through to the
+re-anchor, which is what happened to the whole case before. Spot-checked against
+the real generator (e4 e5, e4 c5, a capture, an exchange, O-O first, en passant
+first, a promotion first, three plies → refused, one ply → left to
+`findSingleMove`).
+
+**And the dead half second at each variation change is gone.** `advance()` now
+starts the plan chase, which had been left on the 500 ms poll: loading the next
+variation is an act like any other, and the first card of every variation was
+waiting a whole tick plus a read before it could be served — dead board at the
+exact moment the user is pressing for the next card. `sg.advancing` keeps tick's
+browse branch from killing that chase while the browse state outlives the press by
+a few hundred ms.
+
+That chase made two guards necessary, both because the plan is now read while the
+completed variation's block is still up: `applyPlan` does not re-anchor in the
+browse state, and `onKey` routes on `reviewBrowseReady()` as well as on
+`sg.phase` — the plan swaps ~90 ms before the new variation's first move
+animates, so `anchor()` can reach card 0 a beat before that block comes down, and
+a press taken as a card there would be graded against a board that is not live
+yet.
+
+**Diagnostic**: `noteHandover()` prints one line per variation naming the press
+that ended a replay ("reveal press", "grade press", "\"wrong\" on an auto-played
+card"). `noteAutoSkip` could only say the variation had been taken over, never by
+what — which is the whole question when the complaint comes from a device nobody
+debugging it can hold.
+
 ## 2c. No flicker at a variation change
 
 The board used to keep showing the position the *previous* variation ended on
@@ -622,6 +726,81 @@ display — §21's `getList` carries numbers, the edit page's arrays do not, and
 regex covers both. Spot-checked against the real generator before writing any of
 this down: `3. e4`→e2e4, `d4!`→d2d4, `O-O`→e1g1, `exf6`→e5f6 (en passant),
 `a8=Q`→a7a8q, garbage→unresolved.
+
+## 2f. Mistake repetitions have no reply (v0.83.0)
+
+Reported: *"during Chessable's mistake repetitions that happen after you make a
+mistake and then finish the review — our board shows the opponent's next move
+after our mistake was corrected (not necessary)."*
+
+Chessable's own re-ask takes you back to a move you failed once the variation is
+finished, and asks for **that move on its own**. Nothing follows it, so the reply
+our board played after the corrected mistake was a move the trainer would never
+make — followed by the board jumping to wherever it actually went.
+
+### It is asked of our own board, not of the lesson plan
+
+`sg.reached` is the high-water mark of `sg.cursor` for the variation. The reply
+to card *i* is ply *i+1*, so it has already been shown iff the cursor ever
+reached *i+2*:
+
+```js
+const isRepeat = () => sg.cardIdx >= 0 && sg.reached > sg.cardIdx + 1;
+```
+
+That is a **direct observation of the trainer having gone back**, and it was
+chosen over the obvious plan field for three reasons:
+
+* `progress.isQuizCurrentlyInRetry` (DESIGN-retry-mistakes.md §2.1) is a *name*
+  we would be guessing at, it is not currently copied out by
+  `content/pagestate.js`, and confirming what it means needs the same live
+  session that would confirm this does.
+* it is right under **either** shape the repetition's plan might take. If that
+  plan turns out to carry no following ply at all, `advanceAfterGrade` already
+  returned early and this is simply inert.
+* it costs nothing in the MAIN world.
+
+`unwalkCard()` is the one thing that lowers the mark, and it is needed: on the
+manual path `advanceAfterGrade` runs on the **press**, ahead of the act, so an
+act that did not land (`failAct`, the "never moved on" watchdog) leaves a reply
+shown and counted for a card the trainer will ask again — which would read as a
+repetition and withhold the real reply.
+
+**Known false positive, accepted:** a position repeating inside a variation
+anchors on its FIRST occurrence (`findIndex`, section 17's own hazard). The card
+is mis-anchored there whatever this returns; withholding one reply is a minor
+extra symptom, and the board re-anchors on the next card.
+
+### It stays a two-press card
+
+The second press keeps its other job: it is the verdict, given **after** the move
+has been seen, which is the whole reason the two presses are split and matters
+more on a move already failed once than anywhere else. A one-press card would
+force the verdict before seeing the answer. So the rule *every press shows a
+move* is bent here, deliberately, and the wording carries the difference:
+
+| where | ordinary card | repetition |
+| --- | --- | --- |
+| think prompt | `Your move` | `Your move — repeat` |
+| shown, marked unknown | `2 — the opponent's reply (marked as not known)` | `2 — on to the next card (marked as not known)` |
+| after the grade | `Opponent played <san>` | `Repeat — no reply follows` |
+
+The other `shown` line (`2 — I knew it · 4 — I didn't know`) promises nothing
+about what follows and is left alone. `sg.cardIdx` goes to `-1` on a repeat, so
+`anchor()` can re-derive — including when the answer is that very card again,
+which its "already here" short-circuit would otherwise refuse.
+
+### Simulated, not observed
+
+Six sequences, against a transcription of the edited bookkeeping: a normal pass
+(every reply shown); a repetition of an earlier card; two repetitions in a row;
+the same card repeated twice; a repetition of the LAST user card, where a reply
+genuinely does exist in the plan; and a failed act followed by the same card
+being re-asked (reply shown again — no false repeat). Panel strings measured in
+the harness at the ground-truthed 506px comment-box width: one line each, 27px
+prompt / 16px keys, identical to the strings they replace.
+
+**Not verified live** — see §12.8.
 
 ## 4. GROUND TRUTH (live, 2026-08-04)
 
@@ -884,7 +1063,22 @@ states where a real control exists.
    `cardIsProven` — `noteAutoSkip` names the reason in one line per card, and
    "not answered correctly yet this session" would mean proofs are not being
    recorded at all, which is a different bug in a different section.
-4b. **The v0.81.0 hand-over fixes, and whether they were the whole of it.** All
+4c. **The v0.82.0 phone fixes.** None seen in a session either; all reasoned from
+   the code, syntax-checked, and `findMovePair` spot-checked against the real
+   generator. What to read in a phone session, in order of what it would settle:
+   `show-and-grade: variation taken over at the <press>` — if this appears at all
+   on a variation the user answered perfectly last time, a press is still doing
+   it and the message names which one. `auto-play: two plies in one frame —
+   catching up` — the tracker really was arriving a reply late on that device, and
+   the observed path was losing proofs. `auto-play: recorded <uci> (show and grade
+   played it)` — the asserted proof landing where the observed one did not (it is
+   only printed when the move was NOT already in the record, so it appearing at
+   all is the interesting part). And, still, `show-and-grade: N of M card(s)
+   proven this session` on the second variation of a session whose first was
+   answered perfectly: it should name the shared prefix.
+4b. **The v0.81.0 hand-over fixes, and whether they were the whole of it.**
+   Answered in part: they were not — they cured a PC and left a phone exactly as
+   it was, which is what v0.82.0 is. All
    three changes (the *next*-while-claimed press, `e.repeat`, and the prefix
    re-walk) are reasoned from the code and syntax-checked; none has been seen in
    a session. The discriminator is already in the console, one line per card:
@@ -907,3 +1101,18 @@ states where a real control exists.
    meant grading a real review card, which the mapping does not justify — the
    `mid`+colour join and the 7-on-6 count are both verified), and the wording
    with the course setting **on**, which no course tested has.
+8. **Mistake repetitions (§2f) — the whole premise.** `isRepeat()` assumes the
+   repetition runs on the SAME lesson plan, with the trainer's own `fen` back on
+   the failed ply's `sourceFen`, so `anchor()` lands on a card our board has
+   already walked past. Nothing about that was observed: Claude in Chrome was not
+   connected when it was written, and it is reasoned from `progress`'s own
+   `isQuizCurrentlyInRetry` / `maxRetry` fields (DESIGN-retry-mistakes.md §2.1)
+   existing per ply of that plan. One console line settles it — `show-and-grade:
+   repeat of <san> — no reply to show`, printed once per repetition. If it never
+   appears while a repetition is on screen, the repetition is not anchoring back
+   onto the same plies, and the next thing to read is what `readLessonLine()`
+   actually returns in that state (`plies.length`, whether the card ply has a
+   following ply, and `progress.isQuizCurrentlyInRetry` — which
+   `content/pagestate.js` does NOT currently copy out). If it appears on an
+   ORDINARY card, `sg.reached` is being left high by something other than a real
+   walk and `unwalkCard()` is the place to look.

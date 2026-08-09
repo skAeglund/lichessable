@@ -1205,6 +1205,33 @@ Currently working (v0.18.x).
     nothing pending. It is also why a trainer solution replay after "Time's up"
     cannot sneak through: `rollbackTo` has already zeroed `ap.lastPointerAt`, so
     that move is classified 'trainer' and never becomes pending.
+  - A FRAME THAT ARRIVES A WHOLE REPLY LATE CARRIES TWO PLIES, AND IS NOT A LOST
+    THREAD (`findMovePair`, v0.82.0). A user answer and the trainer's reply are
+    ~440 ms apart, which is comfortable on a desktop and not on a phone: the
+    frame is delivered through rAF (or the 32 ms backstop) and both are pushed
+    out by Chessable's animation, our own board's render and — under section 23 —
+    the plan chase's JSON round trip. The placement then jumps two plies,
+    `findSingleMove` matches nothing, and the tracker used to RE-ANCHOR, which
+    calls `startTracking` and so THROWS THE PENDING ANSWER AWAY: the move never
+    became a proof, invisibly, until the next variation declined a move the user
+    demonstrably knows. So the jump is resolved instead — exactly one PAIR of
+    legal moves must produce the placement, both are applied in order, and any
+    ambiguity still falls through to the re-anchor (which is what the whole case
+    did before). Only on the path that was about to re-anchor anyway, so ~900
+    `makeMove` calls a handful of times a session and never per frame; the
+    `vs.history` rollback check still comes FIRST, so a board that snapped BACK
+    is a rollback and not a pair. Spot-checked against the real generator.
+  - A PROOF MAY ALSO BE ASSERTED, and section 23 is the only caller
+    (`autoPlayNoteProvenMove(fen, uci)`, v0.82.0 — the one WRITE bridge into the
+    record). Everything above learns a proof by WATCHING the board, which is
+    right for a move the user played and pointless for one WE played from a
+    position the lesson plan states exactly: show and grade presses the COURSE'S
+    OWN move, so "was this answered correctly" is not a question about the board
+    at all. The veto (`readMoveNote`), the merge into `entry.moves` and the key
+    are `confirmPendingRecord`'s, unchanged — a move recorded this way is
+    indistinguishable from one recorded that way. NOT a general back door: the
+    caller must know the exact FEN the move was played from AND know it was
+    right, so nothing derived from the DOM qualifies.
   - `noteDeadContext(err)`: after an extension reload, every `chrome.*` call in
     the still-running content script throws "Extension context invalidated".
     Such an orphan holds a record it can neither refresh nor save and could
@@ -2640,6 +2667,42 @@ Currently working (v0.18.x).
   `anchor`/`leaveActing`/`startMode`) and applied by the press that advances.
   v0.69.0 had a third press — grade, THEN reply — which is the wasted press this
   replaced; do not reintroduce it.
+  THE ONE EXCEPTION IS A MISTAKE REPETITION (`isRepeat`, v0.83.0) — Chessable's
+  own re-ask, which takes you back to a move you failed once the variation is
+  finished. That is a SINGLE MOVE, not a line being walked: nothing follows it,
+  so the reply our board played after the corrected mistake was a move the
+  trainer would never play, followed by the board jumping to wherever it
+  actually went. The second press keeps its OTHER job — it is still the verdict,
+  and still given AFTER the move has been seen, which is the whole reason the two
+  presses are split and matters more on a move already failed once than anywhere
+  else — so this is not a one-press card. What changes is that it shows no reply,
+  and the two lines that would otherwise PROMISE one say what the press does
+  instead ("on to the next card", and "Your move — repeat" at the think stage, so
+  the blindfold seam says it too).
+  THE TEST IS ASKED OF OUR OWN BOARD, NOT OF THE LESSON PLAN: `sg.reached` is the
+  high-water mark of `sg.cursor` for the variation, and the reply to card i has
+  already been shown iff it ever reached i+2. That is a direct observation of the
+  trainer having gone BACK, where a plan field (`progress.isQuizCurrentlyInRetry`
+  is the candidate, and is NOT currently read by `content/pagestate.js`) would be
+  a guess at what a name means — and it is right under either shape the
+  repetition's plan might take: if that plan turns out to carry no following ply
+  at all, the reply was never going to be played and this is simply inert. It
+  costs nothing in the MAIN world. The card index goes to -1 on a repeat, so
+  `anchor()` can re-derive — including when the answer is that very card again,
+  which its "already here" short-circuit would otherwise refuse.
+  `unwalkCard()` is the ONE thing that lowers the mark, and it is needed: on the
+  manual path `advanceAfterGrade` runs on the PRESS, ahead of the act, so an act
+  that did NOT land (`failAct`, the "never moved on" watchdog) leaves a reply
+  shown and counted for a card the trainer will ask again — which would read as a
+  repetition and withhold the real reply. Known false positive, accepted: a
+  position repeating inside a variation anchors on its FIRST occurrence
+  (`findIndex`, section 17's own hazard), where the card is mis-anchored whatever
+  this returns. Simulated over six sequences (normal pass; repetition of an
+  earlier card; two repetitions; the same card repeated twice; a repetition of
+  the LAST user card, where a reply does exist; and a failed act followed by the
+  same card re-asked) before it was written down. NOT yet ground-truthed live —
+  one console line per repetition (`repeat of <san> — no reply to show`) is what
+  a session confirms it with.
   `advanceAfterGrade()` runs the MOMENT the key is pressed, not when the
   Chessable act finishes: the reply comes from the plan, so there is nothing to
   wait for. That is also why `failAct()` exists — an act that cannot be carried
@@ -3041,6 +3104,74 @@ Currently working (v0.18.x).
     ~30 ms once the platform's repeat delay is up, and the ADVANCE press is the
     one held longest, so the repeats landed in the NEXT variation's 'think' phase
     and took it over before its first card had been served.
+  …AND IT STILL DID NOT WORK ON A PHONE (v0.82.0). Same report, same session, one
+  device apart: v0.81.0 cured a PC and changed nothing on a mid-tier Android.
+  That IS the diagnosis rather than a complication — every remaining cause is a
+  RACE, and the machine is the only variable a race has. HAND-OVER MEANS "THE
+  USER ANSWERED A CARD THEMSELVES", and each fix below is a press that never met
+  that definition and was counted as one anyway; any ONE of them ends the replay
+  for the rest of the variation, which is what "one extra variation" looks like
+  from outside.
+  * A PRESS WITH NO CARD TO SHOW COST THE WHOLE VARIATION. Between a variation
+    change and the first card being served `cardPly()` is null — the plan read
+    has not landed, or the trainer is still auto-playing its own opening plies —
+    and a press there set `handedOver` and then fell straight out of `reveal()`,
+    DRAWING NOTHING. A few hundred ms on a desktop; most of a second on a phone,
+    at the start of every variation, i.e. exactly where a steady presser is
+    pressing. It now costs nothing. Same guard on `reveal()` REFUSING (a press
+    landing inside a transition): it puts itself back in 'think', so the phase is
+    the test, and the previous value is RESTORED rather than cleared — an earlier
+    card of this variation may have handed over for real.
+  * THE EXEMPTION ASKED THE WRONG QUESTION. v0.81.0 tested whether the reveal
+    TIMER was pending, which equals "would auto-play take this card" only on a
+    machine that has already SERVED it — and serving is itself what runs late on
+    a phone, waiting on an async plan read that costs real time there. So the
+    press regularly arrived while the answer was still "auto-play has not been
+    asked yet". It now asks `willAutoPlay()`, the condition `maybeAutoPlay`
+    itself acts on, so it agrees by construction instead of by winning a race.
+  * THE SECOND PRESS HAD THE SAME HOLE, and is the likelier of the two. Pressing
+    "next" while auto-play had ALREADY pressed the card set `handedOver`, on the
+    reasoning that "the window is shorter than a human reaction". It is not: that
+    window is auto-play's ADVANCE BEAT — 240 ms fast, 620 ms relaxed — plus, on
+    card 0, up to `pressFloorMs` (550) of settle inside `autoPress`. So meeting
+    auto-play halfway through its very FIRST replayed card ended the replay for
+    everything after it. "Next" there is agreement now; only "wrong" takes the
+    line back.
+  * …SO THE HAND-OVER MOVED TO THE GRADE PRESS, where it belongs, gated on
+    `cardReady()` — the same condition both grades bail on, so a grade refused
+    for being early still costs nothing. That also settles the one case the
+    reveal deliberately leaves open: our board may legitimately be a card AHEAD
+    of Chessable, and there `willAutoPlay()` cannot tell agreement from override,
+    since `cardReady()` is false either way.
+  * THE DEAD HALF SECOND AT EACH VARIATION CHANGE IS GONE: `advance()` starts the
+    plan chase, which had been left on the 500 ms poll, so the first card of
+    every variation waited a whole tick plus a read — dead board at the exact
+    moment the user is pressing for the next card. `sg.advancing` keeps tick's
+    browse branch from killing that chase while the browse state outlives the
+    press by a few hundred ms.
+  * THE PROOFS THEMSELVES STOPPED DEPENDING ON THE BOARD. `sg.proof` is armed in
+    `pressCourseMove` (so BOTH the manual "I knew it" and auto-play's own press
+    arm it, and `gradeUnknown` — which never goes through there — cannot) and
+    committed through section 13's `autoPlayNoteProvenMove` ONLY on the trainer's
+    own evidence that the card was taken: its fen moved off the position we
+    answered, or the variation completed. A press can be SWALLOWED whole and this
+    mode verifies nothing afterwards, so every other exit (`failAct`, the "never
+    moved on" watchdog, a variation change, `stop`) DROPS it. It also gives the
+    variation's LAST card a proof directly — the one answer no opponent reply
+    ever confirms, and which section 13 needs three separate mechanisms to catch.
+  * TWO GUARDS THE CHASE MADE NECESSARY, both because the plan is now read while
+    the completed variation's block is still up: `applyPlan` does not re-anchor
+    in the browse state (a final position repeating an earlier one would put the
+    mode back in 'think' with a card behind a hidden board), and `onKey` routes
+    on `reviewBrowseReady()` as well as on `sg.phase` — the plan swaps ~90 ms
+    before the new variation's first move animates, so `anchor()` can legitimately
+    reach card 0 a beat before that block comes down, and a press taken as a card
+    there would be graded against a board that is not live yet, i.e. swallowed.
+  * DIAGNOSTIC: `noteHandover()` prints one line per variation naming the press
+    that ended a replay ("reveal press", "grade press", "wrong" on an auto-played
+    card). `noteAutoSkip` could only ever say the variation had been taken over,
+    never by WHAT — which is the whole question when the report comes from a
+    device nobody debugging it can hold.
   NO FLICKER AT A VARIATION CHANGE (v0.71.0): the board used to keep showing the
   position the PREVIOUS variation ended on until the trainer settled, then jump.
   `applyPlan` nulls `sg.pos` on a variation change and

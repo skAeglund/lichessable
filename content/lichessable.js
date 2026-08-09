@@ -7810,6 +7810,37 @@
   // null-safe like every other bridge here.
   let autoPlayIsProven = null;
 
+  /**
+   * (fen, uci) => boolean — record a proof section 23 ASSERTED rather than the
+   * tracker OBSERVED (v0.82.0). The one WRITE bridge into the record.
+   *
+   * Everything else in section 13 learns a proof by watching Chessable's board:
+   * a user-colour move seen as exactly ONE legal step from the tracked position,
+   * held as `pendingRecord` until the opponent's reply confirms it. That chain
+   * has three timing-dependent links, and on a slow phone every one of them can
+   * break in the same half second:
+   *
+   *   * the mutation → rAF/32 ms → processFrame hop can arrive AFTER the
+   *     trainer's reply has also landed, in which case the placement is two
+   *     plies on, `findSingleMove` matches nothing and the tracker re-anchors —
+   *     which throws the pending answer away (`startTracking` clears it);
+   *   * a snapshot taken mid-animation is unreadable and simply skipped;
+   *   * the confirming reply itself has to be observed as its own frame.
+   *
+   * Under show-and-grade none of that uncertainty exists: the move played is the
+   * COURSE'S OWN, taken from the lesson plan, pressed by us, from a position the
+   * plan states exactly — so "did the user answer this correctly" is not a
+   * question about the board at all. Section 23 therefore asserts it, and only
+   * once it has the trainer's own evidence that the card was accepted (its fen
+   * moved off the position, or the variation completed). The move NOTE is still
+   * a veto, so a card that ran out of time cannot be recorded as known.
+   *
+   * Deliberately not a general back door: the caller must know the exact FEN the
+   * move was played from and must know the move was right. Nothing derived from
+   * the DOM qualifies.
+   */
+  let autoPlayNoteProvenMove = null;
+
   // (fen) => boolean — is this position on the retry pass's hold list (section
   // 17's `autoPlaySetHold`)? Section 23's auto-play asks before replaying a
   // card: a move the pass is walking the user back to must never be played FOR
@@ -8088,6 +8119,42 @@
         if (boardsEqual(next.board, target)) {
           if (found) return null; // ambiguous — be safe, treat as no match
           found = { move, next };
+        }
+      }
+      return found;
+    }
+
+    /**
+     * TWO plies on, in one frame — the laggy-device case (v0.82.0).
+     *
+     * A user answer and the trainer's reply are ~440 ms apart, which is a
+     * comfortable gap on a desktop and not one on a mid-tier phone: the frame
+     * carrying the answer is delivered through rAF (or the 32 ms backstop), both
+     * of which are pushed out by Chessable's own animation work, our board's
+     * render and the plan chase's JSON round trip. When it lands late enough,
+     * the placement it carries is the one AFTER the reply, `findSingleMove`
+     * matches nothing, and the tracker re-anchors — which is not merely a lost
+     * frame: `startTracking` drops `pendingRecord`, so the user's answer never
+     * becomes a proof. That is invisible until the next variation, where
+     * auto-play then declines a move the user demonstrably knows.
+     *
+     * So resolve the jump instead of giving up on it. Exactly one pair of legal
+     * moves must produce the placement: any ambiguity falls through to the
+     * re-anchor, which is what this code did for the whole case before. The
+     * search is a full two-ply enumeration (~900 makeMove calls at worst) and
+     * runs ONLY on the path that was about to re-anchor anyway — a handful of
+     * times per session, never per frame.
+     */
+    function findMovePair(pos, target) {
+      let found = null;
+      for (const m1 of CloSan.generateMoves(pos)) {
+        const mid = CloSan.makeMove(pos, m1);
+        if (boardsEqual(mid.board, target)) continue; // that is findSingleMove's job
+        for (const m2 of CloSan.generateMoves(mid)) {
+          const next = CloSan.makeMove(mid, m2);
+          if (!boardsEqual(next.board, target)) continue;
+          if (found) return null; // ambiguous — be safe, treat as no match
+          found = { first: { move: m1, next: mid }, second: { move: m2, next } };
         }
       }
       return found;
@@ -8705,8 +8772,19 @@
         } else if (shouldSkipFrame(vs.pos, snap, key)) {
           return; // move animation in flight — deliberately NOT updating lastKey
         } else {
-          log('auto-play: lost track of the board — re-anchoring');
-          startTracking(snap, key);
+          // A frame that arrived a whole reply late (see findMovePair): apply
+          // BOTH moves rather than re-anchoring, so the user's answer is still
+          // classified, held and then confirmed by the reply that overtook it.
+          const pair = findMovePair(vs.pos, snap);
+          if (pair) {
+            log('auto-play: two plies in one frame — catching up');
+            vs.lastSkippedKey = null;
+            applyObservedMove(pair.first, placementKey(pair.first.next.board));
+            applyObservedMove(pair.second, key);
+          } else {
+            log('auto-play: lost track of the board — re-anchoring');
+            startTracking(snap, key);
+          }
         }
       }
       vs.lastKey = key;
@@ -9561,6 +9639,39 @@
       if (!pos) return false;
       const entry = ap.record[posKeyOf(pos)];
       return Boolean(entry && entry.moves && entry.moves[uci]);
+    };
+
+    /**
+     * Section 23's ASSERTED proof — see the bridge's own doc comment for why the
+     * observed path is not good enough on a phone. Same merge, same veto and the
+     * same key as confirmPendingRecord; it differs only in where the fact comes
+     * from, so a move recorded here is indistinguishable from one recorded there.
+     */
+    autoPlayNoteProvenMove = (fen, uci) => {
+      if (ap.contextDead || !ap.record || !fen || !uci) return false;
+      // The trainer's own verdict still overrules the caller's: a card that ran
+      // out of time is played for the user and is NOT an answer they gave.
+      const note = readMoveNote();
+      if (/incorrect|time.s up/i.test(note)) {
+        log('auto-play: not recording', uci, '— notification reads:', note);
+        return false;
+      }
+      const pos = CloSan.parseFen(fen);
+      if (!pos) return false;
+      const posKey = posKeyOf(pos);
+      const entry = ap.record[posKey] || (ap.record[posKey] = { moves: {} });
+      const prev = entry.moves[uci];
+      entry.moves[uci] = {
+        uci,
+        promo: null,   // show-and-grade refuses promotions before it ever presses
+        seenAt: Date.now(),
+        count: (prev && prev.count || 0) + 1,
+      };
+      scheduleSaveRecord();
+      // Only when it is NEWS. The observed path usually records the same move a
+      // beat earlier, and two lines per card would bury everything else.
+      if (!prev) log('auto-play: recorded', uci, '(show and grade played it)');
+      return true;
     };
 
     /**
@@ -18949,6 +19060,14 @@
       // would otherwise grade this card must check it first.
       pressed: false,
       pressing: false,
+      // The proof owed to section 13 for the card we have just pressed:
+      // `{ fen, uci }`, held until the trainer's OWN state says the card was
+      // accepted, then written straight into the record. See commitProof.
+      proof: null,
+      // "Next variation" has been asked for and the plan is being chased across
+      // the change — so the browse branch must leave that chase alone.
+      advancing: false,
+      handoverLogged: false,   // …once per variation, see noteHandover
       // How far into THIS variation auto-play may replay: decided when the plan
       // lands, so card 0 never waits on a read, and re-walked by cardIsProven at
       // any card the answer does not reach (see its own note). Exclusive: the
@@ -18978,6 +19097,11 @@
       // press, which is normal and not a desync.
       plies: [],         // the whole variation, from the lesson plan
       cursor: 0,         // index of the NEXT ply our board will play
+      // HOW FAR ALONG THE LINE THIS BOARD HAS ALREADY WALKED, this variation:
+      // the high-water mark of `cursor`, never lowered by an anchor going
+      // backwards. That is the whole of how Chessable's own mistake repetitions
+      // are recognised — see isRepeat().
+      reached: 0,
       cardIdx: -1,       // index of the user ply currently being asked for
       lastMove: null,    // { from, to } — the move our board last played
       view: 'w',
@@ -19136,6 +19260,7 @@
       if (newVariation) {
         sg.oid = plan.oid;
         sg.cardIdx = -1;
+        sg.reached = 0;   // a new line has been walked none of the way
         sg.lastMove = null;
         // THE BOARD GOES BLANK UNTIL THE NEW VARIATION IS ANCHORED. Without
         // this it keeps showing the position the LAST variation ended on for
@@ -19145,6 +19270,7 @@
         // flag to keep in step.
         sg.pos = null;
         sg.handedOver = false;
+        sg.handoverLogged = false;
         sg.markedUnknown = false;
         sg.autoGrading = false;
         sg.pressed = false;
@@ -19153,6 +19279,12 @@
         sg.prefixAt = -1;
         sg.prefixLogged = false;
         sg.actedOnce = false;   // the next first press races the trainer again
+        // A proof still owed here was never confirmed by the trainer (the browse
+        // branch commits the last card of a normal variation), so it is dropped:
+        // recording an answer we cannot show was accepted is the one direction
+        // this must not err in.
+        sg.proof = null;
+        sg.advancing = false;   // the variation change we were chasing has landed
         clearAutoTimer();
       }
       sg.plies = Array.isArray(plan.plies) ? plan.plies : [];
@@ -19167,8 +19299,12 @@
       if (newVariation) loadAlternatives(sg.oid, plan.bid || readQuickEditBid(), plan.altSetting);
       if (plan.fen !== sg.planFen) {
         sg.planFen = plan.fen;
-        // The trainer has moved off the position we answered.
-        if (sg.awaitingFen && sg.planFen !== sg.awaitingFen) sg.awaitingFen = '';
+        // The trainer has moved off the position we answered — which is also
+        // the evidence the card was accepted, so the proof it owes goes in here.
+        if (sg.awaitingFen && sg.planFen !== sg.awaitingFen) {
+          sg.awaitingFen = '';
+          commitProof();
+        }
       }
       // Anchoring is ONLY ever done from 'think' (or a fresh variation). In
       // 'shown' our board is deliberately AHEAD of what the trainer has been
@@ -19180,8 +19316,16 @@
       // the trainer, which is still animating. Anchoring then would find the
       // card we have just answered still current and drag the board BACK onto
       // it — re-asking a move the user has already graded.
+      //
+      // …and the browse state is the third: a completed variation's board is a
+      // move list to navigate, not a card, and since v0.82.0 the plan is read
+      // there too (the chase now spans the variation change). Anchoring on a
+      // final position that happens to repeat an earlier one would put the mode
+      // back in 'think' with a card behind a hidden board, where a press would
+      // then reveal and hand over. `serveCard` already refuses in that state.
       if (newVariation) { sg.awaitingFen = ''; anchor(); serveCard(); return; }
-      if ((sg.phase === 'think' || sg.phase === 'browse') && !sg.awaitingFen) anchor();
+      if ((sg.phase === 'think' || sg.phase === 'browse') && !sg.awaitingFen &&
+          !reviewBrowseReady()) anchor();
       // SERVE OFF THE READ, not off the next tick. `refreshPlan` is async, so
       // the tick that starts a read cannot use its answer: the card became
       // "ready" only when the FOLLOWING tick came round, which measured 718ms
@@ -19309,6 +19453,61 @@
 
     /** The ply being asked for, or null while the board is between cards. */
     const cardPly = () => (sg.cardIdx >= 0 ? sg.plies[sg.cardIdx] : null) || null;
+
+    /** The cursor's high-water mark for this variation. Only ever grows. */
+    function noteReached() {
+      if (sg.cursor > sg.reached) sg.reached = sg.cursor;
+    }
+
+    /**
+     * The ONE case in which the high-water mark has to come back down: an act
+     * that did not land.
+     *
+     * On the manual path `advanceAfterGrade` runs on the PRESS, ahead of the act
+     * — so by the time `failAct` or the "never moved on" watchdog gives up, the
+     * reply has already been shown and counted. The trainer, having taken
+     * nothing, then asks for the same card again, and `isRepeat()` would read
+     * our own abandoned reply as evidence of a mistake repetition and withhold
+     * the real one. Un-count it: the card was revealed, so the honest mark is
+     * `cardIdx + 1`, and `min` keeps this from ever RAISING it.
+     */
+    function unwalkCard() {
+      if (sg.cardIdx < 0) return;
+      sg.reached = Math.min(sg.reached, sg.cardIdx + 1);
+    }
+
+    /**
+     * Is the trainer RE-ASKING a move this board has already walked past?
+     *
+     * That is Chessable's own mistake repetition: fail a move, finish the
+     * variation, and it takes you back to the failed move and asks for it again
+     * — one move on its own, not a line being walked. Nothing follows it, so
+     * showing the opponent's reply after the corrected move is a move that will
+     * never be played, followed by the board jumping to wherever the trainer
+     * actually went. Reported as unwanted, and it is.
+     *
+     * ASKED OF OUR OWN BOARD, not of the lesson plan, and deliberately: the
+     * question `advanceAfterGrade` needs answered is "will the trainer play this
+     * reply?", and "we have already shown it once in this variation" is a direct
+     * observation of the trainer having gone BACK rather than a guess at what a
+     * field like `progress.isQuizCurrentlyInRetry` means. It also costs nothing
+     * in `content/pagestate.js` and is right under either shape the repetition's
+     * plan might take: if it turns out to carry no following ply at all, the
+     * reply was never going to be played anyway and this is simply inert.
+     *
+     * The reply to card i is ply i+1, so it has been shown iff the cursor has
+     * ever reached i+2. Exact, not a heuristic about how far back we are.
+     *
+     * ONE FALSE POSITIVE IS KNOWN AND ACCEPTED: a position that repeats inside a
+     * variation anchors on its FIRST occurrence (`anchor` uses `findIndex`, the
+     * same hazard section 17 documents for its own ply clock), so the card index
+     * goes backwards while the trainer is really further on. The card is
+     * mis-anchored there whatever this returns; withholding one reply is a minor
+     * extra symptom of that, and the board re-anchors on the next card.
+     */
+    function isRepeat() {
+      return sg.cardIdx >= 0 && sg.reached > sg.cardIdx + 1;
+    }
 
     /**
      * Is the trainer really standing on the card our board is showing? Every
@@ -19777,8 +19976,13 @@
           // — which after a "wrong" at the think stage means only "advance" —
           // silently grade the card CORRECT, and a false proof is worse than
           // the wrinkle it would fix. The natural order asks first anyway.
+          // A repetition has no reply, so the one line that PROMISES one has to
+          // say what the press really does instead. The other line already
+          // reads correctly for both ("I knew it" / "I didn't know" claims
+          // nothing about what follows), so it is left alone.
           : (sg.markedUnknown
-            ? next + " — the opponent's reply (marked as not known)"
+            ? next + (isRepeat() ? ' — on to the next card (marked as not known)'
+              : " — the opponent's reply (marked as not known)")
             : next + " — I knew it   ·   " + wrong + " — I didn't know") +
             '   ·   ' + keyName(C.keys.alts) + ' — also accepted?';
       } else if (sg.phase === 'browse') {
@@ -19821,6 +20025,7 @@
         return;
       }
       sg.cursor = sg.cardIdx + 1;
+      noteReached();
       announce(ply.san);
       syncPanel();
     }
@@ -19835,12 +20040,37 @@
      *
      * A card with no reply after it is the variation's last move — the browse
      * state is what follows, and tick() is already watching for it.
+     *
+     * …AND SO IS A MISTAKE REPETITION, for a different reason (see isRepeat).
+     * There the second press keeps its other job — it is still the verdict, and
+     * it is still made AFTER the move has been seen, which is the whole reason
+     * the two presses are split and matters more on a move already failed once
+     * than anywhere else. What it stops doing is showing a reply the trainer is
+     * never going to play; the panel and the announce say so rather than leaving
+     * the press looking swallowed.
      */
     function advanceAfterGrade() {
+      if (isRepeat()) {
+        // Nothing follows a re-asked move, so the board STAYS on the corrected
+        // mistake. cardIdx goes to -1 rather than staying put: the trainer is
+        // about to ask something else (the next repetition, or nothing), and
+        // -1 is what lets anchor() re-derive it — including when the answer is
+        // this very card again, which its "already here" short-circuit would
+        // otherwise refuse.
+        const ply = cardPly();
+        // One line per repetition — few enough to be worth having, and the only
+        // way to tell from a console that the state was recognised at all.
+        log('show-and-grade: repeat of', (ply && ply.san) || 'a failed move',
+          '— no reply to show');
+        sg.cardIdx = -1;
+        announce('Repeat — no reply follows');
+        return;
+      }
       const reply = sg.plies[sg.cursor];
       if (!reply) return;
       if (!playPlyOnBoard(reply)) return;
       sg.cursor++;
+      noteReached();
       // Whatever comes next is the next card; anchor() confirms it against the
       // trainer on a later tick and fixes the cursor if we have drifted.
       sg.cardIdx = sg.cursor;
@@ -19999,6 +20229,15 @@
       // The tracker has to be told a HUMAN answered this, or the move is filed
       // as trainer-played and never remembered as proven — see section 22.
       if (autoPlayNoteTypedMove) autoPlayNoteTypedMove(ply.from, ply.to);
+      // …and the proof is OWED from here, to be written once the trainer's own
+      // state says the card was taken (commitProof). The observed path above is
+      // still the primary one and usually gets there first; this is what makes
+      // the answer survive a device where it does not — see the
+      // `autoPlayNoteProvenMove` bridge for the three ways that chain breaks on
+      // a phone. Armed for BOTH callers: the manual "I knew it" and auto-play's
+      // own press are the same assertion, and only gradeUnknown — which never
+      // comes through here — must not make it.
+      sg.proof = { fen: ply.sourceFen, uci: ply.from + ply.to };
       log('show-and-grade: knew', ply.san);
       document.documentElement.classList.add('clo-injecting');
       pressSquare(fromEl);
@@ -20038,6 +20277,10 @@
      */
     async function gradeUnknown() {
       if (!cardReady()) { setStatus('Waiting for the board…'); return; }
+      // Read BEFORE the advance: on a mistake repetition that drops the card
+      // index (there is nothing after a re-asked move), and the log line below
+      // would then have no move to name.
+      const ply = cardPly();
       enterActing();
       advanceAfterGrade();  // the board moves NOW; the act below is Chessable's
       await resumeAndSettle();
@@ -20050,7 +20293,6 @@
         failAct('Could not reach Chessable’s “I don’t know” — press it yourself');
         return;
       }
-      const ply = cardPly();
       log('show-and-grade: did not know', (ply && ply.san) || '');
       give.click();
       await wait(C.stepMs);
@@ -20295,6 +20537,15 @@
         setStatus('The retry pass picks the next variation');
         return;
       }
+      // CHASE THE PLAN ACROSS THE VARIATION CHANGE (v0.82.0). Loading the next
+      // variation is an act like any other, and this was the one that was left
+      // on the 500ms poll: the first card of every variation therefore waited a
+      // whole tick plus a read before it could be served, which is a
+      // half-second-plus of dead board on a phone — and dead board at the exact
+      // moment the user is pressing for the next card. The chase stops itself as
+      // soon as a card is served, and `applyPlan` serves off the read.
+      sg.advancing = true;   // …and tick's browse branch must not kill it
+      startChase();
       const next = nextButton();
       if (next) { next.click(); return; }
       // No button rendered: fall back to MoveTrainer2's own single-key
@@ -20323,6 +20574,26 @@
       sg.awaitingSince = Date.now();
     }
 
+    /**
+     * Write the proof owed for the card we pressed (see `sg.proof` and the
+     * `autoPlayNoteProvenMove` bridge).
+     *
+     * ONLY ON THE TRAINER'S OWN EVIDENCE that the card was taken: its fen moved
+     * off the position we answered, or the variation completed. A press can be
+     * SWALLOWED whole — that is what `pressFloorMs` exists for and it cannot be
+     * detected from the board, since a refused move leaves the position exactly
+     * as it was — and a swallowed press is not an answer. Both callers are
+     * places we already know the trainer has moved on; every other exit
+     * (`failAct`, the "never moved on" watchdog, a variation change, `stop`)
+     * DROPS it instead.
+     */
+    function commitProof() {
+      const proof = sg.proof;
+      if (!proof) return;
+      sg.proof = null;
+      if (autoPlayNoteProvenMove) autoPlayNoteProvenMove(proof.fen, proof.uci);
+    }
+
     function enterActing() {
       sg.phase = 'acting';
       sg.actingAt = Date.now();
@@ -20349,6 +20620,8 @@
       warn('show-and-grade:', msg);
       setStatus(msg);
       sg.awaitingFen = '';
+      sg.proof = null;   // the act did not land, so nothing was answered
+      unwalkCard();
       sg.cardIdx = -1;
       sg.pressed = false;
       // FORCE 'think'. leaveActing only converts from 'acting', and auto-play's
@@ -20365,6 +20638,23 @@
       sg.autoGrading = false; // the grade it owned has been taken
       paintArrow();
       syncPanel();
+    }
+
+    /**
+     * One console line naming the press that ended the replay.
+     *
+     * `noteAutoSkip` already says auto-play passed on a card because the
+     * variation had been taken over; what it cannot say is WHICH press did it,
+     * and that is the whole question when the complaint is "auto-play does not
+     * start" on a device nobody debugging it can hold. Once per variation, and
+     * only when auto-play is on — with it off, taking the variation over is not
+     * an event.
+     */
+    function noteHandover(where) {
+      if (!sg.autoPlay || sg.handoverLogged) return;
+      sg.handoverLogged = true;
+      log('show-and-grade: variation taken over at the ' + where +
+        ' — auto-play stands down until the next variation');
     }
 
     // --- keys ----------------------------------------------------------------
@@ -20394,7 +20684,22 @@
       // card has been served.
       if (e.repeat) return;
       if (sg.phase === 'acting') return;
-      if (sg.phase === 'browse') { if (isNext) advance(); return; }
+      // CHESSABLE'S OWN STATE DECIDES THIS ONE, not our phase flag (v0.82.0).
+      // `anchor()` can legitimately put us in 'think' on the next variation's
+      // card 0 a beat before the completed variation's block comes down — the
+      // plan swaps ~90 ms before the first move animates, and the chase reads it
+      // — and a press taken as a card there would be graded against a board that
+      // is not live yet, i.e. swallowed. The browse state is exactly where the
+      // one thing worth doing is asking for the next variation.
+      //
+      // Scoped to 'think', deliberately: 'shown' can also overlap the browse
+      // state — auto-play's last card presses at the reveal and the variation
+      // completes inside the advance beat — and that press still belongs to
+      // `finishAutoCard`, which is the branch below.
+      if (sg.phase === 'browse' || (sg.phase === 'think' && reviewBrowseReady())) {
+        if (isNext) advance();
+        return;
+      }
       // THE ALTERNATIVES KEY GRADES NOTHING and answers only once the move is
       // on screen. At the think stage it would be a set of arrows over the
       // candidate answers, which is the quiz handed over; during auto-play the
@@ -20409,37 +20714,76 @@
       // only remembers the verdict (the card is lost either way, and the user
       // still wants to see the move), so it is applied by the press that
       // advances rather than costing a press of its own.
-      // A press at the think stage is the user taking this variation over: from
-      // here on auto-play stays out of it, section 13's rule and for its reason
-      // (resuming mid-line was reported as jarring). Set HERE and not in
-      // reveal(), which auto-play itself calls.
+      // HAND-OVER MEANS "THE USER ANSWERED A CARD THEMSELVES", and from there on
+      // auto-play stays out of the variation — section 13's rule, for its reason
+      // (resuming mid-line was reported as jarring). Which presses actually mean
+      // that is the whole of v0.82.0: NOT one that shows nothing, NOT one that
+      // agrees with a replay auto-play was about to make (or has just made), and
+      // not yet decided while the trainer is still behind our board. Never set in
+      // `reveal()`, which auto-play itself calls.
       if (sg.phase === 'think') {
-        // "NEXT" ON A CARD AUTO-PLAY HAS ALREADY CLAIMED IS "GET ON WITH IT",
-        // NOT "I'LL TAKE OVER" (v0.81.0). The pending timer means maybeAutoPlay
-        // decided this exact card is proven and is about to reveal and grade it
-        // as correct — which is what the press is asking for too, so handing the
-        // variation over would cost the user the whole replay for agreeing with
-        // it. And it did: at the default pace the reveal beat is 260ms, i.e.
-        // comfortably inside a ring user's own rhythm, so pressing steadily
-        // meant auto-play never ran at all and the feature looked like it only
-        // "kicked in" on a variation the user happened to sit out.
+        // A PRESS WITH NO CARD TO SHOW MUST COST NOTHING (v0.82.0). Between a
+        // variation change and the first card being served there is a window in
+        // which `cardPly()` is null — the plan read has not landed, or it has and
+        // the trainer is still auto-playing its own opening plies — and a press
+        // there used to set `handedOver` and then fall straight out of `reveal`,
+        // drawing nothing. So it spent the ENTIRE variation's replay on a press
+        // that did not even show a move. That window is a few hundred ms on a
+        // desktop and most of a second on a phone, which is exactly why this was
+        // reported as a mobile-only fault: on a slow device a steady presser
+        // lands in it at the start of nearly every variation.
+        if (!cardPly()) {
+          setStatus('Waiting for the board…');
+          return;
+        }
+        // "NEXT" ON A CARD AUTO-PLAY WOULD TAKE IS "GET ON WITH IT", NOT "I'LL
+        // TAKE OVER" (v0.81.0). Handing the variation over for AGREEING with
+        // auto-play costs the user the whole replay: at the default pace the
+        // reveal beat is 260ms, comfortably inside a ring user's own rhythm.
+        //
+        // ASKED OF THE CARD, NOT OF THE TIMER (v0.82.0). v0.81.0 tested whether
+        // the reveal timer was already pending, which is the same question only
+        // on a machine that has already SERVED the card — and serving is itself
+        // what runs late on a phone: it waits on an async plan read that costs
+        // real time there, so the press regularly arrives while the answer is
+        // still "auto-play has not been asked yet". `willAutoPlay()` is the
+        // condition `maybeAutoPlay` acts on, so this agrees with it by
+        // construction rather than by winning a race.
         //
         // "WRONG" IS STILL A HAND-OVER, and must be: it contradicts the very
         // proof the card was picked on, so the user is genuinely taking this
-        // line back. Same for a press with no auto card pending.
-        if (isNext && sg.autoTimer) {
+        // line back. Same for a press on a card auto-play would not take.
+        if (isNext && (sg.autoTimer || willAutoPlay())) {
           clearAutoTimer();
           autoReveal();       // its own guards re-check phase and cardReady()
           return;
         }
-        sg.handedOver = true;
+        const wasHandedOver = sg.handedOver;
+        // …AND WHILE THE TRAINER IS BEHIND, THE ANSWER IS "NOT YET" (v0.82.0).
+        // Our board may legitimately be a card AHEAD of Chessable — it advances
+        // on the press while the trainer is still animating — and there
+        // `willAutoPlay()` cannot say whether this press agrees with auto-play or
+        // overrides it, because `cardReady()` is false for both. Revealing is
+        // still fine (that is our board's own pace, which the mode is built
+        // around); deciding the hand-over is not, so it is left to the GRADE,
+        // which is the press that really answers the card.
+        if (isWrong || cardReady()) sg.handedOver = true;
         sg.autoGrading = false;
         clearAutoTimer();
         // From this press on the user is thinking, so the clock has to stop —
         // and it may never have been started, since auto-play's card is left
-        // running deliberately. `handedOver` is already true, so this pauses.
+        // running deliberately. `handedOver` is set above, so this pauses.
         maintainPause();
         reveal(isWrong);
+        // …AND A PRESS THAT SHOWED NOTHING STILL COSTS NOTHING. `reveal` refuses
+        // when our board cannot play the card — a press landing inside a
+        // variation transition, where the plan has swapped and `anchor()` has not
+        // caught up — and that refusal left `handedOver` set for a press the user
+        // saw no answer to. It puts itself back in 'think', so the phase is the
+        // test; the value is RESTORED rather than cleared, since an earlier card
+        // of this variation may well have handed over for real.
+        if (sg.phase !== 'shown') sg.handedOver = wasHandedOver;
+        if (sg.handedOver && !wasHandedOver) noteHandover('reveal press');
         return;
       }
       if (sg.phase === 'shown') {
@@ -20447,17 +20791,33 @@
         if (sg.pressed || sg.pressing) {
           // Auto-play has ALREADY told Chessable about this card, or is in the
           // middle of doing so, so there is nothing left to grade — this press
-          // only advances the board. The window in which that is true is
-          // shorter than a human reaction and the card was one they had already
-          // proven, so nothing is lost; what matters is that the press cannot
-          // open a SECOND act on a card that is already answered.
-          sg.handedOver = true;
+          // only advances the board. What matters is that it cannot open a
+          // SECOND act on a card that is already answered.
+          //
+          // AND IT IS NOT A HAND-OVER (v0.82.0) — the same mistake the think
+          // stage made, one press later. This window is auto-play's ADVANCE BEAT:
+          // 240ms on the fast pace and 620ms on the relaxed one, i.e. not
+          // "shorter than a human reaction" at all but squarely inside the rhythm
+          // of someone pressing a ring steadily. The old note reasoned that
+          // "nothing is lost" because the card was already proven — true of THIS
+          // card, and the hand-over it set then cost every card AFTER it, so
+          // meeting auto-play halfway through its first replayed card ended the
+          // replay for the rest of the variation. Pressing "next" here is
+          // agreement; only "wrong" contradicts the proof and takes the line
+          // back.
+          if (isWrong) { sg.handedOver = true; noteHandover('"wrong" on an auto-played card'); }
           // Mid-flight, the press's own continuation schedules the beat; there
           // is nothing to finish yet.
           if (sg.pressed) finishAutoCard();
           return;
         }
         sg.autoGrading = false;
+        // GRADING A CARD BY HAND IS WHAT TAKING THE VARIATION OVER MEANS, so it
+        // is settled here as well as at the reveal — the reveal defers the
+        // decision whenever the trainer was still behind (see above), and this is
+        // the press that resolves it. Gated on the same condition both grades
+        // below bail on, so a grade REFUSED for being early still costs nothing.
+        if (cardReady() && !sg.handedOver) { sg.handedOver = true; noteHandover('grade press'); }
         if (isWrong || sg.markedUnknown) gradeUnknown();
         else gradeKnown();
       }
@@ -20714,16 +21074,20 @@
       sg.autoGrading = false;
       sg.pressed = false;
       sg.pressing = false;
+      sg.proof = null;
+      sg.advancing = false;
       sg.prefixDone = false;
       sg.prefixEnd = 0;
       sg.prefixAt = -1;
       sg.prefixLogged = false;
       sg.handedOver = false;
+      sg.handoverLogged = false;
       sg.announced = '';
       // Nothing about the last run may survive into this one: the cursor is an
       // index into a plan that has almost certainly changed.
       sg.plies = [];
       sg.cursor = 0;
+      sg.reached = 0;
       sg.cardIdx = -1;
       sg.pos = null;
       sg.lastMove = null;
@@ -20756,6 +21120,8 @@
       closeMenu();
       sg.autoGrading = false;
       sg.pressed = false;
+      sg.proof = null;      // nothing left to watch for the trainer's verdict
+      sg.advancing = false;
       if (sg.timerPaused) { resumeTrainerTimer(); sg.timerPaused = false; }
       applyTimerBar(false); // give their clock back, whatever else went wrong
       if (autoPlayShowGradeHold) autoPlayShowGradeHold(false);
@@ -20842,7 +21208,11 @@
       if (sg.phase !== 'think' || !cardPly() || !cardReady()) return;
       if (reviewBrowseReady()) return;
       maintainPause();
-      announce('Your move');
+      // Say WHICH kind of card this is: on a repeat the second press will not
+      // show a reply, and the blindfold seam has no other way to know that is
+      // coming. (`announce` is the only user-visible statement this mode makes,
+      // so this is also the only place to put it.)
+      announce(isRepeat() ? 'Your move — repeat' : 'Your move');
       maybeAutoPlay();
     }
 
@@ -20885,6 +21255,8 @@
       if (sg.awaitingFen && Date.now() - sg.awaitingSince > C.actMaxMs) {
         warn('show-and-grade: the board never moved on — re-reading the card');
         sg.awaitingFen = '';
+        sg.proof = null;   // a press the trainer never took is not an answer
+        unwalkCard();
         sg.cardIdx = -1;
       }
       if (document.hidden) return;
@@ -20896,14 +21268,26 @@
         if (sg.timerPaused) { resumeTrainerTimer(); sg.timerPaused = false; }
         if (sg.phase !== 'acting') sg.phase = 'browse';
         clearAutoTimer();
-        stopChase();
+        // …unless we are chasing the variation change we just asked for: the
+        // browse state outlives the press by a few hundred ms, and killing the
+        // chase here put the next variation's first card straight back on the
+        // 500ms poll. A chase that has expired on its own settles the flag.
+        if (sg.advancing && !sg.chaseTimer) sg.advancing = false;
+        if (!sg.advancing) stopChase();
         sg.autoGrading = false;
         sg.pressed = false;
         // The LAST card of a variation is answered and then no card follows, so
         // the wait it started can never be satisfied — the trainer is finished,
         // not stuck. Clear it here, or the watchdog above cries about a board
         // that "never moved on" at the end of every single variation.
+        //
+        // The variation COMPLETING is that card's acceptance, so this is also
+        // where its proof goes in — the one card whose answer no opponent reply
+        // ever confirms, and the one section 13 has needed three separate
+        // mechanisms to catch (observeFinalFrame, the browse-branch confirm and
+        // resetVariation's). Here it is simply known.
         sg.awaitingFen = '';
+        commitProof();
         setBoardVisible(false);
         syncPanel();
         return;

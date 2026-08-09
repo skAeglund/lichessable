@@ -229,6 +229,35 @@ The tracker classifies each observed move:
   read "Incorrect"/"Time's up", record it (§3).
 - user-side move we injected ⇒ auto-play bookkeeping (below).
 
+**Two plies in one frame** (`findMovePair`, v0.82.0). A frame is delivered
+through rAF, or the 32 ms backstop, and both are pushed out by Chessable's own
+animation work, our board's render and (in section 23) the plan chase's JSON
+round trip — on a mid-tier phone easily by the ~440 ms that separates a user
+answer from the trainer's reply. The frame then carries the placement AFTER the
+reply, `findSingleMove` matches nothing, and the tracker re-anchors. That is not
+merely a lost frame: `startTracking` drops `pendingRecord`, so the user's answer
+never becomes a proof, and the loss is invisible until the next variation, where
+auto-play declines a move the user demonstrably knows.
+
+So the jump is resolved rather than given up on: exactly one PAIR of legal moves
+must produce the placement, and both are applied in order, so the answer is
+classified, held and then confirmed by the reply that overtook it. Any ambiguity
+falls through to the re-anchor, which is what the whole case did before. The
+search runs only on the path that was about to re-anchor anyway (a handful of
+times a session, never per frame) and costs ~900 `makeMove` calls at worst. The
+rollback check still comes first, so a board that snapped BACK to a known
+position is a rollback and not a pair. Spot-checked against the real generator:
+e4 e5, e4 c5, a capture, an exchange, O-O as the first ply, en passant as the
+first ply, a promotion as the first ply, three plies → refused, one ply → left to
+`findSingleMove`.
+
+**A proof can also be ASSERTED** (`autoPlayNoteProvenMove`, v0.82.0) — the one
+write bridge into the record, and section 23's alone. Show and grade plays the
+COURSE'S own move, from a position the lesson plan states exactly, so "did the
+user answer this correctly" is not a question about the board at all; the veto,
+the merge and the key are `confirmPendingRecord`'s unchanged. See
+DESIGN-show-and-grade.md §2b. Nothing derived from the DOM may use this door.
+
 ### 4b) Auto-play loop
 
 State machine per variation, evaluated whenever the tracker settles on a new

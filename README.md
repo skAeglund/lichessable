@@ -256,6 +256,16 @@ still just advances. Either way it is two presses a card, and neither of them is
 spent on anything you cannot see. Once the variation is over, **`2`** asks for
 the next one.
 
+**Chessable's own mistake repetitions are the one card with no reply** (v0.83.0).
+When you miss a move, it takes you back to it once the variation is finished and
+asks for that move on its own — so the opponent's reply our board used to play
+after the corrected mistake was a move the trainer was never going to make, with
+the board then jumping to wherever it had actually gone. It stays on your
+corrected move now. It is still two presses: the second is still the verdict, and
+you still give it *after* seeing the move, which matters more on a move you have
+already failed once than anywhere else. The panel says which kind of card it is —
+`Your move — repeat` — so nothing about the second press comes as a surprise.
+
 **`3` — or the space bar — asks whether the move you were thinking of also
 counts.** Sometimes the
 move shown is not the one you had in mind and the course accepts both — grading
@@ -289,6 +299,34 @@ makes it get on with it. Pressing *wrong* still hands over, because it
 contradicts the very proof the card was picked on. And key **auto-repeat is
 ignored** — holding the advance key a fraction too long fired again inside the
 next variation and took that one over before its first card had even been served.
+
+That cured it on a PC and changed nothing on a phone, which is itself the answer:
+what was left were all *races*, and a slower device loses them. v0.82.0 settles
+what taking a variation over actually means — **you answered a card yourself** —
+and stops counting three presses that never did:
+
+* a press **before the card is ready** (between variations, while the plan is
+  still being read) drew nothing at all and yet cost the whole variation's
+  replay. It now costs nothing and says so. Most of a second on a phone, at the
+  start of every variation, i.e. exactly where you are pressing.
+* the *next*-on-a-claimed-card rule asked whether auto-play had already **armed**
+  its reveal, which is the same question as "would auto-play take this card" only
+  on a machine fast enough to have got there first. It now asks the question
+  itself.
+* pressing *next* during a replayed card's own beat — up to about a second on
+  card 0 — counted as taking over, so meeting auto-play halfway through its very
+  first card ended the replay for the rest of the line. Only *wrong* does that
+  now.
+
+Two supporting changes came with it. The extension no longer waits for its own
+half-second poll to notice a **new variation** — it starts reading the moment you
+ask for one, so the first card comes up promptly instead of after a stretch of
+dead board. And a card you answer in this mode is now **remembered as proven
+directly**, rather than by watching Chessable's board: the board-watching path
+(which auto-play in ordinary review still uses, and which also learned to cope
+with two moves arriving in one frame) can miss an answer on a busy phone, and a
+missed answer is invisible until the next variation declines a move you plainly
+know.
 
 It advances one card at a time rather than racing ahead of Chessable. It could
 replay the line on our board at its own pace, but every card still has to be
@@ -1395,7 +1433,12 @@ enough not to run, the ↻ button is the only way back.
   completion block at all ("Time's up" renders none) and for leaving the trainer
   path mid-line. It is safe because a pending answer only ever survives a move
   the board *accepted and kept*: a guess taken back clears it, and a refused move
-  usually never reaches the board at all. Finally,
+  usually never reaches the board at all. A board frame can also arrive so late
+  that it carries **two** moves — an answer and the reply to it are only about
+  440 ms apart, and on a busy phone that is not a comfortable gap — where the
+  reader used to give up and re-anchor, throwing the pending answer away with it;
+  since v0.82.0 it looks for the unique *pair* of legal moves instead and applies
+  both, so the answer is still recorded. Finally,
   user-colour with no pointer input ⇒ trainer-played (solution replays,
   Key-Moves prefixes) and never recorded. The record lives in
   `chrome.storage.session` keyed on placement+side+castling per course, so

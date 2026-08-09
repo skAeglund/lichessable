@@ -1,0 +1,308 @@
+# Testing notes → todo list (2026-08-07)
+
+Twelve notes from a testing session, grouped into nine prompts. Each block below is
+meant to be pasted as-is into a future session; the pointers exist so the session
+does not have to re-find the code. Nothing here has been implemented or verified.
+
+Ordering is by independence, not priority — 1-4 are small and self-contained,
+5-7 are behaviour changes inside one module, 8-9 are new features.
+
+---
+
+## 1. Clickable-line panel: navigation and dimming
+
+Covers notes:
+- *"Inside the panel that shows clickable lines during review: add option to simply
+  navigate the line (`<<` `>>`) in the panel"*
+- *"The clickable line panel is somewhat annoying. Let's make it darker or
+  transparent when not hovered. Important clickable lines (!) can have higher
+  brightness/opacity than normal ones."*
+
+> Two changes to the clickable-line panels (section 18 / 18b in
+> `content/lichessable.js`).
+>
+> **(a) Navigate instead of quiz.** In the panel that shows clickable lines during
+> review, add a way to simply step through the line — `<<` / `>>` buttons that walk
+> our board along the line's plies without asking for a move. Note the quiz already
+> has the machinery: `cr.path` / `linePath()`, `step()`, `currentPly()`, and
+> `applyMove` on our board. The question to settle first is whether this is a
+> third `cr.mode`, or a "browse" flag inside the quiz mode that only changes what
+> `step()` waits for. Keyboard equivalents (arrow keys) fit, but check the
+> capture-phase key swallow in `closeReview`'s listener first.
+>
+> **(b) Dim when not hovered.** The panel is intrusive. Make it darker/more
+> transparent at rest and full strength on hover, with lines marked important
+> (section 18c, `importantLine` / `.clo-cr-*--important`) sitting at a higher
+> opacity than ordinary ones so the mark still reads through the dimming.
+>
+> First tell me **which panel each half applies to** — I meant the one that shows
+> the clickable lines during review, but the code has two candidates and they have
+> different jobs: the mid-quiz/browse heads-up (`.clo-cr-heads`, ~line 3093 of the
+> stylesheet, lists several lines with the important marking per row) and the quiz
+> panel that covers the comment box during a run (`.clo-cr-panel`, ~line 2636).
+> Say which you're changing before you change it.
+>
+> Remember `.clo-cr-heads` in the browse state deliberately COVERS the comment box
+> because the lines are printed there — dimming it must not turn it back into a
+> spoiler. Check the result in `dev/harness.html` (bust the stylesheet cache) and
+> report measured opacity/rects, not "looks fine".
+
+---
+
+## 2. Arrows should look like Lichess's
+
+Covers note: *"Make our board's arrow look the same as the original chessable board's"*
+— **revised 2026-08-07: copy Lichess, not Chessable. Chessable's arrows look bad.**
+
+> Our arrows look wrong. Make `boardShapeArrow` (section 11c,
+> `content/lichessable.js:5107`) draw arrows that look like **Lichess's** — the
+> chessground ones on lichess.org's own board. Explicitly NOT Chessable's: I've
+> looked at theirs and they're the worse of the two.
+>
+> Ground-truth Lichess's first, by measurement rather than from memory. Chessground
+> renders shapes as an SVG overlay over the board with the geometry in board units,
+> the same idea ours uses, so the numbers transfer directly: open a board on
+> lichess.org, draw an arrow, and read the actual `<svg>` off it — shaft width, how
+> far the shaft is pulled back from the source square's centre, head length and
+> width, whether the head is a `marker` on a `<line>` or a separate polygon, and
+> the opacity. Write the measured numbers down — don't eyeball it, and don't take
+> chessground's source constants as the answer without checking them against what
+> the page actually renders.
+>
+> One structural difference to decide on: theirs is a line plus an arrowhead
+> `marker`, ours is a shaft element plus a separate head polygon that `paintShape`
+> colours independently. If you keep our two-element shape, the head still has to
+> sit where theirs does relative to the target square centre.
+>
+> Constraints: geometry stays in BOARD UNITS (`viewBox="0 0 8 8"`, percentages
+> everywhere) so a resize still needs no JS, and the colour rules in section 11c
+> hold — exactly one property per element (`stroke` on the shaft, `fill` on the
+> head, which the CSS also gives `stroke: none`), inline style not attribute, and
+> `paintShape` accepts either a key or a CSS value. A `getBoundingClientRect()` on
+> the head excludes stroke, so it will measure correct while looking wrong.
+> COLOURS STAY OURS — copy the shape, not the palette: our arrow colours are
+> load-bearing (green course move vs blue alternatives in show-and-grade, the four
+> `SHAPE_COLOR_HEX` keys in the quick-edit editor). And nothing is vendored or
+> fetched from lichess.org — the measurement is research, the output is our own
+> geometry.
+>
+> Five callers share this: the line quiz, the drill, the heads-up mini board,
+> show-and-grade (green course arrow + blue alternatives) and the quick-edit arrows
+> editor. Check all five in `dev/harness.html`.
+
+---
+
+## 3. /variation/ page: Analyse button and the lingering save popup
+
+Covers notes:
+- *"Make the 'Analyse' button in /variation/ page stand out more."*
+- *"When saving a comment (at least in /variation/) the popup lingers quite a while,
+  even after the variation has been updated with the new text"*
+
+> Two things on the standalone `/variation/<id>/` page.
+>
+> **(a)** The "Analyse" launcher in the Lichess panel header (`CR_VARBTN_ID`,
+> `content/lichessable.js:956`, `.clo-cr-analyse-head` at stylesheet ~2936) is too
+> quiet — I miss it. Make it stand out more. The current design argument for bare
+> text is in CLAUDE.md section 19b (every control in that header is bare text, and
+> an outlined button would be the loudest thing in a panel meant to be read) — I'm
+> overruling that if it takes an outline, but check `DESIGN-ui-inventory.md` §3 for
+> which tier it should sit in and keep the colour meaning intact (it is a neutral
+> "away from the main task" action, not the primary). Measure the header at 420px
+> afterwards; it currently fits on one 38px line.
+>
+> **(b)** Saving a comment there leaves the quick-edit popup up for a long time
+> after the variation on the page has visibly updated with the new text. Find out
+> what it's still waiting on — likely `qe.refreshing` / `refreshVariationPage`
+> (`content/lichessable.js:6668`, section 12c), whose round trip goes pager →
+> `refreshGameApi` landing → `history.back()` → `restoreShownMove`'s
+> press-confirm-and-hold. Instrument the phases and tell me where the time
+> actually goes before changing any of it.
+>
+> Careful: that function's `finally` is what stops a save stranding the user on a
+> sibling variation, and `qe.refreshing` is what stops a second Save writing back
+> a stale comment. Neither may be shortcut to make the popup close sooner — if the
+> honest answer is "the work really takes that long", the fix is what the popup
+> SAYS while it waits.
+
+---
+
+## 4. Alternative clickable lines: a case that doesn't resolve
+
+Covers note: *"Alternative clickable lines doesn't work fully:
+(15. Nxd4 cxd4 16. b3 Qf5 alt. 16...Rfe8) for example"*
+
+> A clickable-line comment of this shape isn't handled fully:
+>
+> `(15. Nxd4 cxd4 16. b3 Qf5 alt. 16...Rfe8)`
+>
+> One pair of parentheses, several branches inside it, with the word "alt." as
+> prose between them. Work out what actually happens today — which of `walkLine`'s
+> three segmentation rules (`content/lichessable.js:12944`) fires on the rewind to
+> `16...Rfe8`, whether it becomes two branches, and then whether `dropAmbiguous` /
+> `mergeUserAlternatives` (`:13268`, `:13368`) combines them or drops them. Both
+> readers must be checked: the DOM/browse scanner and the lesson-plan one
+> (`:16063`), which legitimately disagree about how far a flat run stays clickable.
+>
+> My expectation is that this should end up as ONE line accepting either 16...Qf5
+> or 16...Rfe8 and carrying on accordingly — but confirm what the branches
+> actually resolve to before deciding that's the right answer; if the two branches
+> aren't a clean single divergence, `mergeUserAlternatives` refusing is correct and
+> the bug is elsewhere.
+>
+> I'll give you the real variation to test against if you need one. Do the
+> reasoning against the real `walkLine` in a headless harness first (`py` + the
+> harness pattern in CLAUDE.md — there's no node on this machine), then ground-truth
+> live before writing anything into CLAUDE.md.
+
+---
+
+## 5. Show and grade: don't show the reply during mistake repetitions — DONE (v0.83.0), NOT VERIFIED LIVE
+
+Covers note: *"In 'show and grade' mode: during Chessable's mistake repetitions that
+happens after you make a mistake and then finish the review — our board shows the
+opponent's next move after our mistake was corrected (not necessary)."*
+
+> In show-and-grade (section 23), during Chessable's own mistake repetitions — the
+> ones it runs after you miss a move and finish the variation — our board shows the
+> opponent's next move after the corrected mistake. That reply isn't wanted there:
+> the repetition is a single move being re-asked, not a line being walked.
+>
+> Work out first how that state is distinguishable from an ordinary card:
+> what the lesson plan looks like during a repetition, whether the plan has a
+> following ply at all, and what `anchor()` / `applyPlan` / `sg.plies` /
+> `sg.cursor` see. Then decide whether the fix is "no reply ply exists, so don't
+> advance past the grade" or an explicit repetition state.
+>
+> The governing rule for this mode is EVERY PRESS SHOWS A MOVE (CLAUDE.md section
+> 23) — so if the reply press goes away here, say what the second press does
+> instead, or make the card a one-press card and make sure `advanceAfterGrade` /
+> `cardReady` / `awaitingFen` all stay consistent. A card that grades without the
+> trainer standing on it is the one mistake this mode must never make.
+
+**Done in v0.83.0.** The lesson plan was never read for this: Claude in Chrome
+was not connected, so instead of guessing at `progress.isQuizCurrentlyInRetry`
+the state is derived from OUR OWN board — `sg.reached`, the high-water mark of
+`sg.cursor`, makes "the reply to this card has already been shown once this
+variation" exact, and that is right whether or not the repetition's plan carries
+a following ply. Kept as two presses (the verdict is still given after seeing the
+move); the panel says `Your move — repeat` and the line that promised a reply now
+reads `on to the next card`. Six sequences simulated. **Still wants one live
+session**: the console prints `repeat of <san> — no reply to show`, once per
+repetition — if that line never appears while a repetition is on screen, the
+premise (that the trainer re-asks by anchoring back onto the same plan) is wrong
+and `progress.isQuizCurrentlyInRetry` is the next thing to try.
+
+---
+
+## 6. Show and grade: hold "correct" to auto-play
+
+Covers note: *"'Show and grade' idea: hold down 'correct' (2) to auto-play moves"*
+
+> Add a hold-to-auto-play gesture to show-and-grade: holding the "known" key (2)
+> keeps cards playing instead of needing a press per card.
+>
+> Note this interacts directly with two rules already in section 23:
+> - `e.repeat` is currently swallowed and never acted on, deliberately — auto-repeat
+>   landing in the NEXT variation's think phase is what took it over before its
+>   first card was served (v0.81.0). A hold gesture has to be built on the repeat
+>   stream or on keyup timing without reintroducing that.
+> - The existing Auto toggle (`cloShowGradeAutoPlay`) already replays PROVEN moves
+>   only, and stops at the first unproven one. A hold would run cards regardless of
+>   proof, i.e. it grades unproven cards correct without the user seeing them —
+>   decide explicitly whether that is what I want (it probably is: the hold IS the
+>   user asserting they know these), and whether releasing mid-card is safe.
+>
+> Also say how it composes with the Auto toggle and whether the hold should
+> count as `handedOver`.
+
+---
+
+## 7. Extend show and grade to clickable-line review
+
+Covers note: *"lets extend the show and grade mode to review clickable lines"*
+
+> Bring show-and-grade's two-key interaction to the clickable-line review
+> (section 18's quiz), the way it was already brought to the drill in v0.72.0:
+> first press plays the line's next move on our board, second press is the verdict.
+>
+> The drill precedent is the model — the two keys live in the continuation module's
+> existing capture-phase listener, gated on `showGradeEnabled()` (the preference,
+> not a running trainer session), and the board still accepts a played move so the
+> keys are a second way to answer rather than a mode. Reuse that, don't build a
+> parallel path.
+>
+> Open questions to answer before coding:
+> - what the verdict DOES here. A drill grade flips `retried` in the mistake log.
+>   A clickable line reschedules nothing and records nothing — so is the verdict
+>   only "advance", or should a "didn't know" line be re-queued at the end of the run?
+> - combined lines (`mergeUserAlternatives`) accept either of two moves — which one
+>   does the reveal show, and does the alternatives key (3/space) apply?
+> - whether the trainer timer needs holding, as `holdTrainer` does for "Review now".
+
+---
+
+## 8. Analysis board: "Add as variation"
+
+Covers note: *"In our analysis. Add option 'Add as variation' to course, if started
+from a specific variation it should included those moves + comments etc."*
+
+> Second write for the analysis board (section 19 / 19b), beside the existing
+> "Add as line": **"Add as variation"** — write the analysed line into the course
+> as a real variation rather than as a clickable line inside a comment. When the
+> board was opened from a specific variation, the new variation should carry that
+> variation's moves up to the entry point (and its comments etc.), with our
+> analysed line continuing from there.
+>
+> This is the biggest item on the list — treat it as design-then-build, and give
+> me the design before you write anything.
+>
+> Existing pieces to survey first:
+> - section 21 already CREATES variations, via Chessable's own
+>   `duplicateVariationsToRepertoire` — but that copies an EXISTING oid; it is not
+>   an "insert these SAN moves" call. `DESIGN-repertoire-coverage.md` has every
+>   endpoint and what each one actually does.
+> - the quick-edit driver (section 12) drives Chessable's own edit page for
+>   everything else we write, because the edit POST fields are session/CSRF-bound.
+>   Adding a variation is very likely another driven flow, not an API call — find
+>   out which, by hooking `fetch` and driving Chessable's own "add variation" UI to
+>   its last button and BLOCKING the request, the way §21's add body was captured.
+> - `analysisLinePgn` / `analysisCommentText` already render our line as numbered
+>   SAN from its start position.
+>
+> Decide and state: where the new variation lands (which chapter), what its name is,
+> whether the prefix moves are copied from the source variation's own move list or
+> re-derived, and what happens to the source variation's per-move comments and
+> arrows (`allTheMoves[...].drawing`) on the copied prefix. Guard it like §21's
+> writes: destination authored by the user, arm-before-fire, and re-read afterwards
+> rather than trusting our model of what we wrote.
+
+---
+
+## 9. "Difficult moves only" mode
+
+Covers note: *"Feature request: Difficult moves only mode. Auto-play all moves that
+have above 90% and hasn't failed recently"*
+
+> New session mode: **difficult moves only**. Auto-play every move I'm reliably
+> good at — above ~90% success and not failed recently — so a session only ever
+> stops on the moves that are actually hard.
+>
+> This is layer 2 of `DESIGN-retry-mistakes.md`, which is still unimplemented and
+> names the `/difficult-moves` JSON endpoint as the source. Start there: find out
+> what that endpoint actually returns per move (success rate? attempt counts? last
+> failure?), whether it is per course or per chapter, and what it costs to fetch.
+> Report that before designing the mode.
+>
+> Then the mode itself is mostly a new source for an existing mechanism: section 13
+> already replays a variation's opening run and hands back at the first unproven
+> move, and `autoPlaySetHold` already forces a hand-back on chosen positions
+> (section 17 uses it to stop auto-play playing the very move being retried). A
+> "difficult moves only" pass is plausibly: hold on the difficult positions, let
+> auto-play cover everything else. Check whether that composes with §13's
+> opening-run-only rule — mistakes at moves 8 and 12 need control handed back
+> twice, which is exactly what §17's `resumeAfterHandover` exists for.
+>
+> Settle the threshold as a SETTING, not a constant, and say where the percentage
+> comes from — if the endpoint doesn't give one, the session's own mistake log
+> (section 16) is a much weaker substitute and the feature may need to wait.
