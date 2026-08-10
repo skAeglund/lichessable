@@ -129,6 +129,17 @@
     // what a mid-quiz review (18b's "Review now") puts its panel over, keeping
     // the panel in the same place it occupies in the browse state.
     reviewCommentCol:   '[data-testid="commentContainer"]',
+    // Chessable's OWN context menu on a clickable move (section 19e). Both
+    // hosts render the same one: a body PORTAL holding a viewport-wide backdrop
+    // and this positioned anchor (fixed, z-index 12001, measured live
+    // 2026-08-11), whose single item is "Add to Repertoire". We never touch it —
+    // it is read only to park our own item directly underneath.
+    subvarMenuAnchor:   '.subvariation-context-menu__anchor',
+    // The class Chessable puts on every clickable move it enables that menu for,
+    // in BOTH hosts. Our own gesture watcher keys on the host selectors instead
+    // (a move whose menu is disabled is still one we can make a puzzle of), so
+    // this is only used to tell whether their menu is worth waiting for.
+    subvarMenuTrigger:  '.subvariation-context-menu__trigger',
 
     // Explore EDIT page (quick-edit-comment feature — section 12). The edit
     // page reuses the mt1 explore iframe (/mt1/explore/edit/<oid>/), so these
@@ -176,6 +187,18 @@
     // .grid-variation, which is exactly the trainer's comment-column slot.
     variationMovesBox: '#theOpeningMoves',
     variationEditLink: 'a[href*="/explore/edit/"]', // "Edit Variation" — rendered only with edit rights
+    // The CLICKABLE moves inside this page's comments (section 19e's second
+    // host). The mainline divs carry `data-index` and `data-san` too, so the
+    // scope to `.commentInMove` is what tells them apart; verified live
+    // 2026-08-11 that this matches exactly the set Chessable itself puts its
+    // context menu on (11 of 11 on variation 70382641).
+    variationSubMoves: '#theOpeningMoves .commentInMove [data-index][data-san]',
+    // The variation's own name, verbatim: measured live 2026-08-11 against the
+    // stored `name` on 70382641, character for character. Section 19d names the
+    // puzzle it creates after it, and reads it here rather than through a
+    // course listing — a puzzle needs no course read of its own, and asking for
+    // 180 KB to learn a title the page is already showing would be absurd.
+    variationTitle:    '#theOpeningTitle',
     // The page's own variation pager, used to make it re-read a variation we
     // just changed (section 12c). Stable ids, so no language-dependent text
     // matching; either one is disabled at the ends of a chapter.
@@ -403,6 +426,39 @@
       // reverts is worse than one that waits. Nothing lurks: any change to the
       // line disarms, and the write re-checks the line's signature anyway.
       addVarArmMs: 30000,
+
+      // --- "Add as puzzle" (section 19d) ------------------------------------
+      // The THIRD write, and the only one whose new variation starts from OUR
+      // position rather than the source's: `importGame` is what Chessable's own
+      // /analysis/ "save to course" drawer posts, and its `head.fen` becomes the
+      // new variation's `initialFEN` — a FromPosition card, which is what a
+      // puzzle is. DESIGN-add-as-puzzle.md holds the ground truth for every
+      // field, and above all for the move-PAIR shape the body wants.
+      addPuzzlePath: '/api/v1/importGame',
+      // POST ?uid&bid, body { data: "<JSON array, one entry per variation>" }
+      //   → { game: { owned, oids:[<new oid>] } }
+      // Where a variation may be written: every course the user can import into
+      // and every chapter of each, in ONE call. `bid` is ignored by the server
+      // (same answer with none, 0, or a bought course's — verified) but is sent
+      // because their own client sends it.
+      importDataPath: '/api/v1/getImportData',
+      // The destination is a standing preference, not a property of this board:
+      // someone filing puzzles in one chapter files the next one there too.
+      puzzleDestKey: 'cloPuzzleDest', // chrome.storage.local: "<bid>:<lid>"
+
+      // --- clickable line → puzzle (section 19e) -----------------------------
+      // The same write, offered on the lines Chessable prints inside a comment,
+      // from the same gesture its own "Add to Repertoire" answers.
+      // How long to wait for THEIR menu before placing ours. Their portal
+      // renders in the same frame as the contextmenu event, so this is slack,
+      // not a race we depend on: with no menu found ours goes at the pointer.
+      clMenuDelayMs: 90,
+      // A long press is the touch form of the gesture (theirs listens for one
+      // too). Ours is measured independently rather than waiting for a
+      // `contextmenu` event, which Android fires only when nothing has called
+      // preventDefault on the touch.
+      clLongPressMs: 550,
+      clLongPressSlopPx: 10, // finger travel that cancels it
     },
 
     // --- Type a move (section 22) -------------------------------------------
@@ -1930,6 +1986,69 @@
     const books = await fetchChessableBooks(cr);
     chessableBooksMemo = books;
     return books;
+  }
+
+  /**
+   * Every place a variation may be WRITTEN: the courses the user can import
+   * into, and every chapter of each, with its `lid` and its name.
+   *
+   * `getImportData` is what Chessable's own import-destination modal reads, and
+   * it is the only call that answers both halves of "where does this go":
+   * getHomeData knows the courses but only their chapter COUNT, and
+   * editVariations knows one chapter at a time and needs its lid to ask for it.
+   * Its book list is ALREADY the writable set — the test account's two authored
+   * courses, with the bought ones absent — so section 21's `authorUid` guard is
+   * not needed on top of it (and would be wrong here: an import needs no source
+   * course at all, so a puzzle may be lifted OUT of a bought course).
+   *
+   * The two fields are JSON **strings** inside the JSON body, which is why they
+   * are parsed a second time (ground-truthed 2026-08-11).
+   */
+  async function fetchImportTargets(cr) {
+    const body = await chessableApiFetch(chessableApiUrl(CONFIG.continuation.importDataPath, {
+      uid: cr.uid, bid: 0,
+    }), { headers: chessableHeaders(cr) });
+    const game = body && body.game;
+    const parse = (raw) => {
+      if (Array.isArray(raw)) return raw; // in case the server ever stops stringifying
+      try {
+        const got = JSON.parse(String(raw || ''));
+        return Array.isArray(got) ? got : [];
+      } catch (err) {
+        return [];
+      }
+    };
+    const books = parse(game && game.books)
+      .filter((b) => b && b.bid != null && !b.isImportDisabled)
+      .map((b) => ({
+        bid: String(b.bid),
+        name: String(b.name || ('Course ' + b.bid)),
+        color: typeof b.color === 'string' ? b.color : '',
+      }));
+    if (!books.length) throw new Error('no course you can add to');
+    const known = new Set(books.map((b) => b.bid));
+    const chapters = parse(game && game.chrs)
+      .filter((c) => c && c.bid != null && c.lid != null && known.has(String(c.bid)))
+      .map((c) => ({
+        bid: String(c.bid),
+        lid: String(c.lid),
+        name: String(c.name || ('Chapter ' + c.lid)),
+      }));
+    return { books, chapters };
+  }
+
+  /**
+   * The same, remembered for this document's lifetime. Chapters are created far
+   * more rarely than a puzzle is added, and the answer is wanted on every open
+   * of the analysis board — see chessableBooksOnce for the same trade. A FAILED
+   * read is not cached, so a lost connection retries.
+   */
+  let importTargetsMemo = null;
+  async function importTargetsOnce(cr) {
+    if (importTargetsMemo) return importTargetsMemo;
+    const targets = await fetchImportTargets(cr);
+    importTargetsMemo = targets;
+    return targets;
   }
 
   /**
@@ -14667,12 +14786,15 @@
      * nested line still finds its parent — while lines hanging off different
      * moves never do.
      */
-    function subMoveGroups(els) {
+    function subMoveGroups(els, mainEls) {
       const groups = [];
       const byKey = new Map();
-      const moveEls = [...document.querySelectorAll(SELECTORS.reviewMoves)];
+      // The mainline elements the attach ply is counted against. Passed in by
+      // section 19e, which runs this on the variation page too — there the
+      // mainline is a different list and the ids live in `data-index`.
+      const moveEls = mainEls || [...document.querySelectorAll(SELECTORS.reviewMoves)];
       for (const el of els) {
-        const id = el.id || '';
+        const id = el.id || el.dataset.index || '';
         const cut = id.lastIndexOf('.');
         if (cut <= 0) continue; // not the "<ply>.<line>.<move>" shape we know
         const idKey = id.slice(0, cut);
@@ -14716,15 +14838,7 @@
       if (!fens) return { retry: 'mainline FENs unusable' };
 
       const groups = subMoveGroups(els);
-
-      // Shallowest first, so a line genuinely written INSIDE another can anchor
-      // on its parent's positions; the output stays in DOM order.
-      const resolved = new Map();
-      const byDepth = groups.slice().sort((a, b) => a.idKey.split('.').length - b.idKey.split('.').length);
-      for (const group of byDepth) {
-        const line = resolveLine(group, fens, group.attachPly, resolved);
-        if (line) resolved.set(group.key, line);
-      }
+      const resolved = resolveGroups(groups, fens);
       const lines = [];
       for (const group of groups) {
         const line = resolved.get(group.key);
@@ -14735,6 +14849,24 @@
       }
 
       return { lines: dropAmbiguous(lines, plan, fens, userColor), fens, userColor };
+    }
+
+    /**
+     * Groups → resolved lines, keyed by group key.
+     *
+     * Shallowest first, so a line genuinely written INSIDE another can anchor on
+     * its parent's positions — `resolveLine` looks its parent up in the map this
+     * builds, so the order is load-bearing, not tidiness. Shared with section
+     * 19e, which resolves the same lines on the variation page.
+     */
+    function resolveGroups(groups, fens) {
+      const resolved = new Map();
+      const byDepth = groups.slice().sort((a, b) => a.idKey.split('.').length - b.idKey.split('.').length);
+      for (const group of byDepth) {
+        const line = resolveLine(group, fens, group.attachPly, resolved);
+        if (line) resolved.set(group.key, line);
+      }
+      return resolved;
     }
 
     async function scanContinuations(signature) {
@@ -15439,6 +15571,10 @@
         // "Add as variation" (19c): idle | armed. `plan` is everything the
         // confirming press writes, prepared and checked by the arming one.
         addVar: { state: 'idle', at: 0, plan: null },
+        // "Add as puzzle" (19d), the same two-press shape and a plan of its own:
+        // the two writes describe different things and must never share one arm,
+        // or a press meant for the sentence on screen would fire the other.
+        addPuzzle: { state: 'idle', at: 0, plan: null },
         // The variation this board has just created, if any — `{ oid, name }`,
         // which is what shows "Open the variation". It lives exactly as long as
         // the status line explaining it does (see anPlay / anRemoveFrom): a way
@@ -15471,6 +15607,7 @@
       // finished save, a failure — is stale; the live preview takes over again.
       if (cr.an.save.state === 'idle' && cr.an.save.msg) resetAnSave('idle', '', false);
       disarmAddVar(true);
+      disarmAddPuzzle(true);
       cr.an.created = null; // its sentence has gone; the button must go with it
       applyMove({ mv }); // animation + cr.pos, exactly as in the quiz
       syncUi();
@@ -15514,6 +15651,7 @@
       // after playing a move; the live preview takes over again.
       if (cr.an.save.state === 'idle' && cr.an.save.msg) resetAnSave('idle', '', false);
       disarmAddVar(true);
+      disarmAddPuzzle(true);
       cr.an.created = null; // its sentence has gone; the button must go with it
       log('analysis: removed', gone, gone > 1 ? 'moves from' : 'move,', san);
       anGoto(idx - 1); // …which repaints, re-renders the list and refreshes the panel
@@ -15653,6 +15791,9 @@
       cr.an.save.state = state || 'idle';
       cr.an.pending = null;
       if (cr.an.addVar) { cr.an.addVar.state = 'idle'; cr.an.addVar.plan = null; cr.an.addVar.at = 0; }
+      if (cr.an.addPuzzle) {
+        cr.an.addPuzzle.state = 'idle'; cr.an.addPuzzle.plan = null; cr.an.addPuzzle.at = 0;
+      }
       setAnStatus(msg || '', bad);
     }
 
@@ -16048,20 +16189,21 @@
     }
 
     /**
-     * The POST, with the server's own words kept.
+     * A course-writing POST, with the server's own words kept. Shared by both
+     * writes that go straight to the API (19c and 19d).
      *
-     * NOT chessableApiFetch: that throws a bare "HTTP 400", and this endpoint's
-     * refusals are the most useful thing it produces — "Illegal SAN at
+     * NOT chessableApiFetch: that throws a bare "HTTP 400", and these endpoints'
+     * refusals are the most useful thing they produce — "Illegal SAN at
      * subvariation[0]='Qh8' from FEN='…'", "color='W' but the side-to-move at
-     * this position is 'B'", "116 missing plies in between". Throwing those away
-     * to say "save failed" would waste the one part of this feature that
-     * diagnoses itself.
+     * this position is 'B'", "116 missing plies in between", "Column 'moves'
+     * cannot be null". Throwing those away to say "save failed" would waste the
+     * one part of these features that diagnoses itself.
      */
-    async function addVarPost(cr0, body) {
+    async function courseWritePost(cr0, url, body) {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), CONFIG.coverage.fetchTimeoutMs);
       try {
-        const res = await fetch(chessableApiUrl(CONFIG.continuation.addVarPath, {}), {
+        const res = await fetch(url, {
           method: 'POST', headers: chessableHeaders(cr0, true),
           body: JSON.stringify(body), signal: ctl.signal,
         });
@@ -16111,7 +16253,7 @@
         'from variation', src.oid, 'at ply', plan.plies[0].plyNumber);
       let oid = null;
       try {
-        oid = await addVarPost(cr0, {
+        oid = await courseWritePost(cr0, chessableApiUrl(CONFIG.continuation.addVarPath, {}), {
           source: { courseId: Number(src.bid), variationId: Number(src.oid) },
           target: { courseId: Number(src.bid), chapterId: Number(src.lid) },
           subvariation: plan.plies,
@@ -16299,6 +16441,1008 @@
         '. Press again to confirm.', false);
     }
 
+    // ------------------------------------------------------------------------
+    // 19d) "Add as puzzle" — the analysed line as a variation that STARTS HERE
+    //
+    // 19c writes a variation that carries the source's plies in front of ours;
+    // this one writes the line ALONE, from the position the analysis board was
+    // opened on. That is what a puzzle is on Chessable: a variation whose
+    // `initialFEN` is a mid-game position, quizzed from its own first move.
+    //
+    // **READ DESIGN-add-as-puzzle.md** — the endpoint, the body and the ten
+    // facts behind them were ground-truthed live 2026-08-11. Four decide the
+    // shape of everything below:
+    //
+    //  * IT IS A DIFFERENT ENDPOINT FROM 19c, and it has to be.
+    //    `importSubvariationFromSource` takes `initialFEN` from the SOURCE
+    //    variation, always — there is no field that overrides it. `importGame`
+    //    (Chessable's own /analysis/ "save to course") takes `head.fen`, and
+    //    that becomes the new variation's start position.
+    //  * THERE IS NO SOURCE. The body names only the target, so this write
+    //    needs no ownership of the course the line came out of: a puzzle can be
+    //    lifted from a BOUGHT course into one of your own, which is the one
+    //    thing 19c cannot do.
+    //  * THE BODY WANTS MOVE **PAIRS**, not plies — Chessable's own storage
+    //    shape (sanW/sanB/fenW/fenB/mid/isKey…). `pairPuzzleMoves` is a
+    //    faithful copy of their client's transform, quirks included, and that
+    //    fidelity IS the safety argument: its output was compared field for
+    //    field against a natively-created variation.
+    //  * THE TARGET COURSE'S COLOUR DECIDES WHICH SIDE IS QUIZZED, whatever
+    //    `color` we send (sent 'white' into a black course, stored 'black').
+    //    Deliberately NOT warned about: a puzzle showing the opponent's move
+    //    before the first move asked for is normal, so the "clash" is usually
+    //    the intended reading.
+    // ------------------------------------------------------------------------
+
+    // The chapter a puzzle belongs in when the user has not said otherwise. A
+    // guess, and only ever the DEFAULT SELECTION of a picker they can change —
+    // never a filter deciding whether the feature is offered at all.
+    const PUZZLE_CHAPTER_RE = /^\s*puzzles?\s*$/i;
+
+    // The destination picker's state. `list` is flat (one entry per chapter,
+    // carrying its course's name) because that is what a <select> wants; `sel`
+    // is the "<bid>:<lid>" key of the chosen one.
+    const pz = { state: 'idle', list: [], sel: '', why: '', rev: 0 };
+
+    const destKey = (bid, lid) => String(bid) + ':' + String(lid);
+
+    /**
+     * Reads the destinations and picks one, once per analysis board.
+     *
+     * Deliberately fired on OPEN rather than on the first press: the picker is
+     * part of the sentence the arming press prints, so it has to be on screen
+     * and settled before anything is pressed. It is one cached GET and no
+     * window of any kind — unlike a rights probe, which is exactly why THAT one
+     * may not be started on open.
+     */
+    async function loadPuzzleTargets() {
+      // 'failed' deliberately falls through: nothing was memoised, so the next
+      // board is the retry. Only a read in flight and a good answer are final.
+      if (pz.state === 'loading' || pz.state === 'ready') return;
+      pz.state = 'loading';
+      pz.why = '';
+      // The board can be closed while this is in flight, and syncUi draws the
+      // overlays — there is nothing to redraw once they are down.
+      const refresh = () => { if (cr.active && cr.mode === 'analysis') syncUi(); };
+      const cr0 = chessableCreds();
+      if (!cr0) {
+        pz.state = 'failed';
+        pz.why = 'No Chessable session found — reload the page.';
+        refresh();
+        return;
+      }
+      let targets;
+      try {
+        targets = await importTargetsOnce(cr0);
+      } catch (err) {
+        pz.state = 'failed';
+        pz.why = 'Could not read your courses: ' + msgOf(err);
+        refresh();
+        return;
+      }
+      const names = new Map(targets.books.map((b) => [b.bid, b.name]));
+      // Grouped by course and in chapter order. getImportData answers with the
+      // chapters of ALL courses interleaved by lid ([A/0, B/0, A/1, B/1, …]),
+      // and the <optgroup> below needs each course's chapters consecutive.
+      const order = new Map(targets.books.map((b, i) => [b.bid, i]));
+      pz.list = targets.chapters.map((c) => ({
+        bid: c.bid, lid: c.lid, name: c.name, key: destKey(c.bid, c.lid),
+        courseName: names.get(c.bid) || ('Course ' + c.bid),
+      })).sort((a, b) => (order.get(a.bid) - order.get(b.bid)) || (Number(a.lid) - Number(b.lid)));
+      pz.rev++; // every <select> built from the old list rebuilds itself
+      if (!pz.list.length) {
+        pz.state = 'failed';
+        pz.why = 'None of your courses can be added to.';
+        refresh();
+        return;
+      }
+      pz.state = 'ready';
+      pz.sel = pickPuzzleDest(await readStoredDest());
+      refresh();
+    }
+
+    /** The last chapter a puzzle was written to, or '' — a standing preference,
+     *  so storage.local rather than session. Never fails the caller. */
+    async function readStoredDest() {
+      try {
+        const got = await chrome.storage.local.get([CONFIG.continuation.puzzleDestKey]);
+        return String((got && got[CONFIG.continuation.puzzleDestKey]) || '');
+      } catch (err) {
+        return ''; // orphaned script, or storage unavailable — the defaults below still work
+      }
+    }
+
+    function storeDest(key) {
+      try {
+        chrome.storage.local.set({ [CONFIG.continuation.puzzleDestKey]: key });
+      } catch (err) {
+        // Not being able to remember it is not a reason to refuse the write.
+      }
+    }
+
+    /**
+     * Which chapter starts selected, best answer first:
+     *   1. the one last written to, if it still exists — the user has already
+     *      answered this question and the answer does not change per board;
+     *   2. a chapter actually called "Puzzles", preferring this course's;
+     *   3. the source variation's own chapter, which is where 19c would put it;
+     *   4. the first chapter there is.
+     */
+    function pickPuzzleDest(stored) {
+      const has = (key) => pz.list.some((c) => c.key === key);
+      if (stored && has(stored)) return stored;
+      const found = analysisSource();
+      const here = found.src ? found.src.bid : '';
+      const named = pz.list.filter((c) => PUZZLE_CHAPTER_RE.test(c.name));
+      const mine = named.find((c) => c.bid === here) || named[0];
+      if (mine) return mine.key;
+      if (found.src && has(destKey(found.src.bid, found.src.lid))) {
+        return destKey(found.src.bid, found.src.lid);
+      }
+      return pz.list[0].key;
+    }
+
+    /** The chosen chapter, or null while the picker is not ready. */
+    function puzzleDest() {
+      return pz.list.find((c) => c.key === pz.sel) || null;
+    }
+
+    /**
+     * The picker's <select>, kept in step with `pz`.
+     *
+     * Rebuilt only when the LIST itself changes (`pz.built` is its signature),
+     * never on the ordinary sync: syncUi runs on every move, every tick and
+     * every status change, and replacing the options under an open dropdown
+     * would shut it in the user's face. The same reason section 21's render()
+     * does visibility only and leaves the report to renderReport().
+     */
+    function syncPuzzleDest() {
+      const el = cr.ui.anDest;
+      const ready = pz.state === 'ready' && pz.list.length > 0;
+      el.hidden = !ready;
+      if (!ready) return;
+      fillDestSelect(el);
+      el.disabled = cr.an.save.state === 'saving' || cr.an.save.state === 'checking';
+    }
+
+    /**
+     * Fills one destination <select> from `pz`, and only when the list has
+     * actually changed since that element last saw it (`pz.rev`).
+     *
+     * TWO surfaces carry one of these — the analysis panel and section 19e's
+     * popup — and both read and write the SAME `pz.sel`: "where do my puzzles
+     * go" is one question with one answer, and a second copy of it would be a
+     * second thing to keep in step.
+     */
+    function fillDestSelect(el) {
+      if (el.dataset.cloRev !== String(pz.rev)) {
+        el.dataset.cloRev = String(pz.rev);
+        el.textContent = '';
+        let group = null, groupBid = null;
+        for (const c of pz.list) {
+          if (c.bid !== groupBid) {
+            groupBid = c.bid;
+            group = document.createElement('optgroup');
+            group.label = c.courseName;
+            el.appendChild(group);
+          }
+          const opt = document.createElement('option');
+          opt.value = c.key;
+          opt.textContent = c.name; // remote text, so textContent — never innerHTML
+          group.appendChild(opt);
+        }
+      }
+      if (el.value !== pz.sel) el.value = pz.sel;
+    }
+
+    /**
+     * Our line as `importGame` wants each PLY, before the pairing below.
+     *
+     * Every position is our own: `cr.an.startFen` is what the board opened on
+     * and each later FEN came from `fenAfterUci`, so castling rights, en passant
+     * and both counters are exact. `move` is the FULLMOVE number of the position
+     * the ply is played from (their `ch()`), and `mid` the 0-based index of the
+     * move PAIR it belongs to — which is why a line starting with Black offsets
+     * by one, so that Black's first move pairs as the black half of pair 0.
+     */
+    function puzzlePliesFrom(startFen, moves) {
+      const first = CloSan.parseFen(startFen);
+      if (!first || !moves.length) return null;
+      const offset = first.side === 'b' ? 1 : 0;
+      const out = [];
+      let fen = startFen;
+      for (let i = 0; i < moves.length; i++) {
+        const pos = CloSan.parseFen(fen);
+        if (!pos || !moves[i].fen) return null;
+        out.push({
+          color: pos.side,
+          comment: null,
+          commentB: null,
+          draws: null,
+          f1: fen,
+          f2: moves[i].fen,
+          // Every move of a puzzle is one to be quizzed on; nothing here is a
+          // run-up the user should be shown for free.
+          key: true,
+          mid: Math.floor((i + offset) / 2),
+          move: pos.fullmove,
+          san: moves[i].san,
+          nag: null,
+        });
+        fen = moves[i].fen;
+      }
+      return out;
+    }
+
+    /** The analysis board's own line, in that shape. Section 19e hands in a
+     *  clickable line's plies instead — they carry the same `{san, fen}`. */
+    const puzzlePlies = () => puzzlePliesFrom(cr.an.startFen, cr.an.moves);
+
+    /**
+     * The plies folded into Chessable's move PAIRS — a faithful copy of their
+     * own client's transform, and it must stay one.
+     *
+     * Two of its results look like bugs and are not ours to fix:
+     *   * `fen` lags by a ply (pair k gets pair k-1's black-move position). A
+     *     natively created variation reads back exactly the same way, checked
+     *     against 70382641 through getLesson, so this IS the convention.
+     *   * a black-first pair reports `c` as the position AFTER its move. Also
+     *     theirs, also harmless — `fenW` is blanked for that pair anyway.
+     * Reproducing what their client produces is the whole reason to trust this
+     * write; "tidying" either one makes our payload something the server has
+     * never been sent.
+     */
+    function pairPuzzleMoves(plies) {
+      const byMid = new Map();
+      for (const p of plies) {
+        if (!byMid.has(p.mid)) byMid.set(p.mid, { w: null, b: null });
+        byMid.get(p.mid)[p.color] = p;
+      }
+      const blackFirst = plies.length > 0 && plies[0].f1.includes(' b ');
+      let prevBlackFen = null;
+      const rows = [];
+      const mids = [...byMid.keys()].sort((a, b) => a - b);
+      for (const mid of mids) {
+        const pair = byMid.get(mid);
+        const w = pair.w, b = pair.b;
+        const sanW = w ? w.san : null;
+        const sanB = b ? b.san : null;
+        const wFen = w ? w.f1 : (b ? b.f2 : null);
+        const bFen = b ? b.f1 : (w ? w.f2 : null);
+        const first = mid === 0;
+        const ellipsis = first && blackFirst;
+        const lead = ellipsis ? b : w;
+        rows.push({
+          mid,
+          sanW, sanB,
+          nagW: w ? w.nag : null,
+          nagB: b ? b.nag : null,
+          fen: ellipsis ? '' : (prevBlackFen || wFen),
+          fenW: ellipsis ? '' : wFen,
+          fenB: bFen,
+          isKey: Boolean((w && w.key) || (b && b.key)),
+          drawW: w ? w.draws : null,
+          drawB: b ? b.draws : null,
+          commentW: w ? w.comment : null,
+          commentB: b ? b.comment : null,
+          commentBW: w ? w.commentB : null,
+          commentBB: b ? b.commentB : null,
+          lastBlack: first ? '' : ((byMid.get(mid - 1) || {}).b || {}).san || '',
+          move: lead.move + (ellipsis ? '...' : '.') + (sanW || '') + ' ' + (sanB || ''),
+        });
+        prevBlackFen = bFen;
+      }
+      // "4... Nf6 5.Nc3 a6" → "4...Nf6 5.Nc3 a6". Their replace is un-anchored
+      // and NOT global on purpose: the only ellipsis a line can have is its
+      // first pair's, so the first match is the only one to fix.
+      const line = rows.map((r) => r.move).join(' ').replace(/\. /, '.').trim();
+      return { rows, line };
+    }
+
+    /**
+     * The PGN header block. Every key is theirs and every empty string is
+     * deliberate: this is `Bm` out of Chessable's own bundle with `fen` filled
+     * in, and a header they always send is not one to start omitting.
+     */
+    function puzzleHead(fen) {
+      return {
+        event: '', site: '', date: '', round: '', white: '', black: '',
+        result: '*', eco: '', variant: '', annotator: '', plycount: '',
+        eventDate: '', source: '', sourceData: '', fen, setup: '',
+      };
+    }
+
+    /** The name of the variation this board was opened from, read off the page
+     *  rather than out of a course listing. '' when there is none to read. */
+    function analysisSourceTitle() {
+      if (isVariationPath()) {
+        const el = document.querySelector(SELECTORS.variationTitle);
+        return el ? (el.textContent || '').trim() : '';
+      }
+      const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
+      const row = marker && marker.parentElement;
+      const attr = row && row.getAttribute('title');
+      if (attr) return attr.trim();
+      const link = document.querySelector(SELECTORS.reviewTitleLink);
+      return link ? (link.textContent || '').trim() : '';
+    }
+
+    /**
+     * What the puzzle is called: where it came from, then the move it starts on
+     * — "Sicilian: 2...Nc6 3.d4 — puzzle from 4.Qxd4". The source title is not
+     * decoration: a puzzle's own moves say nothing about which line produced it,
+     * and its start position is a diagram no list can print.
+     */
+    function puzzleNameFor(startFen, moves) {
+      const pos = CloSan.parseFen(startFen);
+      const first = moves[0];
+      const title = analysisSourceTitle();
+      if (!pos || !first) return title || 'Puzzle';
+      const move = pos.fullmove + (pos.side === 'w' ? '.' : '...') + first.san;
+      return (title ? title + ' — ' : '') + 'puzzle from ' + move;
+    }
+
+    const puzzleName = () => puzzleNameFor(cr.an.startFen, cr.an.moves);
+
+    /**
+     * A line + a destination as everything the write needs, or null when the
+     * line cannot be written out. Shared by both entry points: the analysis
+     * board (19d) and a clickable line (19e) differ only in where the moves came
+     * from, never in what is sent.
+     */
+    function puzzlePlan(startFen, moves, name, dest) {
+      const plies = puzzlePliesFrom(startFen, moves);
+      if (!plies) return null;
+      const paired = pairPuzzleMoves(plies);
+      const pos = CloSan.parseFen(startFen);
+      if (!pos) return null;
+      return {
+        dest,
+        rows: paired.rows,
+        line: paired.line,
+        head: puzzleHead(startFen),
+        color: pos.side === 'w' ? 'white' : 'black',
+        name,
+        count: plies.length,
+        startFen,
+        // What the read-back must find. Our own SANs, in order — no prefix is
+        // spliced here, so the stored line is the line and nothing else.
+        expect: plies.map((p) => p.san),
+      };
+    }
+
+    /** The POST itself: the wire entry, and the new oid or a throw carrying the
+     *  server's own words. */
+    async function postPuzzle(cr0, plan) {
+      const res = await courseWritePost(cr0,
+        chessableApiUrl(CONFIG.continuation.addPuzzlePath, { uid: cr0.uid, bid: plan.dest.bid }),
+        {
+          data: JSON.stringify([{
+            head: plan.head,
+            color: plan.color,
+            name: plan.name,
+            orig: plan.name,
+            lid: Number(plan.dest.lid),
+            moves: plan.rows,
+            line: plan.line,
+          }]),
+        });
+      const oids = res && res.game && res.game.oids;
+      const oid = Array.isArray(oids) ? oids[0] : null;
+      if (!oid) throw new Error('Chessable did not report a new variation');
+      return String(oid);
+    }
+
+    /**
+     * Everything after a successful POST: remember where it went, drop the
+     * caches that now lie, and READ THE COURSE BACK rather than trust our model
+     * of what landed. Returns `{ oid, name, msg, bad }` — the sentence is built
+     * here so both entry points say the same thing about the same outcome.
+     *
+     * The start position is checked as carefully as the moves: a puzzle stored
+     * from the standard position instead of ours would be a different card
+     * entirely, and a silent one. `cacheKey` compares the first four fields, so
+     * Chessable normalising the move counters is not a failure.
+     */
+    async function confirmPuzzle(cr0, plan, oid) {
+      const dest = plan.dest;
+      storeDest(dest.key); // it worked, so this is where the next one goes too
+      await dropCourseCache(dest.bid);
+      // `rep` is section 6c's own state, populated in every document the panel
+      // runs in — so this reads the live nomination, not a copy of it.
+      if (rep.bid && String(rep.bid) === String(dest.bid)) await dropRepertoireIndexCache();
+      let landed = null;
+      try {
+        const fresh = await fetchCourse(dest.bid, cr0, false);
+        landed = fresh.vars.find((v) => String(v.oid) === String(oid));
+      } catch (err) {
+        return { oid, name: plan.name, bad: false,
+          msg: 'Added "' + plan.name + '" — but the course could not be re-read to ' +
+            'confirm it (' + msgOf(err) + ').' };
+      }
+      if (!landed) {
+        return { oid, name: plan.name, bad: true,
+          msg: 'Chessable reported variation ' + oid + ' added, but it is not in the ' +
+            'course listing — check it in Chessable.' };
+      }
+      const got = landed.sans.map(bareSan).join(' ');
+      const want = plan.expect.map(bareSan).join(' ');
+      const startOk = cacheKey(landed.fen || START_FEN) === cacheKey(plan.startFen);
+      if (got !== want || !startOk) {
+        warn('add as puzzle: expected "' + want + '" from ' + plan.startFen +
+          ' but the course has "' + got + '" from ' + (landed.fen || '(start position)'));
+        return { oid, name: landed.name, bad: true,
+          msg: 'Added, but Chessable stored ' +
+            (got !== want ? 'a different line: ' + got : 'it from a different position') +
+            ' — check it in Chessable.' };
+      }
+      log('add as puzzle: created', oid, '—', got, 'from', landed.fen);
+      return { oid, name: landed.name, bad: false,
+        msg: 'Added as a puzzle in ' + dest.courseName + ' › ' + dest.name +
+          ': "' + landed.name + '" (' + got + ').' };
+    }
+
+    /**
+     * Everything the confirming press needs, or an `error` sentence. Far less to
+     * check than 19c's: there is no source variation to line the moves up
+     * against, because the puzzle starts where the board does — the position IS
+     * the answer to "where does this go", and it is one we built ourselves.
+     */
+    function preparePuzzle() {
+      if (!cr.an.startFen || !CloSan.parseFen(cr.an.startFen)) {
+        return { error: 'The position this board started from could not be read.' };
+      }
+      if (pz.state !== 'ready') {
+        return { error: pz.why || 'Still reading where puzzles can go — try again in a moment.' };
+      }
+      const dest = puzzleDest();
+      if (!dest) return { error: 'Choose a chapter to put the puzzle in.' };
+      const plan = puzzlePlan(cr.an.startFen, cr.an.moves, puzzleName(), dest);
+      if (!plan) return { error: 'The line could not be written out.' };
+      plan.sig = anLineSig();
+      return { plan };
+    }
+
+    /**
+     * Sends the write and confirms it by re-reading the course.
+     *
+     * `report` drops its message when the board it belongs to has gone, exactly
+     * as 19c's does and for the same reason: this awaits a POST and then a
+     * course read, and a variation change can close the board in between.
+     */
+    async function firePuzzle(plan) {
+      const an = cr.an;
+      const report = (msg, bad) => {
+        if (cr.an !== an) { log('add as puzzle: board gone, not reporting —', msg); return; }
+        resetAnSave('idle', msg, bad);
+      };
+      const cr0 = chessableCreds();
+      if (!cr0) { report('No Chessable session found — reload the page.', true); return; }
+      if (plan.sig !== anLineSig()) {
+        report('The line changed since that was described — press again.', true);
+        return;
+      }
+      const dest = plan.dest;
+      an.save.state = 'saving';
+      setAnStatus('Adding to "' + dest.courseName + '"…', false);
+      log('add as puzzle:', plan.name, '→ course', dest.bid, 'chapter', dest.lid,
+        'from', plan.startFen);
+      let oid = null;
+      try {
+        oid = await postPuzzle(cr0, plan);
+      } catch (err) {
+        report('Could not add it: ' + msgOf(err) +
+          ' — the line is still here, you can retry.', true);
+        return;
+      }
+      const done = await confirmPuzzle(cr0, plan, oid);
+      report(done.msg, done.bad);
+      noteCreatedVariation(an, done.oid, done.name);
+    }
+
+    /** Whether the arming press is still good for a confirming one. */
+    function puzzleArmed() {
+      const av = cr.an.addPuzzle;
+      return av.state === 'armed' && av.plan &&
+        Date.now() - av.at < CONFIG.continuation.addVarArmMs;
+    }
+
+    /** Drops a pending confirm — see disarmAddVar, whose contract this shares. */
+    function disarmAddPuzzle(clearStatus) {
+      const av = cr.an.addPuzzle;
+      if (!av || av.state !== 'armed') return false;
+      av.state = 'idle';
+      av.plan = null;
+      av.at = 0;
+      if (clearStatus && cr.an.save.state === 'idle') {
+        cr.an.save.msg = '';
+        cr.an.save.bad = false;
+      }
+      return true;
+    }
+
+    /**
+     * "Add as puzzle". Two presses, like 19c and for the same reason: what it
+     * creates is a scheduled card, and the sentence naming it, its course and
+     * its chapter does not fit anywhere but the status line.
+     */
+    async function addAsPuzzle() {
+      const ui = cr.ui;
+      if (ui && ui.anAddPuzzle) ui.anAddPuzzle.blur();
+      const save = cr.an.save;
+      if (save.state === 'saving' || save.state === 'checking') return;
+      if (!cr.an.moves.length) {
+        resetAnSave('idle', 'Play the moves the puzzle should ask for first.', true);
+        return;
+      }
+      if (puzzleArmed()) {
+        const plan = cr.an.addPuzzle.plan;
+        disarmAddPuzzle(false);
+        await firePuzzle(plan);
+        return;
+      }
+      cr.an.addPuzzle.state = 'idle';
+      cr.an.created = null; // a second add is starting; the old button must not sit beside the new sentence
+      // Synchronous, unlike 19c's: the destinations were read when the board
+      // opened and the position needs no course to line it up against, so there
+      // is no await here for the board to disappear behind.
+      const prepared = preparePuzzle();
+      if (prepared.error) { resetAnSave('idle', prepared.error, true); return; }
+      cr.an.addPuzzle = { state: 'armed', at: Date.now(), plan: prepared.plan };
+      const p = prepared.plan;
+      setAnStatus('Creates "' + p.name + '" in ' + p.dest.courseName + ' › ' + p.dest.name +
+        ', starting from the position on this board — ' + p.count +
+        (p.count === 1 ? ' move' : ' moves') + '. Press again to confirm.', false);
+    }
+
+    // ------------------------------------------------------------------------
+    // 19e) "Add as puzzle" on a CLICKABLE LINE
+    //
+    // The same write as 19d, offered where Chessable itself offers "Add to
+    // Repertoire": right-click (or long-press) a clickable move printed inside a
+    // comment, and take that whole line as a puzzle starting from the position
+    // it branches at. Both hosts — the trainer's browse state and
+    // /variation/<oid>/.
+    //
+    // **READ DESIGN-add-as-puzzle.md §6** for the menu's own ground truth. Three
+    // facts decide the shape of this code:
+    //
+    //  * CHESSABLE'S data-fen CANNOT SEGMENT A LINE. On the variation page every
+    //    clickable move carries the position AFTER it — but that FEN is chained
+    //    BLINDLY: a comment writing two branches in one breath ("4.Qxd4 e5 4.c3
+    //    dxc3") gets the second branch's first move played onto the end of the
+    //    first branch whenever that happens to be legal, which it usually is.
+    //    Ground-truthed on 70382641, where "4.c3" carries the position after
+    //    e5. So the lines are read the way section 18 reads them — through the
+    //    printed MOVE NUMBERS, `resolveLine`/`walkLine`/`branchLines`, which is
+    //    also what makes both hosts agree — and never from data-fen.
+    //  * NOTHING OF OURS ENTERS THEIR MENU. Theirs is a body portal; ours is a
+    //    separate body-mounted element parked underneath it, raised by our OWN
+    //    gesture watcher. So it still appears where theirs does not: their item
+    //    is disabled for a variation with a custom start FEN, which is exactly
+    //    the tactics course a puzzle is most likely to come from.
+    //  * ONE PRESS WRITES, unlike 19d's two. The popup IS the description —
+    //    name, destination and line are all on screen before anything is
+    //    pressed — which is the argument that made "Add as line" a single press
+    //    (v0.43.0). An arming press would only repeat what is already visible.
+    // ------------------------------------------------------------------------
+
+    const CL_MENU_ID = 'lichessable-cl-menu';
+    const CL_POPUP_ID = 'lichessable-cl-popup';
+
+    // The gesture watcher's state, the raised menu's, and the popup's.
+    const cl = {
+      el: null,        // the clickable move the gesture landed on
+      menu: null,      // our own one-item menu
+      popup: null,     // the popup it opens
+      ui: null,        // the popup's parts
+      press: null,     // long-press timer + its start point
+      raiseAt: 0,      // timer id for the delayed placement
+      line: null,      // the resolved clickable line the popup is about
+      plan: null,      // the prepared write, or null
+      why: '',         // why there is no plan
+      busy: false,
+      created: null,   // { oid } — the way to what was just written
+      startFen: null,  // memoised initialFEN of the variation page's variation
+      startOid: '',
+    };
+
+    /** Every clickable comment move of the host we are on. The two hosts print
+     *  the same lines with wholly different markup. */
+    const clickableMoveSelector = () =>
+      isVariationPath() ? SELECTORS.variationSubMoves : SELECTORS.reviewSubMoves;
+
+    /**
+     * The clickable move a gesture landed on, or null.
+     *
+     * The geometric fallback is NOT belt and braces. Chessable's own menu comes
+     * with a viewport-wide BACKDROP at z-index 12000 (measured live), and it
+     * outlives the menu in some states — so the second right-click of a session
+     * lands on the backdrop and `closest()` finds nothing, exactly as if the
+     * user had clicked empty space. `elementsFromPoint` looks underneath it,
+     * which is what makes a second gesture work at all.
+     */
+    function clickableMoveAt(target, x, y) {
+      if (!target || !target.closest) return null;
+      const sel = clickableMoveSelector();
+      const direct = target.closest(sel);
+      if (direct) return direct;
+      // Only when the gesture really did land on their portal: everywhere else
+      // "nothing here" is the true answer and must stay cheap.
+      const theirs = target.closest('.subvariation-context-menu__backdrop, ' +
+        SELECTORS.subvarMenuAnchor);
+      if (!theirs || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+      for (const el of document.elementsFromPoint(x, y)) {
+        const hit = el.closest && el.closest(sel);
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    /**
+     * The variation page's mainline FEN array in `resolveLine`'s shape:
+     * fens[i] = the position BEFORE ply i, fens[n] = the final position.
+     *
+     * Every entry but the first is Chessable's own `data-fen` on the mainline
+     * move divs (the position AFTER that ply), which for the MAINLINE is exact —
+     * the blind-chaining problem in this section's header is a property of
+     * BRANCHES inside a comment, and the mainline has none.
+     *
+     * The first is the variation's `initialFEN`, which the page does not show
+     * anywhere: it comes from the section 5c course cache. When that cannot be
+     * read we fall back to the standard position and say so — harmless rather
+     * than dangerous, because `walkLine` checks the printed move NUMBER of every
+     * move as well as its legality, so a wrong start does not fit a line, it
+     * merely fails to resolve one.
+     */
+    async function variationMainlineFens(moveEls) {
+      const fens = [await variationInitialFen()];
+      for (const m of moveEls) {
+        const fen = m.dataset.fen;
+        if (!fen) return null; // a half-rendered list: better to answer nothing
+        fens.push(fen);
+      }
+      return fens;
+    }
+
+    async function variationInitialFen() {
+      const oid = (VARIATION_PATH_RE.exec(location.pathname) || [])[1] || '';
+      if (cl.startOid === oid && cl.startFen) return cl.startFen;
+      let fen = '';
+      const ids = variationCourseIds();
+      const cr0 = chessableCreds();
+      if (oid && ids && cr0) {
+        try {
+          const course = await fetchCourse(ids.bid, cr0, true);
+          const found = course.vars.find((v) => String(v.oid) === String(oid));
+          if (found) fen = found.fen || START_FEN;
+        } catch (err) {
+          log('clickable puzzle: could not read the course for this variation\'s start ' +
+            'position (' + msgOf(err) + ') — assuming the standard one');
+        }
+      }
+      cl.startOid = oid;
+      cl.startFen = fen || START_FEN;
+      return cl.startFen;
+    }
+
+    /** A resolved group's lines, WITHOUT section 18's quizzability filters: the
+     *  user pointed at this line, so a "?" on it or a line with no move of their
+     *  own is theirs to add if they want it. Branches still split. */
+    function puzzleLinesOf(line) {
+      if (!line || line.truncated) return [];
+      return line.branches || [line];
+    }
+
+    /**
+     * Every clickable line the page is printing, with the spans that print it —
+     * resolved by section 18's own machinery on both hosts, so a line means the
+     * same thing here as it does in a continuation quiz.
+     */
+    async function clickableLineGroups() {
+      const els = [...document.querySelectorAll(clickableMoveSelector())];
+      if (!els.length) return null;
+      let moveEls, fens;
+      if (isVariationPath()) {
+        moveEls = [...document.querySelectorAll(SELECTORS.variationMoves)];
+        fens = await variationMainlineFens(moveEls);
+      } else {
+        moveEls = [...document.querySelectorAll(SELECTORS.reviewMoves)];
+        const plan = await readLessonLine();
+        fens = (plan && !plan.error && Array.isArray(plan.plies) && plan.plies.length)
+          ? mainlineFens(plan) : null;
+      }
+      if (!fens) return null;
+      const groups = subMoveGroups(els, moveEls);
+      const resolved = resolveGroups(groups, fens);
+      return groups.map((g) => ({ els: g.els, parts: puzzleLinesOf(resolved.get(g.key)) }));
+    }
+
+    /**
+     * The line the clicked move belongs to. A group that spells out several
+     * branches is split by `branchLines`, and each branch carries `moveIdx` —
+     * the indices of ITS moves within the group — so the clicked span picks the
+     * branch it was actually printed in. Taking the group as one line would make
+     * a puzzle out of moves the author wrote as alternatives.
+     */
+    async function clickableLineFor(el) {
+      const groups = await clickableLineGroups();
+      if (!groups) {
+        return { why: isVariationPath()
+          ? 'The lines on this page could not be read.'
+          : 'The variation\'s own moves could not be read — is it still loading?' };
+      }
+      for (const g of groups) {
+        const at = g.els.indexOf(el);
+        if (at < 0) continue;
+        const part = g.parts.find((p) => (p.moveIdx || []).includes(at));
+        if (part) return { line: part };
+        return { why: 'That line does not fit any position in this variation, so it ' +
+          'cannot be placed on a board.' };
+      }
+      return { why: 'That move is not part of a line we could read.' };
+    }
+
+    // --- the menu ------------------------------------------------------------
+
+    /**
+     * Raises our one-item menu for `el`, parked under Chessable's own if theirs
+     * is up. Body-mounted and fixed, above their portal (their anchor measures
+     * z-index 12001) — never inside it, and never inside Chessable's DOM at all.
+     */
+    function raiseClMenu(el, x, y) {
+      if (!el || !el.isConnected) return;
+      cl.el = el;
+      if (!cl.menu) buildClMenu();
+      const menu = cl.menu;
+      menu.hidden = false;
+      // Placed only once it can be measured, which is also when their own menu
+      // has had its frame to appear.
+      const box = menu.getBoundingClientRect();
+      const theirs = document.querySelector(SELECTORS.subvarMenuAnchor);
+      const rect = theirs ? theirs.getBoundingClientRect() : null;
+      let left = rect && rect.width ? rect.left : x;
+      let top = rect && rect.height ? rect.bottom + 4 : y + 4;
+      // Their menu is placed ABOVE the move when there is room above it, so ours
+      // going below theirs can land on the move itself; that is fine and is what
+      // "below Add to Repertoire" means. Only the viewport is clamped against.
+      left = Math.max(4, Math.min(left, window.innerWidth - box.width - 4));
+      top = Math.max(4, Math.min(top, window.innerHeight - box.height - 4));
+      menu.style.left = Math.round(left) + 'px';
+      menu.style.top = Math.round(top) + 'px';
+    }
+
+    function buildClMenu() {
+      const menu = document.createElement('div');
+      menu.id = CL_MENU_ID;
+      menu.className = 'clo-cl-menu';
+      menu.hidden = true;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'clo-cl-menu__item';
+      btn.textContent = 'Add as puzzle';
+      btn.title = 'Add this clickable line to a course as a puzzle, starting from ' +
+        'the position it branches at';
+      btn.addEventListener('click', () => {
+        const el = cl.el;
+        hideClMenu();
+        openClPopup(el);
+      });
+      menu.appendChild(btn);
+      document.body.appendChild(menu);
+      cl.menu = menu;
+    }
+
+    function hideClMenu() {
+      clearTimeout(cl.raiseAt);
+      cl.raiseAt = 0;
+      if (cl.menu) cl.menu.hidden = true;
+    }
+
+    /** Both gestures end here: wait a beat for Chessable's own menu, then place
+     *  ours relative to it. */
+    function scheduleClMenu(el, x, y) {
+      clearTimeout(cl.raiseAt);
+      cl.raiseAt = setTimeout(() => { cl.raiseAt = 0; raiseClMenu(el, x, y); },
+        CONFIG.continuation.clMenuDelayMs);
+    }
+
+    // --- the popup -----------------------------------------------------------
+
+    async function openClPopup(el) {
+      if (!el) return;
+      if (!cl.popup) buildClPopup();
+      cl.plan = null;
+      cl.why = '';
+      cl.busy = false;
+      cl.created = null;
+      cl.popup.hidden = false;
+      placeClPopup(el);
+      syncClPopup('Reading the line…', false);
+      // Both are cached after the first time: the destinations for the document,
+      // the course listing in storage.session for 12 h.
+      const [found] = await Promise.all([clickableLineFor(el), loadPuzzleTargets()]);
+      if (cl.popup.hidden) return; // closed while we were reading
+      if (found.why) {
+        cl.why = found.why;
+        syncClPopup(found.why, true);
+        return;
+      }
+      const line = found.line;
+      cl.line = line;
+      buildClPlan();
+      syncClPopup('', false);
+    }
+
+    /** (Re)builds the write from the line and whatever the picker says now. */
+    function buildClPlan() {
+      const line = cl.line;
+      cl.plan = null;
+      if (!line) return;
+      if (pz.state !== 'ready') {
+        cl.why = pz.why || 'Still reading where puzzles can go…';
+        return;
+      }
+      const dest = puzzleDest();
+      if (!dest) { cl.why = 'Choose a chapter to put the puzzle in.'; return; }
+      const moves = line.plies.map((p) => ({ san: p.san, fen: p.fen }));
+      const plan = puzzlePlan(line.startFen, moves,
+        puzzleNameFor(line.startFen, moves), dest);
+      if (!plan) { cl.why = 'That line could not be written out.'; return; }
+      cl.plan = plan;
+      cl.why = '';
+    }
+
+    function buildClPopup() {
+      const popup = document.createElement('div');
+      popup.id = CL_POPUP_ID;
+      popup.className = 'clo-cl-popup';
+      popup.hidden = true;
+
+      const title = document.createElement('div');
+      title.className = 'clo-cl-title';
+      title.textContent = 'Add as puzzle';
+
+      const line = document.createElement('div');
+      line.className = 'clo-cl-line';
+
+      const name = document.createElement('div');
+      name.className = 'clo-cl-name';
+
+      const dest = document.createElement('select');
+      dest.className = 'clo-cl-dest';
+      dest.title = 'Which chapter the puzzle goes in. Remembered for next time.';
+      dest.addEventListener('change', () => {
+        pz.sel = dest.value;
+        buildClPlan();
+        syncClPopup('', false);
+      });
+
+      const status = document.createElement('div');
+      status.className = 'clo-cl-status';
+
+      const actions = document.createElement('div');
+      actions.className = 'clo-cl-actions';
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'clo-cl-btn clo-cl-btn--primary';
+      add.textContent = 'Add as puzzle';
+      add.addEventListener('click', () => { addClPuzzle().catch(() => {}); });
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'clo-cl-btn';
+      open.textContent = 'Open it';
+      open.title = 'Open the puzzle that was just created, on its own page in a new tab';
+      open.hidden = true;
+      open.addEventListener('click', () => {
+        const made = cl.created;
+        open.blur();
+        if (!made) return;
+        // A new tab on both hosts, for section 19c's reason: in a trainer
+        // session navigating away abandons the session, and MoveTrainer2 puts
+        // its own "Leave site?" dialog in front of it.
+        window.open(location.origin + '/variation/' + encodeURIComponent(made.oid) + '/',
+          '_blank', 'noopener');
+      });
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'clo-cl-btn clo-cl-btn--exit';
+      cancel.textContent = 'Close';
+      cancel.addEventListener('click', hideClPopup);
+      actions.append(add, open, cancel);
+
+      popup.append(title, line, name, dest, status, actions);
+      // MoveTrainer2 binds single-key shortcuts on `document` and does not skip
+      // a focused control, so "n" typed into this popup's <select> would send
+      // the trainer to the next variation. Bubble phase, like the quick-edit
+      // popup: our own overlays' capture-phase swallow is for a run we own, and
+      // this popup can be open with nothing running.
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        popup.addEventListener(type, (e) => {
+          e.stopPropagation();
+          if (type === 'keydown' && e.key === 'Escape') hideClPopup();
+        });
+      }
+      document.body.appendChild(popup);
+      cl.popup = popup;
+      cl.ui = { title, line, name, dest, status, add, open, cancel };
+    }
+
+    /** Anchored under the move it is about, clamped into the viewport. */
+    function placeClPopup(el) {
+      const popup = cl.popup;
+      const r = el.getBoundingClientRect();
+      const box = popup.getBoundingClientRect();
+      const left = Math.max(4, Math.min(r.left, window.innerWidth - box.width - 4));
+      const top = Math.max(4, Math.min(r.bottom + 6, window.innerHeight - box.height - 4));
+      popup.style.left = Math.round(left) + 'px';
+      popup.style.top = Math.round(top) + 'px';
+    }
+
+    function hideClPopup() {
+      if (cl.popup) cl.popup.hidden = true;
+      cl.line = null;
+      cl.plan = null;
+      cl.created = null;
+    }
+
+    function syncClPopup(msg, bad) {
+      const ui = cl.ui;
+      if (!ui) return;
+      const line = cl.line;
+      ui.line.textContent = line
+        ? line.plies.map((p) => p.san + (p.annot || '')).join(' ')
+        : '';
+      ui.line.hidden = !line;
+      ui.name.textContent = cl.plan
+        ? 'Creates "' + cl.plan.name + '" — ' + cl.plan.count +
+          (cl.plan.count === 1 ? ' move' : ' moves') + ' from this position.'
+        : '';
+      ui.name.hidden = !cl.plan;
+      const ready = pz.state === 'ready' && pz.list.length > 0;
+      ui.dest.hidden = !ready;
+      if (ready) fillDestSelect(ui.dest);
+      ui.dest.disabled = cl.busy;
+      ui.add.disabled = cl.busy || !cl.plan;
+      ui.open.hidden = !cl.created;
+      ui.status.textContent = msg || cl.why || '';
+      ui.status.className = 'clo-cl-status' + (bad || (!msg && cl.why) ? ' clo-cl-status--bad' : '');
+      ui.status.hidden = !ui.status.textContent;
+    }
+
+    /**
+     * One press writes. Everything a confirming press could say — the name, the
+     * course, the chapter and the line itself — is in the popup already.
+     */
+    async function addClPuzzle() {
+      const ui = cl.ui;
+      if (ui) ui.add.blur();
+      if (cl.busy || !cl.plan) return;
+      const cr0 = chessableCreds();
+      if (!cr0) { syncClPopup('No Chessable session found — reload the page.', true); return; }
+      const plan = cl.plan;
+      cl.busy = true;
+      cl.created = null;
+      syncClPopup('Adding to "' + plan.dest.courseName + '"…', false);
+      log('clickable puzzle:', plan.name, '→ course', plan.dest.bid,
+        'chapter', plan.dest.lid, 'from', plan.startFen);
+      let oid = null;
+      try {
+        oid = await postPuzzle(cr0, plan);
+      } catch (err) {
+        cl.busy = false;
+        syncClPopup('Could not add it: ' + msgOf(err) + ' — you can retry.', true);
+        return;
+      }
+      const done = await confirmPuzzle(cr0, plan, oid);
+      cl.busy = false;
+      // The popup can have been closed behind the two awaits; the write stands
+      // either way, so the only question is whether anyone can still be told.
+      if (cl.popup && cl.popup.hidden) { log('clickable puzzle:', done.msg); return; }
+      cl.created = { oid: done.oid };
+      syncClPopup(done.msg, done.bad);
+    }
+
     /**
      * The position Chessable's board is showing, whichever review host we are
      * on. In the trainer that is the DOM reconstruction (exact on the mainline,
@@ -16343,6 +17487,11 @@
       cr.boardEl.hidden = false;   // …which is also what hides the board
       buildGrid();
       anGoto(0);
+      // Where a puzzle would go (19d). Fired on OPEN, unlike the rights probe
+      // above it: this is one cached GET and raises no window, and the answer is
+      // part of the sentence the arming press prints — so it has to be on screen
+      // and settled before anything is pressed.
+      loadPuzzleTargets().catch(() => {});
       log('analysis board opened on', fen);
     }
 
@@ -16461,6 +17610,22 @@
         'moves of this variation (and their comments and arrows) in front of it. ' +
         'Two presses: the first says exactly what it would create. ' +
         'Only for courses you created.';
+
+      // "Add as puzzle" (19d) and its destination picker. Enabled whenever there
+      // is a line and somewhere to put it — it needs no entry move (nothing is
+      // being commented on) and no rights in the SOURCE course (nothing is read
+      // from it), so a puzzle can be lifted out of a course you only bought.
+      syncPuzzleDest();
+      const armedPz = puzzleArmed();
+      if (cr.an.addPuzzle.state === 'armed' && !armedPz) disarmAddPuzzle(true);
+      ui.anAddPuzzle.disabled = busy || !cr.an.moves.length || pz.state !== 'ready';
+      ui.anAddPuzzle.textContent = armedPz ? 'Really add it?' : 'Add as puzzle';
+      ui.anAddPuzzle.classList.toggle('clo-cr-btn--armed', armedPz);
+      ui.anAddPuzzle.title = pz.state === 'ready'
+        ? 'Add this line as its own variation STARTING FROM THIS POSITION — a ' +
+          'puzzle, with none of the moves that led here. Two presses: the first ' +
+          'says exactly what it would create, and where.'
+        : (pz.why || 'Reading the courses and chapters a puzzle could go in…');
       // The way to what was just created. Hidden until there IS one, and it goes
       // when the sentence naming it goes.
       ui.anOpen.hidden = !cr.an.created;
@@ -16805,6 +17970,11 @@
       // does not fit anywhere but the status line.
       const anAddVar = anBtn('Add as variation', '', () => { addAsVariation().catch(() => {}); });
       anAddVar.classList.add('clo-cr-btn--primary');
+      // The third write (19d): the line on its own, starting HERE. Two presses
+      // as well — it creates a card too, and the sentence naming its course and
+      // chapter is longer still.
+      const anAddPuzzle = anBtn('Add as puzzle', '', () => { addAsPuzzle().catch(() => {}); });
+      anAddPuzzle.classList.add('clo-cr-btn--primary');
       // Shown only once a variation has been created, and it NAVIGATES rather
       // than acting on the course, so it wears the row's plain style.
       const anOpen = anBtn('Open it',
@@ -16833,6 +18003,23 @@
         // preview of the NEW text instead is the useful answer.
         if (cr.an.save.state === 'idle' && cr.an.save.msg) resetAnSave('idle', '', false);
         else syncUi(); // the preview follows every keystroke
+      });
+
+      // Where a puzzle goes (19d): every chapter of every course the user can
+      // import into, grouped by course. A <select> rather than a popover like
+      // the row's menus, because this one sits inside a panel that is already an
+      // overlay and has room for it — and because the answer must be READABLE
+      // without opening anything, since the arming sentence refers to it.
+      const anDest = document.createElement('select');
+      anDest.className = 'clo-cr-andest';
+      anDest.title = 'Which chapter "Add as puzzle" writes to. Remembered for next time.';
+      anDest.hidden = true;
+      anDest.addEventListener('change', () => {
+        pz.sel = anDest.value;
+        // The destination is half of what the armed sentence promised, so
+        // changing it must drop the confirm exactly as changing the line does.
+        disarmAddPuzzle(true);
+        syncUi();
       });
 
       // Status for the add: the text about to be written, the save's progress,
@@ -16872,7 +18059,8 @@
       // The prefix field and the status go LAST: the actions rows carry
       // `margin-top: auto`, so the panel's free space collects above them — put
       // earlier, they would float far from the button they belong to.
-      panel.append(title, prompt, progress, list, nav, chooser, actions, anPrefix, anActions, anStatus);
+      panel.append(title, prompt, progress, list, nav, chooser, actions,
+        anPrefix, anDest, anActions, anStatus);
 
       document.body.append(boardEl, panel);
       cr.boardEl = boardEl;
@@ -16881,8 +18069,8 @@
         grid, layer, shapes, promo, title, prompt, progress, actions, hint, skip, exit,
         chooser, chooseAll, chooseFinal,
         browseBtn, nav, navStart, navBack, navFwd, navEnd,
-        list, anActions, anStart, anBack, anFwd, anCut, anAdd, anAddVar, anOpen,
-        anPrefix, anStatus,
+        list, anActions, anStart, anBack, anFwd, anCut, anAdd, anAddVar, anAddPuzzle, anOpen,
+        anPrefix, anDest, anStatus,
       };
       cr.orientation = null; // the grid is built on the first startLine
     }
@@ -16953,7 +18141,11 @@
       cr.ui.list.hidden = !analysing && !browsing;
       cr.ui.nav.hidden = !browsing;
       cr.ui.anActions.hidden = !analysing;
-      if (!analysing) { cr.ui.anStatus.hidden = true; cr.ui.anPrefix.hidden = true; }
+      if (!analysing) {
+        cr.ui.anStatus.hidden = true;
+        cr.ui.anPrefix.hidden = true;
+        cr.ui.anDest.hidden = true;
+      }
       if (analysing) {
         cr.ui.actions.hidden = true;
         syncAnalysisUi();
@@ -18819,6 +20011,7 @@
         cancelAutoStart();
         resetHeadsUp();
         hideButton();
+        closeClickableMenus(); // 19e: they describe a line of the variation we just left
         if (cr.active) closeReview('variation changed');
       }
       if (cr.active) { positionOverlays(); return; }
@@ -18852,6 +20045,7 @@
         cr.scanTries = 0;
         cancelAutoStart(); // an auto-start belongs to the variation it was armed in
         resetHeadsUp(); // queued lines belong to the variation they were queued in
+        closeClickableMenus(); // 19e: they describe a line of the variation just left
         if (cr.active) closeReview('variation changed');
       }
       if (!reviewBrowseReady()) {
@@ -18891,6 +20085,78 @@
       maybeAutoStart();
     }
 
+    // --- section 19e: the gesture that offers a clickable line as a puzzle ---
+    //
+    // Ours is raised by our OWN watcher rather than by hooking Chessable's menu,
+    // so it still appears where theirs does not: their "Add to Repertoire" is
+    // disabled for a variation with a custom start FEN, which is exactly the
+    // tactics course a puzzle is most likely to come from. Their menu is only
+    // ever MEASURED, to park ours underneath it.
+    //
+    // Capture phase, and nothing is prevented or stopped: the gesture belongs to
+    // Chessable as much as to us, and both menus may answer it.
+
+    document.addEventListener('contextmenu', (e) => {
+      const el = clickableMoveAt(e.target, e.clientX, e.clientY);
+      if (!el) { hideClMenu(); return; }
+      scheduleClMenu(el, e.clientX, e.clientY);
+    }, true);
+
+    // The touch form of the same gesture. Measured ourselves rather than waited
+    // for as a `contextmenu` event, which Android only fires when nothing has
+    // called preventDefault on the touch — and Chessable's own long-press
+    // handler is entitled to.
+    document.addEventListener('pointerdown', (e) => {
+      // An outside press closes whichever of ours is open. By CONTAINMENT and
+      // never with stopPropagation: the page underneath is entitled to the
+      // event (their backdrop closes their own menu on exactly this).
+      if (cl.menu && !cl.menu.hidden && !cl.menu.contains(e.target)) hideClMenu();
+      if (cl.popup && !cl.popup.hidden && !cl.popup.contains(e.target) &&
+          !(cl.menu && cl.menu.contains(e.target))) hideClPopup();
+      clearClPress();
+      if (e.pointerType !== 'touch' || !e.isPrimary) return;
+      const el = clickableMoveAt(e.target, e.clientX, e.clientY);
+      if (!el) return;
+      cl.press = {
+        x: e.clientX, y: e.clientY,
+        timer: setTimeout(() => {
+          cl.press = null;
+          scheduleClMenu(el, e.clientX, e.clientY);
+        }, CONFIG.continuation.clLongPressMs),
+      };
+    }, true);
+
+    document.addEventListener('pointermove', (e) => {
+      if (!cl.press) return;
+      const slop = CONFIG.continuation.clLongPressSlopPx;
+      if (Math.abs(e.clientX - cl.press.x) > slop || Math.abs(e.clientY - cl.press.y) > slop) {
+        clearClPress(); // a scroll, not a press
+      }
+    }, true);
+
+    for (const type of ['pointerup', 'pointercancel']) {
+      document.addEventListener(type, clearClPress, true);
+    }
+
+    // Dismissed rather than chased, like every other popover here: both are
+    // placed once, from a rect that scrolling invalidates.
+    for (const type of ['scroll', 'resize']) {
+      window.addEventListener(type, () => { if (cl.menu && !cl.menu.hidden) hideClMenu(); }, true);
+    }
+
+    function clearClPress() {
+      if (!cl.press) return;
+      clearTimeout(cl.press.timer);
+      cl.press = null;
+    }
+
+    /** Everything 19e has on screen, gone. Called when the variation changes. */
+    function closeClickableMenus() {
+      hideClMenu();
+      if (cl.popup && !cl.popup.hidden) hideClPopup();
+      clearClPress();
+    }
+
     // MoveTrainer2 binds single-key shortcuts ("n" = next variation, space, …)
     // on document and does not care what has focus, so one stray keypress
     // would tear the quiz down mid-line. Same discipline as the quick-edit
@@ -18908,10 +20174,17 @@
         // an "f" would flip the board and an arrow would move through the line
         // instead of the text. Escape steps out of the field rather than
         // closing the whole board on a half-typed sentence.
-        if (cr.ui && e.target === cr.ui.anPrefix) {
-          if (e.key === 'Escape') cr.ui.anPrefix.blur();
+        // …and the same for the destination picker (19d), where the arrows and
+        // the letter keys are how a <select> is driven: taking them for the
+        // board would make the chapter list impossible to use from the keyboard.
+        if (cr.ui && (e.target === cr.ui.anPrefix || e.target === cr.ui.anDest)) {
+          if (e.key === 'Escape') e.target.blur();
           return;
         }
+        // Section 19e's popup can be open over a run. It has its own bubble
+        // swallow for the trainer's sake; here it needs the board shortcuts kept
+        // off its own controls for the same reason as the two above.
+        if (cl.popup && !cl.popup.hidden && cl.popup.contains(e.target)) return;
         if (e.key === 'Escape') { closeReview('escaped', true); return; }
         // Section 23 on our own board: the same two keys and the same two
         // presses on a mistake drill AND on a clickable line, so either can be

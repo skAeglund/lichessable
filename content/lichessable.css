@@ -2658,6 +2658,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cr-nav[hidden],
 .clo-cr-list[hidden],
 .clo-cr-anprefix[hidden],
+.clo-cr-andest[hidden],
 .clo-cr-anstatus[hidden],
 .clo-cr-heads[hidden],
 .clo-cr-heads__note[hidden],
@@ -3119,7 +3120,38 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-cr-anprefix:disabled { opacity: 0.45; }
 
-.clo-cr-anprefix + .clo-cr-actions { margin-top: 0; }
+.clo-cr-anprefix + .clo-cr-actions,
+.clo-cr-anprefix + .clo-cr-andest,
+.clo-cr-andest + .clo-cr-actions { margin-top: 0; }
+
+/* Where "Add as puzzle" writes (section 19d). Sits between the lead-in and the
+   controls, and carries the same auto margin as the field above it so that
+   hiding EITHER of them still leaves the cluster pinned to the bottom of the
+   panel — the pair of `+` rules above is what takes the margin off whichever
+   one is not first. A native <select>: its options are chapter names from
+   another site, which is exactly the text a hand-drawn popover would have to
+   size itself around, and the browser's own list scrolls and searches for
+   free. */
+.clo-cr-andest {
+  align-self: stretch;
+  margin-top: auto;
+  box-sizing: border-box;
+  max-width: 100%;
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  background: var(--clo-bg-sunken);
+  color: #d8d8d8;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cr-andest:focus {
+  outline: none;
+  border-color: var(--clo-accent);
+}
+
+.clo-cr-andest:disabled { opacity: 0.45; }
 
 /* "Add as line" status: the exact text about to be appended, the save's
    progress, and every reason a line cannot be added. Sits under the analysis
@@ -3134,6 +3166,152 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-cr-anstatus--bad { color: var(--clo-danger-text); }
+
+/* ---------------------------------------------------------------------------
+   Section 19e — "Add as puzzle" on a clickable line.
+
+   Two body-mounted, FIXED surfaces: a one-item menu parked under Chessable's
+   own context menu, and the popup it opens. Their menu's anchor measures
+   z-index 12001 (live, 2026-08-11), so ours sits just above it — never inside
+   it, and never inside Chessable's DOM at all.
+   --------------------------------------------------------------------------- */
+
+.clo-cl-menu {
+  position: fixed;
+  z-index: 12002;
+  padding: 4px;
+  border: 1px solid var(--clo-line);
+  border-radius: 6px;
+  background: var(--clo-bg);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.clo-cl-menu__item {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--clo-accent);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.clo-cl-menu__item:hover { background: var(--clo-bg-sunken); }
+
+.clo-cl-popup {
+  position: fixed;
+  z-index: 12003;
+  box-sizing: border-box;
+  width: 320px;
+  max-width: calc(100vw - 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--clo-line);
+  border-radius: 6px;
+  background: var(--clo-bg);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+  line-height: 1.45;
+  font-family: inherit;
+  color: var(--clo-text);
+}
+
+.clo-cl-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* The line itself, in the wording the comment printed it in. */
+.clo-cl-line {
+  font-size: 14px;
+  color: var(--clo-accent);
+  overflow-wrap: anywhere;
+}
+
+.clo-cl-name {
+  font-size: 12px;
+  color: var(--clo-text-dim);
+  overflow-wrap: anywhere;
+}
+
+.clo-cl-dest {
+  box-sizing: border-box;
+  max-width: 100%;
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  background: var(--clo-bg-sunken);
+  color: #d8d8d8;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-cl-dest:focus {
+  outline: none;
+  border-color: var(--clo-accent);
+}
+
+.clo-cl-dest:disabled { opacity: 0.45; }
+
+.clo-cl-status {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--clo-text-dim);
+  overflow-wrap: anywhere;
+}
+
+.clo-cl-status--bad { color: var(--clo-danger-text); }
+
+.clo-cl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.clo-cl-btn {
+  padding: 5px 10px;
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--clo-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.clo-cl-btn:hover:not(:disabled) { background: var(--clo-bg-sunken); }
+.clo-cl-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* The one action that writes — the row's ordinary-action green, section 18's
+   own accent, never the filled "one primary" of the trainer row. */
+.clo-cl-btn--primary {
+  border-color: var(--clo-accent);
+  color: var(--clo-accent);
+}
+
+.clo-cl-btn--exit { color: var(--clo-text-dim); }
+
+.clo-cl-menu[hidden],
+.clo-cl-popup[hidden],
+.clo-cl-line[hidden],
+.clo-cl-name[hidden],
+.clo-cl-dest[hidden],
+.clo-cl-status[hidden] {
+  display: none;
+}
+
+html.clo-touch .clo-cl-menu__item { font-size: 15px; padding: 10px 14px; }
+html.clo-touch .clo-cl-popup { font-size: 14px; width: 340px; }
+html.clo-touch .clo-cl-btn { font-size: 14px; padding: 8px 12px; }
+html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms iOS */
 
 .clo-cr-mvrow {
   display: flex;

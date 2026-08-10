@@ -51,7 +51,13 @@ the engine following OUR board instead of Chessable's, and "Add as line" writes
 the line worked out there back into the course as a clickable line in the
 comment of the move it was opened on; it opens on the standalone variation page
 too (section 19b), from an "Analyse" button in the Lichess panel's own header —
-that page has no trainer row to host one. A COURSE page
+that page has no trainer row to host one. "Add as variation" (19c) writes the
+line as a real trainable card with the source's own plies in front of it, and
+"Add as puzzle" (section 19d) writes it ALONE, starting from the board's own
+position — a FromPosition card — into any chapter of any course you can import
+into, chosen from a picker in the panel. That same puzzle write is offered on the
+CLICKABLE LINES a comment prints (section 19e), from the right-click/long-press
+Chessable answers with its own "Add to Repertoire". A COURSE page
 (`https://www.chessable.com/course/<bid>/`) gets a "Repertoire coverage" panel
 (section 21): it walks the course's move tree against one of the user's own
 courses, lists the variations that are missing ranked by how likely the user is
@@ -147,6 +153,8 @@ Currently working (v0.18.x).
   * `DESIGN-show-and-grade.md` — sections 23 and 23b
   * `DESIGN-repertoire-coverage.md` — section 21
   * `DESIGN-add-as-variation.md` — section 19c (§2 = the wire, and the ten live facts)
+  * `DESIGN-add-as-puzzle.md` — sections 19d and 19e (§2 = the wire, incl. the
+    move-PAIR fold; §6 = the clickable-line menu and why data-fen cannot be trusted)
 - `DESIGN-ui-inventory.md` — every control by host and state, what competes with
   what, the agreed visual hierarchy, and the remaining change list. Read it
   before adding a control to the overstudy row or picking a colour for one; §3
@@ -1317,6 +1325,105 @@ Currently working (v0.18.x).
     write). `cr.an.created` is set AFTER `report()`, since every report goes
     through `resetAnSave`, and is cleared wherever the sentence naming it is:
     the button and its sentence live and die together.
+- ADD AS PUZZLE (section 19d, v0.97.0): the analysis board's THIRD write — the
+  analysed line as a variation that STARTS ON THE BOARD'S OWN POSITION, with none
+  of the moves that led there. That is what a puzzle is on Chessable: a variation
+  whose `initialFEN` is mid-game. Both hosts, a third button beside the other two.
+  **READ `DESIGN-add-as-puzzle.md` BEFORE CHANGING ANYTHING HERE** — the endpoint,
+  the body and the facts behind them were ground-truthed live 2026-08-11. What
+  follows is only what an edit ELSEWHERE can break.
+  * IT IS A DIFFERENT ENDPOINT FROM 19c AND HAS TO BE.
+    `importSubvariationFromSource` takes `initialFEN` from the SOURCE variation,
+    always; `POST /api/v1/importGame?uid&bid` (Chessable's own /analysis/ "save to
+    course") takes `head.fen`, and THAT becomes the new variation's start. Same
+    section 5c JWT auth, body `{ data: "<JSON string, an array of entries>" }`.
+    NEVER send `oid` on an entry — with it the call OVERWRITES that variation.
+  * THERE IS NO `source` FIELD, which is the whole reason this one is more
+    capable than 19c: nothing is read from the course the line came out of, so a
+    puzzle can be lifted from a BOUGHT course. It therefore has NO `authorUid`
+    guard and needs none — `getImportData`'s book list already IS the writable
+    set (bought courses absent), and `isImportDisabled` is the one filter.
+  * THE BODY WANTS MOVE **PAIRS**, not plies (`sanW/sanB/fenW/fenB/mid/isKey/…`),
+    and `pairPuzzleMoves` is a FAITHFUL COPY of their client's own fold — quirks
+    included: `fen` lags by a ply, and a black-first pair's would-be `fenW` is the
+    position AFTER its move. Both were confirmed against a NATIVELY created
+    variation, so they are the convention, not bugs to fix. Tidying either makes
+    the payload something the server has never been sent. The per-ply array alone
+    is refused with `500 "Column 'moves' cannot be null"`.
+  * THE TARGET COURSE'S COLOUR DECIDES WHICH SIDE IS QUIZZED whatever `color` we
+    send (sent 'white' into a black course, stored 'black'). DELIBERATELY NOT
+    WARNED ABOUT: a puzzle that shows the opponent's move before the first move it
+    asks for is normal, so the clash is usually the intended reading.
+  * `fetchImportTargets`/`importTargetsOnce` (section 5c, memoised per document
+    like `chessableBooksOnce`) IS THE DESTINATION UNIVERSE: `getImportData` answers
+    every importable course AND every chapter of each — `books`/`chrs`, both JSON
+    STRINGS inside the JSON body — in one call. Nothing else does: `getHomeData`
+    knows only a chapter COUNT and `editVariations` needs a `lid` to ask. `bid` is
+    ignored by the server. Its chapters come back INTERLEAVED by lid across
+    courses, so the picker sorts before it groups.
+  * A CHAPTER CALLED "Puzzles" IS A DEFAULT, NEVER A GATE (`PUZZLE_CHAPTER_RE`).
+    The selection falls back through: last written to (`cloPuzzleDest`,
+    storage.LOCAL — a standing preference), then a "Puzzles" chapter, then the
+    source variation's own, then the first. The picker is read on OPEN, which is
+    safe only because it is one cached GET and raises no window — the rights probe
+    beside it may still never be started that way.
+  * `cr.an.addPuzzle` IS ITS OWN ARM, never shared with `cr.an.addVar`: one arm
+    between two writes would let a press meant for the sentence on screen fire the
+    other. Both are dropped by `resetAnSave`, `anPlay` and `anRemoveFrom`, and this
+    one additionally by CHANGING THE PICKER — the destination is half of what the
+    armed sentence promised.
+  * IT DROPS THE SAME CACHES 19c DOES (`dropCourseCache`, and
+    `dropRepertoireIndexCache` when the target IS the nominated repertoire), and
+    its read-back checks the START POSITION as well as the moves (`cacheKey`, so
+    normalised counters are not a failure) — a puzzle stored from the standard
+    position would be a different card entirely, and a silent one.
+  * `courseWritePost` is SHARED with 19c and keeps the server's own words for the
+    same reason; do not route either write through `chessableApiFetch`, which
+    throws a bare "HTTP 400".
+  * `SELECTORS.variationTitle` (`#theOpeningTitle`) is the source variation's name
+    verbatim, so naming the puzzle costs no course read. The document-capture key
+    swallow exempts the picker exactly as it exempts the lead-in field: arrows and
+    letters are how a `<select>` is driven.
+- ADD AS PUZZLE ON A CLICKABLE LINE (section 19e, v0.98.0): 19d's write, offered
+  where Chessable offers "Add to Repertoire" — right-click or long-press a
+  clickable move in a comment. Both hosts. Same doc, `DESIGN-add-as-puzzle.md`
+  §6; **read it before touching this**. What an edit ELSEWHERE can break:
+  * CHESSABLE'S `data-fen` CANNOT SEGMENT A LINE, and trusting it fails SILENTLY.
+    The variation page gives every clickable move the position after it, but
+    chained BLINDLY: a comment writing two branches in one breath ("4.Qxd4 e5
+    4.c3 dxc3") hands the second branch's first move the position after the FIRST
+    branch whenever that is legal, which it usually is. So lines are read the way
+    section 18 reads them — printed MOVE NUMBERS, through `subMoveGroups` →
+    `resolveLine` → `walkLine` → `branchLines`. Never from `data-fen`.
+  * THAT MACHINERY IS NOW SHARED, so a change to it lands in two features:
+    `subMoveGroups(els, mainEls)` takes the mainline elements to count the attach
+    ply against and reads the id from `el.id || el.dataset.index`; the
+    shallowest-first resolve loop is `resolveGroups(groups, fens)`, whose ORDER is
+    load-bearing (a nested line anchors on its parent, looked up in the map that
+    loop builds). `fens[i]` is the position BEFORE ply i.
+  * NOTHING OF OURS ENTERS THEIR PORTAL. Ours is raised by our OWN capture-phase
+    `contextmenu` listener plus our own long-press timer, and theirs is only
+    MEASURED (`SELECTORS.subvarMenuAnchor`) to park ours under it — so ours still
+    appears where theirs is disabled, which is a variation with a custom start
+    FEN, i.e. exactly the tactics course a puzzle comes from.
+  * THEIR BACKDROP IS VIEWPORT-WIDE (z 12000) AND OUTLIVES THE MENU, so a second
+    right-click lands on IT and `closest()` finds nothing. `clickableMoveAt` falls
+    back to `elementsFromPoint`, but only when the target really is inside their
+    portal. Our own surfaces sit at 12002/12003, and both close on an outside
+    pointerdown BY CONTAINMENT — never `stopPropagation`, since their backdrop is
+    entitled to the same event.
+  * THE POPUP SWALLOWS KEYS IN BUBBLE PHASE (the quick-edit popup's discipline,
+    NOT the overlays' capture-phase one): that listener is gated on a run being
+    active and this popup can be open with nothing running, while MoveTrainer2's
+    single-key shortcuts do not skip its `<select>`.
+  * ONE PRESS WRITES, deliberately unlike 19d's two: the popup IS the description
+    (line, name, destination), so an arming press would only repeat what is on
+    screen — v0.43.0's argument for "Add as line".
+  * IT KEEPS THE LINES SECTION 18 DROPS. `puzzleLinesOf` applies no quizzability
+    filter — the user pointed at this line, so a "?" on it or a line with no move
+    of their own is theirs to take. Only `truncated` is dropped; branches split.
+  * `closeClickableMenus()` is called from BOTH ticks on a variation change: what
+    is on screen describes a line of the variation just left.
 - Mistake drill (section 20, v0.45.0; verified live 2026-07-29): the fast
   alternative to the retry pass —
   the session's failed MOVES, one card each, instead of their whole variations.

@@ -1750,10 +1750,20 @@ body {
             <button type="button" class="clo-cr-btn">Remove from here</button>
           </div>
           <input type="text" class="clo-cr-anprefix" placeholder="lead-in, e.g. “An example continuation:”" value="An example continuation:">
+          <select class="clo-cr-andest">
+            <optgroup label="Testing course">
+              <option>Main Level</option>
+              <option selected>Puzzles</option>
+            </optgroup>
+            <optgroup label="Testing Repertoire">
+              <option>Main Level</option>
+            </optgroup>
+          </select>
           <div class="clo-cr-anstatus">Appends to 12.Be3: An example continuation: (12.Be3 Rb7 13.Nc3 a4 14.Qd2)</div>
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as line</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as variation</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as puzzle</button>
             <button type="button" class="clo-cr-btn">Flip</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
           </div>
@@ -1790,6 +1800,54 @@ body {
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as line</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--armed">Really add it?</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as puzzle</button>
+            <button type="button" class="clo-cr-btn">Flip</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>“Add as puzzle” armed (19d)</h3>
+      <p class="hx-note">The THIRD write, and the only one that starts a variation from the position
+         on the board — no source plies in front of it. Its destination is a real choice (any chapter
+         of any course you can import into), so it gets a picker, and the armed sentence names what
+         the picker says. <strong>Measure this one at 488px</strong>, the live width of the panel over
+         Chessable’s comment column: six buttons plus a select is the fullest this panel ever is.</p>
+      <div class="hx-stage">
+        <div class="clo-cr-panel hx-pos" style="width:488px">
+          <div class="clo-cr-title">Analysis</div>
+          <div class="clo-cr-prompt">Black to play</div>
+          <div class="clo-cr-progress">Move 3 of 3</div>
+          <div class="clo-cr-list">
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">4…</span>
+              <button type="button" class="clo-cr-mv" data-ply="1">Nf6</button>
+            </div>
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">5.</span>
+              <button type="button" class="clo-cr-mv" data-ply="2">Nc3</button>
+              <button type="button" class="clo-cr-mv clo-cr-mv--on" data-ply="3">a6</button>
+            </div>
+          </div>
+          <input type="text" class="clo-cr-anprefix" placeholder="lead-in, e.g. “An example continuation:”">
+          <select class="clo-cr-andest">
+            <optgroup label="Testing course">
+              <option>Main Level</option>
+              <option selected>Puzzles</option>
+              <option>sicil test</option>
+            </optgroup>
+            <optgroup label="Testing Repertoire">
+              <option>Main Level</option>
+            </optgroup>
+          </select>
+          <div class="clo-cr-anstatus">Creates "1 — puzzle from 4...Nf6" in Testing course › Puzzles,
+            starting from the position on this board — 3 moves. Press again to confirm.</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as variation</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--armed">Really add it?</button>
             <button type="button" class="clo-cr-btn">Flip</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
           </div>
@@ -1802,7 +1860,10 @@ body {
       <p class="hx-note">After a successful create, “Open it” appears and stays for as
          long as the sentence naming it does. It NAVIGATES (plain style, not green), and it opens a
          new tab: the analysed line stays on this board, and in a trainer session nothing is
-         abandoned. <strong>Measure this one too:</strong> it is the widest the action row gets.</p>
+         abandoned. <strong>Measure this one too:</strong> it is the widest the action row gets —
+         and since 19d made six of them, it is now the one state that wraps. Measured at the live
+         488px panel (454px of content): the first five fit on one line and <em>Exit</em> alone
+         drops to a second, 32px → 64px. Only after a create, and the panel has the room.</p>
       <div class="hx-stage">
         <div class="clo-cr-panel hx-pos" style="width:300px">
           <div class="clo-cr-title">Analysis</div>
@@ -1820,6 +1881,7 @@ body {
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as line</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as variation</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as puzzle</button>
             <button type="button" class="clo-cr-btn">Open it</button>
             <button type="button" class="clo-cr-btn">Flip</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
@@ -1849,8 +1911,105 @@ body {
                  variation's starting position too, and its other refusals need a course
                  read. A press that cannot act says why. -->
             <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as variation</button>
+            <!-- 19d is not disabled either: it needs no entry move at all (nothing is
+                 being commented on) and no rights in the course the line came from. -->
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as puzzle</button>
             <button type="button" class="clo-cr-btn">Flip</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section class="hx-sec" id="s-cl" data-title="Clickable line → puzzle">
+  <h2>Clickable line → puzzle (19e)</h2>
+  <p>The same write as 19d, offered where Chessable offers “Add to Repertoire”: right-click or
+     long-press a clickable move in a comment. Two body-mounted fixed surfaces — a one-item menu
+     parked under theirs, and the popup it opens. Nothing of ours ever enters their portal; theirs
+     is only measured. Their anchor sits at z-index 12001 (measured live), so ours is 12002 and the
+     popup 12003.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card">
+      <h3>The menu item</h3>
+      <p class="hx-note">Shown under Chessable’s own one-item menu. Raised by our own gesture
+         watcher rather than by hooking theirs, so it still appears where theirs is disabled — which
+         is a variation with a custom start FEN, i.e. exactly the tactics course a puzzle comes
+         from. The grey box below stands in for theirs.</p>
+      <div class="hx-stage">
+        <div style="position:relative;height:120px">
+          <div style="position:absolute;left:16px;top:8px;width:160px;padding:8px 12px;
+                      border-radius:6px;background:#f4f4f4;color:#222;font-size:13px">Add to Repertoire</div>
+          <div class="clo-cl-menu" style="position:absolute;left:16px;top:52px">
+            <button type="button" class="clo-cl-menu__item">Add as puzzle</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>The popup — ready to write</h3>
+      <p class="hx-note">ONE press writes, unlike 19d’s two: the popup <em>is</em> the description,
+         so an arming press would only repeat what is already on screen (v0.43.0’s argument for
+         “Add as line”). The picker is the same one the analysis panel carries and shares its
+         selection.</p>
+      <div class="hx-stage">
+        <div style="position:relative;height:230px">
+          <div class="clo-cl-popup" style="position:absolute;left:8px;top:8px">
+            <div class="clo-cl-title">Add as puzzle</div>
+            <div class="clo-cl-line">c3! d5</div>
+            <div class="clo-cl-name">Creates "1 — puzzle from 3.c3" — 2 moves from this position.</div>
+            <select class="clo-cl-dest">
+              <optgroup label="Testing course">
+                <option>Main Level</option>
+                <option selected>sicil test</option>
+              </optgroup>
+              <optgroup label="Testing Repertoire">
+                <option>Main Level</option>
+              </optgroup>
+            </select>
+            <div class="clo-cl-actions">
+              <button type="button" class="clo-cl-btn clo-cl-btn--primary">Add as puzzle</button>
+              <button type="button" class="clo-cl-btn clo-cl-btn--exit">Close</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>The popup — written, and refused</h3>
+      <p class="hx-note">“Open it” appears only once there is an oid, and opens a NEW tab on both
+         hosts (section 19c’s reasoning: in a trainer session, navigating away abandons the
+         session). Every refusal carries its sentence.</p>
+      <div class="hx-stage">
+        <div style="position:relative;height:400px">
+          <div class="clo-cl-popup" style="position:absolute;left:8px;top:8px">
+            <div class="clo-cl-title">Add as puzzle</div>
+            <div class="clo-cl-line">c3! d5</div>
+            <div class="clo-cl-name">Creates "1 — puzzle from 3.c3" — 2 moves from this position.</div>
+            <select class="clo-cl-dest">
+              <optgroup label="Testing course"><option selected>sicil test</option></optgroup>
+            </select>
+            <div class="clo-cl-status">Added as a puzzle in Testing course › sicil test:
+              "1 — puzzle from 3.c3" (c3 d5).</div>
+            <div class="clo-cl-actions">
+              <button type="button" class="clo-cl-btn clo-cl-btn--primary">Add as puzzle</button>
+              <button type="button" class="clo-cl-btn">Open it</button>
+              <button type="button" class="clo-cl-btn clo-cl-btn--exit">Close</button>
+            </div>
+          </div>
+          <div class="clo-cl-popup" style="position:absolute;left:8px;top:210px">
+            <div class="clo-cl-title">Add as puzzle</div>
+            <div class="clo-cl-status clo-cl-status--bad">That line does not fit any position in
+              this variation, so it cannot be placed on a board.</div>
+            <div class="clo-cl-actions">
+              <button type="button" class="clo-cl-btn clo-cl-btn--primary" disabled>Add as puzzle</button>
+              <button type="button" class="clo-cl-btn clo-cl-btn--exit">Close</button>
+            </div>
           </div>
         </div>
       </div>
