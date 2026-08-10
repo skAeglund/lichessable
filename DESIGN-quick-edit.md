@@ -30,6 +30,47 @@ stretched a save from ~4–5 s to ~13–20 s, i.e. right into the worker's job
 timeout. `focused: false` was tried and saved NOTHING: the window opens occluded
 behind a maximized browser and is throttled the same.
 
+#### …unless the browser has no windows (v0.96.0)
+
+Android has no window concept, so every Android Chromium fork has to fake
+`chrome.windows` — and quick-edit is the extension's ONLY user of that API.
+Ground-truthed 2026-08-10 on **Lemur Browser** (Android tablet), against a build
+where the Lichess panel populates and the overstudy button opens a tab: the
+service worker runs, messaging works in both directions, and `chrome.tabs` is
+fine. `chrome.windows.create` alone throws. **Kiwi Browser maps it onto a tab**,
+which is why the same extension works on the user's phone.
+
+`openDriverSurface(url, req)` is the new entry point and the order is
+window → window-without-bounds → tab:
+
+| step | when |
+| --- | --- |
+| `openDriverWindow(url, req)` | `canOpenDriverWindow()`, i.e. `chrome.windows.create` is a function |
+| `openDriverWindow(url, null)` | the original v0.28.0 retry — bad screen bounds are the one thing a caller can get wrong |
+| `openDriverTab(url)` | anything else |
+
+`openDriverTab` is `chrome.tabs.create({ url, active: true })`. **`active: true` is
+the whole point** — the rule above is about HIDDEN pages, and a foreground tab is
+not one, so the driver's clocks run at full speed. `active: false` would
+reintroduce the exact ~1 s clamp the popup window exists to escape. Finish is
+unchanged: `finalizeQuickEditJob` removes the tab and the browser returns to the
+tab underneath.
+
+`openDriverWindow` also races `create` against `DRIVER_WINDOW_TIMEOUT_MS` (5 s) and
+falls through on no answer, closing the window if it turns up late. This covers the
+failure a try/catch cannot: `startQuickEditJob` arms the job timeout only AFTER the
+await returns, so a stub that accepts the call and drops it hangs the job before
+anything exists to time it out — no window, no job record, no error, and a popup
+stuck for the rest of the session. Lemur throws rather than hanging, so this arm is
+untested against a real browser.
+
+**The cost, and it cannot be avoided on a single-window browser:** the requester tab
+is backgrounded while the driver works, and Android evicts background renderers
+aggressively. If Chessable's tab is killed mid-job, the result lands nowhere and the
+popup waiting for it is gone with the page. Nothing in the design can fix that —
+opening a *visible* driver necessarily hides the requester when there is only one
+slot to be visible in.
+
 The popup's TOP document covers itself with an opaque "Saving…" shield
 (`maybeMountQuickEditShield`, worker msg `clo-quick-edit-is-driver`) that also
 swallows all keystrokes in capture phase — the window has real focus, so typing
@@ -184,6 +225,14 @@ runs one job at a time — so a read fired beside it was refused, and the refusa
 carried no `plyIndex`, so it matched no key and the tab sat on "Reading…" for ever.
 Both halves fixed (the worker now echoes `plyIndex` on a refusal); `onResult`'s probe
 branch and the probe watchdog both release a waiting read.
+
+**Every failure relay must carry `plyIndex`, not just that one** (v0.96.0). The same
+omission was still sitting on the could-not-open-a-driver branch, and it presented
+identically: on Lemur, Append reported "could not open the Chessable edit window"
+correctly (the save handler does not key on the ply) while Edit and Arrows hung on
+"Reading the current comment from Chessable…" over the very same failure. Whenever a
+new refusal path is added to `startQuickEditJob`, it is `plyIndex` that makes it
+audible to the reading tabs.
 
 ## 5. Alternative moves
 
@@ -395,6 +444,24 @@ is settled locally by a `probeTimeoutMs` watchdog — otherwise the bid stays in
 for the rest of the session with no retry. The alt check hears about a watchdog
 give-up through the `altCheckProbeSettled` bridge, since its own knowledge of probes
 comes only from `clo-quick-edit-result` messages.
+
+**…and a failed probe may not start another one** (`qe.probeFailed`, v0.96.0). The
+two facts above compose into a loop: a failure is deliberately not cached in
+`rightsByBid`, so rights stay `null` — and `applyRightsToPopup` answered `null` by
+calling `maybeProbe()`, which re-armed the watchdog, whose expiry called
+`applyRightsToPopup` again. A probe that can never succeed therefore re-ran every
+45 s for ever, opening a driver window each time, while the popup showed "Checking
+edit rights…" permanently and the message explaining the failure was always one
+tick away from being replaced. Section 15 was fixed for exactly this in v0.34.x
+(`ac.probeFailed`, plus `ac.probeStarted` so `applyAcRights` cannot re-probe in a
+loop); this half of the shared cache was missed. The latch is per popup-OPEN — reset
+in `openPopup`, so closing and reopening is the retry the message asks for — and is
+set from all three routes to a failure: the watchdog, the `ok:false` probe result,
+and `maybeProbe()` returning false.
+
+Found while diagnosing the Lemur failure above: with `chrome.windows.create`
+throwing, every probe failed, and the loop is what turned a reportable error into a
+hang.
 
 `initQuickEditUi` exports `quickEditApi = { rightsFor(bid), probe(bid, oid, win) }`
 (module-level variable). The alt check (15) and the analysis board's "Add as line"

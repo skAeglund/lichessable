@@ -563,6 +563,22 @@ Currently working (v0.18.x).
     (ours AND Chessable's) to ~1 s and pushes a save into the worker's job timeout.
     All waits are `quickEditWaitUntil`, MutationObserver-driven with the interval as
     backstop: NEVER add a plain fixed delay to that driver.
+  * …EXCEPT WHERE THERE ARE NO WINDOWS, i.e. Android. `openDriverSurface` falls back
+    to `chrome.tabs.create({active: true})` when `chrome.windows.create` is absent,
+    throws, or does not answer inside `DRIVER_WINDOW_TIMEOUT_MS`. The rule above is
+    about HIDDEN pages, and a FOREGROUND tab is not one — do not "restore" the
+    window-only path, and above all do not make the fallback `active: false`, which
+    would reintroduce the exact ~1 s clamp the popup window exists to escape.
+    Ground-truthed 2026-08-10 on Lemur Browser, where the panel and the overstudy
+    tab work and `chrome.windows` alone is missing. The unavoidable cost on a
+    single-window browser: the requester tab is backgrounded while the driver runs,
+    and Android may evict it, taking the waiting popup with it.
+  * EVERY FAILURE RELAY FROM THE WORKER MUST CARRY `plyIndex`. The 'load' handler
+    keys its state machine on `"<oid>#<plyIndex>"` and DROPS a result that does not
+    match, so an error sent without it is an error the popup never hears — Edit and
+    Arrows then hang on "Reading the current comment from Chessable…" over a failure
+    they were already told about. Bitten twice: the concurrency refusal, then the
+    could-not-open-a-window branch (2026-08-10).
   * MATCH THE MOVE BY ITS 0-BASED PLY INDEX, NEVER BY ABSOLUTE NUMBER. The edit page
     renumbers every variation from move 1 — a tactics puzzle shown as "25. Qc2!" in
     review is `Qc2_w_1` there — while review keeps the source game's numbering.
@@ -593,6 +609,15 @@ Currently working (v0.18.x).
     cannot start one, a probe whose result never arrives is settled by a watchdog,
     and the alt check hears about that give-up through the `altCheckProbeSettled`
     bridge — otherwise both popups sit on "Checking edit rights…" for the session.
+    …AND A FAILED PROBE MAY NOT START ANOTHER. A failure is deliberately NOT cached
+    in `rightsByBid` (that would lock the course out for the session), so "unknown"
+    is also what a failure leaves behind — and `applyRightsToPopup` answered unknown
+    by probing again, which re-armed the watchdog, which called it again, for ever:
+    a driver window every `probeTimeoutMs` and a popup pinned on "Checking edit
+    rights…" with the explanation permanently one tick away. `qe.probeFailed` is the
+    latch, per popup-OPEN (reopening is the retry), mirroring section 15's
+    `ac.probeFailed` — that module was fixed for this loop; this half of the shared
+    cache was left in it until v0.96.0.
     `variationEditRights()` is top-level and shared with 19b: that page renders its
     "Edit Variation" link only for an editable course, so the answer is never null and
     no probe is needed — load-bearing, since the variation host reports NO `bid`.

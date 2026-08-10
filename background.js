@@ -28,10 +28,12 @@
  * comment in the review column is not the stored text, so this round trip is
  * the only way to fill the editor with something safe to save back. Like
  * 'probe' it also answers the edit-rights question, so an edit never needs a
- * probe of its own. ALWAYS that popup window, never a background tab — Chrome
+ * probe of its own. ALWAYS a VISIBLE surface, never a background tab — Chrome
  * clamps every timer on a hidden page to ~1 s (Chessable's own boot,
  * animations and dialogs included), which stretched a save from ~4-5 s to
- * ~13-20 s, i.e. right up against this worker's job timeout. One job at a
+ * ~13-20 s, i.e. right up against this worker's job timeout. That surface is a
+ * focused popup window wherever there are windows, and a FOREGROUND tab where
+ * there are not (Android; see openDriverSurface). One job at a
  * time, kept in chrome.storage.session so it survives a worker idle-restart:
  *   { type:'clo-quick-edit-run', mode:'probe'|'load'|'save'|'edit'|'alt'|'shapes',
  *     oid, bid, san, color, plyIndex, commentText, baseText, altSans,
@@ -108,6 +110,11 @@ function quickEditJobCap(job) {
   const extra = job && Array.isArray(job.altSans) ? Math.max(0, job.altSans.length - 1) : 0;
   return QUICK_EDIT_TIMEOUT_MS + extra * QUICK_EDIT_ALT_EXTRA_MS;
 }
+// How long chrome.windows.create is given to ANSWER before the driver gives up
+// on it and opens a tab instead (see openDriverWindow). Opening a window is a
+// local operation with no network in it — this is a stuck-API cap, not a
+// patience allowance, so it is short.
+const DRIVER_WINDOW_TIMEOUT_MS = 5000;
 let quickEditTimer = null;
 
 
@@ -333,8 +340,9 @@ function relayQuickEditResult(job, result) {
 }
 
 /**
- * Opens the quick-edit driver: a small FOCUSED popup window, ALWAYS — never a
- * background tab. Chrome clamps every timer on a hidden page to ~1 s, and that
+ * Opens the quick-edit driver in a small FOCUSED popup window — the preferred
+ * surface everywhere the browser has windows, and NEVER a background tab.
+ * Chrome clamps every timer on a hidden page to ~1 s, and that
  * includes Chessable's own boot, animations and dialogs, which stretched a
  * save from ~4-5 s to ~13-20 s. Focused is equally load-bearing: an unfocused
  * window opens BEHIND a maximized browser, where the occlusion tracker
@@ -347,6 +355,8 @@ function relayQuickEditResult(job, result) {
  * BESIDE its quick-edit popup (sanity-checked here, sizes clamped; Chrome
  * additionally enforces its own popup minimums). Without it, the window is
  * parked bottom-right of the user's current window.
+ *
+ * See openDriverSurface for what happens where there are no windows at all.
  */
 async function openDriverWindow(url, req) {
   if (!req || ![req.left, req.top, req.width, req.height].every(Number.isFinite)) req = null;
@@ -362,12 +372,95 @@ async function openDriverWindow(url, req) {
     left = bounds ? Math.max(0, bounds.left + bounds.width - width - 8) : undefined;
     top = bounds ? Math.max(0, bounds.top + bounds.height - height - 8) : undefined;
   }
-  const win = await chrome.windows.create({
+  const create = chrome.windows.create({
     url, focused: true, type: 'popup', width, height, left, top,
   });
+  // A create that never ANSWERS is the one failure this await cannot survive:
+  // startQuickEditJob arms the job timeout only after it returns, so a stub
+  // that accepts the call and drops it hangs the job before anything exists to
+  // time it out — no window, no job record, no error, and a popup stuck on
+  // "Saving…" or "Checking edit rights…" for the rest of the session. Lemur
+  // throws instead (ground-truthed 2026-08-10), which try/catch already
+  // handles, but the honest failure and the silent one cost the same to cover.
+  let timer = 0;
+  const win = await Promise.race([
+    create,
+    new Promise((resolve) => { timer = setTimeout(() => resolve(null), DRIVER_WINDOW_TIMEOUT_MS); }),
+  ]);
+  clearTimeout(timer);
+  if (!win) {
+    // …and if it turns up late, close it: the fallback surface is by then
+    // already open, and an orphan popup window over the user's page is worse
+    // than the failure it came from.
+    create.then((late) => {
+      if (late && late.id != null && chrome.windows.remove) {
+        chrome.windows.remove(late.id).catch(() => {});
+      }
+    }).catch(() => {});
+    throw new Error('windows.create did not answer');
+  }
   const tab = win && win.tabs && win.tabs[0];
   if (!tab) throw new Error('driver window has no tab');
   return tab;
+}
+
+/**
+ * The fallback driver surface: a FOREGROUND tab, used only where the browser
+ * has no windows to give. Android Chromium forks are the case — there is no
+ * window concept on the platform, so the API is stubbed or absent (Lemur
+ * Browser throws outright; ground-truthed 2026-08-10 on a build where the
+ * Lichess panel and the overstudy tab both work, i.e. the worker, both
+ * message directions and chrome.tabs are all fine and chrome.windows alone is
+ * not).
+ *
+ * `active: true`, and that is the whole point — NOT the openOverstudyTab
+ * treatment. Everything the doc comment above says about hidden pages being
+ * clamped to ~1 s applies to a background tab exactly as it does to an
+ * occluded window, and the driver's clocks are what a save is made of. A
+ * FOREGROUND tab is not hidden, so it runs at full speed; it takes the screen
+ * while it works, which on a phone or tablet is what a popup window would have
+ * done anyway. finalizeQuickEditJob closes it (chrome.tabs.remove) and the
+ * browser returns to the tab underneath.
+ *
+ * The cost, which cannot be avoided on a single-window browser: the REQUESTER
+ * tab is backgrounded for the duration, and Android evicts background
+ * renderers aggressively. If Chessable's tab is killed mid-job the result
+ * lands nowhere and the popup that was waiting for it is gone with the page.
+ */
+async function openDriverTab(url) {
+  const tab = await chrome.tabs.create({ url, active: true });
+  if (!tab || tab.id == null) throw new Error('driver tab has no id');
+  return tab;
+}
+
+/** Whether this browser can open a window at all (see openDriverTab). */
+function canOpenDriverWindow() {
+  return Boolean(chrome.windows && typeof chrome.windows.create === 'function');
+}
+
+/**
+ * Window first, tab last. The middle step is the original retry: the only
+ * input the requester controls is the placement, and bad screen bounds (a
+ * monitor that went away between the two calls, say) are the one thing that
+ * can make windows.create refuse on a browser that has windows.
+ */
+async function openDriverSurface(url, req) {
+  if (canOpenDriverWindow()) {
+    try {
+      return await openDriverWindow(url, req);
+    } catch (err) {
+      try {
+        return await openDriverWindow(url, null);
+      } catch (err2) {
+        console.warn('[CLO] quick-edit: could not open a driver window (' +
+          ((err2 && err2.message) || err2) + ') — falling back to a foreground tab');
+      }
+    }
+  } else {
+    console.warn('[CLO] quick-edit: this browser has no chrome.windows.create — ' +
+      'using a foreground tab for the driver');
+  }
+  return openDriverTab(url);
 }
 
 async function startQuickEditJob(msg, sender) {
@@ -391,22 +484,21 @@ async function startQuickEditJob(msg, sender) {
   const url = QUICK_EDIT_BASE + oid + '/';
   let tab;
   try {
-    tab = await openDriverWindow(url, msg.win);
+    tab = await openDriverSurface(url, msg.win);
   } catch (err) {
-    // The only input the requester controls is the placement, and bad screen
-    // bounds (a monitor that went away between the two calls, say) are the one
-    // thing that can make windows.create refuse. Retry once letting Chrome
-    // place the window itself — but stay a POPUP either way: a background tab
-    // is throttled to ~1 s timers and is not an acceptable substitute.
-    try {
-      tab = await openDriverWindow(url, null);
-    } catch (err2) {
-      chrome.tabs.sendMessage(sender.tab.id, {
-        type: 'clo-quick-edit-result', oid, bid: msg.bid, mode: msg.mode,
-        ok: false, error: 'could not open the Chessable edit window',
-      }, { frameId: sender.frameId || 0 }).catch(() => {});
-      return;
-    }
+    chrome.tabs.sendMessage(sender.tab.id, {
+      type: 'clo-quick-edit-result', oid, bid: msg.bid, mode: msg.mode,
+      // plyIndex, for the reason spelled out on the refusal above: the 'load'
+      // handler keys its state machine on "<oid>#<plyIndex>" and DROPS a result
+      // that does not match, so an error sent without it is an error the popup
+      // never hears — the Edit and Arrows tabs then sit on "Reading the current
+      // comment from Chessable…" for ever, over a failure they were told about.
+      // (Ground-truthed 2026-08-10: Append reported this failure correctly while
+      // Edit hung on the same one, which is what led to this branch.)
+      plyIndex: msg.plyIndex,
+      ok: false, error: 'could not open the Chessable edit window',
+    }, { frameId: sender.frameId || 0 }).catch(() => {});
+    return;
   }
 
   const job = {

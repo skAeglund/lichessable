@@ -6338,6 +6338,11 @@
       rightsByBid: new Map(), // bid -> boolean (edit rights), cached per session
       probing: new Set(),     // bids with a probe in flight
       probeTimers: new Map(), // bid -> watchdog timer for that probe
+      // A probe for THIS popup-open failed — the alt-check's ac.probeFailed
+      // latch, for its reason (see applyRightsToPopup). Per popup-open and not
+      // per course, deliberately: a failure is never cached in rightsByBid, so
+      // reopening the popup must still be able to retry.
+      probeFailed: false,
       pencil: null,
       popup: null,
       els: null,              // cached popup child refs
@@ -7357,6 +7362,8 @@
       qe.popupTarget = moveEl;
       qe.saving = false;
       qe.clearArmed = false;
+      // A new open is the retry the failure message asked for.
+      qe.probeFailed = false;
       qe.els.textarea.value = '';
       qe.els.editArea.value = '';
       qe.els.sanInput.value = '';
@@ -7403,6 +7410,18 @@
      * probe starts, so no window ever opens before the user asks to comment.
      * "Checking…" is shown ONLY when a probe is genuinely running: a probe
      * that could not be started at all used to leave this status up forever.
+     *
+     * AND A PROBE THAT FAILED MUST NOT START ANOTHER ONE (qe.probeFailed).
+     * Every route to a failed probe ends here — the watchdog and the error
+     * result both call this — and a failure leaves rights unknown ON PURPOSE
+     * (see onResult: caching it would lock the course out for the session). So
+     * without the latch this function answered "unknown" by probing again,
+     * which re-armed the watchdog, which called this function… i.e. a probe
+     * that can never succeed re-ran every probeTimeoutMs for ever, opening a
+     * driver window each time and holding the popup on "Checking edit rights…"
+     * with no way to reach the message that says what went wrong. That is
+     * exactly the loop applyAcRights was fixed for in section 15; this half of
+     * the shared rights cache was left in it.
      */
     function applyRightsToPopup() {
       if (!qe.popup || qe.popup.hidden || qe.saving) return;
@@ -7422,10 +7441,13 @@
         setStatus('', false);
       } else if (rights === false) {
         setStatus("You don't have edit rights for this course.", true);
+      } else if (qe.probeFailed) {
+        setStatus('Could not check edit rights — close and reopen to retry.', true);
       } else if (maybeProbe()) {
         setStatus('Checking edit rights…', false);
       } else {
-        setStatus('Could not check edit rights — close and retry.', true);
+        qe.probeFailed = true;
+        setStatus('Could not check edit rights — close and reopen to retry.', true);
       }
     }
 
@@ -7591,7 +7613,10 @@
           clearTimeout(qe.probeTimers.get(msg.bid));
           qe.probeTimers.delete(msg.bid);
         }
-        if (!msg.ok) warn('quick-edit: rights probe failed:', msg.error || '(no reason given)');
+        if (!msg.ok) {
+          warn('quick-edit: rights probe failed:', msg.error || '(no reason given)');
+          qe.probeFailed = true; // …so applyRightsToPopup cannot start another
+        }
         if (msg.ok && msg.bid) {
           // Only a completed probe is cached — a timeout/error stays unknown
           // so the next popup open retries instead of locking the course out.
@@ -7599,7 +7624,7 @@
           log('quick-edit rights for course', msg.bid, '=', Boolean(msg.canEdit));
           applyRightsToPopup();
         } else if (qe.popup && !qe.popup.hidden && !qe.saving) {
-          setStatus('Could not check edit rights — close and retry.', true);
+          setStatus('Could not check edit rights — close and reopen to retry.', true);
         }
         // A reading tab that stood down for this probe can go now — including
         // after a FAILED one, where the read is the better answer anyway.
@@ -7727,6 +7752,7 @@
         qe.probeTimers.delete(bid);
         if (!qe.probing.delete(bid)) return; // a result landed after all
         warn('quick-edit: rights probe for course', bid, 'never returned');
+        qe.probeFailed = true; // …so applyRightsToPopup cannot start another
         applyRightsToPopup();
         // Same release as a returning probe: a reading tab queued behind this
         // one must not wait on it for ever (see ensureMoveLoaded).
