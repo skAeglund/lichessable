@@ -2803,6 +2803,17 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: #fff;
 }
 
+/* "Add as variation" waiting for its confirming press (section 19c). Amber, like
+   every other "are you sure" here (auto-play's Clear, the heads-up's Turn off,
+   the coverage panel's Add) — never a green fill, which would read as "this is
+   the thing to press" rather than "you owe an answer". */
+.clo-cr-btn--armed,
+.clo-cr-btn--armed:hover:not(:disabled) {
+  border-color: var(--clo-attention);
+  background: transparent;
+  color: var(--clo-attention);
+}
+
 .clo-cr-btn--exit {
   border-color: #a33;
   color: var(--clo-danger-text);

@@ -385,6 +385,24 @@
       // only repeat what is already on screen.
       addWaitMs:       45000, // watchdog: a save whose result never comes back
       addRightsWaitMs: 50000, // …and one for a rights probe (quickEdit.probeTimeoutMs + slack)
+
+      // --- "Add as variation" (section 19c) --------------------------------
+      // The SECOND write, and nothing like the first: Chessable has a JSON API
+      // that creates a variation and splices the source variation's own plies
+      // (comments and arrows included) in front of ours, so there is no edit
+      // page to drive, no worker job and no rights probe — just this POST.
+      // DESIGN-add-as-variation.md holds the ground truth for every field.
+      addVarPath: '/api/v1/importSubvariationFromSource',
+      // POST { source:{courseId,variationId}, target:{courseId,chapterId},
+      //        subvariation:[{san,plyNumber,color:'W'|'B'}], name }
+      //   → { game: { owned, oids:[<new oid>] } }
+      // How long the confirming press stays available. Generous on purpose: the
+      // arming press puts a two-line sentence on screen (name, course, branch
+      // point) and the whole point is that it gets READ — 10 s was measured to
+      // expire while it was still being read, and a confirm that silently
+      // reverts is worse than one that waits. Nothing lurks: any change to the
+      // line disarms, and the write re-checks the line's signature anyway.
+      addVarArmMs: 30000,
     },
 
     // --- Type a move (section 22) -------------------------------------------
@@ -1103,6 +1121,26 @@
     const preHalf = Number(preFen.trim().split(/\s+/)[4]);
     const postHalf = (isPawn || isCapture) ? 0 : (Number.isInteger(preHalf) ? preHalf : 0) + 1;
     return CloSan.fenFromPos(CloSan.makeMove(pos, mv), postHalf);
+  }
+
+  /**
+   * How many plies have been played to reach `fen` — the GAME's ply count, not
+   * a variation's. Null when the FEN is unusable.
+   *
+   * This is section 19c's whole arithmetic. `importSubvariationFromSource`
+   * numbers a ply absolutely in the game, derived from the source variation's
+   * own `initialFEN`: a tactics line starting at `… b - - 0 34` has "67 plies
+   * played" before its first move, and the server refuses anything numbered
+   * below that (ground-truthed 2026-08-10 — see DESIGN-add-as-variation.md
+   * §2.2). Deriving it from a FEN rather than from a ply INDEX is what makes a
+   * mid-game start need no special case anywhere.
+   */
+  function pliesBefore(fen) {
+    const parts = String(fen || '').trim().split(/\s+/);
+    const full = Number(parts[5]);
+    if (!Number.isInteger(full) || full < 1) return null;
+    if (parts[1] !== 'w' && parts[1] !== 'b') return null;
+    return 2 * (full - 1) + (parts[1] === 'b' ? 1 : 0);
   }
 
   /**
@@ -1875,6 +1913,23 @@
       name: String((b && b.name) || ('Course ' + (b && b.bid))),
       ours: b && b.authorUid != null && String(b.authorUid) === String(cr.uid),
     })).filter((b) => b.bid && b.bid !== 'undefined');
+  }
+
+  /**
+   * The user's course list, remembered for this document's lifetime.
+   *
+   * Section 21 re-reads it per run because its panel is a report the user runs
+   * deliberately; section 19c asks a single yes/no question ("did I write this
+   * course?") on a button press, where a 200 ms round trip per press would be
+   * felt. Authorship does not change during a session, so one read is enough —
+   * and a failed read is NOT cached, so a lost connection retries.
+   */
+  let chessableBooksMemo = null;
+  async function chessableBooksOnce(cr) {
+    if (chessableBooksMemo) return chessableBooksMemo;
+    const books = await fetchChessableBooks(cr);
+    chessableBooksMemo = books;
+    return books;
   }
 
   /**
@@ -15355,6 +15410,9 @@
         job: null,        // { oid, plyIndex } of the save in flight
         pending: null,    // { text, oid, plyIndex } a rights probe is holding up
         waitTimer: 0,     // watchdog for a probe / save whose result never lands
+        // "Add as variation" (19c): idle | armed. `plan` is everything the
+        // confirming press writes, prepared and checked by the arming one.
+        addVar: { state: 'idle', at: 0, plan: null },
       };
     }
 
@@ -15381,6 +15439,7 @@
       // The line just changed, so the status line's last word about it — a
       // finished save, a failure — is stale; the live preview takes over again.
       if (cr.an.save.state === 'idle' && cr.an.save.msg) resetAnSave('idle', '', false);
+      disarmAddVar(true);
       applyMove({ mv }); // animation + cr.pos, exactly as in the quiz
       syncUi();
       scheduleRefresh(); // database + engine follow immediately, not on the next tick
@@ -15422,6 +15481,7 @@
       // The status line's last word about the line is stale now, exactly as
       // after playing a move; the live preview takes over again.
       if (cr.an.save.state === 'idle' && cr.an.save.msg) resetAnSave('idle', '', false);
+      disarmAddVar(true);
       log('analysis: removed', gone, gone > 1 ? 'moves from' : 'move,', san);
       anGoto(idx - 1); // …which repaints, re-renders the list and refreshes the panel
     }
@@ -15552,12 +15612,14 @@
     }
 
     /** Drops any watchdog and sets the state + status — every path out of a
-     *  press goes through here. */
+     *  press goes through here, including 19c's, which is why it also spends a
+     *  pending confirm: the sentence describing it is about to be replaced. */
     function resetAnSave(state, msg, bad) {
       clearTimeout(cr.an.waitTimer);
       cr.an.waitTimer = 0;
       cr.an.save.state = state || 'idle';
       cr.an.pending = null;
+      if (cr.an.addVar) { cr.an.addVar.state = 'idle'; cr.an.addVar.plan = null; cr.an.addVar.at = 0; }
       setAnStatus(msg || '', bad);
     }
 
@@ -15723,6 +15785,438 @@
       }
     }
 
+    // ------------------------------------------------------------------------
+    // 19c) "Add as variation" — the analysed line as a real trainable item
+    //
+    // "Add as line" (above) writes our moves INSIDE the entry move's comment,
+    // where Chessable prints them as clickable moves. This writes a VARIATION:
+    // its own item in the course, scheduled and quizzed like any other, with
+    // the source variation's own plies in front of ours.
+    //
+    // **READ DESIGN-add-as-variation.md** — every field of the call, and the
+    // ten facts behind it, were ground-truthed live 2026-08-10. Three of them
+    // decide the whole shape of this code:
+    //
+    //  * THE SERVER SPLICES THE PREFIX. We send only OUR moves plus the
+    //    absolute ply number of the first one, and Chessable copies the source
+    //    variation's plies 1..n in front — with their comments, their nested
+    //    clickable lines and their arrows, byte-identical. So there is nothing
+    //    here that reads, rebuilds or POSTs a prefix, and there must never be:
+    //    we cannot even read a variation's arrows outside the edit page.
+    //  * `plyNumber` IS ABSOLUTE IN THE GAME, not an index in the variation —
+    //    see pliesBefore(). A tactics variation starting at move 34 numbers its
+    //    own first ply 68, and the server refuses anything below that.
+    //  * IT IS A PLAIN JSON CALL, on section 5c's JWT auth. No edit page, no
+    //    driver window, no worker job, no rights probe, no staleness guard.
+    //
+    // Two presses, unlike "Add as line"'s one: what this creates is a card the
+    // user will be quizzed on, and the sentence describing it (name, course,
+    // where it branches) is far too long to sit in the idle status line beside
+    // the other write's preview. So the arming press is also what prepares and
+    // describes the write — every check that can refuse has run before the
+    // confirming press exists.
+    // ------------------------------------------------------------------------
+
+    const SUBLINE_WHY = 'The board was inside a clickable line, not on a move of the ' +
+      'variation — a new variation can only branch off the variation itself.';
+
+    const msgOf = (err) => String((err && err.message) || err);
+
+    /** Source ids for the write: which variation we branch off, and where its
+     *  course keeps it. `atStart` distinguishes "the board is on the variation's
+     *  starting position" (legal here, unlike for a comment) from a move we
+     *  could not read. Returns { why } for every refusal, never null. */
+    function analysisSource() {
+      const oid = isVariationPath()
+        ? (VARIATION_PATH_RE.exec(location.pathname) || [])[1]
+        : readQuickEditOid();
+      if (!oid) return { why: 'This variation could not be identified.' };
+
+      let shown;
+      if (isVariationPath()) {
+        // The highlight class is not scoped to the mainline — a clickable move
+        // inside a comment wears it too — so membership of the mainline list is
+        // what tells them apart.
+        const hl = document.querySelector(SELECTORS.variationMoveShown);
+        const moves = [...document.querySelectorAll(SELECTORS.variationMoves)];
+        if (hl && moves.indexOf(hl) < 0) return { why: SUBLINE_WHY };
+        shown = hl;
+      } else {
+        if (document.querySelector(SELECTORS.reviewSubMoveShown)) return { why: SUBLINE_WHY };
+        shown = document.querySelector(SELECTORS.reviewMoveShown);
+      }
+      // A move IS shown but analysisEntryMove could not read it: the position
+      // our line continues from is then unknown, which is the one thing this
+      // write must never guess at.
+      if (shown && !cr.an.entry) return { why: 'The move on the board could not be read.' };
+
+      const ids = isVariationPath() ? variationCourseIds() : trainerCourseIds();
+      if (!ids) {
+        return { why: 'Could not tell which course and chapter this variation is in.' };
+      }
+      return { src: { oid: String(oid), bid: ids.bid, lid: ids.lid, atStart: !shown } };
+    }
+
+    /** Course and chapter of the trainer's current variation: the drawer row
+     *  carries both, with the session URL's list id as the fallback the drawer
+     *  needs when it has not rendered. */
+    function trainerCourseIds() {
+      const m = TRAINER_URL_RE.exec(location.pathname);
+      if (!m) return null;
+      const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
+      const row = marker && marker.parentElement;
+      const lid = (row && row.getAttribute(SELECTORS.reviewRowListAttr)) || m[3] || '';
+      if (lid === '') return null;
+      return { bid: m[1], lid };
+    }
+
+    /**
+     * The same pair on the standalone variation page, which has no session URL
+     * to read: its own breadcrumb links to /course/<bid>/<lid> (verified live
+     * 2026-08-10 on /variation/70455201/, which sits in chapter 1). The bid is
+     * cross-checked later against the course listing actually containing this
+     * oid, so a stray course link elsewhere on the page cannot misdirect a write.
+     */
+    function variationCourseIds() {
+      for (const a of document.querySelectorAll('a[href*="/course/"]')) {
+        const m = /\/course\/(\d+)\/(\d+)/.exec(a.getAttribute('href') || '');
+        if (m) return { bid: m[1], lid: m[2] };
+      }
+      return null;
+    }
+
+    /**
+     * Our line as the wire's `subvariation`: SAN, the ply's absolute number in
+     * the game, and the colour of the side that plays it. Every value comes from
+     * our own FENs — `cr.an.startFen` is the position after the entry move, so
+     * it already carries the ply count and the side, and each later position is
+     * exact (fenAfterUci). Null when the start FEN is unusable.
+     */
+    function analysisVarPlies() {
+      const base = pliesBefore(cr.an.startFen);
+      if (base === null) return null;
+      const out = [];
+      let fen = cr.an.startFen;
+      for (let i = 0; i < cr.an.moves.length; i++) {
+        const pos = CloSan.parseFen(fen);
+        if (!pos) return null;
+        out.push({
+          san: cr.an.moves[i].san,
+          plyNumber: base + i + 1,
+          color: pos.side === 'w' ? 'W' : 'B',
+        });
+        fen = cr.an.moves[i].fen;
+      }
+      return out;
+    }
+
+    /** Chessable's own naming convention for a line lifted out of a variation:
+     *  the variation's title plus the branching move ("… 3.d4" / "… 3...c5").
+     *  Its context menu builds the name exactly this way. */
+    function analysisVarName(title) {
+      const first = cr.an.moves[0];
+      const pos = CloSan.parseFen(cr.an.startFen);
+      if (!first || !pos) return title;
+      const move = pos.fullmove + (pos.side === 'w' ? '.' : '...') + first.san;
+      return (title ? title + ' ' : '') + move;
+    }
+
+    /**
+     * Everything the confirming press needs, or an `error` sentence. Run by the
+     * ARMING press, so no check happens between "press again to confirm" and the
+     * write.
+     *
+     * The two ply measures are cross-checked here, and that is the point of the
+     * function: `entry.plyIndex` (the review/variation ply index, verified 1:1
+     * against the edit page) and `pliesBefore(startFen)` measure the same
+     * distance by different routes, and if they disagree, one of them is wrong.
+     * The server catches most bad ply numbers — parity, then legality — but not
+     * all: two plies out in a quiet position can be legal for the same side, and
+     * the result would be a variation silently spliced at the wrong point. So a
+     * mismatch refuses.
+     */
+    async function prepareAddVariation() {
+      const found = analysisSource();
+      if (found.why) return { error: found.why };
+      const src = found.src;
+
+      const plies = analysisVarPlies();
+      if (!plies || !plies.length) return { error: 'The line could not be written out.' };
+      // Snapshot taken together with `plies`, so the two always describe the same
+      // line however long the reads below take.
+      const sig = anLineSig();
+
+      const cr0 = chessableCreds();
+      if (!cr0) return { error: 'No Chessable session found — reload the page.' };
+
+      // Only a course the user CREATED can be written to (section 21's guard,
+      // and the same set Chessable's own add flow offers). Not `isRepertoire`,
+      // which was true for a course that was not one.
+      let books;
+      try {
+        books = await chessableBooksOnce(cr0);
+      } catch (err) {
+        return { error: 'Could not check which courses are yours: ' + msgOf(err) };
+      }
+      const book = books.find((b) => String(b.bid) === String(src.bid));
+      if (!book) return { error: 'That course is not in your library.' };
+      if (!book.ours) {
+        return { error: 'You did not create "' + book.name + '", so Chessable will not let ' +
+          'you add a variation to it. "Add as line" works on courses you can edit.' };
+      }
+
+      // The source variation itself: its title names the new one, and its
+      // initialFEN is what the ply cross-check needs. Cached (12 h, shared with
+      // the coverage report and the repertoire badges), re-read once fresh if
+      // the numbers disagree — an edited variation is the likely reason.
+      let course, entryVar, stale = false;
+      for (const useCache of [true, false]) {
+        try {
+          course = await fetchCourse(src.bid, cr0, useCache);
+        } catch (err) {
+          return { error: 'Could not read the course: ' + msgOf(err) };
+        }
+        entryVar = course.vars.find((v) => String(v.oid) === String(src.oid));
+        if (!entryVar) { stale = true; continue; }
+        const varBase = pliesBefore(entryVar.fen || START_FEN);
+        // How far into the variation our start position is, measured twice.
+        const rel = varBase === null ? null : pliesBefore(cr.an.startFen) - varBase;
+        const want = src.atStart ? 0 : (cr.an.entry ? cr.an.entry.plyIndex + 1 : null);
+        if (rel !== null && want !== null && rel === want && rel <= entryVar.sans.length) {
+          return {
+            plan: {
+              src, plies, courseName: book.name, sig,
+              name: analysisVarName(entryVar.name),
+              // What the read-back must find: the source's plies up to the
+              // branch, then ours.
+              expect: entryVar.sans.slice(0, rel).concat(plies.map((p) => p.san)),
+              after: src.atStart ? '' : (cr.an.entry ? cr.an.entry.san : ''),
+            },
+          };
+        }
+        if (!useCache) {
+          // Everything here means "the two measures disagree", and the only safe
+          // answer is to write nothing: the server would catch most wrong ply
+          // numbers, but a legal move for the same side two plies out would go
+          // through and splice the variation at the wrong point.
+          const why = rel === null || want === null
+            ? 'the position could not be placed in the variation'
+            : (rel !== want
+              ? rel + ' plies played here, ' + want + ' expected'
+              : 'the variation only has ' + entryVar.sans.length + ' plies');
+          return { error: 'The line does not line up with the variation in your course (' +
+            why + ') — not adding it. Reload the page and try again.' };
+        }
+        stale = true;
+      }
+      return { error: stale
+        ? 'That variation is not in this course any more — reload the page.'
+        : 'Could not work out where the line branches off.' };
+    }
+
+    /**
+     * The POST, with the server's own words kept.
+     *
+     * NOT chessableApiFetch: that throws a bare "HTTP 400", and this endpoint's
+     * refusals are the most useful thing it produces — "Illegal SAN at
+     * subvariation[0]='Qh8' from FEN='…'", "color='W' but the side-to-move at
+     * this position is 'B'", "116 missing plies in between". Throwing those away
+     * to say "save failed" would waste the one part of this feature that
+     * diagnoses itself.
+     */
+    async function addVarPost(cr0, body) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), CONFIG.coverage.fetchTimeoutMs);
+      try {
+        const res = await fetch(chessableApiUrl(CONFIG.continuation.addVarPath, {}), {
+          method: 'POST', headers: chessableHeaders(cr0, true),
+          body: JSON.stringify(body), signal: ctl.signal,
+        });
+        const text = await res.text();
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch (err) { /* not JSON — say so below */ }
+        if (!res.ok) {
+          const e = parsed && parsed.error;
+          const said = e && (e.message || e.userFriendlyErrorMessage);
+          throw new Error(said || ('HTTP ' + res.status));
+        }
+        if (!parsed) throw new Error('Chessable answered with something unreadable');
+        return parsed;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    /**
+     * Sends the write and confirms it by re-reading the course.
+     *
+     * Every status write goes through `report`, which drops the message when the
+     * board it belongs to is gone: this function awaits a POST and then a course
+     * read, and the user can close the analysis board (or a variation change can
+     * close it for them) in between. `blankAnalysis()` hands out a NEW object per
+     * board, so object identity is the whole test.
+     */
+    async function fireAddVariation(plan) {
+      const an = cr.an;
+      const report = (msg, bad) => {
+        if (cr.an !== an) { log('add as variation: board gone, not reporting —', msg); return; }
+        resetAnSave('idle', msg, bad);
+      };
+      const cr0 = chessableCreds();
+      if (!cr0) { report('No Chessable session found — reload the page.', true); return; }
+      // Belt and braces: anPlay disarms, so this should be unreachable — but the
+      // one thing this feature must never do is write a line other than the one
+      // the user was shown.
+      if (plan.sig !== anLineSig()) {
+        report('The line changed since that was described — press again.', true);
+        return;
+      }
+      const src = plan.src;
+      an.save.state = 'saving';
+      setAnStatus('Adding to "' + plan.courseName + '"…', false);
+      log('add as variation:', plan.name, '→ course', src.bid, 'chapter', src.lid,
+        'from variation', src.oid, 'at ply', plan.plies[0].plyNumber);
+      let oid = null;
+      try {
+        oid = await addVarPost(cr0, {
+          source: { courseId: Number(src.bid), variationId: Number(src.oid) },
+          target: { courseId: Number(src.bid), chapterId: Number(src.lid) },
+          subvariation: plan.plies,
+          name: plan.name,
+        }).then((res) => {
+          const oids = res && res.game && res.game.oids;
+          return Array.isArray(oids) ? oids[0] : null;
+        });
+        if (!oid) throw new Error('Chessable did not report a new variation');
+      } catch (err) {
+        // Nothing was created — the server validates the whole line before it
+        // writes anything (ground-truthed on an illegal SAN and on three kinds
+        // of bad ply number).
+        report('Could not add it: ' + msgOf(err) +
+          ' — the line is still here, you can retry.', true);
+        return;
+      }
+      // Never trust our own model of what landed. The caches that describe this
+      // course now lie, so they go first — if the target is also the nominated
+      // repertoire, its index would otherwise spend 12 h badging this line as
+      // unprepared.
+      await dropCourseCache(src.bid);
+      // `rep` is section 6c's own state, populated in every document the panel
+      // runs in — so this reads the live nomination, not a copy of it.
+      if (rep.bid && String(rep.bid) === String(src.bid)) await dropRepertoireIndexCache();
+      let landed = null;
+      try {
+        const fresh = await fetchCourse(src.bid, cr0, false);
+        landed = fresh.vars.find((v) => String(v.oid) === String(oid));
+      } catch (err) {
+        report('Added "' + plan.name + '" — but the course could not be ' +
+          're-read to confirm it (' + msgOf(err) + ').', false);
+        return;
+      }
+      if (!landed) {
+        report('Chessable reported variation ' + oid + ' added, but it is not ' +
+          'in the course listing — check it in Chessable.', true);
+        return;
+      }
+      const got = landed.sans.map(bareSan).join(' ');
+      const want = plan.expect.map(bareSan).join(' ');
+      if (got !== want) {
+        warn('add as variation: expected "' + want + '" but the course has "' + got + '"');
+        report('Added, but Chessable stored a different line: ' + got +
+          ' — check it in Chessable.', true);
+        return;
+      }
+      log('add as variation: created', oid, '—', got);
+      report('Added as a variation: "' + landed.name + '" (' + got + ').' +
+        (isVariationPath() ? ' Reload the page to see it.' : ''), false);
+    }
+
+    /**
+     * The analysed line, as a string that changes whenever the line does.
+     *
+     * `prepareAddVariation` reads the board, then awaits two network calls, and
+     * the board is live throughout — a move played in between would leave the
+     * prepared plan describing a line that is no longer on screen. anPlay's
+     * disarm cannot cover that window (there is nothing armed yet), so the plan
+     * carries this and is checked against it both when it arms and when it fires.
+     */
+    const anLineSig = () => cr.an.moves.map((m) => m.uci).join(' ');
+
+    /** Whether the arming press is still good for a confirming one. */
+    function addVarArmed() {
+      const av = cr.an.addVar;
+      return av.state === 'armed' && av.plan &&
+        Date.now() - av.at < CONFIG.continuation.addVarArmMs;
+    }
+
+    /**
+     * Drops a pending confirm. Anything that changes WHAT would be written calls
+     * this: a confirm whose description the user can no longer see is one they
+     * cannot give.
+     *
+     * Writes the status fields DIRECTLY rather than through setAnStatus, because
+     * syncAnalysisUi calls this for an expired arm — and setAnStatus re-enters
+     * syncUi.
+     */
+    function disarmAddVar(clearStatus) {
+      const av = cr.an.addVar;
+      if (!av || av.state !== 'armed') return false;
+      av.state = 'idle';
+      av.plan = null;
+      av.at = 0;
+      if (clearStatus && cr.an.save.state === 'idle') {
+        cr.an.save.msg = '';
+        cr.an.save.bad = false;
+      }
+      return true;
+    }
+
+    /**
+     * "Add as variation". First press prepares and describes; second press
+     * writes. A press while the description is up but stale (the line changed,
+     * the arm expired) re-describes rather than writing — disarmAddVar has
+     * already dropped it by then.
+     */
+    async function addAsVariation() {
+      const ui = cr.ui;
+      // A pressed button keeps focus, and space would then fire the confirming
+      // press for free — the whole point of arming is that it is deliberate.
+      if (ui && ui.anAddVar) ui.anAddVar.blur();
+      const save = cr.an.save;
+      if (save.state === 'saving' || save.state === 'checking') return;
+      if (!cr.an.moves.length) {
+        resetAnSave('idle', 'Play the moves you want to add first.', true);
+        return;
+      }
+      if (addVarArmed()) {
+        const plan = cr.an.addVar.plan;
+        disarmAddVar(false);
+        await fireAddVariation(plan);
+        return;
+      }
+      const an = cr.an;
+      an.addVar.state = 'idle';
+      save.state = 'checking';
+      setAnStatus('Checking where it would go…', false);
+      const prepared = await prepareAddVariation();
+      // The board is live behind an await, and the checking state must be given
+      // up whether or not the board it belongs to is still here.
+      save.state = 'idle';
+      if (cr.an !== an || cr.mode !== 'analysis' || !cr.active) return;
+      if (prepared.error) { resetAnSave('idle', prepared.error, true); return; }
+      if (prepared.plan.sig !== anLineSig()) {
+        resetAnSave('idle', 'The line changed while that was checked — press again.', true);
+        return;
+      }
+      cr.an.addVar = { state: 'armed', at: Date.now(), plan: prepared.plan };
+      const p = prepared.plan;
+      const n = p.plies.length;
+      setAnStatus('Creates "' + p.name + '" in ' + p.courseName + ', in this variation\'s own ' +
+        'chapter — ' + n + (n === 1 ? ' move' : ' moves') +
+        (p.after ? ' after ' + p.after : ' from the start of the variation') +
+        '. Press again to confirm.', false);
+    }
+
     /**
      * The position Chessable's board is showing, whichever review host we are
      * on. In the trainer that is the DOM reconstruction (exact on the mainline,
@@ -15871,6 +16365,21 @@
           ' in your course, where Chessable prints it as clickable moves. ' +
           'Saves on one press; needs edit rights.'
         : (cr.an.entryWhy || 'There is no move to add this line to.');
+
+      // "Add as variation" (19c). Deliberately NOT disabled for want of an
+      // entry move — it can also branch from a variation's starting position,
+      // and every other reason it might refuse needs a course read, which is
+      // what the arming press is for. A press that cannot act says why.
+      const armed = addVarArmed();
+      if (cr.an.addVar.state === 'armed' && !armed) disarmAddVar(true);
+      ui.anAddVar.disabled = busy || !cr.an.moves.length;
+      ui.anAddVar.textContent = armed ? 'Really add it?' : 'Add as variation';
+      ui.anAddVar.classList.toggle('clo-cr-btn--armed', armed);
+      ui.anAddVar.title = 'Add this line to the course as its own variation, with the ' +
+        'moves of this variation (and their comments and arrows) in front of it. ' +
+        'Two presses: the first says exactly what it would create. ' +
+        'Only for courses you created.';
+
       // The status line: what a press would write while nothing is happening,
       // then the save's own progress, every refusal and its result. Never blank
       // without reason — it is what makes the single press safe to give.
@@ -16205,6 +16714,11 @@
       // other button in here that does something rather than navigates.
       const anAdd = anBtn('Add as line', '', addLineToComment);
       anAdd.classList.add('clo-cr-btn--primary');
+      // The second write (19c). Two presses, because what it creates is a card
+      // the user will be quizzed on — and because the sentence describing it
+      // does not fit anywhere but the status line.
+      const anAddVar = anBtn('Add as variation', '', () => { addAsVariation().catch(() => {}); });
+      anAddVar.classList.add('clo-cr-btn--primary');
       const anExit = anBtn('Exit', 'Close the analysis board and give Chessable its board back',
         () => closeReview('analysis closed'));
       anExit.classList.add('clo-cr-btn--exit');
@@ -16275,7 +16789,7 @@
         grid, layer, shapes, promo, title, prompt, progress, actions, hint, skip, exit,
         chooser, chooseAll, chooseFinal,
         browseBtn, nav, navStart, navBack, navFwd, navEnd,
-        list, anActions, anStart, anBack, anFwd, anCut, anAdd, anPrefix, anStatus,
+        list, anActions, anStart, anBack, anFwd, anCut, anAdd, anAddVar, anPrefix, anStatus,
       };
       cr.orientation = null; // the grid is built on the first startLine
     }
@@ -16876,6 +17390,9 @@
       cr.flash = null;
       cr.drag = null;
       cr.swallowClick = false;
+      // A confirm nobody can see is one nobody can give (section 19c). The board
+      // going away is the plainest case of that.
+      disarmAddVar(false);
       clearShapes();
       hidePromo();
       if (cr.boardEl) cr.boardEl.hidden = true;

@@ -146,6 +146,7 @@ Currently working (v0.18.x).
   * `DESIGN-quick-edit-arrows.md` — section 12b only
   * `DESIGN-show-and-grade.md` — sections 23 and 23b
   * `DESIGN-repertoire-coverage.md` — section 21
+  * `DESIGN-add-as-variation.md` — section 19c (§2 = the wire, and the ten live facts)
 - `DESIGN-ui-inventory.md` — every control by host and state, what competes with
   what, the agreed visual hierarchy, and the remaining change list. Read it
   before adding a control to the overstudy row or picking a colour for one; §3
@@ -1238,6 +1239,49 @@ Currently working (v0.18.x).
     and back with our board still up, and every hazard in that function's own
     notes would apply with an overlay over the board. The status line says
     "Reload the page to see it" instead.
+- ADD AS VARIATION (section 19c, v0.95.0): the analysis board's SECOND write —
+  the analysed line as a real trainable variation rather than a clickable line
+  inside a comment, with the source variation's own plies in front of it. Both
+  hosts (19 and 19b), a second button beside "Add as line".
+  **READ `DESIGN-add-as-variation.md` BEFORE CHANGING ANYTHING HERE** — the wire
+  shape, the ten facts behind it (all ground-truthed live 2026-08-10) and the
+  arithmetic are all there. What follows is only what an edit ELSEWHERE can break.
+  * THERE IS A JSON API, and this feature is the ONE write that does not go
+    through section 12's driver: `POST /api/v1/importSubvariationFromSource` on
+    section 5c's JWT auth. No edit page, no popup window, no worker job, no
+    rights probe, no staleness guard. Do not "unify" it with quick-edit.
+  * THE SERVER SPLICES THE PREFIX, comments and ARROWS included, byte-identical.
+    We send only OUR moves. Nothing here may grow code that reads, rebuilds or
+    posts a prefix — a variation's arrows cannot even be read outside the edit
+    page, so a hand-built copy would silently lose them.
+  * `plyNumber` IS ABSOLUTE IN THE GAME, never an index in the variation, and
+    that is what the top-level `pliesBefore(fen)` exists for. A tactics variation
+    starting `… b - - 0 34` numbers its own first ply 68. Deriving it from OUR
+    start FEN is what makes a mid-game start need no special case; deriving it
+    from a move number or a ply index would splice at the wrong point.
+  * TWO PRESSES, deliberately unlike "Add as line"'s one (v0.43.0): this creates
+    a SCHEDULED CARD, and the sentence describing it does not fit the idle status
+    line beside the other write's preview. The ARMING press is what runs every
+    check, so nothing can refuse between "press again" and the write.
+    `disarmAddVar` is called by anything that changes what would be written; the
+    plan also carries `sig` (the line's own uci string) and is refused at both
+    ends if the line moved, since the board is live behind two awaits.
+  * IT WRITES TO THE COURSE THE VARIATION IS IN — nowhere else. Guarded on
+    `authorUid === uid` through `chessableBooksOnce` (section 5c, memoised per
+    document), the same guard section 21's writes use, NOT `isRepertoire`. The
+    nominated repertoire (6c) is deliberately NOT a destination yet.
+  * IT DROPS THE CACHES THAT NOW LIE — `dropCourseCache(bid)` always, and
+    `dropRepertoireIndexCache()` when the target IS the nominated repertoire.
+    Without the second one section 6c spends up to 12 h badging the line the user
+    just added as unprepared, which reads as the badges being broken.
+  * `addVarPost` DOES NOT USE `chessableApiFetch`, and must not be "tidied" into
+    it: that helper throws a bare "HTTP 400", and this endpoint's refusals are
+    its most useful output ("Illegal SAN at subvariation[0]='Qh8' from FEN='…'",
+    a colour/parity mismatch, "116 missing plies in between"). They are relayed
+    verbatim. Nothing is created on any of them.
+  * The start position, which "Add as line" must refuse, is LEGAL here (relative
+    ply 1, no prefix, `initialFEN` from the source), so `analysisSource()` does
+    its own sub-move check rather than leaning on `cr.an.entry`.
 - Mistake drill (section 20, v0.45.0; verified live 2026-07-29): the fast
   alternative to the retry pass —
   the session's failed MOVES, one card each, instead of their whole variations.
@@ -1640,6 +1684,34 @@ DOM rather than waiting on the poll. Everything that does NOT go through this
 debounce — the overlays, the launchers, the continuation module's own tick —
 works normally in a hidden tab, which is why the analysis board could be verified
 end to end while the panel behind it sat idle.
+
+## Reaching a live Chessable session (THE ONLY WAY)
+
+**Claude in Chrome, always — the user's own Chrome.** It is the only browser that
+has the Chessable session AND the unpacked extension loaded, which are both
+required: without the session every page redirects to the logged-out home, and
+without the extension there is nothing of ours to test.
+
+* Its tools are a SEPARATE, DEFERRED family, `mcp__claude-in-chrome__*`. They must
+  be fetched with ToolSearch before they can be called (one call, comma-separated:
+  `select:mcp__claude-in-chrome__tabs_context_mcp,…navigate,…javascript_tool,…computer`).
+  Then `tabs_context_mcp{createIfEmpty:true}` before anything else.
+* **NEVER use Claude Code's own Browser pane (`mcp__Claude_Browser__*` /
+  `preview_start`) for Chessable.** It is a different browser — a separate profile
+  with no Chessable cookies and no extension — and it looks like a login problem
+  rather than the wrong tool. A whole session was lost to this on 2026-08-10: the
+  pane was driven, `/course/<bid>/` kept redirecting to the marketing home page,
+  and the conclusion drawn was "the user is not logged in".
+* If the Chrome tools are missing, or `tabs_context_mcp` shows nothing, or a page
+  loads logged-out: **STOP AND ASK THE USER** to check that Claude in Chrome is
+  enabled, that the side panel is signed in to the same account, and that Chrome is
+  logged in to Chessable. Do not fall back to another browser, and do not spend
+  turns diagnosing it — one question settles it.
+* It is fine to read Chessable's PUBLIC minified bundle from any browser (that is
+  how `importSubvariationFromSource` and `importGame` were found), but every call
+  that needs auth, and every test of our own UI, needs the Chrome above.
+* The test account is a test account: writes are allowed, and are expected to be
+  undone afterwards (`updateOpening&mode=del`) with a re-read to prove it.
 
 ## Reloading the extension (READ THIS BEFORE TESTING)
 

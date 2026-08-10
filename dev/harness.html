@@ -1753,6 +1753,43 @@ body {
           <div class="clo-cr-anstatus">Appends to 12.Be3: An example continuation: (12.Be3 Rb7 13.Nc3 a4 14.Qd2)</div>
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as variation</button>
+            <button type="button" class="clo-cr-btn">Flip</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>“Add as variation” armed (19c)</h3>
+      <p class="hx-note">The second write takes two presses: the first one describes exactly what it
+         would create, in the status line, because the sentence (name, course, branch point) does not
+         fit anywhere else. Amber for the pending confirm, like every other “are you sure” here.
+         <strong>Measure this one:</strong> it is the longest the status line ever gets, and the panel
+         is a sized overlay.</p>
+      <div class="hx-stage">
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Analysis</div>
+          <div class="clo-cr-prompt">Black to play</div>
+          <div class="clo-cr-progress">Move 4 of 4</div>
+          <div class="clo-cr-list">
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">12.</span>
+              <button type="button" class="clo-cr-mv" data-ply="1">Be3</button>
+              <button type="button" class="clo-cr-mv" data-ply="2">Rb7</button>
+            </div>
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">13.</span>
+              <button type="button" class="clo-cr-mv" data-ply="3">Nc3</button>
+              <button type="button" class="clo-cr-mv clo-cr-mv--on" data-ply="4">a4</button>
+            </div>
+          </div>
+          <div class="clo-cr-anstatus">Creates "Sicilian: 2...Nc6 3.d4 12...Rb7" in Testing course,
+            in this variation's own chapter — 4 moves after 12.Be3. Press again to confirm.</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--armed">Really add it?</button>
             <button type="button" class="clo-cr-btn">Flip</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
           </div>
@@ -1777,6 +1814,10 @@ body {
             line, so there is no mainline move to append this to.</div>
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn clo-cr-btn--primary" disabled>Add as line</button>
+            <!-- 19c is NOT disabled for want of an entry move: it can branch from the
+                 variation's starting position too, and its other refusals need a course
+                 read. A press that cannot act says why. -->
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as variation</button>
             <button type="button" class="clo-cr-btn">Flip</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
           </div>

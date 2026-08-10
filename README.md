@@ -42,6 +42,7 @@ it.
 | Mistake log and retry runner | 16, 17 | `DESIGN-retry-mistakes.md` |
 | Clickable-line review, mid-quiz heads-up, important lines | 18, 18b, 18c | `DESIGN-continuation-review.md` |
 | Analysis board (trainer and variation page) | 19, 19b | `CLAUDE.md` |
+| Analysis board: "Add as variation" | 19c | `DESIGN-add-as-variation.md` |
 | Mistake drill | 20 | `CLAUDE.md` |
 | Repertoire coverage | 21 | `DESIGN-repertoire-coverage.md` |
 | Type a move | 22 | `CLAUDE.md` |
