@@ -546,3 +546,295 @@ API call, not a permission.
    blur the window mid-quiz and confirm the pause + that resume restarts the
    variation (a restart was observed after that pause; if blur⇒pause⇒restart
    is real, it strengthens the case for freezing auto-play on `document.hidden`).
+
+---
+
+# 12) Implementation notes since the original design
+
+Everything above describes the feature as first designed. What follows is what
+changed while it was built and used — kept here rather than in CLAUDE.md, which
+carries only the contract surface and the anti-repair notes.
+
+**"Difficult moves only" (13b/13c/13d) has its own document:
+`DESIGN-difficult-moves.md`.**
+
+## 12.1 A position holds a SET of proven moves (v0.55.0)
+
+`{ moves: { <uci>: { uci, promo, seenAt, count } } }`. A course regularly answers
+one position two ways — two variations branching at ply 4, 2…Nc6 in one and
+2…Qb6 in another — and both are right, each in its own line.
+
+`confirmPendingRecord` therefore **merges** a proof in beside the others;
+replacing was what made proving the second cost the user the first.
+
+`pruneRecordEntry` is the single door into `ap.record` (load, cross-course save
+prune) so everything else may assume `entry.moves`, and it doubles as the upgrade
+path for pre-v0.55 single-move entries, which outlive their build in
+`storage.session` — an extension reload mid-session must not cost the user their
+proofs. An OLD build reading a new entry finds no `uci` and degrades to manual
+play, never to a wrong move.
+
+## 12.2 THE LINE CHOOSES THE MOVE, THE RECORD ONLY PROVES IT (v0.55.0)
+
+It was the other way round. `evaluateAutoPlay` locates the position in the line
+oracle, resolves the mainline's SAN there to a uci through `sanToUci` **on the
+plan's own position** (exact castling and en passant), and injects only if THAT
+move is in the position's proven set.
+
+Asking it this way round is the whole of the multi-answer support: neither branch
+of a shared position can disable the other, because the move played comes from the
+variation being played and never from a record that has no idea which line it is
+in. So there is nothing to memoise as "conflicted" — that flag and its
+`⚠ line differs here` chip are **gone**, and an unproven line move is an ordinary
+hand-back, retried next time a variation passes through, rather than a verdict for
+the session.
+
+Castling notation cannot bite: both sides are CloSan's own generator (the record's
+uci is a board diff resolved through it), so O-O is `e1g1` on both and never the
+explorer's `e1h1`. A promoting line move is refused by LENGTH (`sanToUci` appends
+the piece, so it could never match a stored 4-char uci) with its own message rather
+than reading as unproven.
+
+## 12.3 The line oracle — `content/pagestate.js`
+
+The extension's ONLY MAIN-world content script. React fibers are page-world
+expandos, invisible to an isolated content script, so the plan cannot be read any
+other way. READ-only: no page state written, no page function called, nothing put
+on `window`.
+
+Protocol: the isolated world dispatches `clo-ps-req` on `document` and gets one
+`clo-ps-res` back whose `detail` is a **JSON string** (live objects would not cross
+the world boundary); `readLessonLine()` wraps that with a timeout so every caller
+sees one shape.
+
+Search is by **shape** — a context object owning an array `lessonPlan` — because
+component names in the bundle are minified; the PROPERTY names (`lessonPlan`,
+`san`, `sourceFen`, `color`, `variationId`) come from Chessable's API payload and
+are not.
+
+Ground-truthed: the plan holds per ply `san`/`from`/`to`/`sourceFen`/`targetFen`,
+swaps to the next variation ~90 ms BEFORE its first move animates, and a whole
+variation runs with ZERO network requests. So `requestOracle()` needs no fetch, no
+cache, no prefetch and no simulation: `vs.oracleSim[i].pos` is
+`CloSan.parseFen(plan[i].sourceFen)` — exact, tactics lines starting mid-game
+included. It still aligns by POSITION, not ply index, so transpositions and a late
+tracker anchor both work. A read for the WRONG oid (trainer mid-swap) or an
+unusable plan retries `oracleMaxTries` times behind `oracleRetryMs`, then the
+variation goes manual.
+
+## 12.4 The injection recipe
+
+Injection **clicks** the move — `pressSquare` on the source then the target, the
+explore panel's recipe unchanged, both presses in the **same task**. (An older note
+claimed click-click does not work on the trainer board; it does, on quiet moves and
+captures alike, and a DRAG is what should be avoided.)
+
+Both halves are load-bearing and were ground-truthed live: click-move is the path
+MoveTrainer2 **animates** — it tints both squares yellow and glides the piece with
+the same ~200 ms tween its own replies use, whereas mousedown-here/mouseup-there
+reads as a drag and redraws instantly (replays used to teleport). Same-task is what
+keeps the SELECTION invisible: the grey pickup tint and the legal-move dots come
+from React state and never get a frame to paint.
+
+`pressSquare` picks its event flavour (mouse sequence vs. synthesised finger tap)
+from the human's own trusted `pointerType`, **never** from
+`navigator.maxTouchPoints` — a touchscreen laptop is touch-capable while being
+driven with a mouse, and tapping such a board left MoveTrainer2 with a stale
+selection, so the piece of the last injected move could not be picked up (v0.18.8
+regression, fixed v0.18.9).
+
+During the two presses `<html>` carries `clo-injecting`; its CSS is now only a
+**backstop** for the case where the trainer slips a render between them — the
+square tints (`highlight-legal-mt2` / `highlight-hover-mt2`, partly inline ⇒
+`!important`) and the target markers, which are CHILD divs `legal-square-dot-mt2` /
+`legal-square-capture-mt2` and NOT a `::before` (an earlier `::before` rule matched
+nothing). **That CSS must never touch `.piece-417db`:** the element that animates
+any move, Chessable's own replies included, is a `.piece-417db` parked on
+`document.body` for the glide, so hiding it would break the very animation the
+injection borrows.
+
+## 12.5 The two clocks, and why they are stamped where they are
+
+A speed preset is a `{move, settle}` pair, both counted from the last board change.
+`move` is the ordinary pause before a replay (the same clock the trainer answers
+on — ~480 ms measured live); `settle` replaces it whenever the trainer may still be
+auto-playing (variation setup, Key-Moves prefix, solution replay), so it is the
+wait at a variation's START. **Keep `settle` above ~450 ms** — that is how long one
+animated trainer move occupies the board. The rest of a replay's cycle is
+Chessable's and cannot be tuned: ~440 ms for our move to land, ~480 ms for the
+reply.
+
+`vs.lastMoveAt` — the origin of both clocks — is stamped in the **mutation
+callback** (`frameTime()`, from `ap.mutationAt`), not when `processFrame` gets to
+run, and `evaluateAutoPlay` subtracts the already-elapsed time from BOTH waits
+(v0.30.1). **Never re-anchor a wait on `Date.now()` at evaluation time:** on a
+phone the mutation→rAF→timer chain runs 100–300 ms late, and every re-entry
+(`injectMove`'s bail-out, the 500 ms poll catching a frame the observer path
+missed) then charged a whole extra `move` pause on top of the wait already served —
+that is what made some mobile replays a second slower than the rest.
+
+For the same reason a board mutation schedules a rAF **and** a `frameFallbackMs`
+(32 ms) timer, first one through wins: rAF runs only while the document RENDERS,
+and in a hidden tab it never ran at all while the pending flag swallowed every
+later mutation. The oracle back-off (`oracleRetryMs`) also owns a real timer —
+waiting for the next poll to notice it had expired cost up to 500 ms per retry, and
+a first read losing the race against the trainer's ~90 ms plan swap is routine on
+mobile.
+
+`vs.trainerDrove` starts **false** and means strictly "a user-colour move was
+trainer-played"; a `true` default used to cost 700 ms per variation, because the
+opponent merely having replied is the ordinary variation-start case and needs no
+floor at all.
+
+`syncVariation()` is called from the 500 ms tick AND from every board frame, so a
+new variation is recognised as soon as the board resets rather than up to 500 ms
+later; it ignores a falsy oid so a mid-re-render blink cannot reset tracking.
+
+## 12.6 Four ways a proof gets lost, and what fixed each
+
+**An injected move is not only closed out by OBSERVING it.** Treating it that way
+caused false "injected move did not land" hand-backs on real courses: the tracker
+can lose the thread across an injection — the trainer bursting several plies
+(Key-Moves prefix, a variation starting mid-line) re-anchors us and
+`startTracking()` clears the history our own move would have matched against. The
+verify timer (`vs.verifyTimer`, `injectVerifyMs` — 2.5 s, after which the position
+goes manual) therefore asks the **board**: it stores `vs.injected.beforeKey` (the
+placement the drag was meant to change) and only hands back when the placement is
+still IDENTICAL to it. A changed (or unreadable) board means the move went through
+untracked: clear `vs.injected`, no `manualHold`, re-enter `evaluateAutoPlay()`.
+Keeping the still-identical case strict is what stops a refused drag looping.
+
+**The line-ending move needs its own read** (`observeFinalFrame`, v0.53.3).
+`processFrame` bails on `reviewBrowseReady()` — browse navigation is not play — but
+the frame carrying a variation's LAST move arrives with the completion block
+already rendered (MoveTrainer2 answers that move and completes the lesson in one
+state transition; our mutation callback runs after that commit). So the move was
+never observed, never became a `pendingRecord`, and
+`confirmPendingRecord('variation completed')` — which exists for exactly this move,
+since no opponent reply follows it — had nothing to confirm. The last move of a
+line therefore never earned a proof. Invisible until a session plays the same line
+TWICE, which is what a retry pass does: auto-play replayed the whole variation and
+then handed back on its very last move, every time. So `tick`'s browse branch takes
+one board read before suspending. **Observation only** — no `evaluateAutoPlay` (the
+tracker is suspended on the next line) and no wrong-guess capture (the variation is
+over) — and a frame that is not exactly one legal move on is left alone, since the
+browse board may already have been navigated.
+
+**…and the answer is also committed on the way out** (`resetVariation`, v0.81.0).
+That read is on the 500 ms poll, and `syncVariation()` — which detects the
+variation change and replaces `ap.vs` wholesale — runs BEFORE the browse branch on
+that same tick AND on every board frame. So the instant the drawer's active row
+flips, the still-uncommitted last answer goes with the rest of the per-variation
+state. Same for a run that ends with NO browse state at all (a "Time's up" finish
+renders no `practiceProgress` block, so `reviewBrowseReady()` never goes true) and
+for leaving the trainer path mid-line. `resetVariation` therefore calls
+`confirmPendingRecord('variation changed')` first.
+
+> **Safe, for a reason worth writing down:** a pending record only ever survives a
+> move the board ACCEPTED AND KEPT. `rollbackTo` clears both it and the pointer
+> credit when a guess is taken back, and a refused move usually never commits to
+> the DOM at all, so there is nothing to roll back and nothing pending. It is also
+> why a trainer solution replay after "Time's up" cannot sneak through:
+> `rollbackTo` has already zeroed `ap.lastPointerAt`, so that move is classified
+> `'trainer'` and never becomes pending.
+
+**A frame that arrives a whole reply late carries two plies, and is not a lost
+thread** (`findMovePair`, v0.82.0). A user answer and the trainer's reply are
+~440 ms apart, which is comfortable on a desktop and not on a phone: the frame is
+delivered through rAF (or the 32 ms backstop) and both are pushed out by
+Chessable's animation, our own board's render and — under section 23 — the plan
+chase's JSON round trip. The placement then jumps two plies, `findSingleMove`
+matches nothing, and the tracker used to RE-ANCHOR, which calls `startTracking` and
+so **throws the pending answer away**: the move never became a proof, invisibly,
+until the next variation declined a move the user demonstrably knows. So the jump
+is resolved instead — exactly one PAIR of legal moves must produce the placement,
+both applied in order, and any ambiguity still falls through to the re-anchor
+(which is what the whole case did before). Only on the path that was about to
+re-anchor anyway, so ~900 `makeMove` calls a handful of times a session and never
+per frame; the `vs.history` rollback check still comes FIRST, so a board that
+snapped BACK is a rollback and not a pair. Spot-checked against the real generator.
+
+## 12.7 A proof may also be ASSERTED (v0.82.0)
+
+`autoPlayNoteProvenMove(fen, uci)` — the one WRITE bridge into the record, and
+section 23 is the only caller. Everything else learns a proof by WATCHING the
+board, which is right for a move the user played and pointless for one WE played
+from a position the lesson plan states exactly: show and grade presses the COURSE'S
+OWN move, so "was this answered correctly" is not a question about the board at
+all.
+
+The veto (`readMoveNote`), the merge into `entry.moves` and the key are
+`confirmPendingRecord`'s, unchanged — a move recorded this way is indistinguishable
+from one recorded that way. **Not a general back door:** the caller must know the
+exact FEN the move was played from AND know it was right, so nothing derived from
+the DOM qualifies.
+
+## 12.8 On by default since v0.81.0 — and the key is OPT-OUT
+
+Absent means ON, so every read is `!== false` and never `Boolean(...)`. There are
+**four readers and they must agree** — the pref load, the `storage.onChanged`
+listener, and section 17's `prevAutoPlay` (which SAVES the user's setting to put it
+back when a pass ends; reading an absent value as `false` there would switch
+auto-play off for the rest of the session at the end of every pass).
+
+`ap.enabled` still initialises to `false`: that is what an unreadable pref read
+leaves behind, and it lasts only until the read lands.
+
+## 12.9 The status chip is not in the cluster (v0.57.0)
+
+It is appended to the widget's own `.clo-review-status` line through
+`reviewStatusHost()`, and so is the retry pass's (section 17).
+
+Inline among the controls, every message re-laid-out the row: measured, swapping
+one auto-play message for another moved "Drill mistakes" 77 px across and 32 px
+DOWN, threw "Retry" 467 px as the row re-wrapped, and changed the widget's height
+75→107 px — which moves the Lichess panel, the alt-check chip and the heads-up,
+since all three anchor below this widget.
+
+The line is `order: 99; flex: 0 0 100%`, so it sits after every cluster on a line
+of its own. `order`/`flex-basis` apply to flex ITEMS, i.e. direct children of
+`.clo-review`, which is why the two elements had to be **re-parented** rather than
+nudged with CSS where they sat. Its children carry an explicit `line-height`
+because the messages are emoji-prefixed (▶ ✋ 🧹 ⚠) and the differing ascents grew
+and shrank the line box by 2 px per message, which the panel below followed.
+
+`reviewStatusHost()` creates the row on demand (a widget from an older build, or
+one re-mounted by a React re-render, grows it again rather than swallowing every
+message for the session) and each `ensureUi` drops a stale copy of ITS OWN status
+first — a cluster can be rebuilt without the widget being re-mounted, and the
+status no longer goes away with it.
+
+## 12.10 `clearRecord()` ordering
+
+Drops the CURRENT course's proofs from `ap.record` and from `storage.session`. It
+**must cancel `ap.saveTimer` first**, or the debounced `saveRecord` would write the
+old in-memory record straight back — and it calls `stopReplaying()`, since a replay
+in flight was decided on what it just dropped.
+
+The button arms on the first click and disarms after `clearArmMs`: one misclick
+would otherwise cost a whole session's proofs. A re-mount of the cluster resets
+that armed state.
+
+## 12.11 Storage access, orphaned scripts, diagnostics
+
+`background.js` calls `chrome.storage.session.setAccessLevel` at startup so the
+content script can read that area (content sends `clo-ping` first to guarantee the
+worker has run).
+
+`noteDeadContext(err)`: after an extension reload, every `chrome.*` call in the
+still-running content script throws "Extension context invalidated". Such an orphan
+holds a record it can neither refresh nor save and could still drive drags off it,
+so the module **stands down** on the first such error (auto-play off, observer
+disconnected, poll cleared, `ap.contextDead` gates
+`tick`/`processFrame`/`evaluateAutoPlay`) and logs one line telling the user to
+reload the page. Reloading the extension alone never revives a tab.
+
+`logHandback(reason)` prints one console line per (position, reason) pair whenever
+auto-play declines to replay — no-record, the line's move not proven yet (named in
+the message: "the line plays Qb6 here"), expired, promotion, oracle failed/pending,
+ply not found in the line, unresolvable SAN — since a silent no-op is otherwise
+indistinguishable from a bug.
+
+Debug-only DOM hook: dispatching a `clo-debug` event on `document` dumps a summary
+(record/cache key counts, no move data) onto `documentElement[data-clo-session]` —
+storage areas are not otherwise visible from the page.

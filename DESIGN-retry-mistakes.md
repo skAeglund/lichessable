@@ -445,3 +445,290 @@ a pass does with an entry it has already marked. Re-retrying is just `startRun`
 over entries whose `retried` flag stays set; `markRetried` spares them because
 they are already marked, and the pass advances on `passedPly`, which never
 consulted the log.
+
+---
+
+# 7. Implementation notes — the log and the runner as built
+
+§1–5 are the original design and §6 the list-as-history change. What follows is
+the feature as it actually works, kept here rather than in CLAUDE.md.
+
+## 7.1 The log's source is the trainer's OWN per-ply `progress`
+
+`quizIncorrectAttempts` in the lesson plan — the refused SAN, or the literal
+`"timeUp"`, or `"giveUp"` (section 23's honest "I don't know"), once per failed
+attempt. **Not the DOM, and not a hooked `fetch`**
+(`saveProgressAndReturnNewProgressInfo` carries the same data, and `pagestate.js`
+is read-only by design).
+
+Sampled ~1/s in trainer sessions, keyed on the trainer's `mid` (= difficult-moves'
+`moveId`), stored in `chrome.storage.session.cloMistakeLog` per course with the
+auto-play record's 12 h TTL. **Session area only** — a stale list would drill
+another day's moves.
+
+Counters are PER-LESSON, so growth is measured against what THIS document already
+logged (`ml.seen`).
+
+### The `mode` field, and why the route decides it
+
+An entry keeps the `mode` it was FIRST seen in. Overstudy-mode entries are excluded
+from the count (else the retry pass refills its own queue), while a move failed
+again during its retry keeps mode `'review'` and merely gets `retried: false`
+again — the sole upgrade is `'overstudy'` → the current mode, which is also what
+heals an entry another tab mislabelled.
+
+**What makes a run "overstudy" is the ROUTE, not Chessable's per-ply
+`startedAsOverstudy`** (v0.35.1). That flag is true for a variation Chessable
+itself counts as overstudy inside an ORDINARY `/practice/` review session too — a
+card that was not due — so trusting it filed real review mistakes under
+`'overstudy'` and hid them from Retry for the session. A `/practice/` ply is
+therefore always `'review'`; only in `/learn/` does `startedAsOverstudy` decide.
+Safe because the runner only ever drives `/learn/`.
+
+Writes MERGE (`mergeEntry`) — every tab shares that storage area, and a background
+overstudy tab used to be able to overwrite the review tab's log.
+
+### `lead`, and why it is captured at ingest
+
+The NEW `lead` field holds the plies before the failed move, captured in `ingest`
+where the whole plan is in hand, because it is unobtainable later without loading
+that variation — which is the very cost the drill (section 20) exists to avoid.
+
+`CONFIG.retry.leadPlies` (4) is what is STORED, `CONFIG.continuation.drillLeadPlies`
+(1) is what is PLAYED: the run-up length is meant to become a setting and a stored
+log cannot be back-filled. An entry logged before v0.45.0 has no `lead` and simply
+gets no run-up.
+
+### Chapter grouping
+
+`mistakeLogApi.byChapter`. The name comes off the entry's own `chapter` field,
+captured at ingest beside `title`, from the drawer BLOCK the active row sits in
+(`SELECTORS.reviewDrawerBlock` + `reviewDrawerChapter`, ground-truthed 2026-08-03
+on course 453453, whose two chapters are two `.mt-drawer-content` blocks, both
+fully rendered with the drawer CLOSED). Falls back to a live `chapterNames()` scan
+for entries an older build logged, then to `Chapter <lid>`.
+
+Section order follows the DRAWER, so the popup reads the way the course does.
+Grouping on `lid` is exact — every row of a block carries its chapter's lid.
+
+### Selection is DERIVED, not owned by the DOM
+
+`isChecked` = `reselected` ∪ (default ∖ `deselected`), default = `isPending`. Two
+sets rather than one list of what is ticked, because that is what KEEPS the
+original property — a mistake logged while the popup is open joins the pass by
+itself — now that the default differs per row.
+
+It is also why `renderList`'s signature includes the tick and `retried` state: a
+pass finishing under an open popup flips rows to "already gone through", and the
+list has to follow. Folds survive an open (`rr.collapsed`); ticks do not — every
+open starts from "the outstanding ones". A group's All/None is the point of the
+whole feature: going through a chapter again must be one gesture, not one click per
+move.
+
+## 7.2 The runner
+
+The queue is one item per VARIATION (target = the LAST failed move of the line; the
+earlier ones are met on the way) and lives in
+`chrome.storage.session.cloRetryRun`, because the FIRST switch is a real navigation
+that destroys the document — the next one adopts the pass.
+
+Only that one costs a load: in a `/learn/` session an untrusted `.click()` on
+`SELECTORS.reviewDrawerRow` (carries `oid`/`lid`/`title`) switches variation
+in-session, and the `/learn/` drawer lists the WHOLE course.
+
+**Never click a drawer row in a `/practice/` session** — the runner would then go
+on to ANSWER that variation, and ANSWERING is what reschedules it, which is the
+opposite of what a retry pass is for. So it treats "right oid, wrong route" as not
+yet arrived and navigates out.
+
+> The CLICK itself reschedules nothing — measured 2026-08-09, zero `saveProgress`
+> and an unchanged due count; `DESIGN-difficult-moves.md` §6 is built on exactly
+> that. This rule is about what the runner does NEXT.
+
+A browse state on the item's OWN variation is normally the previous one still
+painted a beat after the switch (hence the early return), but if it OUTLASTS
+`browseGraceMs` the pass is parked on a variation the trainer has finished — where
+a pass that starts on the variation the previous one ended on lands (fail the last
+one, press Retry again): the oid already matches so nothing switches, and its drawer
+row is the ACTIVE one so clicking it does nothing. Only reloading the overstudy URL
+re-quizzes it, which is why `navigateToItem` falls back to `location.reload()` when
+the target URL is the one already loaded (v0.29.1).
+
+### Ownership
+
+`storage.session` is profile-wide, so a run is OWNED by one document (random id +
+`beat` heartbeat): a navigating document hands over by nulling `owner`, a quiet
+owner is takeable after `ownerStaleMs`, and the owner ends its own pass on
+`pagehide` (unless `rr.handingOver`), after `awayStopMs` off the trainer path inside
+the SPA, or via the `runAbandonMs` sweep for a tab that died — always restoring
+`cloAutoPlayEnabled` to `run.prevAutoPlay`.
+
+Counters that live in the RECORD must be saved to survive the per-tick reload
+(`loadRun`); `rr.waits` is deliberately document-local for that reason.
+
+### Advance = the trainer standing on a LATER PLY than the target
+
+`mistakeLogApi.passedPly` (v0.53.3), or the variation completing.
+`quizCorrectTotal` growing past the value read ON ARRIVAL (a BASELINE, not `> 0`: a
+seeded counter would race the whole queue through) is kept only as a second signal.
+
+The clock is the lesson plan's own `fen` — Chessable's current position — located
+among the plies' `sourceFen`s on the four-field key, i.e. §8's ply clock, and a
+quiz cannot be left behind without being answered.
+
+**Both sides of that compare are POSITIONS** (the item carries the target's own
+`sourceFen` as `targetFen`), never `mkey`: `plyKey` is `'m' + mid` and `mid` numbers
+the USER's moves, not the plies — hence the runner's own `mid * 2` fallback — so a
+key lookup could resolve to an EARLIER ply, and "past it" then went true exactly as
+the trainer ARRIVED at the failed move. The pass advanced, `applyHold` dropped its
+holds, and auto-play played the very mistake the user was being asked for: a brief
+pause, then the move (v0.53.4).
+
+Standing ON the target is answered explicitly rather than left to the index compare,
+so a position repeating inside a variation — where `findIndex` resolves to the FIRST
+occurrence — still cannot read as "past it".
+
+The counter alone was NOT enough: its baseline is read on the first arrival tick,
+and one reading taken a beat early (off the outgoing lesson's plan, before the
+overstudy's own counters are in place) leaves the comparison one short FOR EVER, so
+the pass never moved on early and the user played out the whole tail of every line
+— in "Only the mistakes" that is the one thing the mode promises not to ask for.
+
+The last position of a variation is nobody's `sourceFen`, so a target that IS the
+final ply reads as "not past it" and the browse state ends that visit instead; a
+repeated position resolves to its first occurrence, which can only err towards "not
+yet".
+
+`markRetried(oid, visit.at)` deliberately spares entries whose ts is NEWER than the
+visit, which is what keeps a re-failed move in the list.
+
+### Holds
+
+Auto-play is told to hold on ALL of the item's failed positions (`autoPlaySetHold`,
+compared on placement+side only because the tracker's castling can be the
+home-square heuristic) — a move failed early and answered correctly later IS proven,
+and would otherwise be replayed past.
+
+`applyHold` picks that item by the oid ON SCREEN, **not** by `run.index` (v0.53.4):
+auto-playing a move the user is being asked to retry is the one outcome this feature
+must never produce, and hanging the hold off the queue cursor made every reason the
+cursor can move on early — a clock reading a beat ahead, the switch to the next item
+not having landed yet — lift the hold with the trainer still sitting on the failed
+move.
+
+The RESUME flag stays tied to the cursor: holding is about the variation on screen,
+taking the board back after a mistake is about the item being driven. So is the
+SHIELD TARGET.
+
+### `cloRetryMode`
+
+storage.local, default `'from'`, decides how much of a line the user plays:
+
+* `'whole'` forces `cloAutoPlayEnabled` OFF for the pass and advances only on
+  completion;
+* `'from'` is the plain hold;
+* `'only'` ALSO passes `resumeAfterHandover`, the second argument of the same
+  bridge, which lifts auto-play's `vs.handedOver` rule so control comes back after
+  each retried mistake (mistakes at moves 8 and 12 ⇒ auto-play 1–7, user 8,
+  auto-play 9–11, user 12).
+
+That rule exists because resuming mid-line was reported as jarring, so the lift is
+scoped to the variation a pass is DRIVING (`applyHold`'s `here`) and cleared on
+every other tick — never let it leak into ordinary sessions.
+
+## 7.3 The transition shield (v0.54.0)
+
+A correctness hole, not polish. Advancing on an answered move is the RUNNER'S
+decision and the trainer knows nothing about it: the correct move lands, ~440 ms
+later Chessable glides the opponent's reply in, and the board is live and asking for
+the NEXT move of the line while the pass spends up to a tick noticing and then a
+beat switching.
+
+In `'from'`/`'only'` that is ~2.3 s on which the trainer asks for exactly the moves
+the mode promises not to ask for, and a wrong move played there is logged as a NEW
+MISTAKE — refilling the queue the pass is draining. (`'whole'` is unaffected: it
+advances from the browse state, where the board is not live, so `applyHold` passes
+NO target in that mode — shielding there would block the rest of the variation,
+which is legitimately the user's to play.)
+
+So a body-mounted div is pinned over `getReviewBoard()` (absolute in DOCUMENT
+coordinates like every overlay here) and swallows input in CAPTURE phase.
+
+* **Trigger** = `retryNoteTargetPlayed`, fired from `applyObservedMove` at MUTATION
+  speed when a user-colour move is observed from `ap.targetKey` — the ONE hold whose
+  answer advances the pass, carried by `autoPlaySetHold`'s third argument. **Never
+  every hold**: with mistakes at moves 8 and 12, answering 8 must leave the board
+  alone so the replay of 9–11 stays fully VISIBLE. That is the behaviour most likely
+  to be got wrong. The key is placement+side, `holdKeys`' own normalisation.
+* **Two stages**, because the answer is not confirmed when the shield goes up: stage
+  1 claims nothing and only glows at the board edge (half a second of a silently
+  dead board with no cue reads as a FREEZE); stage 2, from `driveRun`'s existing
+  `passedPly` path via `confirmShield`, is a green "Correct move!" pill. The shield
+  is TRANSPARENT — the reply plays underneath and stays visible, which is the
+  confirmation the move was accepted — so the pill carries its own background and a
+  full-surface tint is out. `cursor: default`, not `not-allowed`: this follows a
+  CORRECT answer.
+* **Fails open, unconditionally** — a stuck shield is far worse than the gap it
+  closes. `syncShield` runs from `tick`'s FINALLY (so every early return passes
+  through it) and drops on a `shieldMaxMs` cap, oid change, browse state,
+  `document.hidden`, off-path and pass end; `noteDead` drops it too, since `tick`
+  returns on `rr.dead` ABOVE its try/finally. A failed retry therefore raises stage
+  1, never reaches stage 2, and expires, with Chessable's "Incorrect" note readable
+  through the shield throughout. Accepted and deliberately unguarded: a piece
+  already picked up when the shield mounts keeps its pointer capture and can still be
+  dropped.
+* `confirmShield` sets a `holdUntil` (= `advanceHoldMs`), the ONE exemption in that
+  watchdog, and it exists for the pass's LAST item: there `advanceItem` → `nextItem`
+  → `finishRun` all run in the same task, so "pass ended" fired in the same task the
+  pill went up and the user's final correct answer was acknowledged by a ~100 ms
+  flash. The exemption is scoped to that one reason — the cap is checked FIRST — and
+  `finishRun`'s own eager drop (there so "Stop" gives the board back at once) skips a
+  shield inside its hold.
+* `processFrame` keeps reading frames while the shield is up (`ap.heldOff`, NOT
+  `held()`): the session underneath is really playing, and the opponent's reply is
+  what CONFIRMS the user's answer as a proof — skipping it would cost them the record
+  for the very move they just got right. Only `evaluateAutoPlay` and `injectMove` ask
+  `held()`.
+* Auto-play is held by its OWN flag, `ap.retryHeld` via `autoPlayRetryHold` — never
+  `ap.heldOff`, which means "an outside feature owns the board". Two owners on one
+  boolean lose eventually: this shield self-clears on a watchdog, and a "Review now"
+  holding at that moment would have its hold lifted with its own board still over
+  Chessable's. The hold matters most in `'only'` mode, where `resumeAfterHandover` is
+  still true between the move landing and `advanceItem`.
+* **The switch timing is split.** `switchRetryMs` (1800) was doing two unrelated jobs
+  — spacing retried switch ATTEMPTS, and giving the answer a beat on screen.
+  `nextItem(holdMs)` now sets `run.switchNotBefore` and `maybeSwitch` gates on it
+  separately; a shielded mid-line advance passes `advanceHoldMs` (700, long enough to
+  read the pill), everything else (skips, completions) keeps the old beat.
+
+### Ground truth (2026-08-02, course 453453, mode `'only'`)
+
+A non-target failed move raises NOTHING; the target raises stage 1 at mutation speed
+(transparent, `rgba(0,0,0,0)`, board-sized to the pixel, hit test at the board centre
+returns the shield) with stage 2 ~750 ms later — i.e. the two-stage split is
+load-bearing, that gap is real; the switch follows `advanceHoldMs` later and the
+shield goes down on 'variation changed'; the last item holds the pill ~890 ms then
+'pass ended'; a wrong answer at the target gets stage 1 only and 'lifetime cap' at
+~3.3 s with the pass NOT advanced.
+
+## 7.4 `startRun` refuses, and says so
+
+It refuses outside the BROWSE STATE (v0.56.0) and **returns false** when it refuses,
+so the popup's "Retry selected" can say why in its own status line — the widget's
+`setDone` flash sits behind that popup and would never be seen from there (the same
+contract as the `continuationDrill` bridge).
+
+Retry is the DESTRUCTIVE sibling of the two mistake launchers — it SWITCHES
+VARIATION, so a mid-quiz press abandons the card being answered — yet the drill was
+the gated one and this went straight through.
+
+`return true` is sent BEFORE the first `driveRun()` step, never after: the pass
+exists once `rr.run` is saved, and a throw in that step must not read back to the
+caller as a refusal and print a refusal sentence under a pass that is running.
+
+## 7.5 Still not implemented
+
+The §3.1 diff backstop. Layer 2's drill on our own board landed as section 20; the
+`/difficult-moves` endpoint is read by section 13b, though for a different question
+than this design imagined — not as a mistake-log backstop but as the lifetime record
+behind "difficult moves only" (`DESIGN-difficult-moves.md`).

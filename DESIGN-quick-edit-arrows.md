@@ -129,8 +129,9 @@ any ordinary press and never persisted.
 * Opening the tab draws the position AFTER the move on a small board in the
   popup, pre-loaded with the stored shapes. Position source: the lesson plan
   (`reviewPlan.fens[plyIndex + 1]` — exact, free) where it is available,
-  otherwise the move element is pressed (navigating the host board, the click
-  the user would make anyway) and the FEN read back, verified by side to move.
+  otherwise `pressAndReadFen` presses the move element (navigating the host
+  board, the click the user would make anyway) and reads the FEN back, verified
+  by side to move.
 * Input: drag between two squares for an arrow, press one square for a circle,
   in Chessable's own four colours (swatch row; the same shape again removes it,
   in a different colour recolours it). Deliberately NOT right-button-only, as
@@ -185,52 +186,19 @@ Also settled here: a completed variation's trainer browse board **does** paint
 `svg#drawings` (checked live — the same `data-start`/`data-end`/`data-color`
 children as the variation page), which section 3 had left open.
 
-## 7. Showing the save without a reload (v0.53.x)
+## 7. Showing the save without a reload (v0.53.x → v0.62.1)
 
-A save goes to the SERVER; both hosts go on rendering the copy they loaded.
+**Moved to `DESIGN-quick-edit.md` §6.**
 
-**The variation page can re-read in place, and does.** It fetches its whole
-chapter once at load (`getOpeningsForBookLevelInCorrectOrder`) and never again
-while you navigate moves — only `getCommentsByFEN` per position. Its own
-variation PAGER, though, is a real router navigation that refetches `getGame`
-and the chapter. So: step to a sibling (`#variation-btn-next-variation`, else
-`-prev-`; stable ids, no text matching), then `history.back()`.
-`performance.getEntriesByType('navigation').length` stays at **1** throughout —
-no document reload, so nothing of ours is torn down either.
+It was never arrows-specific — the same round trip refreshes a comment save — and
+the version that lived here described v0.53 and had gone stale in one load-bearing
+respect: it rejected the opposite pager button outright as a way home, which
+v0.60.1 overruled (on the sibling we have just stepped to, our own variation is on
+the other side of that button, so it is always enabled). It also predates the whole
+`watchVariationFetch` / `siblingVariation` / `watchLateDeparture` rewrite that
+stopped saves occasionally stranding the user on a stranger's variation.
 
-* `history.back()` and NOT the opposite pager button: the click just pushed
-  exactly one entry, so back is guaranteed to undo it (verified to refetch the
-  same way), while the opposite button is DISABLED at the ends of a chapter and
-  would strand the user on the sibling.
-* If the pager never navigated we return without calling back() — never pop an
-  entry we did not push.
-* A chapter of ONE variation has both buttons disabled: the refresh returns
-  false and the popup says "reload the page to see it".
-
-**Restoring the shown move is the hard part.** Being back on the URL is not
-being back on the page: React keeps the sibling's move list mounted for about a
-second while the refetch lands, and REUSES the very nodes — so element identity
-is no signal at all (measured: `same0=true` across an 18-move variation and an
-8-move one). A press issued then lands on the outgoing render, our verify sees
-it succeed, and the page's own navigation to move 1 silently undoes it. Both
-guards are therefore needed:
-
-1. wait for a composite the sibling cannot satisfy — our path, our move COUNT,
-   and a `.textMoveHighlighted` marker, which only appears once the fresh
-   variation has rendered and navigated to its own first move;
-2. `restoreShownMove` presses, confirms, and then requires the move to STILL be
-   shown `refreshHoldMs` later, retrying otherwise.
-
-**The trainer cannot** (`HOSTS.review.refresh` is null). It re-reads a variation
-only via `/api/v1/getLesson`, which fires when you SWITCH variation — and
-switching back re-quizzes it, costing the browse state the pencil lives in
-(verified: `commentMove` count drops to 0 on return). Updating its render in
-place would need a MAIN-world write (pagestate.js is read-only by design) or our
-nodes inside Chessable's DOM. So the status line says it instead.
-
-Verified live 2026-08-01, no reload in any case: arrows 8→9 on a save and 9→8 on
-a removal, board back on the move it was on; an appended comment appearing in
-the move list and disappearing again when deleted from the Edit tab.
+Do not re-document it here.
 
 ## 8. Still open
 

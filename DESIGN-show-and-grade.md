@@ -197,7 +197,8 @@ what is left rather than a rounding error on dead time, and both stay clear of
 `animMs` (180) so each move is still a visible glide. Re-measured, same
 variation: **657–876 ms per card**, no pause/resume at all, 100 % accuracy,
 Chessable's own timer for the variation 1 min → 15 sec. Manual play got the
-chase too: 1320 ms → 770 ms from grade to next card.
+chase too — the same 718 ms of dead time sat between a human's grade and the next
+card: 1320 ms → 770 ms from grade to next card.
 
 ### …and then overlapped, one card deep (v0.75.0)
 
@@ -246,7 +247,13 @@ What replaced it is a **one-card-deep overlap**:
 - **The chase adapts** to what a read costs on the device, and must *serve*
   before it stops: the plan now regularly lands while our board is still in
   'shown', where applyPlan cannot serve, and returning without serving hands the
-  card back to the 500 ms poll.
+  card back to the 500 ms poll. `chaseInterval` never asks again inside twice
+  what the last read actually cost, floored at `chaseMs` (110 ms — right on a
+  desktop, and on a phone a fixed interval that short would just queue reads
+  behind each other and add to the jank it exists to see through) and capped at
+  `chaseMaxIntervalMs`; the chase itself stops at `chaseMaxMs`. A fixed interval
+  would just queue reads behind each other on a phone and add to the jank it
+  exists to see through.
 
 Expected ≈ 610 ms/card against a ~500 ms floor set by the beats themselves.
 
@@ -605,6 +612,60 @@ second way to answer a card rather than a mode to be in. Gated on
 `showGradeEnabled()`, the preference rather than a running session, since a drill
 is not a trainer session and the row's Show & grade button does not apply to it.
 
+### The clickable-line quiz (section 18) — v0.85.0
+
+The same listener and the same two presses, which is why `drillShowGradeKey` was
+renamed `showGradeKey`: it now serves both hosts. What made this cheap is what
+made the drill cheap — **neither host grades Chessable**, so there is no card to
+keep in step with and no scheduled move to get wrong.
+
+The two hosts differ in exactly ONE thing, and it is structural rather than a
+setting:
+
+* a **drill card ENDS** on the move being asked for, so its verdict is followed
+  by `nextLine()`;
+* a **clickable line CARRIES ON**, so its verdict is followed by `step()` —
+  which plays the opponent's reply and stops at the next move asked for.
+
+That reply is the second press's own move to look at, which is the rule the whole
+mode rests on: *no press that shows nothing*. It is why `step()` is the right call
+rather than a bespoke advance — the pause before the reply is the module's own,
+the same one a hand-played move gets.
+
+**What the verdict does** was the open question. A clickable line reschedules
+nothing and records nothing — its defining property — so the verdict has only
+THIS RUN to act on. A line holding a move the user did not know is pushed back
+onto `cr.queue` (`requeueLine`), i.e. it comes round again at the end. That is
+the same *shape* the drill's verdict has ("does this leave the list?"), scoped to
+something that does not outlive the run, and it is what stops the second key
+being a press for nothing.
+
+**Once per line** (`cr.sgAgain`, keyed on `line.key`, cleared by `beginRun` and
+`closeReview`): a repeat that can re-queue itself is a run with no end, and the
+user has already said they did not know it — saying so twice must not cost them
+the exit. The queued entry is a shallow COPY carrying `sgRepeat`, so the title
+can say "· again"; the two passes are otherwise indistinguishable, the queue
+being an array that is still growing. Everything the copy is read for (`plies`,
+`moveIdx`, `startFen`, `label`, `key`) is on it, and nothing compares lines by
+identity.
+
+**Combined lines**: the reveal plays the line's OWN move and NAMES the rest
+(`ply.alts` in the prompt — "O-O (or Qc7)"), which is exactly what browse mode
+does and for the same reason. So the ALTERNATIVES key is deliberately **not**
+bound in this module: the accepted set is already on the ply, where a review
+session has to fetch `getLesson` for it — a press to ask a question already
+answered on screen is the wasted press v0.70.0 removed.
+
+**The timer needs nothing.** `holdTrainer()` is called from `reviewNow` and
+nowhere else, i.e. from exactly the runs that happen mid-quiz with a live card
+being timed; a browse-state run has no card to charge. So the two keys make a run
+slower without making it cost anything.
+
+**Not** while `cr.browse` — nothing is being asked for there and the walk owns the
+keyboard. A hand-played line is never re-queued (and a hinted one is not either):
+the verdict exists only on the key path, and playing the move correctly IS
+knowing it.
+
 ## 3. Decisions taken (2026-08-04)
 
 | Question | Answer |
@@ -621,6 +682,10 @@ is not a trainer session and the row's Show & grade button does not apply to it.
 | Keys | `2` / `4`, plus `3` **or space** for the alternatives (v0.79.0, §2e). `1` earmarked for `repeat` (TTS). Media keys deferred until a real ring is captured. |
 
 ## 2e. "Was my move also right?" — the alternatives key (v0.79.0)
+
+*Entry point: `showAlternatives()`. The verdict it must never touch is
+`sg.markedUnknown`, which is cleared by `anchor()`, `leaveActing()` and
+`startMode()` and by nothing else.*
 
 The move shown is not always the move you had in mind, and the course often
 accepts both. Grading that as a failure is simply wrong, so `3` — **or the space
@@ -878,6 +943,73 @@ Section 22 (type a move) stands down entirely while this mode runs, through the
 new `showGradeActive` bridge. Two things holding the keyboard over one quiz
 board is not a state either of them can reason about.
 
+`keyName` maps a binding to a READABLE name (`KEY_LABEL`). `KeyboardEvent.key` is
+the right thing to match on and the wrong thing to print — a space's name is
+invisible, which in a panel whose whole job is to say which key does what is the
+message lost. Anything unmapped prints as itself, so a new digit needs no entry.
+
+### The `next` key also STARTS the mode (v0.87.0)
+
+`onKey` no longer returns on `!sg.active`; it routes to `maybeStartFromKey`
+instead, and `2` does what the row's button does. The reason is the reason the
+mode exists: a ring has four buttons and no way to press one on a web page, so
+needing a mouse click to *begin* was the one gap in "a whole session without
+letting go of it".
+
+Gated on exactly what the button is gated on (`sg.enabled` + `inSession()`, with
+`continuationActive()` as belt-and-braces), and the key is swallowed ONLY when it
+is going to act — outside the mode these belong to MoveTrainer2. The press is
+spent on starting and does **not** also reveal the first card: there is no board
+on screen when it lands, and a key that means two things depending on state is
+what this mode avoids everywhere else.
+
+### SPACE also takes the heads-up's "Review now" — and the two DO overlap
+
+The assumption that they could not is wrong and worth spelling out. Section 18b's
+panel is clocked on the TRAINER's position, and the trainer does not move until
+the card is graded, so a panel raised at the card's own position is still standing
+all the way through the reveal — i.e. through exactly the `'shown'` window where
+the alternatives key is live. `headsUpTick` has no stand-down for this mode
+either.
+
+Resolved by priority rather than by hoping:
+
+* inside `'shown'` (and not `autoGrading`) the press means **alternatives**,
+  because it is about the card being answered right now;
+* everywhere else `onKey` hands it to `continuationReviewNow`, the null-safe
+  bridge, which takes the offer if a panel is up and answers false otherwise.
+
+The continuation module owns the same key when the mode is NOT running, in a
+listener of its own — the existing one is gated on `cr.active`, and a heads-up is
+not an active review. That listener STANDS DOWN on `showGradeActive()`, and that
+is load-bearing rather than tidy: `start()` runs `initContinuationReview` BEFORE
+`initShowGrade`, so as the earlier capture-phase listener it would otherwise
+swallow space before section 23 ever saw it. Both listeners test for a panel
+BEFORE swallowing, since MoveTrainer2 binds space itself and with nothing on
+screen that shortcut is still the user's.
+
+Space is safe to take only because of where these listeners are — capture phase on
+`document`, `preventDefault` + `stopPropagation` on all three event types before
+anything else sees them — so it cannot scroll the page, re-fire a focused button
+or reach MoveTrainer2's own shortcuts while the mode runs, and outside the mode it
+is not bound at all.
+
+### The trainer row (`.clo-sg`)
+
+`DESIGN-ui-inventory.md` has no entry for this mode, so the row rules live here.
+
+`.clo-sg` sits at `order: 2`, beside section 22's move field — both act on the
+card being answered — with mistakes / practice / overstudy / settings each shifted
+up one. Green **outline** idle, and `.clo-rowprimary` while running, when it reads
+"Stop": a mode that owns the session must not make its exit a hunt.
+
+A FOURTH collapsed-mid-quiz exception in the established idiom,
+`.clo-review--collapsed .clo-sg:has(> .clo-rowprimary)`, reading the module's own
+state rather than a new flag, at specificity (0,4,0) — strictly narrower than the
+rule it bends, exactly like the `.clo-mx` and `.clo-tm` exceptions. Measured in
+the harness: browse row 38 px, collapsed-while-running 38 px, +26 px with a status
+line — the same figures the move field gives.
+
 **Media keys are still unresolved.** On most platforms they never reach a page
 as key events — the OS routes them to the media session, which a page can only
 claim by playing audio. Until a real ring is captured, only the digits are
@@ -904,6 +1036,19 @@ leaving `/practice/`, from another board opening, and from `pagehide`.
 early return in `tick()`.
 
 ## 7. Architecture
+
+**Entry points not named elsewhere in this doc:**
+
+| Function | Does |
+|---|---|
+| `computePrefix` / `plyIsProven` | decides the auto-played prefix when the variation's plan first lands, reading each ply's own `sourceFen` rather than the live board — so a promotion *ends* the prefix instead of being refused at the last moment. `cardIsProven` re-walks when the cursor runs out of prefix (at most once per card, `sg.prefixAt`), because the record also gains the *previous* variation's answers and a proof landing late was otherwise invisible for a whole variation. It can only ever extend. |
+| `applyTimerBar` | hides Chessable's per-move clock (`SELECTORS.trainerTimerBar`) for the mode's duration — it flickers as the clock is paused and resumed around each card, and cannot tell the user anything they can act on. **`visibility`, never `display`:** the bar is inside the board footer, so taking it out of flow moves everything anchored below the widget. Re-applied every tick (a React re-render drops our inline style) and restored in `stop()`. |
+| `applyBoardTheme` | copies Chessable's own board image onto ours (`.clo-sg-board--themed`). Every `.square-55d63` computes to a *transparent* background — the checkers are a themed background **image** on an ancestor two levels up — so there is no square colour to read, and `boardThemeEl()` walks ancestors rather than matching a selector, which would only ever work for one theme. `100% 100%` rather than `cover`, and `positionBoard` measures the *theme* element so our grid lines up with the checkers being borrowed. |
+| `altKeyOf` | joins a ply to its `getLesson` entry on `mid` + `color`, never on SAN. |
+| `enterActing` / `markActed` | `markActed` was split OUT of `enterActing` because the auto path's early press must not change the phase — `'shown'` is *the move being looked at*. `sg.pressed` / `sg.pressing` are what stop a key press opening a SECOND act on a card already answered, and `failAct` forces `'think'`, since an early press fails from `'shown'`, which nothing else moves on. |
+| `serveCard` / `chaseStep` / `finishAutoCard` | the per-card work, called from `applyPlan` as well as `tick` so a card is not held back until the next 500 ms poll. `chaseStep` must *serve* before it stops. |
+| `sg.plies` / `sg.cursor` / `sg.cardIdx` | our board's own walk of the plan. `sg.awaitingSince` is the watchdog stamp behind `actMaxMs`. |
+| `C.paces` / `C.anims`, `paceOf` / `animMs` | the pace and glide settings tables and their lookups. Every read goes through the lookup with a fallback, never raw: a value from an older build must degrade to the default rather than put `undefined` into a `setTimeout`. |
 
 **Section 23 in `content/lichessable.js`**, top document, gated on
 `location.pathname.startsWith(CONFIG.review.pathPrefix)` evaluated per tick —
@@ -1003,7 +1148,8 @@ anyway. It is the **position** that is hidden. That is also why there is no
 coupling to the audio in either direction: with the panel still drawn, blindfold
 works silently, with the moves read off it as text.
 
-`announceRunUp()` is blindfold's one extra statement and not a nicety: a
+`announceRunUp()` — once per variation (`sg.runUpSaid`, cleared on the variation
+change alongside `sg.lastMoveSpeech`) — is blindfold's one extra statement and not a nicety: a
 variation usually starts several plies in, those plies are played by the
 *trainer*, and nothing announces them — so a blindfold player would have no
 position at all. Read once per variation, marked as a MOVE so `repeat` re-reads
@@ -1132,6 +1278,12 @@ not parse is spoken as it stands rather than dropped.
 
 **Not spoken:** the two keys in the drill and in the clickable-line quiz. Those
 are the continuation board's own panels, not this mode's `announce`.
+
+### The cog menu, measured
+
+In the harness: the menu is 213×144 (262×214 under `html.clo-touch`, where the
+checkbox goes 13→18 px), and the three-item keys line fits one line from 372 px —
+the live comment box is 506 px.
 
 ## 9. What must never happen
 

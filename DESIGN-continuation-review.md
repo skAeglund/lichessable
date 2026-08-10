@@ -634,3 +634,784 @@ verified offline (§6.8's harness, ply 8 → both lines, one panel).
 * **"Review now"** (interrupting the variation to play the line immediately).
   Deliberately deferred: it means suspending a live quiz, and "review on
   variation end" answers the same need without touching the trainer's state.
+
+---
+
+# 7. Implementation notes since the original design
+
+Sections 1–5 describe the feature as first designed and §6 the mid-quiz heads-up.
+What follows is everything that changed while it was built and used — kept here
+rather than in CLAUDE.md, which carries only the contract surface and the
+anti-repair notes.
+
+## 7.1 The board and its shapes (section 11c)
+
+The board primitives — `fillBoardGrid`, `boardVisualPos`, `boardSquareAt`,
+`harvestBoardPieces`, `makeBoardPiece`, `boardShapeArrow` / `boardShapeCircle`,
+`BOARD_SHAPE`, `SHAPE_COLOR_HEX` — live at TOP LEVEL in section 11c, because the
+quick-edit arrows editor (12b), the drill (20) and section 23's board all draw the
+same board. The functions inside section 18 are thin wrappers passing
+`boardView()`, declared as `function`s so the definitions above them can call them.
+
+Pieces are Chessable's own live `<svg>` nodes CLONED (`cloneNode(true)`, never
+innerHTML, no vendored art) with a Unicode glyph fallback. Geometry is ALL
+percentages — squares in an 8-col grid, pieces at 12.5 % translated in multiples of
+100 % of their own size — so a resize needs no JS.
+
+### Why a shape's colour is an inline STYLE
+
+Never a presentation attribute: `.clo-cr-shape`'s CSS `stroke` outranks an
+attribute of the same name, so every arrow would come out green. And on EXACTLY
+ONE property per element, matching what those classes do — `stroke` for the shaft
+and the ring, `fill` for the arrow HEAD, which the CSS also gives `stroke: none`.
+
+Colouring the head's stroke as well overrides that `none`, and nothing sets
+`stroke-width` on a head, so it falls back to SVG's default of 1 — which in a
+`viewBox="0 0 8 8"` is one whole SQUARE of outline, i.e. an arrow tip several times
+its intended size (v0.52.1). The polygon's `getBoundingClientRect()` does NOT show
+it: a bbox excludes stroke, so this measured correct while looking wrong.
+
+### The arrow geometry is chessground's, MEASURED (v0.86.0)
+
+Read off a live lichess.org analysis board on 2026-08-09 by drawing four shapes
+with synthetic right-button mouse events and reading the `svg.cg-shapes` it
+produced — **not** taken from chessground's source. Their overlay is
+`viewBox="-4 -4 8 8"`, board units like ours, so the numbers transfer directly.
+
+Two rules, and ours broke both:
+
+* the shaft starts **on** the source square's CENTRE (we started 0.26 out of it);
+* it stops exactly **one stroke-width** short of the destination centre, where the
+  head puts its TIP (we overshot the centre by 0.06).
+
+The shortening is a flat one stroke-width in every case — confirmed on e2–e4,
+d1–d8, b1–c3 and, notably, UNCHANGED when the destination square is OCCUPIED:
+there is no special case for a piece standing on it.
+
+`markerUnits` is absent from their marker, so it defaults to `strokeWidth` and the
+head is 3 stroke-widths long by 4 wide — i.e. 0.625 wide against the 0.44 we had,
+which is most of why ours read as a thin dart rather than an arrow. `refX=2.05` of
+3 puts their tip 0.05 of a stroke-width short of the centre; we put it ON the
+centre, a 0.6 px difference on a 616 px board, and say so rather than carrying the
+artefact.
+
+Kept as line + polygon rather than adopting their `<marker>`: `paintShape` colours
+the two independently, and a marker needs a per-colour `<defs>` entry with a unique
+id in every document that draws one, the quick-edit popup included.
+
+COLOURS ARE UNCHANGED — the shape was copied, not the palette — except `opacity`,
+which was 0.72 and is now the 1 they actually render; that softening was the other
+half of the difference. The circle is theirs too (r 0.46875 with a 0.0625 stroke,
+outer edge flush with the square's boundary); ours inset `r` by half the stroke,
+drawing a smaller ring.
+
+## 7.2 Reading the lines out of the DOM
+
+Lines come from `SELECTORS.reviewSubMoves` grouped by the id prefix up to the last
+dot (`0.1.7.1.0` … `0.1.7.1.1` = one line) — **but that prefix is not unique on its
+own**: EVERY comment block restarts the numbering, so a variation with three
+commented moves prints `0.0.0`, `0.0.1` three times over (ground-truthed
+2026-07-27).
+
+Grouping on the id alone welded three separate lines into one 8-move line that
+fitted nowhere and dropped all of them — i.e. "Review clickables" was broken for
+ANY variation with more than one commented move (fixed v0.36.3). The group key is
+therefore `attachPly + '|' + idPrefix`: two lines of ONE comment share the attach
+ply, so a nested line still finds its parent, while lines hanging off different
+moves never collide.
+
+**Read the id for the GROUPING and the BRANCH INDEX only** — both other readings
+are wrong:
+
+* the leading component is NOT the mainline attach ply (ground-truthed 2026-07-26:
+  a comment hanging off 10.Be2, ply 18, gives every one of its sub-moves an id
+  starting `0.`). The attach ply is COUNTED FROM THE DOM instead — `attachPlyOf`,
+  the number of `SELECTORS.reviewMoves` printed before the block.
+* the nesting is not always semantic either — `7.0.3.0.*` looked nested under the
+  first line's last move yet its board showed it branching from the MAINLINE. So
+  the parent's branch position is the FIRST candidate, never an assumption.
+
+### Anchoring
+
+Positions come from the line oracle (`readLessonLine()` still answers in the browse
+state — verified). Candidate anchors, in order: the parent line's position at the
+branch index, then after it, then the position AFTER the attach ply, then instead
+of it, then the parent's other positions, then the rest of the mainline.
+
+A candidate is accepted only when EVERY move's printed number + colour
+(`parseMoveNumber`) matches the position it would be played from AND every SAN
+resolves legally (`sanToUci` + `fenAfterUci`). Lines resolve shallowest-first so a
+nested line can anchor inside its parent.
+
+There is deliberately **no looser pass**: v0.34.1 removed a legality-only fallback
+over the attach positions that had quizzed a `12.Be3 Rb7` sideline on the MAINLINE
+position 8 plies away (both moves happened to be legal there). A line whose numbers
+fit nothing we can reconstruct is DROPPED, like one that fits nowhere or has no
+user-colour ply. Never guessed at.
+
+## 7.3 What makes a move clickable (ground truth, 2026-08-04)
+
+Established on course 453453 by writing three comments and reading back what
+Chessable rendered, because the answer decides which shape the reader ever meets:
+
+* **Parentheses do.** Text outside them is prose, however move-like it looks:
+  `Branch test: 5.Nb3 (5.Nc3 Qxb2) 5...Nf6` rendered ONE clickable group,
+  `5.Nc3 Qxb2` — "5.Nb3" and "5...Nf6" stayed plain text. So section 19's "Add as
+  line" wrapping its output in parentheses is not decoration, and a comment written
+  without them is not quizzable at all.
+* **Parentheses nest, exactly as PGN does.**
+  `Branch test: (5.Nb3 (5.Nc3 Qxb2) 5...Nf6)` gave ids `7.0.0` + `7.0.1` for the
+  outer line and `7.0.0.0.0` + `7.0.0.0.1` for the inner — TWO groups, which
+  `subMoveGroups` already separates and which have always resolved. So the user's
+  own example, `1.e4 (1.d4 d5) 1...c5`, was never the broken case.
+* **The broken case is several branches inside ONE pair of parentheses.**
+  `Flat branch test: (4.Qxd4 e5 4.c3 dxc3)` gave ONE group — `5.0.0` `5.0.1`
+  `5.0.2` — whose third move rewinds. That is what `branched` means, and what was
+  dropped whole.
+
+## 7.4 Each branch is its own line (v0.66.0)
+
+Authors write several branches in one breath ("10.dxe6 fxe6 11.Bd3 d5 10…dxe6
+11.Qxd8 …") and Chessable makes every move of that a clickable sub-move in the SAME
+group.
+
+`walkLine` cuts them apart: it SEGMENTS as it walks, playing each move from the
+first of
+
+1. where the current segment left off — no branch;
+2. the END of a segment left open earlier ⇒ a variation closed, so RESUME it,
+   scanned NEWEST-FIRST so nesting closes innermost-first;
+3. a position already played FROM ⇒ a new branch off an earlier move.
+
+**Rule 2 is the one that was missing**, and it is not a nicety: the position after
+1.e4 is not in `before` at all until something is played from it, so the old scan
+of `before` alone could only ever find the position inside the SIDELINE — "1…c5"
+was anchored after 1.d4, i.e. quizzed as an answer to the wrong move.
+
+It is a REFINEMENT, not a looser pass: every candidate is a position this very line
+stood on, and `moveFits` still checks the printed move number of EVERY move as well
+as legality. Spot-checked against the real `walkLine` in a headless harness before
+anything was written down, then ground-truthed live 2026-08-04 (course 453453,
+overstudy of 70382641, comment `Flat branch test: (4.Qxd4 e5 4.c3 dxc3)` on
+3…cxd4) on BOTH readers:
+
+* **DOM/browse** — `continuation: line 5|5.0 (Qxd4 e5 c3) writes 2 branches in one
+  line — 1 of them quizzable`, `line 5|5.0#1 (c3) has no move for the user —
+  skipped`, then `5 line(s) ready — h3 Nc6 | c3! d5 | Qxd4 e5 | Nb3 Nf6 |
+  Nc3 Qxb2` and a launcher reading "Review clickables (5)". Before the change that
+  group contributed nothing, so it was 4.
+* **PLAN/heads-up** — the panel raised BOTH branching moves at 3…cxd4 ("Qxd4",
+  "c3"), and "Review now" ran `starting 2 line(s) now — Qxd4 e5 | c3 dxc3`, played
+  to `all lines done`.
+
+The two readers legitimately disagree on the second branch: the DOM stops making
+moves clickable after `4.c3` while the server's own comment JSON still carries
+`dxc3`, so the plan reader has a user move there and the DOM reader does not. Both
+are right about what their source says — which is why `quizzableLines` judges each
+branch on its own rather than the group as a whole.
+
+`branched` now means `segments.length > 1` (equivalent to the old "a rewind
+happened" — a rewind can only create or resume, both of which need a second
+segment). The entry keeps the WHOLE run in `plies`/`before` and ADDS `branches`,
+because the lines written INSIDE it are anchored by their index in the run.
+
+`quizzableLines` is ONE filter, shared by the DOM scanner and the lesson-plan
+reader, which had drifting copies of the same three rules.
+
+Each branch carries `moveIdx`, its plies' indices in the ORIGINAL run: a branch's
+printed spans are NOT contiguous, so `lineSpans` (and through it
+`navigateToLineEnd`) cannot find the move to click without them.
+
+A group with a move we cannot read (Chessable writes null moves as `18.--`) is
+`truncated` and is still dropped WHOLE — but, like every unquizzable group, it is
+still stored in `resolved`, because its positions are the ONLY way to place the
+lines written inside it.
+
+### Annotations
+
+A line whose USER-colour move is annotated "?", "??" or "?!" is dropped — authors
+use these lines to show what NOT to play, and quizzing one would drill the blunder
+as repertoire. `quickEditSanFromEl` STRIPS eval glyphs (the edit page's ids carry
+none), so `moveAnnotation()` reads them separately as the trailing run of `!`/`?`
+on the span (never inside SAN, so unambiguous), with the next sibling as a fallback
+in case Chessable emits the glyph outside the span.
+
+`isBlunderAnnot` tests the **first character** — that is what separates "?!" (drop)
+from "!?" (keep), so never use a "contains a ?" test. An annotated OPPONENT move is
+the PREMISE of a line about punishing it and stays quizzable.
+
+## 7.5 Already in the course (`tagLinesInCourse`, v0.35.0)
+
+Chessable lets the user add a clickable line to the repertoire as a real variation
+(their own right-click on the line), which they then review normally — so quizzing
+it here too drills it TWICE in one session. Such lines are tagged (`line.inCourse`)
+and left out: `freshLines()` is what the launcher counts, what `openReview` runs and
+what the scope picker filters, while `cr.lines` keeps everything so the tooltip can
+say how many were left out.
+
+The answer comes from the endpoint behind Chessable's own "Find position in
+course": `GET /api/v1/getList?uid&bid&fen` with the JWT Bearer header
+(`CONFIG.chessableApi`, shared with the chapter sort; `uid` comes from
+localStorage and is REQUIRED — 400 without it) →
+`{ list: { data: [ {id, name, moves, …} ] } }`, where a non-empty `data` IS the
+answer and `name` is the variation's title. The page behind that URL is an SPA
+shell whose HTML contains NOTHING (4.7 KB, no cards — do not try to scrape it).
+
+Query FEN = the four-field `cacheKey` with `/` → `;`: the server ignores the move
+counters and even the en-passant field but DOES match the side to move. The
+position checked is the one AFTER the line's last move, i.e. reaching it means the
+whole line was played.
+
+Answers are cached per course+position in `chrome.storage.session`
+(`cloCourseFenCache`, 12 h) because a hit downloads ~180 KB (a miss ~0) and a
+session completes the same variation repeatedly.
+
+EVERYTHING here fails **open** — no credentials, HTTP error, timeout, unexpected
+shape, unreadable bid — the line simply stays quizzable, since losing a line to a
+network hiccup is worse than drilling one twice.
+
+## 7.6 One position, one answer — unless the answers are the same line forking
+
+(`dropAmbiguous`, v0.34.2; combining added v0.67.0.)
+
+Authors offer alternatives for their own side all the time ("10…fxe6 … 10…dxe6 …"),
+and a quiz cannot ask those one after the other — the user would see the same board
+twice and be marked wrong for a move the author also recommends.
+
+So every USER ply of every quizzable line is collected per position (`cacheKey`, so
+a transposition into a disputed position counts too) and a position with two
+different answers is CONTESTED. **Opponent plies are deliberately not collected**:
+two lines showing different replies to one position is the ordinary "and if he
+plays this instead" case (verified live — variation 70382641's two lines branch
+from the same position and both stay).
+
+A contested position is resolved one of three ways:
+
+* **COMBINED** (`mergeUserAlternatives`) when the clashing lines are the SAME LINE
+  up to the disputed move — exactly what an author writing "or you can play…"
+  produces. They become ONE line accepting EITHER answer, which then carries on
+  down whichever was actually played. It counts as one line in the launcher and
+  costs one pass; the branch not taken is not drilled this time, which is the point
+  of combining rather than asking twice (the author's call, 2026-08-04).
+* **DROPPED** when the MAINLINE answers the position differently. There is no
+  second line to combine with — only the game the user has just played — and being
+  asked to unlearn it a minute later is the trap this pass exists for.
+* **DROPPED** when it is not a clean divergence: lines meeting at a position by
+  different routes (a transposition), or disagreeing at more than one point.
+  "Either move here, then carry on accordingly" is not a true description of those.
+  `mergeUserAlternatives` REFUSES rather than approximates — identical startFen,
+  identical uci prefix, one shared divergence index, at least two lines — and the
+  caller falls back to the drop.
+
+A line whose USER move carries "?", "??" or "?!" never reaches this pass at all
+(`quizzableLines` drops it first), so a combined line can never offer a move the
+author marked as a mistake. That was the stated condition for combining and it is
+satisfied structurally, not by a second test.
+
+**One fork per line** is all the run side supports, so a line already combined (or
+dropped) at an EARLIER disagreement makes every other line at a later contested
+position take the safe answer — `settled` in the loop. Without that guard a
+position whose only remaining asker had already been folded elsewhere would "merge"
+a group of one and let a real clash through.
+
+The combined line is the FIRST of the group with `alts` hung on the disputed ply,
+each alternative carrying its own continuation and a `src` back to the line it was
+printed in. The primary path stays exactly where it was, so everything that does
+not know about alternatives — labels, `importantLine`, the heads-up's mini board —
+keeps working untouched. The label shows the fork ("O-O b5/Qc7 Bb3") so a log line
+says the pair was combined rather than one of them lost.
+
+**At run time the path is RUN STATE, never the line** (`cr.path` / `linePath()`).
+`startLine` sets it to the line's own plies and `tryMove` re-paths on taking an
+alternative — prefix + the answer given + that answer's continuation. It must not
+live on the line: the same combined line has to be playable the other way in a
+later run. `step`, `currentPly` and `syncUi` all read the PATH, since taking an
+alternative can make the rest a different length. `navigateToLineEnd` takes the
+path too and follows the last ply's `src`: a combined path crosses from one printed
+comment line into another at the fork.
+
+Ground-truthed live 2026-08-04 on variation 71087636 with
+`(7.O-O b5 8.Bb3) or (7.O-O Qc7 8.a3)`: both readers logged the combine, the
+launcher went 2 → 3, the prompt read "Black to play — either move", and playing the
+NON-primary Qc7 finished the line and left the board on **a3** — the alternative's
+own continuation, not the primary's Bb3.
+
+The hint names every accepted answer ("Play b5 or Qc7"); the ordinary prompt says
+"— either move" before the user has to guess that the move they were about to play
+is also right.
+
+**One thing the order costs:** `tagLinesInCourse` runs AFTER this pass, so a
+combined line is checked for "already in the course" by its PRIMARY ending only,
+and a member that was already added as a real variation no longer drops out on its
+own. Fail-open like the rest of that check, but it is why the count can differ by
+one from what a pre-merge tagging would give.
+
+## 7.7 Input
+
+Click-then-click **and** drag-and-drop. The drag layer sits ON TOP of the click
+path, which is unchanged: `pointerdown` only ever picks a piece up (the same
+selection a click makes), the pointer is CAPTURED on the grid so the drop square is
+resolved GEOMETRICALLY (every captured move/up event targets the grid, not a
+square), and `cr.swallowClick` stops the trailing click being acted on twice. That
+flag is cleared on EVERY pointerdown before any bail-out — a sequence ending
+without the expected click would otherwise eat a later real one — and is otherwise
+SET on every pick-up.
+
+Under `dragSlopPx` travel a press stays a click. `touch-action: none` on the board
+(not `manipulation`) keeps a finger drag from scrolling the page.
+
+**DESELECT** (pressing the already-selected piece) is done by `onDragEnd` from
+`drag.wasSel`, NOT by the click path: `setPointerCapture` retargets the whole
+compatibility sequence — mousedown/mouseup, hence the CLICK — to the GRID, so after
+a pick-up the click never reaches a `[data-sq]` element and `onSquare` is never
+called. Ground-truthed live 2026-07-26; that is why clicking a selected piece did
+nothing before v0.34.0. **Never move that deselect back into the click handler.**
+
+**Right button draws:** drag = arrow, click = circle, same shape again removes it
+(`cr.shapes`, the in-flight one `cr.shape`). ONE `<svg>` over the piece layer,
+geometry in BOARD UNITS like the squares and pieces, so a resize needs no JS;
+`pointer-events: none` keeps input on the grid and `contextmenu` is prevented on
+the board element. Drawing is allowed while `cr.busy` (an annotation is never a
+quiz answer); shapes are scratch work, cleared by ANY ordinary press on the board
+(before the busy bail-out) and by every move — nothing is persisted, and one colour
+is the whole design.
+
+Legal-target markers are COPIED from Chessable's live rules rather than
+approximated (33 % dot at effective alpha .21; their radial-gradient ring on a
+capture) — the square colour is ours on purpose, the affordances are theirs.
+
+A refused move needs NO rollback — our position only ever advances on the correct
+move. Two misses spell the answer out (`wrongHintAfter`).
+
+## 7.8 Walking a line instead of being asked for it ("Navigate", v0.84.0)
+
+`cr.browse` is a FLAG INSIDE the quiz, deliberately not a fourth `cr.mode`. It is
+the same run — same queue, same line, same `cr.path` — and everything that branches
+on `cr.mode` (`closeReview`'s `navigateToLineEnd`, the `--important` class, the
+drill's card bookkeeping) must keep reading `'quiz'`; a mode of its own would have
+had to duplicate every one of those branches to arrive back where it started.
+
+Only TWO things change: `moverColor()` returns null (so the click and drag paths
+accept nothing, with no knowledge of browse in either) and `step()` is not driving
+— `startLine` skips it, which is what keeps the flag alive across a line change.
+
+`browseGoto(i)` is `anGoto`'s shape: every ply ALREADY carries the position after
+it (`fen`, from `walkLine`/`drillPlies` via `fenAfterUci`), so a jump is one
+`parseFen` and is exact, where replaying the moves would only be as good as the
+replay. The one step FORWARD is special-cased through `applyMove` — that is what
+GLIDES the piece; a rebuild teleports it.
+
+Leaving browse resumes the quiz FROM WHERE THE BOARD STANDS rather than restarting
+the line: `cr.pos` and `cr.plyIdx` are already consistent, so `step()` needs no
+help, and "walk to the interesting move, then be asked from there" is the gesture
+worth having. Per RUN, not a preference (`beginRun` and `closeReview` both clear
+it) — the launcher was pressed to be quizzed.
+
+The move list is the analysis board's, extracted as `renderMoveList(moves, idx,
+startFen, emptyText)`: both are "a straight line of moves with a cursor in it", and
+the numbering — continuing the source game, with the leading "…" when the line
+starts on Black's move — is exactly what a second copy would get wrong. Items need
+nothing but `san`. The keys are the analysis board's too (arrows/Home/End), which
+were free: that handler returns on any mode but `'analysis'`.
+
+NOT offered on a drill card: its whole content IS the move being asked for, so
+"navigate" there is just the answer — and section 23's two keys already reveal that
+one. Hint is hidden while browsing, and "Skip line" reads "Next line", since
+walking to the end of a line does not move on by itself.
+
+Measured in the harness: the 4-button quiz row fits one line from 276 px (368 px
+under `html.clo-touch`) and wraps below that; the browse panel keeps its controls
+on screen with a 20-ply line at the live comment box's 506×385, the list scrolling
+inside `flex: 1 1 auto`.
+
+## 7.9 The scope picker, ending a review, and auto-start
+
+**Scope picker.** A line's `fromFinal` flag is `startFen === fens[fens.length-1]`
+(string compare is exact — both sides come from the same `fens` array). When a
+variation has BOTH kinds, pressing the launcher shows "All continuations (n)" /
+"Final continuations (m)" / Cancel instead of starting: continuing from where the
+variation ended is the ordinary case, while an earlier branch revisits a move
+already answered. Only ONE kind ⇒ no picker, straight into the quiz.
+
+`cr.lines` is everything DISCOVERED (drives the launcher label and the picker
+counts); `cr.queue` is what the current run plays — `startLine`/`nextLine`/`syncUi`
+all index the queue, never `lines`. The board stays HIDDEN behind the picker: there
+is no single position to preview, and `syncUi` early-returns on `!cr.line` so the
+picker's text is not overwritten.
+
+**Ending a review leaves their board on the line** (v0.38.0). `closeReview(why,
+navEnd)` — `navEnd` true only for a user-driven end (finished, Exit, Escape; NEVER
+a teardown the trainer forced, where the variation it would click in has gone) —
+presses the line's last PLAYED sub-move span, so the review panel (whose FEN comes
+off that board) is already showing the line's final position when the overlays come
+down.
+
+Ground-truthed 2026-07-27: a bare `.click()` on a `commentSubMove` span does
+NOTHING; it needs `pressSquare`'s pointer+mouse sequence, exactly like a board
+square. The span is found by matching the line's SAN sequence against freshly
+grouped spans (`lineSpans` over `subMoveGroups`) — NOT by an element stored on the
+line: a queued line (§6) came from the plan and never had one, and the comment
+re-renders freely. `cr.plyIdx` caps the index, so an early exit lands on the last
+move the user was SHOWN, and `played <= 0` navigates nothing.
+
+**Auto-start** (`autoKey` = `cloAutoReviewClickables`, storage.local, opt-IN):
+`maybeAutoStart` runs `beginRun(freshLines())` from the tick once the lines are
+ready — launcher and picker skipped, the setting IS the answer to "which lines?".
+Armed once per variation (`cr.autoRan`, which `beginRun` sets for ANY run, so
+exiting never drops the user straight back in), and it stands down while
+`retryRunActive()`: that pass navigates between variations itself and would tear a
+just-opened quiz down.
+
+## 7.10 A note on verifying this feature
+
+The browse-state gates need a CLEAN completion. A run that ends in "Time's up"
+renders the move list and the clickable lines but NO `practiceProgress` block, so
+`reviewBrowseReady()` stays false and the launcher never appears — which under
+automation (where the clamped timers make "Time's up" the default outcome) reads
+exactly like a broken scan.
+
+---
+
+# 8. The heads-up since §6 — everything added after v0.36.0
+
+§6 describes the panel as first built. What follows is what it became.
+
+## 8.1 The source is the LESSON PLAN, not the DOM
+
+Ground-truthed 2026-07-27 on `/practice/453453/70382641/0/b` by playing the
+variation through with a MutationObserver watching: **a quiz renders NO
+`commentMove`, NO `commentSubMove`, and not even a `commentScrollContainer`.** The
+comment column says "Quiz — Black to play!" and nothing else, before and after
+every answer. Everything the browse scanner reads is created only when the
+variation completes. (v0.36.0 read the DOM and therefore never showed anything.)
+
+Each ply's `comment` is a JSON STRING carried in the plan and passed through
+verbatim by `pagestate.js`:
+
+```
+{ before, after, data:[ {key:'V', val:[ {key:'S', val:'5.Nb3'}, …,
+                                        {key:'C', val:'<br/>'},
+                                        {key:'V', val:[…]} ]} ] }
+```
+
+`'V'` a line, `'S'` a clickable move, `'C'` prose, a `'V'` inside a `'V'` the
+nesting the DOM ids spell "7.0.3.0". That yields the grouping, the nesting, the
+branch index (the count of `'S'` siblings before a nested `'V'`, minus one —
+verified to equal the DOM's) and, which the DOM never had, the EXACT positions the
+comment hangs between. `after` is tried first (a line carrying on past the ply),
+then `before` (one offering an alternative TO it); both occur in the same
+variation.
+
+Anchoring itself is unchanged — `walkLine`, printed number plus legality. The
+browse-state scanner stays on the DOM: it works, and the two agree on `lineSig`,
+which is all the hand-over needs.
+
+The mini board reuses the quiz board's own geometry, cloned piece SVGs and arrows,
+so the two boards cannot drift apart.
+
+## 8.2 Three rules about which lines are raised
+
+* **Only lines whose FIRST ply is the OPPONENT'S — except at the final position.**
+  A line starting with a move of the user's colour branches where the trainer is
+  about to ASK them for a move, so raising it hands over the answer. At the FINAL
+  position the variation is over and there is nothing left to give away, so a
+  continuation of the user's own colour is offered there too (`startPly <
+  finalPly` is the whole test). The wording follows: "The opponent can also respond
+  with:" mid-variation, "From here the opponent can play:" / "You can also carry on
+  with:" at the end.
+* **Only lines anchored on a MAINLINE position are RAISED** — a line anchored
+  inside another comment line branches from a position the user never plays
+  through, so there is no moment at which to raise it. **But it is still CARRIED**
+  (`linesInside`, `groupLines`, v0.66.1 — reported and reproduced live on variation
+  71087636 with `(6.O-O! fxe4 7.Nxe4 (7.Ne5 d6 and Black is better.) 7...d5 …)`,
+  where the console read `2 clickable line(s) …, 1 can be pointed out`). That rule
+  was right about when to SHOW such a line and wrong about what to do with it: the
+  author wrote `(7.Ne5 d6)` as an alternative to a move of the very line being
+  pointed out, so it is part of the SAME offer, and dropping it made "Review on
+  variation end" and "Review now" quietly review half of what the comment says. The
+  browse-state launcher never had the problem — it has no mainline rule.
+  **Carried, not printed:** the panel's rows are the alternatives at THIS position
+  and a move branching four plies later is not one, so `showHeadsUp` adds a quiet
+  "+n line(s) written inside" row instead and the mini board's arrows stay
+  `group.lines` only. `armHeadsUp`/`reviewNow`/the "already armed" test take
+  `groupLines(group)` = `lines` + `inside`; `headsUpScan` extends the
+  `tagLinesInCourse` candidates the same way.
+  The relation is DERIVED FROM POSITIONS, never from the comment keys, so it holds
+  for both readers with no key surgery: a line is inside another when it starts on
+  a position that other line REACHES. Its own start position is deliberately NOT in
+  that set — a line starting where the host starts is a SIBLING, and at the root
+  those are raised in their own right; including it would duplicate them into the
+  queue.
+* **The clock is the plan's own `fen`** located in the plan's `sourceFen`s
+  (`pollHeadsUpPly`, asynchronous, so at most one tick stale — the right lag, since
+  the panel must not blink out on the frame a piece lands). A line branching at
+  mainline ply k goes up when the trainer reaches ply k and comes down at k+2: the
+  OPPONENT'S reply (ply k) leaves it standing, the USER'S next move (ply k+1) takes
+  it away. That is the asked-for "it disappears when you move".
+  **Never derive this clock from the board DOM.** Ground-truthed 2026-07-27: after
+  a rolled-back wrong answer the board held a stale DUPLICATE piece (a knight on b8
+  AND c6) for far longer than an animation, which no one-king-per-side check
+  catches; the derived placement then matched no plan position at all and the clock
+  simply stopped, leaving the panel up over a position the user had left several
+  moves earlier.
+
+A first move that merely transposes back into the variation (`cacheKey` of its
+post-FEN equals the mainline's next position) is not an alternative and is dropped.
+`tagLinesInCourse` is AWAITED before `cr.hu.lines` is assigned, so no line is ever
+raised untagged; it runs for the CANDIDATES only.
+
+The scan runs ONCE per variation (the plan holds every comment from the first
+frame) and only after `getReviewBoard()` exists — before that there are no React
+fibers to walk, and a small retry budget was otherwise spent entirely on "no fiber
+root" during the cold boot, permanently skipping the variation (v0.36.2). Budget is
+`headsUpScanTries` (~30 s at the 500 ms tick). Wiped by `resetHeadsUp` on every
+variation change and on leaving the trainer path.
+
+## 8.3 It runs in the browse state too (v0.37.0), and the queue is never auto-started
+
+Lines that carry on from the FINAL position branch where the variation ends, so
+there is no earlier moment at which to raise them. `tick` therefore calls
+`headsUpTick` in BOTH branches (browse only while `!cr.active`, or it would fight
+the quiz overlays it is about to be replaced by).
+
+**The queue is never started automatically.** A filled "Review queued lines (n)"
+button (`cr.queueBtn`, ahead of the plain launcher in the same cluster) calls
+`runQueued`. Landing in a quiz nobody asked for is jarring, and the final
+continuations are only offered once the variation ENDS — so the user must have a
+moment to add those to the queue before anything starts. The button only shows in
+the browse state: our board overlays Chessable's, so running mid-quiz would cover a
+live quiz board. `beginRun` clears the queue, whichever way the run started.
+
+While it shows, the plain "Review clickable(s)" launcher is HIDDEN: a user who
+picked lines by hand has already said which ones they want, so "all of them" beside
+it is noise and the two green buttons compete. It comes back the moment the queue is
+spent or the variation changes — which is also the only way to abandon a queue.
+
+**The queue is the RESOLVED LINES themselves** (`cr.hu.armed`: lineSig → line),
+handed straight to `beginRun`, skipping the All/Final picker (the user already
+chose). It used to store only the NAMES and look them up again in the browse
+scanner's `freshLines()`, which meant a line could be offered mid-quiz and then
+silently withdrawn at the end ("the line(s) queued during the quiz are no longer
+offered", v0.36.6).
+
+The two readers are ALLOWED to differ: the DOM one has a wider anchor set (the
+whole mainline, not just the comment's own two positions), counts the attach ply
+from printed moves rather than from the plan, and never sees a `comment_before`
+block as its own — any of which can land the same line on a different startFen,
+changing its lineSig. Nothing about a queued line needs re-deriving anyway: it was
+resolved against the plan's exact positions, `walkLine` proved every SAN legal, and
+every condition above was applied before it was ever raised. **Never reintroduce a
+cross-reader lookup here.**
+
+Queueing a line HIDES the panel after `headsUpQueuedHideMs` (v0.38.0): its work is
+done and it sits over the gutter — or, on a phone, over the comment column.
+`armHeadsUp` already adds the group to `seen`, so the next tick cannot raise it
+again; the timer is cleared by `hideHeadsUp`.
+
+At the final position with an EMPTY queue there is no arm button (v0.63.0): "Add to
+review queue" beside "Review now" then offers a second button to go and find in
+exchange for nothing — the variation is over, so the wait it names has already
+happened. `cr.hu.armed.size` is the test, not `group.final` alone: once anything IS
+queued, adding to a set that will be played in one go is a real choice and the
+button comes back. Mid-variation it always stands.
+
+## 8.4 "Review now" (v0.51.0) and holding the trainer
+
+The panel's SECOND button, and the only run that lives OUTSIDE the browse state.
+`reviewNow` plays the SHOWN GROUP on the spot: `beginRun(lines, spot=true)`, whose
+`spot` arm keeps everything else as it was (only the played lines leave
+`cr.hu.armed`, `cr.autoRan` is NOT set, so the auto-start stays armed for the
+variation's other lines) and sets `cr.midQuiz = spot && !reviewBrowseReady()`.
+
+That flag is what `tick` checks before its "left the browse state" teardown — every
+OTHER active review must still die there, since outside the browse gates it means
+the trainer moved on underneath us; this one was opened over a live quiz
+deliberately. Mid-quiz the panel placement needs no special case either:
+`positionOverlays` falls back from `reviewCommentBox` (a live quiz renders NO
+scroll container — §8.1's fact) to `reviewCommentCol`.
+
+**The trainer is put on hold for the duration** (`holdTrainer` / `releaseTrainer`,
+the latter called from `closeReview` on EVERY close, so a run torn down by a
+variation change cannot leave the session paused):
+
+* the session TIMER is paused, or the minute spent in a sideline is charged to the
+  card being answered. Ground-truthed live 2026-08-01: pausing is a plain `.click()`
+  on `trainerPauseButton()`, while the play overlay that replaces the board
+  (`SELECTORS.trainerPlayOverlay`) needs the full `pressSquare` pointer sequence — a
+  bare `.click()` on it does NOTHING, exactly like a board square. Pausing leaves
+  the board element and every `[data-piece]` in place (the pieces merely go to
+  opacity 0), so the overlays measure and clone off it as usual, and the quiz
+  position is untouched. A session paused by SOMEONE ELSE (section 10's
+  background-tab auto-pause) is left alone by `pauseTrainerTimer` and so never
+  becomes ours to resume.
+* the control is NOT always on screen — Chessable empties the board footer in the
+  study/transition states between quizzes, which is exactly when the heads-up can be
+  up — so `maintainTrainerHold()` retries once per tick while the run is active
+  instead of giving up on the one press.
+* AUTO-PLAY is held off through `autoPlayHold(true)`: our board covers theirs and
+  the session is paused, so an injection would be a move played into a board nobody
+  can see. Release re-enters the loop at once. `releaseTrainer` resumes the timer
+  BEFORE releasing auto-play, for that same reason.
+
+Exit reads "Back to the quiz" in this mode — leaving is not "give the board back
+and be done" but "go back to the card I was in the middle of", and the timer
+restarting is the half the user cannot see.
+
+**Hidden while auto-play replays.** `headsUpTick` returns early on
+`autoPlayReplaying()` — during the opening replay the positions go past at
+auto-play's own speed, so a panel raised on one of them either flashes by unread
+or, worse, stands over a position the replay has long left. HIDDEN, not dismissed:
+the group stays out of `seen`, so whatever is still branching where auto-play hands
+back is raised the moment it does. The bridge answers `injected || injectTimer`,
+else a move injected within `replayQuietMs` (1.5 s) — the quiet window exists
+because NOTHING else marks the gap between one replayed move landing and the
+trainer's reply, and `maybeHandback` clears `vs.replayAt` so a real handback shows
+the panel immediately. Verified live that with auto-play merely ENABLED (the common
+case) the panel still appears.
+
+## 8.5 Placement
+
+**In the browse state it COVERS the comment** (v0.60.0), for the same reason the
+QUIZ panel always has: the lines it is offering to quiz are PRINTED THERE. A
+completed variation's comment regularly ends with the whole line written out ("If
+white goes for the doubled pawns: 7.Bxc6+! bxc6 8.O-O Bg4 9.h3 Bh5 10.d3 Rg8
+11.Bf4 Qd5"), so a heads-up that offers that line while leaving it on screen has
+handed over every answer before the user presses anything.
+
+`placeHeadsUp` therefore prefers `SELECTORS.reviewCommentBox` — the comment's own
+SCROLL CONTAINER, which a live quiz does not render at all — so the rule is
+self-limiting: container present ⇒ browse ⇒ cover it. The whole container, not its
+top: the clickable lines are usually the LAST thing in a long comment.
+
+**Mid-quiz it falls back to the COLUMN** (v0.63.0), `reviewCommentCol`. CLAUDE.md
+used to refuse this on the grounds that Chessable's own "Quiz — White to play!" was
+worth leaving readable, this panel being unsolicited where "Review now" is asked
+for. Overruled on the evidence: that column prints ONE sentence and is then empty
+for the whole card, the board says whose move it is anyway, and the room is what the
+mini board grows into — 176 px in the gutter against 317 px over a 455 px column.
+
+Two differences from the spoiler branch, both deliberate:
+
+* the column is SIZE-GATED (`headsUpCoverMinPx`, 300) and the box is not. Covering
+  the box is a SPOILER decision — the answers are printed in it, so it is taken at
+  any size, overflow and all. Covering the column buys room and hides nothing, so a
+  column too short to hold the panel is not worth taking.
+* the panel keeps its CONTENT HEIGHT over a column and is stretched to the box. Over
+  a column it is the WIDTH that limits the board (a trainer column runs 600 px+), so
+  a fixed height would leave the panel half empty for nothing.
+
+This retired the old preference, the gutter LEFT of the board, whose comment read
+"which during a quiz is empty: the review panel only ever shows in the browse
+state" — true when written, and falsified by v0.37.0 extending this panel INTO the
+browse state, where the review panel is in that gutter: it covered the Lichess move
+table (which spoils nothing) and left the comment showing (which spoils
+everything).
+
+Ground-truthed live 2026-08-03: mid-quiz `[406,113,300,304]` content-sized and no
+scroll container; browse `[1226,161,506,385]` against a comment box of exactly
+`[1226,161,506,385]`, opaque, with the Lichess panel at `[286,113,420]` no longer
+overlapped.
+
+In a STACKED layout (portrait) while the quiz is LIVE, placement stops at the
+board's own FOOTER instead of also clearing the overstudy widget and the whole
+trainer row (`coverComment` = stacked && `!reviewBrowseReady()`): down there
+Chessable prints nothing but "Quiz — White to play!", while our panel would
+otherwise be a scroll away from the board it is talking about. Since v0.63.0 that
+is the SHORT-column case only.
+
+### Sizing the mini board
+
+`fitHeadsUpMini` (v0.63.0). Everywhere else the panel wraps around a
+`headsUpMiniPx` board; over the comment box the panel has a BOX (~506×385 live), and
+a 176 px board in that leaves the only thing worth looking at as the smallest part
+of the panel. So the board takes whatever the rest leaves — **measured, never
+estimated** (the lead sentence, the number of move rows, the queued note and the arm
+button's presence all vary in height, and this must never push the buttons out of a
+panel that cannot scroll): collapse the board, let the panel size to content for one
+synchronous read, restore.
+
+The BODY's height comes back off (`rest` is everything OUTSIDE it) — the move rows
+sit BESIDE the board and are absorbed by it, only `headsUpMovesColPx` of WIDTH is
+theirs. That is not a detail: counting them as height instead (i.e. dropping them
+below the board, which at that width looks like the tidier layout) measured 207 px
+of edge against 261 in the harness.
+
+`headsUpMiniPx` is the FLOOR, so a box too small to fit the fit is left exactly as
+it was. Measured: 261 px over a 506×385 comment box (height-bound), 317 px over a
+455 px-wide column (width-bound). The measurement needs a laid-out panel, so it
+bails while `hidden` and `showHeadsUp` calls again after unhiding, and it is cached
+against everything that can change the answer because `placeHeadsUp` runs on every
+scroll event and this forces two reflows. The glyph piece fallback is the one thing
+on that board NOT sized in percentages, so `sizeHeadsUpMini` sets a font-size on the
+board element and the stylesheet inherits it.
+
+## 8.6 Quiet at rest (v0.84.0), darker rather than transparent (v0.87.0)
+
+This panel RAISES ITSELF — nobody asked for it — beside a board the user is being
+quizzed on, and at full strength it competes with the card being answered; it was
+reported as "somewhat annoying". So it rests dimmed and comes up on hover, because
+NOTICING it and READING it are different acts and only the second is deliberate.
+`:focus-within` is in the same rule as `:hover`: both buttons are keyboard-reachable,
+and a panel still dim while one of them has focus is at its least readable exactly
+when it is about to be pressed.
+
+`filter: brightness(var(--clo-heads-rest))` on an opaque surface, where v0.84–0.86
+used `opacity`. Opacity was the wrong property twice over, and the whole tangle it
+created is now GONE:
+
+* it made the panel TRANSLUCENT, so whatever sat under it showed through — muddy
+  over Chessable's UI, and outright dangerous over the comment box, where what shows
+  through is the answers to the very lines being offered. So that placement needed
+  an exemption…
+* …and the exemption needed `!important` to outrank the TOUCH rule, which itself
+  existed only because a phone has no hover to lift the dimming with — two releases
+  of exemptions (v0.84.0 exempted touch outright, v0.85.0 rested it higher instead)
+  that were both about opacity and neither about touch.
+
+An opaque panel raises none of that: the resting dim is now the SAME in every
+placement and on every device. Measured in the harness: ordinary
+`brightness(0.78)`, IMPORTANT `0.92` — an author's "!" is the whole reason a line is
+worth interrupting for, so its mark (18c) must read THROUGH the dimming rather than
+be the first casualty of it — and `brightness(1)` on hover/focus, with `opacity`
+staying 1 throughout.
+
+It FADES IN over 0.5 s (`@keyframes clo-heads-in`, class `.clo-cr-heads--in`). An
+ANIMATION, not a transition, because the element is REUSED — `showHeadsUp` unhides
+it rather than creating it, so there is no property change for a transition to run
+from; that function restarts the animation by removing the class, forcing a reflow
+(`void el.offsetWidth`) and adding it back. Without the reflow the browser coalesces
+the pair and nothing restarts.
+
+`.clo-cr-heads--cover` SURVIVES, for the fade and nothing else: a fade IS opacity by
+definition, so over the comment box it would make the clickable lines legible for
+half a second — which is what that placement exists to prevent. There the panel
+simply appears, at once and fully opaque. Set by `placeHeadsUp`, the only code that
+knows which placement it took, and only for the SPOILER — never for the mid-quiz
+COLUMN, which prints one sentence and hides nothing.
+
+> **Note for measuring this:** the dim carries a 120 ms transition, and
+> `getComputedStyle` returns the ANIMATING value — in a browser pane that is not
+> compositing frames the transition never advances at all, so a probe reads the
+> resting value for ever and the rule looks dead. Set `transition: none` on the
+> element before reading (that is how the figures above were taken).
+
+## 8.7 Keys, and the setting
+
+Unlike the quiz panel this one must **not** swallow keys — the user is still playing
+on Chessable's board and needs MoveTrainer2's shortcuts — so its buttons `blur()`
+themselves after a press instead, or the next space would re-fire them.
+
+Opt-OUT setting `cloLineHeadsUp` (storage.local, absent = ON), watched through
+`chrome.storage.onChanged` so a change lands in open trainer tabs. TWO controls
+write it: the options-page checkbox, and the panel's own "Turn off" — the setting
+has to be reachable from inside the session, since the options page is another tab
+and the panel's moment has passed by the time anyone gets there. That one arms on
+the first click and disarms after `headsUpOffArmMs` (auto-play's "Clear" pattern): a
+misclick would otherwise cost the feature for the rest of time, with the options page
+the only way back. `turnHeadsUpOff` sets the local flag and hides the panel BEFORE
+the write, so an orphaned content script still obeys the press.
+
+Deliberately NOT gated on `document.hidden`: auto-play is, because it DRIVES the
+board; this panel only reads and renders, and is invisible in a hidden document
+anyway — the guard bought nothing and made the feature impossible to verify under
+automation, where a driven tab always reports itself hidden.
