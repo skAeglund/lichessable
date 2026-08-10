@@ -15413,6 +15413,11 @@
         // "Add as variation" (19c): idle | armed. `plan` is everything the
         // confirming press writes, prepared and checked by the arming one.
         addVar: { state: 'idle', at: 0, plan: null },
+        // The variation this board has just created, if any — `{ oid, name }`,
+        // which is what shows "Open the variation". It lives exactly as long as
+        // the status line explaining it does (see anPlay / anRemoveFrom): a way
+        // to a variation, with the sentence naming it gone, says nothing.
+        created: null,
       };
     }
 
@@ -15440,6 +15445,7 @@
       // finished save, a failure — is stale; the live preview takes over again.
       if (cr.an.save.state === 'idle' && cr.an.save.msg) resetAnSave('idle', '', false);
       disarmAddVar(true);
+      cr.an.created = null; // its sentence has gone; the button must go with it
       applyMove({ mv }); // animation + cr.pos, exactly as in the quiz
       syncUi();
       scheduleRefresh(); // database + engine follow immediately, not on the next tick
@@ -15482,6 +15488,7 @@
       // after playing a move; the live preview takes over again.
       if (cr.an.save.state === 'idle' && cr.an.save.msg) resetAnSave('idle', '', false);
       disarmAddVar(true);
+      cr.an.created = null; // its sentence has gone; the button must go with it
       log('analysis: removed', gone, gone > 1 ? 'moves from' : 'move,', san);
       anGoto(idx - 1); // …which repaints, re-renders the list and refreshes the panel
     }
@@ -16109,13 +16116,17 @@
         const fresh = await fetchCourse(src.bid, cr0, false);
         landed = fresh.vars.find((v) => String(v.oid) === String(oid));
       } catch (err) {
+        // It IS created — the oid came back — so the way to it is offered even
+        // though we could not read it back to describe it.
         report('Added "' + plan.name + '" — but the course could not be ' +
           're-read to confirm it (' + msgOf(err) + ').', false);
+        noteCreatedVariation(an, oid, plan.name);
         return;
       }
       if (!landed) {
         report('Chessable reported variation ' + oid + ' added, but it is not ' +
           'in the course listing — check it in Chessable.', true);
+        noteCreatedVariation(an, oid, plan.name);
         return;
       }
       const got = landed.sans.map(bareSan).join(' ');
@@ -16124,11 +16135,53 @@
         warn('add as variation: expected "' + want + '" but the course has "' + got + '"');
         report('Added, but Chessable stored a different line: ' + got +
           ' — check it in Chessable.', true);
+        // Especially here: the button is how the user goes and looks.
+        noteCreatedVariation(an, oid, landed.name);
         return;
       }
       log('add as variation: created', oid, '—', got);
-      report('Added as a variation: "' + landed.name + '" (' + got + ').' +
-        (isVariationPath() ? ' Reload the page to see it.' : ''), false);
+      report('Added as a variation: "' + landed.name + '" (' + got + ').', false);
+      noteCreatedVariation(an, oid, landed.name);
+    }
+
+    /**
+     * Remembers the variation just created, which is what puts "Open the
+     * variation" on the panel. Set AFTER `report`, deliberately: every report
+     * goes through `resetAnSave`, which is the funnel for spending an arm and
+     * would spend this too.
+     *
+     * Offered on every path where an oid came back, including the two where we
+     * could not describe what landed — those are exactly the cases where the
+     * user most needs a way to go and look.
+     */
+    function noteCreatedVariation(an, oid, name) {
+      if (cr.an !== an) return; // the board went away while the write was in flight
+      an.created = { oid: String(oid), name: name || '' };
+      syncUi();
+    }
+
+    /**
+     * Opens the created variation on its own page — in a NEW TAB, on both hosts.
+     *
+     * Never in this one. The analysis board holds a line the user has just worked
+     * out and may well want to keep working on, and in a trainer session leaving
+     * would abandon the session itself: MoveTrainer2 guards an unfinished session
+     * with its own beforeunload dialog, so a same-tab navigation would first put a
+     * browser "Leave site?" prompt in front of a button that promised to show them
+     * a variation.
+     *
+     * Plain `window.open` from a click handler — a user gesture, so no popup
+     * blocker, and no `chrome.*` at all, which means this still works in a content
+     * script orphaned by an extension reload (the same script that can still
+     * perform the write, since that is a plain fetch too).
+     */
+    function openCreatedVariation() {
+      const made = cr.an.created;
+      if (cr.ui && cr.ui.anOpen) cr.ui.anOpen.blur();
+      if (!made) return;
+      const url = location.origin + '/variation/' + encodeURIComponent(made.oid) + '/';
+      log('add as variation: opening', url, 'in a new tab');
+      window.open(url, '_blank', 'noopener');
     }
 
     /**
@@ -16196,6 +16249,9 @@
       }
       const an = cr.an;
       an.addVar.state = 'idle';
+      // A second add is starting: the previous creation's button must not sit
+      // beside the new sentence, pointing at the older variation.
+      an.created = null;
       save.state = 'checking';
       setAnStatus('Checking where it would go…', false);
       const prepared = await prepareAddVariation();
@@ -16379,6 +16435,10 @@
         'moves of this variation (and their comments and arrows) in front of it. ' +
         'Two presses: the first says exactly what it would create. ' +
         'Only for courses you created.';
+      // The way to what was just created. Hidden until there IS one, and it goes
+      // when the sentence naming it goes.
+      ui.anOpen.hidden = !cr.an.created;
+      ui.anOpen.disabled = busy;
 
       // The status line: what a press would write while nothing is happening,
       // then the save's own progress, every refusal and its result. Never blank
@@ -16719,6 +16779,12 @@
       // does not fit anywhere but the status line.
       const anAddVar = anBtn('Add as variation', '', () => { addAsVariation().catch(() => {}); });
       anAddVar.classList.add('clo-cr-btn--primary');
+      // Shown only once a variation has been created, and it NAVIGATES rather
+      // than acting on the course, so it wears the row's plain style.
+      const anOpen = anBtn('Open it',
+        'Open the variation that was just created, on its own page in a new tab. ' +
+        'This board and its line stay as they are.', openCreatedVariation);
+      anOpen.hidden = true;
       const anExit = anBtn('Exit', 'Close the analysis board and give Chessable its board back',
         () => closeReview('analysis closed'));
       anExit.classList.add('clo-cr-btn--exit');
@@ -16789,7 +16855,8 @@
         grid, layer, shapes, promo, title, prompt, progress, actions, hint, skip, exit,
         chooser, chooseAll, chooseFinal,
         browseBtn, nav, navStart, navBack, navFwd, navEnd,
-        list, anActions, anStart, anBack, anFwd, anCut, anAdd, anAddVar, anPrefix, anStatus,
+        list, anActions, anStart, anBack, anFwd, anCut, anAdd, anAddVar, anOpen,
+        anPrefix, anStatus,
       };
       cr.orientation = null; // the grid is built on the first startLine
     }

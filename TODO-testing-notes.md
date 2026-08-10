@@ -257,7 +257,53 @@ Covers note: *"lets extend the show and grade mode to review clickable lines"*
 
 ---
 
-## 8. Analysis board: "Add as variation"
+## 8 DONE (v0.95.0, "Open it" in v0.95.1)
+
+Landed as **section 19c**, a second button beside "Add as line" on both analysis-board
+hosts, with `DESIGN-add-as-variation.md` holding the wire shape and the ten live facts.
+
+**The note's central guess is wrong, and that is the main finding: there is a JSON
+API.** `POST /api/v1/importSubvariationFromSource`, on section 5c's JWT auth — the
+call Chessable's own "add this clickable line to my repertoire" context menu makes.
+So no edit-page driver, no popup window, no worker job, no rights probe and no
+staleness guard, and section 12 is untouched by this feature. (The general creator,
+`importGame`, exists too and is deliberately NOT used: it would make us build every
+FEN, move number and drawing blob, and a variation carrying an `oid` there
+*overwrites* that variation.)
+
+Three findings decided the shape, all ground-truthed:
+
+* **the server splices the prefix**, per-move comments, nested clickable lines and
+  arrows byte-identical, so we send only our own moves. That answers the note's
+  question about the copied prefix's comments and arrows outright — and it is the
+  only way to get the arrows at all, since a variation's arrows cannot be read
+  outside the edit page;
+* **`plyNumber` is absolute in the GAME**, not an index in the variation. A tactics
+  variation starting `… b - - 0 34` numbers its own first ply 68 and the server
+  refuses anything below that. Hence the top-level `pliesBefore(fen)`, derived from
+  our own start FEN so a mid-game start needs no special case;
+* the illegal-SAN error **echoes the FEN the server resolved to**, which makes it a
+  free read-only probe of all of the above — that is how the ply semantics were
+  settled with no writes at all.
+
+The note's four "decide and state" questions, answered in `DESIGN-add-as-variation.md`
+§3.3–3.5: destination is **this course, the source variation's own chapter** (one
+destination, decided with the user; the nominated repertoire is the case it cannot
+serve yet, and §3.3 says what that would cost); the name is Chessable's own
+convention, source title + the branching move; the prefix is neither copied nor
+re-derived by us; and the guards are §21's — `authorUid`, arm-before-fire, re-read
+afterwards — plus dropping the caches that now lie (5c's course cache, and 6c's index
+when the target is the nominated repertoire).
+
+Verified live end to end on the variation-page host, including the created line, its
+chapter, its inherited comments, and the refusal on a course the user did not create;
+all test writes deleted and the courses confirmed back at their original counts. **The
+trainer host is verified only as far as its readers** — reaching the browse state means
+completing a variation, and driving MoveTrainer2 from automation lost to the per-move
+clock. `DESIGN-add-as-variation.md` §3b says exactly what is untested and what to watch
+on the first real run.
+
+<details><summary>original note</summary>
 
 Covers note: *"In our analysis. Add option 'Add as variation' to course, if started
 from a specific variation it should included those moves + comments etc."*
@@ -291,6 +337,8 @@ from a specific variation it should included those moves + comments etc."*
 > arrows (`allTheMoves[...].drawing`) on the copied prefix. Guard it like §21's
 > writes: destination authored by the user, arm-before-fire, and re-read afterwards
 > rather than trusting our model of what we wrote.
+
+</details>
 
 ---
 

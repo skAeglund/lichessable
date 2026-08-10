@@ -1282,6 +1282,16 @@ Currently working (v0.18.x).
   * The start position, which "Add as line" must refuse, is LEGAL here (relative
     ply 1, no prefix, `initialFEN` from the source), so `analysisSource()` does
     its own sub-move check rather than leaning on `cr.an.entry`.
+  * "OPEN IT" (v0.95.1) OPENS A NEW TAB on BOTH hosts, never navigates this one:
+    the board holds a line the user may still be working on, and in a trainer
+    session leaving abandons the session — MoveTrainer2 guards an unfinished one
+    with its own beforeunload dialog, so a same-tab hop would put a browser
+    "Leave site?" prompt in front of a button that promised a variation. Plain
+    `window.open` in a click handler (a gesture, so no popup blocker, and no
+    `chrome.*`, so an orphaned script can still do it — as it can still do the
+    write). `cr.an.created` is set AFTER `report()`, since every report goes
+    through `resetAnSave`, and is cleared wherever the sentence naming it is:
+    the button and its sentence live and die together.
 - Mistake drill (section 20, v0.45.0; verified live 2026-07-29): the fast
   alternative to the retry pass —
   the session's failed MOVES, one card each, instead of their whole variations.
@@ -1711,7 +1721,9 @@ without the extension there is nothing of ours to test.
   how `importSubvariationFromSource` and `importGame` were found), but every call
   that needs auth, and every test of our own UI, needs the Chrome above.
 * The test account is a test account: writes are allowed, and are expected to be
-  undone afterwards (`updateOpening&mode=del`) with a re-read to prove it.
+  undone afterwards (`updateOpening&mode=del`) with a re-read to prove it. However,
+  it is not critical to undo changes if it would be expensive (in tokens). 
+  The SRS or review progress doesn't matter on this test user.
 
 ## Reloading the extension (READ THIS BEFORE TESTING)
 

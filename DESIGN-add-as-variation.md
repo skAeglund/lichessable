@@ -270,6 +270,33 @@ Armed state expires like auto-play's "Clear?" and is dropped by any change to th
 line, the destination or the shown move. The button `blur()`s itself after a press,
 as every other button here does, or space would fire the second press for free.
 
+### 3.5b And then the way to it (v0.95.1)
+
+A successful create puts **"Open it"** on the panel, holding the new oid; it goes
+to `/variation/<oid>/`.
+
+**In a new tab, on both hosts.** Navigating this one would throw away the analysed
+line — which the user may still be working on, and which the board is the only copy
+of — and in a trainer session it would abandon the session as well: MoveTrainer2
+guards an unfinished one with its own `beforeunload` dialog, so a same-tab hop would
+put a browser "Leave site?" prompt in front of a button that promised to show them a
+variation. `window.open` from the click handler: a user gesture, so no popup blocker,
+and no `chrome.*` — which keeps it working in a content script orphaned by an
+extension reload, exactly like the write itself.
+
+It is offered on **every path where an oid came back**, including the two that could
+not describe what landed ("the course could not be re-read", "not in the course
+listing"). Those are precisely the cases where the user most needs to go and look.
+
+It lives exactly as long as the sentence naming it: `cr.an.created` is cleared by
+`anPlay`, `anRemoveFrom` and the next arming press. A way to "the variation that was
+just added", with no sentence saying which, tells the user nothing.
+
+Labelled "Open it", not "Open the variation", for a measured reason: with five
+buttons the action row wraps below 490 px at the longer label and below 440 px at the
+shorter one, and the panel covering the comment column measures ~488 px live. The
+tooltip carries the full description.
+
 The **start position** case, which Add-as-line has to refuse ("no move to comment
 on"), is legal here: `relativePly 1`, prefix empty, `initialFEN` from the source.
 Add-as-variation is strictly more capable, and `analysisEntryMove()`'s refusals need
@@ -347,6 +374,14 @@ Also verified live:
   from "nothing happened", since the re-arm reprints the same sentence. Now 30 s
   (`addVarArmMs`). Nothing lurks behind the longer window: any change to the line
   disarms, and the write re-checks `plan.sig`.
+
+* **"Open it" (v0.95.1)** — after a create on `/variation/70455201/`, the button
+  appeared in plain style, and pressing it opened a NEW tab on
+  `/variation/71345048/` showing `e4 c5 Nf3 Nc6 d4 cxd4 Qxd4 Nf6`, with the analysis
+  board still up behind it and its line ("Qxd4 Nf6") intact. Deleted afterwards, the
+  course confirmed back at 80. (Note for anyone testing this the same way: the
+  content script is an ISOLATED world, so overriding `window.open` from the page
+  world does not intercept it — watch the tab list instead.)
 
 **NOT yet verified: the trainer host end to end.** Reaching the browse state means
 completing a variation, and driving MoveTrainer2's study/quiz cycle from automation
