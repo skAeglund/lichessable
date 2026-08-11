@@ -132,20 +132,39 @@ live 420px: the button 50.7×18 → **60.7×20**, the header 31 → **33px** des
 **61px unchanged** under `html.clo-touch` (the ⚙ still sets that line), one line in
 both, right edge unchanged because `.clo-title` is `flex: 1`. Reasoning in
 `DESIGN-ui-inventory.md` ("v0.99.0 — …and the vocabulary goes back to the tier's").
-Not seen in a live session.
+**Seen live 2026-08-11** on /variation/70382641/ at the same 420px panel: button
+**60.70×20**, `1px solid rgb(61,58,54)` on `rgb(186,186,186)` text, background
+transparent — the harness figure to the pixel. The one divergence: the live
+`.clo-header` is **38px**, not the harness's 33 (still one line, and the button
+is not what sets it).
 
-**(b) INSTRUMENTED, NOT YET MEASURED, NOTHING CHANGED.** `refreshVariationPage`
-logs `[CLO] quick-edit refresh timing (ms): {total, leave, settle, home, render,
-restore}` from its `finally`, and `restoreShownMove` logs its press count and
-total. `render` is the phase boundary that matters: its gate is "the fresh
-variation has rendered", i.e. the moment the new text is on screen, so everything
-logged after it is the tail being complained about. Prediction, and only that:
-the tail is `restore`, floor 700 ms (the hold is unconditional), ceiling 9.5 s,
-expected ~1.5–2 s at two iterations. **This needs one live save on a /variation/
-page to answer** — Claude in Chrome was not available in the session that wrote
-the instrumentation. Analysis and the candidate fix (close the popup on `render`,
-let `restore` finish behind it) are in `DESIGN-quick-edit.md` §6, "Where the time
-goes".
+**(b) MEASURED LIVE 2026-08-11 (four saves), NOTHING CHANGED — a decision is
+owed.** Table and reasoning in `DESIGN-quick-edit.md` §6, "The measurement".
+Headlines:
+
+* the popup is up for **~4.5 s** from "Saving…", of which the **driver write is
+  ~2.4 s (54%)**, the pre-visible half of the refresh ~1.4 s (30%) and the
+  **post-visible tail 0.70 s (16%)**;
+* the prediction was wrong in the user's favour: the tail is the **FLOOR**
+  (`refreshHoldMs`, 703–723 ms), not ~1.5–2 s. `restore` took **0 presses in
+  three of four runs**, because `history.back()` restores the hash, the hash is
+  the page's move pointer, and the fresh render therefore lands on the move we
+  started on. The navigate-to-move-1 override the retry loop exists for never
+  fired;
+* `render` is confirmed as the visible moment (predicted vs observed within
+  ~50 ms), so the instrument's own boundary is sound;
+* cold (extension just reloaded) and warm runs are indistinguishable.
+
+So the candidate fix — close the popup on `render`, let `restore` finish behind
+it — is safe and cheap but buys **0.7 s of 4.5**. It does not by itself answer
+"lingers quite a while", and the rest of the wait is the write actually
+happening. Your call between (i) take the 0.7 s anyway, (ii) leave it and change
+what the popup SAYS while it waits, or (iii) both. The session's very first save
+felt far slower but was not instrumented and did not reproduce in four attempts;
+the log line now answers that if it recurs.
+
+v0.99.1 is the only code change from this: the timing line is `JSON.stringify`d,
+because an object logs as `Object` in every console reader that is not DevTools.
 
 Covers notes:
 - *"Make the 'Analyse' button in /variation/ page stand out more."*
@@ -206,16 +225,18 @@ Covers note: *"Alternative clickable lines doesn't work fully:
 > I'll give you the real variation to test against if you need one. Do the
 > reasoning against the real `walkLine` in a headless harness first, then
 > ground-truth live before writing anything into CLAUDE.md.
-> (Correction, 2026-08-09: **node IS on this machine** — v24.14.1, and
-> `node --check` is what CLAUDE.md's verification block already assumes. The
-> "no node" claim above was wrong.)
-> (Counter-correction, 2026-08-11: **both notes are right, about different
-> machines** — this folder is carried between a home PC and a work PC. Node
-> v24.14.1 exists on one of them; on the other, PATH, both Program Files trees,
-> LOCALAPPDATA\Programs, scoop shims and fnm were all re-searched and there is no
-> `node.exe` at all. So a session must CHECK rather than assume: `node --version`
-> first, and fall back to the headless-Chrome parse harness when it is missing.
-> `py` works on both.)
+> (Resolved, 2026-08-11: **Node is on BOTH machines** and the question is closed.
+> This folder is carried between a home PC and a work PC; one had Node v24.14.1
+> all along, the other had none until it was installed with
+> `scoop install nodejs-lts` → v24.19.0 + npm 11.17.0, whole `node --check` block
+> verified on it. So CLAUDE.md's verification block works as written and the
+> headless-Chrome parse harness the earlier notes describe is retired — do not
+> rebuild it. The one live trap left is a STALE PATH, not a missing install:
+> scoop writes the user PATH to the registry and an already-running shell does not
+> re-read it, so prepend
+> `$env:Path = "$env:USERPROFILE\scoop\apps\nodejs-lts\current;$env:Path"` or open
+> a new terminal. Note scoop puts node on PATH via the app directory, so there is
+> no `~\scoop\shims\node.exe` to find. `py` works on both.)
 
 ---
 ## 5 DONE

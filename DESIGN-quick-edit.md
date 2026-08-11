@@ -468,6 +468,59 @@ visible at that point, and putting the board back is housekeeping the user has n
 reason to watch. That trades away nothing the two rules above protect — but it
 needs the measurement first, in case the real tail is somewhere else entirely.
 
+#### The measurement (2026-08-11, live, four saves)
+
+Ground-truthed on `/variation/70382641/` with the board on ply 7 (Qb6), one line
+of text appended per save through the Append tab. Alongside the extension's own
+log line, a page-side MutationObserver timed the two moments the log cannot see:
+when the new text actually appears in the comment column, and when the popup goes
+`hidden`. Run E was the first save after an extension reload (cold service
+worker); the others were warm. All four agree.
+
+| ms | B | C | D | E |
+|---|---|---|---|---|
+| "Saving…" → "Saved" (the driver write) | 2390 | 2283 | 2457 | 2467 |
+| `leave` | 35 | 38 | 48 | 46 |
+| `settle` | 789 | 781 | 664 | 751 |
+| `home` | 35 | 20 | 30 | 33 |
+| `render` | 589 | 531 | 627 | 491 |
+| `restore` (presses) | 702 (0) | 723 (1) | 702 (0) | 702 (0) |
+| refresh `total` | 2151 | 2092 | 2071 | 2024 |
+| "Saved" → **new text on screen** | 1443 | 1366 | 1362 | 1317 |
+| **new text on screen → popup gone** | **703** | **723** | **703** | **703** |
+| "Saving…" → popup gone | 4536 | 4372 | 4522 | 4487 |
+
+Four things the numbers settle:
+
+* **`render` IS the visible moment**, to within the observer's own resolution:
+  `leave + settle + home + render` = 1448 / 1370 / 1369 / 1321 ms against a
+  measured 1443 / 1366 / 1362 / 1317. The phase boundary this whole instrument
+  was built around is the right one.
+* **the post-visible tail is 703–723 ms — the FLOOR, not the predicted
+  1.5–2 s.** `restore` took ZERO presses in three of four runs and one in the
+  fourth; the second iteration never happened. The reason is `returnToVariation`'s
+  first route: `history.back()` restores the URL, and the hash IS the page's own
+  move pointer (`#/4/b`), so the fresh render lands on the move we started on and
+  the shown marker is already right. The navigate-to-move-1 override the loop
+  exists for did not fire on this host at all. It is `refreshHoldMs` and nothing
+  else that is being waited on.
+* **the wait is mostly the WRITE, and it is all pre-visible**: of ~4.5 s from
+  "Saving…" to the popup going away, the driver round trip is ~2.4 s (54%), the
+  pre-visible half of the refresh ~1.4 s (30%), and the post-visible tail 0.70 s
+  (16%). Closing the popup on `render` therefore buys **0.7 s of 4.5** — real,
+  cheap and safe, but not on its own an answer to "lingers quite a while".
+* **cold vs warm makes no difference** to any of it (E vs B–D).
+
+So the honest reading of the report is that the popup is up for ~4.5 s of which
+only ~0.7 s is waste. The one run that felt much slower — the session's very
+first save, before the page-side observer was armed — could not be phase-attributed
+and was not reproduced in four attempts; if it recurs, the log line above now says
+where it went.
+
+(v0.99.1: the log line is `JSON.stringify`d. An object collapses to `Object` in
+every console reader that is not DevTools itself, which is exactly how this line
+gets read under automation.)
+
 `qe.refreshing`: the loaded copy is stale by then (the read was dropped), so a second
 Save would write it back and be refused by the driver's own staleness guard. `tick`
 skips its not-ready close while that flag is set — the sibling's render passes through

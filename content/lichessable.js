@@ -7137,8 +7137,11 @@
         // Logged from the finally so a timeout or a throw is measured too — a
         // slow save is exactly the case worth reading, and those paths are how
         // it gets slow. Phases are ELAPSED ms each, in order of occurrence.
+        // Stringified rather than logged as an object: an object collapses to
+        // "Object" in every console reader that is not DevTools itself, which
+        // is exactly how this line is read under automation.
         log('quick-edit refresh timing (ms):',
-          Object.assign({ total: Math.round(performance.now() - t0) }, phases));
+          JSON.stringify(Object.assign({ total: Math.round(performance.now() - t0) }, phases)));
         // The late watch takes both of these over with the guard (see below).
         if (!watching) { fetchWatch.stop(); qe.refreshBusy = false; }
       }
