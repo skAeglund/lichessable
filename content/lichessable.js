@@ -14645,10 +14645,15 @@
           }
           continue;
         }
-        // The combined line stands in for the first of the group; the rest are
-        // folded into it and must not be offered again in their own right.
-        verdict.set(open[0].line, combined);
-        for (const a of open.slice(1)) verdict.set(a.line, 'drop');
+        // The combined line stands in for the member it was built on — the one
+        // that walked the most of the shared road, which is the first of the
+        // group unless a shorthand branch made them fork at different indices.
+        // Keys are unique per line, so this finds it without the two having to
+        // agree on an ordering. The rest are folded into it and must not be
+        // offered again in their own right.
+        const baseAsker = open.find((a) => a.line.key === combined.key) || open[0];
+        verdict.set(baseAsker.line, combined);
+        for (const a of open) if (a !== baseAsker) verdict.set(a.line, 'drop');
         log('continuation: lines', open.map((a) => a.line.key).join(' + '),
           'offer the user', combined.plies[combined.altAt].san + '/' +
           combined.plies[combined.altAt].alts.map((x) => x.san).join('/'),
@@ -14677,36 +14682,77 @@
      * share the road up to that point, and quizzing them as if it were would
      * put the user on a board the author never joined up.
      *
-     * The result is the FIRST line of the group with `alts` hung on the disputed
-     * ply — each alternative carrying its own continuation, and a `src` back to
-     * the line it came from so navigateToLineEnd can still find its printed
-     * moves. The primary path stays exactly where it was, so everything that
-     * does not know about alternatives (labels, importantLine, the mini board)
-     * keeps working unchanged.
+     * AN ALTERNATIVE IS OFTEN WRITTEN IN SHORTHAND, and until v0.101.0 that was
+     * refused along with the transpositions. Authors do not repeat the road they
+     * have just printed — "(15.Nxd4 cxd4 16.b3 Qf5 alt. 16...Rfe8)" spells the
+     * second answer out from the FORK, not from the start — and walkLine's rule
+     * 3 duly makes it a branch of its own, starting where the first branch was
+     * standing, with the disputed move at ITS ply 0 rather than at the base
+     * line's ply 3. Both of the old guards then fired (a different `startFen`, a
+     * different `at`) and BOTH lines were dropped, so a comment written the
+     * commonest way lost every line it held.
+     *
+     * So the members no longer have to fork at the same INDEX. What they must
+     * still share is the ROAD: a member spelling it out in full is matched ply
+     * for ply from the same start, exactly as before, while one written in
+     * shorthand spells out only its tail — so its plies are matched BACKWARDS
+     * from the fork and its start position must be one the base line actually
+     * stands on there. Nothing is ever inherited that the base did not itself
+     * walk, which is what keeps a genuine transposition refused: that has no
+     * shared road at all, in either direction.
+     *
+     * The result is the group's line that walked the MOST of that road, with
+     * `alts` hung on the disputed ply — each alternative carrying its own
+     * continuation, and a `src` back to the line it came from so
+     * navigateToLineEnd can still find its printed moves. That is the first line
+     * of the group whenever they all fork at the same index, i.e. in every case
+     * that worked before; a shorthand branch is never the base, since its plies
+     * begin at the fork and taking them would throw the shared road away.
+     * The primary path stays exactly where it was, so everything that does not
+     * know about alternatives (labels, importantLine, the mini board) keeps
+     * working unchanged.
      */
     function mergeUserAlternatives(group) {
       if (group.length < 2) return null; // nothing to combine WITH: a clash of one
-      const base = group[0].line;
-      const at = group[0].at;
-      if (!base.plies[at] || group.some((a) => a.at !== at)) return null;
-      for (const a of group.slice(1)) {
+      // The member that spells out the most road before the fork. Ties keep the
+      // FIRST, so a group whose members all fork at the same index — every case
+      // this function handled before — picks exactly the line it used to.
+      let baseAsker = group[0];
+      for (const a of group) if (a.at > baseAsker.at) baseAsker = a;
+      const base = baseAsker.line;
+      const at = baseAsker.at;
+      if (!base.plies[at] || !base.before) return null;
+      for (const a of group) {
+        if (a === baseAsker) continue;
         const line = a.line;
-        if (line.startFen !== base.startFen) return null;   // met by different routes
-        if (!line.plies[at]) return null;
-        for (let i = 0; i < at; i++) {
-          if (!line.plies[i] || line.plies[i].uci !== base.plies[i].uci) return null;
+        if (!line.plies[a.at]) return null;
+        if (a.at === at) {
+          if (line.startFen !== base.startFen) return null; // met by different routes
+        } else if (!base.before[at - a.at] ||
+                   cacheKey(line.startFen) !== cacheKey(base.before[at - a.at])) {
+          // Written in shorthand, but starting somewhere the base line never
+          // stands: that is a transposition, not the same road.
+          return null;
         }
-        if (line.plies[at].uci === base.plies[at].uci) return null; // not an alternative at all
+        // Backwards from the fork, so a full member and a shorthand one are
+        // checked by the one rule; with a.at === at this is the old forwards
+        // comparison, term for term.
+        for (let i = 1; i <= a.at; i++) {
+          const mine = line.plies[a.at - i];
+          const theirs = base.plies[at - i];
+          if (!mine || !theirs || mine.uci !== theirs.uci) return null;
+        }
+        if (line.plies[a.at].uci === base.plies[at].uci) return null; // not an alternative at all
       }
-      const alts = group.slice(1).map((a) => ({
-        san: a.line.plies[at].san,
-        uci: a.line.plies[at].uci,
-        annot: a.line.plies[at].annot,
-        color: a.line.plies[at].color,
-        fen: a.line.plies[at].fen,
+      const alts = group.filter((a) => a !== baseAsker).map((a) => ({
+        san: a.line.plies[a.at].san,
+        uci: a.line.plies[a.at].uci,
+        annot: a.line.plies[a.at].annot,
+        color: a.line.plies[a.at].color,
+        fen: a.line.plies[a.at].fen,
         // What follows this answer, which is what "carry on accordingly" means.
-        plies: a.line.plies.slice(at + 1).map((p, n) => withSource(p, a.line, at + 1 + n)),
-        src: { line: a.line, at },
+        plies: a.line.plies.slice(a.at + 1).map((p, n) => withSource(p, a.line, a.at + 1 + n)),
+        src: { line: a.line, at: a.at },
       }));
       const plies = base.plies.map((p, i) => {
         const ply = withSource(p, base, i);
@@ -15556,7 +15602,19 @@
         const played = { san: alt.san, uci: alt.uci, annot: alt.annot,
           color: alt.color, fen: alt.fen, src: alt.src };
         cr.path = linePath().slice(0, cr.plyIdx).concat([played], alt.plies);
-        applyMove(played);
+        // applyMove wants a RESOLVED move on `mv`, which every other caller
+        // hands it from currentPly() (or builds itself, as the analysis board
+        // does). A line's stored plies carry no `mv` — currentPly() attaches one
+        // per position — so `played` has none either, and passing it bare threw
+        // `Cannot read properties of undefined (reading 'from')` on the FIRST
+        // line of applyMove, before the position was advanced or the board
+        // repainted: the pieces froze mid-trade with the exception the only
+        // sign. It is the move the user has just played, and `mv` IS that move
+        // already — `uci` was derived from it, and matching `alt.uci` is this
+        // branch's own condition. Do not "tidy" this back to `applyMove(played)`.
+        // Broken since the alternative arm shipped in v0.67.0, and reachable
+        // only through a combined line — which v0.101.0 made common.
+        applyMove({ ...played, mv });
         cr.plyIdx++;
         flashSquare(mv.to, 'ok');
         log('continuation: took the alternative', alt.san, 'in', cr.line.label);

@@ -199,7 +199,64 @@ Covers notes:
 
 ---
 
-## 4. Alternative clickable lines: a case that doesn't resolve
+## 4 DONE (v0.101.0)
+
+**The expectation was right and the diagnosis was worse than expected: BOTH lines
+were dropped, not one.** Full write-up in `DESIGN-continuation-review.md` §7.6a.
+
+Answering the note's own questions in its own terms:
+
+* **which segmentation rule fires** — rule 3, "a position this line has already
+  been played FROM ⇒ a new branch off an earlier move". The rewind to `16...Rfe8`
+  fails `moveFits` at the running end on BOTH counts (printed number and side to
+  move), so it opens a segment of its own starting at the fork.
+* **whether it becomes two branches** — yes, `branched: true`, and both are
+  quizzable, so `dropAmbiguous` sees them.
+* **whether `mergeUserAlternatives` combines or drops them** — it dropped them,
+  and so did the caller: a refusal takes *every* line at that position, which is
+  why the comment lost both. Two guards fired at once, a different `startFen` and
+  a different fork index — because the author wrote the alternative in SHORTHAND,
+  from the fork, instead of repeating the road to it.
+
+So `mergeUserAlternatives` refusing was **not** correct here, and the bug was in
+this function rather than elsewhere: its shape check described only the case where
+both branches are written out in full, which is the rarer of the two. Members no
+longer have to fork at the same index — a shorthand member's plies are matched
+BACKWARDS from the fork and its start position must be one the base line actually
+stands on. The full-form path is untouched, term for term, and a genuine
+transposition is still refused.
+
+Result on the reported comment: ONE line accepting either 16...Qf5 or 16...Rfe8,
+carrying on down whichever was played — exactly what the note expected.
+
+**Both readers**: the change is in `dropAmbiguous`/`mergeUserAlternatives`, which
+sit *below* the DOM scanner and the lesson-plan one, so neither reader needed
+touching and they cannot disagree about it.
+
+Nine cases against the real functions (sliced out of the source by brace matching,
+run against the real `CloSan`), and ground-truthed live 2026-08-11 on variation
+70382641 — the test comment written through Chessable's own edit page, the rendered
+markup read back, and the comment restored afterwards. **"alt." renders as prose
+between the clickable spans and all three moves stay in ONE group**, which is the
+one thing the headless run had assumed rather than observed.
+
+**v0.101.1 — playing the alternative threw, and had done since v0.67.0.** Reported
+on `(4.d4 cxd4 5.Nxd4 g6 or 5...Nxd4)`: `Cannot read properties of undefined
+(reading 'from')`, board frozen mid-trade. `tryMove`'s alternative arm handed
+`applyMove` a ply with no resolved `mv`; it reads `ply.mv` on its first line and has
+since v0.33.0. Not caused by v0.101.0 — **made reachable** by it, since a combined
+line was rare until the shorthand shape started combining. The alt arm is now
+EXECUTED in a harness (real `tryMove`, real `CloSan`, DOM calls stubbed), with a
+control that reproduces the reported message when the fix is reverted.
+
+Consequence for the record: `DESIGN-continuation-review.md` §7.6's 2026-08-04 note
+claimed the non-primary answer "finished the line" — impossible, and now corrected
+there. The run verified the OFFER; the write-up claimed the ANSWER.
+
+Still unverified: the combined line being played in a real session, and
+`navigateToLineEnd` landing on the right span after an alternative.
+
+<details><summary>original note</summary>
 
 Covers note: *"Alternative clickable lines doesn't work fully:
 (15. Nxd4 cxd4 16. b3 Qf5 alt. 16...Rfe8) for example"*
@@ -237,6 +294,8 @@ Covers note: *"Alternative clickable lines doesn't work fully:
 > `$env:Path = "$env:USERPROFILE\scoop\apps\nodejs-lts\current;$env:Path"` or open
 > a new terminal. Note scoop puts node on PATH via the app directory, so there is
 > no `~\scoop\shims\node.exe` to find. `py` works on both.)
+
+</details>
 
 ---
 ## 5 DONE

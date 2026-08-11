@@ -1807,6 +1807,24 @@ After ANY edit to CLAUDE.md, and after adding or removing a cross-module bridge:
 py dev/check-contracts.py
 ```
 
+After touching section 18's line reading — `walkLine`, `branchLines`,
+`quizzableLines`, `dropAmbiguous`, `mergeUserAlternatives`, or `tryMove`'s
+alternative arm:
+
+```
+node dev/check-continuation-lines.js
+```
+
+It EXECUTES those functions, sliced out of `content/lichessable.js` by brace
+matching (`dev/slice-source.js`) and run against the real `engine/san.js` — so
+it cannot drift from the source, and a rename breaks the slice loudly. This
+exists because that arm has shipped broken twice on a class `node --check`
+cannot see: v0.67.0's `applyMove(played)` with no resolved `mv` threw on EVERY
+alternative for six weeks, and v0.100.0's stranded `isNext` did the same in
+section 23. To run a control, point `CLO_SRC` at a copy with the change
+reverted and confirm it FAILS — an early version of that control silently read
+the good source and passed against a copy that still had the bug.
+
 It discovers every module-level bridge in `content/lichessable.js` (the
 `let x = null;` idiom, assigned a function or object by the owning section's
 init) and fails if one is not named in CLAUDE.md, or if CLAUDE.md still calls

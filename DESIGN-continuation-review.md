@@ -899,9 +899,10 @@ A contested position is resolved one of three ways:
 * **DROPPED** when it is not a clean divergence: lines meeting at a position by
   different routes (a transposition), or disagreeing at more than one point.
   "Either move here, then carry on accordingly" is not a true description of those.
-  `mergeUserAlternatives` REFUSES rather than approximates — identical startFen,
-  identical uci prefix, one shared divergence index, at least two lines — and the
-  caller falls back to the drop.
+  `mergeUserAlternatives` REFUSES rather than approximates — a shared road up to
+  the fork, a genuinely different move there, at least two lines — and the caller
+  falls back to the drop. What "shared road" means was widened in v0.101.0; see
+  §7.6a.
 
 A line whose USER move carries "?", "??" or "?!" never reaches this pass at all
 (`quizzableLines` drops it first), so a combined line can never offer a move the
@@ -914,9 +915,12 @@ position take the safe answer — `settled` in the loop. Without that guard a
 position whose only remaining asker had already been folded elsewhere would "merge"
 a group of one and let a real clash through.
 
-The combined line is the FIRST of the group with `alts` hung on the disputed ply,
-each alternative carrying its own continuation and a `src` back to the line it was
-printed in. The primary path stays exactly where it was, so everything that does
+The combined line is the member of the group that walked the MOST of the shared
+road, with `alts` hung on the disputed ply, each alternative carrying its own
+continuation and a `src` back to the line it was printed in. That is the FIRST of
+the group whenever they all fork at the same index — i.e. in every case this
+handled before v0.101.0, where ties keep the first — and §7.6a is the case where
+it is not. The primary path stays exactly where it was, so everything that does
 not know about alternatives — labels, `importantLine`, the heads-up's mini board —
 keeps working untouched. The label shows the fork ("O-O b5/Qc7 Bb3") so a log line
 says the pair was combined rather than one of them lost.
@@ -932,9 +936,21 @@ comment line into another at the fork.
 
 Ground-truthed live 2026-08-04 on variation 71087636 with
 `(7.O-O b5 8.Bb3) or (7.O-O Qc7 8.a3)`: both readers logged the combine, the
-launcher went 2 → 3, the prompt read "Black to play — either move", and playing the
-NON-primary Qc7 finished the line and left the board on **a3** — the alternative's
-own continuation, not the primary's Bb3.
+launcher went 2 → 3, and the prompt read "Black to play — either move".
+
+> **The last claim of that run was WRONG and stood for six weeks.** It also said
+> that playing the NON-primary Qc7 "finished the line and left the board on a3".
+> It cannot have: `tryMove`'s alternative arm passed `applyMove` a ply with no
+> resolved `mv`, and `applyMove` reads `ply.mv` on its FIRST line — it has done
+> since v0.33.0, while the arm shipped in v0.67.0 and `git log -S` confirms it
+> never carried one. Playing an alternative has therefore ALWAYS thrown. Fixed in
+> v0.101.1; the bug and its symptoms are in §7.6a.
+>
+> Everything else in that run is a pre-move observation and stands. The lesson is
+> the narrower one: **the run verified the OFFER, and the write-up claimed the
+> ANSWER.** A verification note must not describe a step past the last one
+> actually observed — and when the observed steps all pass, that is exactly when
+> the unobserved one gets written down as if it had.
 
 The hint names every accepted answer ("Play b5 or Qc7"); the ordinary prompt says
 "— either move" before the user has to guess that the move they were about to play
@@ -945,6 +961,140 @@ combined line is checked for "already in the course" by its PRIMARY ending only,
 and a member that was already added as a real variation no longer drops out on its
 own. Fail-open like the rest of that check, but it is why the count can differ by
 one from what a pre-merge tagging would give.
+
+## 7.6a The alternative is usually written in SHORTHAND (v0.101.0)
+
+Reported as *"Alternative clickable lines doesn't work fully:
+`(15. Nxd4 cxd4 16. b3 Qf5 alt. 16...Rfe8)` for example"* — and the answer is that
+**BOTH lines were dropped**, so a comment written the commonest way lost every line
+it held. The user saw nothing at all, with only a console line to say why.
+
+### What actually happened
+
+Authors do not repeat the road they have just printed. The second answer is spelled
+out from the FORK — "16...Rfe8", not "15.Nxd4 cxd4 16.b3 Rfe8" — so `walkLine`'s
+rule 3 duly makes it a branch of its own (§7.4), starting where the first branch was
+standing, with the disputed move at ITS ply 0 rather than at the base line's ply 3.
+
+`mergeUserAlternatives` then refused on two guards at once: a different `startFen`
+("met by different routes") and a different fork index. Refusal falls through to the
+drop, and the drop takes **every** line in the group — so the pair annihilated each
+other. Both guards were doing their job as written; what was wrong was that they
+described only the case where both branches are written out in full, which is the
+rarer of the two.
+
+### The widening
+
+Members no longer have to fork at the same INDEX. What they must still share is the
+ROAD:
+
+* a member spelling it out in full is matched ply for ply from the same `startFen`,
+  **exactly as before** — that path is untouched;
+* one written in shorthand spells out only its tail, so its plies are matched
+  **backwards from the fork** and its `startFen` must be a position the base line
+  actually stands on there (`cacheKey(base.before[at - a.at])`).
+
+Nothing is ever inherited that the base did not itself walk, which is what keeps a
+genuine transposition refused: that has no shared road in either direction. The
+backwards comparison is the same comparison as the old forwards one when the indices
+are equal, term for term — it is a generalisation, not a replacement.
+
+Three consequences worth knowing:
+
+* **the base becomes the member with the largest `at`**, not `group[0]`. A shorthand
+  branch's plies BEGIN at the fork, so taking it as the base would throw the shared
+  road away and label the line "Rfe8/Qf5". Ties keep the first, so every pre-v0.101.0
+  case picks exactly the line it used to.
+* **`alts[].plies` slices from the alternative's OWN index** (`a.at + 1`, was
+  `at + 1`), and `src.at` is its own index too. With equal indices these are the
+  same expression; with a shorthand branch the old one silently sliced past the end
+  and would have dropped the alternative's continuation.
+* **the caller finds the base by key** rather than assuming `open[0]`.
+
+The partial case falls out for free: an author who repeats one move before forking
+("16.b3 Qf5 16.b3 Rfe8") gives `a.at = 1` against the base's 3, and the backwards
+walk plus the `startFen` check confirm the repeated move really is the same one.
+
+### Verified
+
+Nine cases against the REAL `walkLine` / `branchLines` / `quizzableLines` /
+`dropAmbiguous` / `mergeUserAlternatives`, sliced out of `content/lichessable.js`
+by brace matching and run against the real `CloSan` — not transcribed, per the rule
+in CLAUDE.md that an extraction in this file is not shippable on static checks
+alone. The suite covers: the reported case; a shorthand branch WITH a continuation;
+the partial shorthand; the pre-existing full-form pair (unchanged, base still the
+first); order independence; a transposition still refused; the mainline clash still
+refused; a "?" on the shorthand branch still dropping only that branch; and a WHITE
+user, for whom the fork is an opponent choice and there is nothing to combine.
+
+**Ground-truthed live 2026-08-11** on variation 70382641 (test course 453453). The
+comment `(2. h3 Nc6 alt. 2...e6)` was written onto `Nf3_w_2` through Chessable's own
+edit page and the rendered result read back off `/variation/70382641/`:
+
+* **"alt." is PROSE between the spans**, not a move — the group's `textContent`
+  reads `"2.h3c6 alt.2...e6"`;
+* all three moves are clickable spans in **one group** (ids `2.0.0`, `2.0.1`,
+  `2.0.2`), so the branch split is `walkLine`'s job and not the DOM reader's;
+* the printed numbers are `"2."` / (none) / `"2..."`, which is exactly what makes
+  the third move rewind to the fork.
+
+Feeding those live spans through the real functions gives two branches — `h3 Nc6`
+and `e6` — combined into one line `h3 Nc6/e6` forking at ply 1, and the fork
+position the walk derives matches the `data-fen` Chessable itself put on the `2.h3`
+span. The test comment was restored to `(2. h3 Nc6)` afterwards and the group
+confirmed back at two spans.
+
+### The alternative arm had never worked (v0.101.1)
+
+Reported within the hour, on `(4.d4 cxd4 5.Nxd4 g6 or 5...Nxd4)`:
+
+```
+lichessable.js:15215 Uncaught TypeError: Cannot read properties of undefined (reading 'from')
+```
+
+…with the board frozen mid-trade, the knight still on d4.
+
+`applyMove(ply)` reads `ply.mv` — a RESOLVED CloSan move — on its first line, and
+has since v0.33.0. Every caller gets one from `currentPly()`, which attaches it per
+position (a line's stored plies carry no `mv`, and must not: it is only valid for
+one position). The alternative arm built its `played` ply out of the alt record's
+named fields and passed it bare, so `mv` was `undefined`. **Since v0.67.0, playing
+an alternative has always thrown** — confirmed by `git log -S`, which shows the call
+introduced there and never carrying an `mv`.
+
+The fix is one term: `applyMove({ ...played, mv })`. In `tryMove` the parameter `mv`
+IS that move — `uci` was derived from it, and `uci === alt.uci` is the branch's own
+condition — so nothing has to be re-resolved.
+
+Two things worth keeping:
+
+* **the frozen board is diagnostic, not incidental.** `cr.path` is reassigned
+  BEFORE `applyMove`, so the throw left the path advanced and the position and
+  board untouched. Any report of "it stopped without moving the piece" in this
+  module should send you to whatever ran between the state write and the paint.
+* **v0.101.0 did not cause this; it made it REACHABLE.** The arm needs a combined
+  line, and until the shorthand widening the only combinable shape was the rare
+  full-form pair. A latent bug behind a rare path became a certain bug behind a
+  common one on the same day — which is the ordinary way a widening finds things,
+  and an argument for exercising the path a widening opens, not just the widening.
+
+**Now executed, not just checked.** `altplay.js` slices the REAL `tryMove` and runs
+it against the real `CloSan` with the DOM-facing calls stubbed and recorded, on the
+reported line: no exception, the ALTERNATIVE applied (not the primary), `plyIdx`
+past the fork, the path re-pathed, no wrong-guess counted, and the primary answer
+still playing from a fresh state. **The control matters more than the suite** — with
+the fix reverted in a copy of the source it reproduces the reported message exactly
+and 4 of 8 checks fail. An earlier version of that control passed against the broken
+copy because the harness overwrote `CLO_SRC` and silently read the good file; a
+control that cannot fail proves nothing, so check it fails before trusting it.
+
+**Still not verified live: the combined line being played in a real session.** That
+needs a trainer browse state, which means completing a variation, and driving
+MoveTrainer2 from automation has already lost to the per-move clock more than once
+in this project (see `DESIGN-add-as-variation.md` §3b). What is left to watch is
+`navigateToLineEnd` landing on the right printed span after an alternative — it
+follows `src.at`, which for a shorthand alternative indexes into the BRANCH's own
+`moveIdx`, not the base line's.
 
 ## 7.7 Input
 
