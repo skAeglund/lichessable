@@ -646,9 +646,19 @@ Currently working (v0.18.x).
     says so instead. The page round trip is the riskiest code in this feature — once
     the pager is clicked we are COMMITTED to a navigation, so `refreshVariationPage`
     is a try/**finally** whose finally is the one unconditional step, and FALSE MEANS
-    "not refreshed", NEVER "not where you were". While a refresh runs the popup stays
-    in its SAVING ui (`qe.refreshing`), since the loaded copy is stale and a second
-    Save would be refused by the staleness guard.
+    "not refreshed", NEVER "not where you were". The popup holds its SAVING ui
+    (`qe.refreshing`) only until the `render` mark — `host.refresh(onVisible)` fires
+    there, which is the moment the saved text is on screen — and `restore` runs
+    behind it. NEVER TIE THE POPUP TO A LATER PHASE AGAIN: `restore`'s ceiling is
+    9.5 s and the gate's is 12 s, and v0.99.1's "the post-visible tail is 0.7 s" was
+    a measurement of one variation in a fresh tab (13.8 s on the next one tried).
+    THE `render` GATE IS `variationPageSig()` (title + every move's id and SAN) PLUS
+    one proof it is the fresh render — the sibling's list seen and replaced, or a
+    `getGame` landing after the way back started (`fetchWatch.fresh`). It must NOT
+    go back to wanting a `variationMoveShown` marker: that marker is the page
+    navigating itself to move 1, which does not happen when `returnToVariation`
+    comes home by the pager (route 2, no hash) — and route 2 is what EVERY tab gets
+    once `history.length` saturates at 50.
 - The TRAINER ROW is shared, and since v0.58.0 it has rules of its own that no
   module may decide locally (DESIGN-ui-inventory.md is the whole argument;
   `dev/harness.html` renders every state). Ground-truthed live 2026-08-03 on

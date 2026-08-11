@@ -138,33 +138,30 @@ transparent — the harness figure to the pixel. The one divergence: the live
 `.clo-header` is **38px**, not the harness's 33 (still one line, and the button
 is not what sets it).
 
-**(b) MEASURED LIVE 2026-08-11 (four saves), NOTHING CHANGED — a decision is
-owed.** Table and reasoning in `DESIGN-quick-edit.md` §6, "The measurement".
-Headlines:
+**(b) DONE (v0.102.0). The report was right and the v0.99.1 measurement was
+wrong** — it measured one variation in a fresh tab, which is the lucky case
+twice over. Write-up in `DESIGN-quick-edit.md` §6, "The marker that is not always
+there". Headlines:
 
-* the popup is up for **~4.5 s** from "Saving…", of which the **driver write is
-  ~2.4 s (54%)**, the pre-visible half of the refresh ~1.4 s (30%) and the
-  **post-visible tail 0.70 s (16%)**;
-* the prediction was wrong in the user's favour: the tail is the **FLOOR**
-  (`refreshHoldMs`, 703–723 ms), not ~1.5–2 s. `restore` took **0 presses in
-  three of four runs**, because `history.back()` restores the hash, the hash is
-  the page's move pointer, and the fresh render therefore lands on the move we
-  started on. The navigate-to-move-1 override the retry loop exists for never
-  fired;
-* `render` is confirmed as the visible moment (predicted vs observed within
-  ~50 ms), so the instrument's own boundary is sound;
-* cold (extension just reloaded) and warm runs are indistinguishable.
+* on the very next variation tried, the post-visible tail was **13.75 s**, not
+  0.7 — and it ended with *"Saved — reload the page to see it."* over a page that
+  was already showing the save;
+* the cause was the `render` gate's `variationMoveShown` term. That marker is the
+  page navigating itself to move 1, which does not happen when `returnToVariation`
+  comes home by the PAGER (route 2, landing with no hash) — so the gate burned its
+  full 12 s timeout and reported "not refreshed" about a refresh that had worked;
+* route 2 is what every tab gets once `history.length` saturates at 50, which is
+  why a fresh test tab never sees it. Padding history with `pushState` reproduces
+  it on demand;
+* the gate is now the page's own SIGNATURE (title + every move's id and SAN) plus
+  one proof of freshness, and the popup closes at the `render` mark
+  (`host.refresh(onVisible)`), leaving `restore` behind it. Post-visible tail:
+  one observation frame, on both hosts, including an edit-mode save.
 
-So the candidate fix — close the popup on `render`, let `restore` finish behind
-it — is safe and cheap but buys **0.7 s of 4.5**. It does not by itself answer
-"lingers quite a while", and the rest of the wait is the write actually
-happening. Your call between (i) take the 0.7 s anyway, (ii) leave it and change
-what the popup SAYS while it waits, or (iii) both. The session's very first save
-felt far slower but was not instrumented and did not reproduce in four attempts;
-the log line now answers that if it recurs.
-
-v0.99.1 is the only code change from this: the timing line is `JSON.stringify`d,
-because an object logs as `Object` in every console reader that is not DevTools.
+So the answer to the "(i)/(ii)/(iii)" question is that (i) was not a 0.7 s tidy-up
+after all — it was the cap on a 14 s hang. Nothing was changed about what the
+popup SAYS: while it is up it is explaining the flick to a sibling variation and
+back, which is the one thing on screen that needs explaining.
 
 Covers notes:
 - *"Make the 'Analyse' button in /variation/ page stand out more."*

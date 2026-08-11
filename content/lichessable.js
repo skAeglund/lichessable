@@ -6577,7 +6577,7 @@
         // Chessable only renders the "Edit Variation" link (Repertoire Admin
         // box) for a course you can actually edit. Never null.
         rights: () => variationEditRights(),
-        refresh: () => refreshVariationPage(),
+        refresh: (onVisible) => refreshVariationPage(onVisible),
         // Same bottom-of-board signal as review; the variation page's board is
         // the standard chessboard.js one, so squares come from findSquare.
         userColor: () => boardBottomColor(findSquare('a1'), findSquare('h8')),
@@ -6983,6 +6983,28 @@
     }
 
     /**
+     * WHAT THE VARIATION PAGE IS CURRENTLY SHOWING — its title and its whole
+     * move list (each move's id and SAN), as one string.
+     *
+     * The refresh's only hard question is "has the fresh copy of OUR variation
+     * rendered yet, or is this still the sibling's list React has not replaced?"
+     * The URL cannot answer it (it flips a second early) and neither can a move
+     * COUNT (two variations in a chapter regularly have the same length). Two
+     * different variations agreeing on their title AND every one of their moves
+     * are the same line, at which point the distinction has no consequence.
+     *
+     * `quickEditSanFromEl` is not needed here: a figurine renders as an empty
+     * child either way, so both readings of "♘c6" are stable strings — and this
+     * is only ever compared against itself.
+     */
+    function variationPageSig() {
+      const title = document.querySelector(SELECTORS.variationTitle);
+      const moves = [...document.querySelectorAll(SELECTORS.variationMoves)]
+        .map((el) => el.id + ':' + (el.textContent || '').trim());
+      return (title ? title.textContent.trim() : '') + '|' + moves.join(',');
+    }
+
+    /**
      * Watches for the request a variation navigation makes for its data
      * (`getGame`), so the step back can wait for the sibling to have actually
      * LANDED rather than merely for its URL to have appeared.
@@ -6993,11 +7015,11 @@
      * COMPLETE, which is exactly the moment being waited for.
      */
     function watchVariationFetch() {
-      let landed = false, obs = null;
+      let landed = 0, obs = null;
       try {
         obs = new PerformanceObserver((list) => {
           for (const e of list.getEntries()) {
-            if (String(e.name).includes(CONFIG.quickEdit.refreshGameApi)) landed = true;
+            if (String(e.name).includes(CONFIG.quickEdit.refreshGameApi)) landed++;
           }
         });
         obs.observe({ type: 'resource', buffered: false });
@@ -7013,6 +7035,14 @@
           }
           await quickEditDelay(CONFIG.quickEdit.refreshLandMs);
         },
+        /** How many of those responses have completed so far. */
+        count: () => landed,
+        /** True once ANOTHER one has landed since `n` — the home leg's own
+         *  data, i.e. proof that what is on screen is a fresh render and not
+         *  the outgoing one React is still holding. With no observer there is
+         *  nothing to prove it with, so it answers yes and the caller falls
+         *  back to the page signature alone. */
+        fresh: (n) => !obs || landed > n,
       };
     }
 
@@ -7042,8 +7072,15 @@
      * chapter (both pager buttons disabled), or a round trip that did not land
      * — and the caller then says so instead of implying the page is current.
      * False means "not refreshed", never "not where you were".
+     *
+     * `onVisible` is called ONCE, at the moment the fresh variation has
+     * rendered, i.e. when the saved text is on screen. Everything after it —
+     * putting the board back on the move it was on — is housekeeping the user
+     * has no reason to watch, so that is where the popup closes. It is never
+     * called when the round trip did not land: there the popup has a message
+     * to deliver instead.
      */
-    async function refreshVariationPage() {
+    async function refreshVariationPage(onVisible) {
       const oid = host.oid();
       if (!oid) return false;
       // One round trip at a time. Two overlapping ones would each step the
@@ -7058,7 +7095,10 @@
       // trip resets it to the start of the line.
       const shownEl = document.querySelector(SELECTORS.variationMoveShown);
       const shownPly = shownEl ? Number(shownEl.id) : NaN;
-      const plyCount = document.querySelectorAll(SELECTORS.variationMoves).length;
+      // WHAT THIS PAGE IS SHOWING, as something only our own variation can
+      // match: its title plus every move's id and SAN. Captured before the
+      // pager click and compared on the way back — see the `render` gate.
+      const sig = variationPageSig();
       let stepped = false, backSel = '', pushed = false, homeTried = false;
       let watching = false; // a late-departure watch has taken over the guard
       // PHASE CLOCK. The popup sits on "Saved — re-reading the variation…" for
@@ -7127,6 +7167,7 @@
         mark('settle');
 
         homeTried = true;
+        const seenGames = fetchWatch.count(); // …anything after this is the way BACK
         const wentHome = await returnToVariation(oid, home, backSel, pushed);
         mark('home');
         if (!wentHome) return false;
@@ -7135,18 +7176,35 @@
         // sibling's move list mounted (it even REUSES the nodes — verified, so
         // element identity is no signal at all) for a second or so while the
         // refetch lands. Pressing then lands on the outgoing render and the
-        // page's own navigation to move 1 silently undoes it. The composite
-        // that the sibling cannot satisfy: our path, our move count, and a
-        // shown-move marker — which only appears once the fresh variation has
-        // rendered and navigated itself to its first move.
-        const back = await quickEditWaitUntil(() => onVariation(oid) &&
-          document.querySelectorAll(SELECTORS.variationMoves).length === plyCount &&
-          document.querySelector(SELECTORS.variationMoveShown),
-        CONFIG.quickEdit.refreshBackMs);
+        // page's own navigation to move 1 silently undoes it. So the wait is
+        // for a page the SIBLING CANNOT BE: our path, and our own title and
+        // move list back on screen.
+        // NOT "a shown-move marker", which is what this gate used to want on
+        // top of the move COUNT. That marker is the page navigating itself to
+        // move 1 after a render, and it does NOT happen when we came home by
+        // the pager (route 2, which lands with no hash) — measured live
+        // 2026-08-11 on variation 70392537: the fresh variation and the saved
+        // text were on screen at 10.1 s with no marker ever appearing, so this
+        // gate burned its whole 12 s timeout and the popup then told the user
+        // to reload a page that was already showing their save. That is the
+        // "lingers quite a while" report, and it is 13.8 s of it.
+        // A signature match on its own is not quite proof: if the sibling never
+        // rendered at all, what is on screen when we get home is our OWN
+        // outgoing list, which matches trivially. So the match has to come with
+        // one piece of positive evidence that this is a fresh render — either
+        // the sibling's list was seen and has now been replaced, or another
+        // `getGame` has completed since we started back.
+        let sawOther = false;
+        const back = await quickEditWaitUntil(() => {
+          if (!onVariation(oid)) return null;
+          if (variationPageSig() !== sig) { sawOther = true; return null; }
+          return (sawOther || fetchWatch.fresh(seenGames)) || null;
+        }, CONFIG.quickEdit.refreshBackMs);
         // …and THIS is the moment the saved text is on screen. Every phase after
-        // it is the popup outstaying its welcome.
+        // it is the popup outstaying its welcome — so this is where it closes.
         mark('render');
         if (!back) return false;
+        if (onVisible) { try { onVisible(); } catch (err) { warn('quick-edit: onVisible threw:', err); } }
 
         if (Number.isInteger(shownPly)) await restoreShownMove(shownPly);
         mark('restore');
@@ -7898,7 +7956,19 @@
             setStatus('Saved — reload the page to see it.', false);
             setTimeout(() => { if (!qe.saving) closePopup(); }, 2500);
           };
-          Promise.resolve(host.refresh())
+          // THE POPUP GOES WHEN THE SAVE IS ON SCREEN, not when the refresh has
+          // finished tidying up after itself. Its two jobs are both done by
+          // then: explaining the flick to a sibling variation and back (which
+          // IS the re-read, and is alarming with nothing saying why), and
+          // keeping a second Save off a copy that is now stale — a closed popup
+          // cannot save at all. What is left is putting the board back on the
+          // move it was on, which the user has no reason to sit through.
+          const onVisible = () => {
+            if (!qe.popup || qe.popup.hidden || qe.saving) return;
+            setSavingUi(false);
+            closePopup(); // …which clears qe.refreshing too
+          };
+          Promise.resolve(host.refresh(onVisible))
             .then((ok) => done(ok ? '' : 'not refreshed'))
             .catch((err) => { warn('quick-edit: refresh failed:', err); done('error'); });
         } else {

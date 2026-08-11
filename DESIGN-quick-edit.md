@@ -410,11 +410,15 @@ REUSES the very nodes (verified — element identity is no signal at all; measur
 lands on the outgoing render and the page's own navigation to move 1 silently undoes
 it, while our verify saw it succeed.
 
-1. Wait for a composite the sibling cannot satisfy — our path, our move COUNT, and a
-   `variationMoveShown` marker, which only appears once the fresh variation has
-   rendered and navigated to its own first move.
+1. Wait for a state the sibling cannot be — our path, plus our own TITLE and MOVE
+   LIST back on screen (`variationPageSig`), plus one piece of positive evidence
+   that this is the fresh render rather than the outgoing one: the sibling's list
+   was seen and has been replaced, or another `getGame` has completed since we
+   started back. *(Until v0.102.0 this was our move COUNT plus a
+   `variationMoveShown` marker — see "The marker that is not always there".)*
 2. `restoreShownMove` presses, confirms, and then requires the move to STILL be shown
-   `refreshHoldMs` later, retrying otherwise.
+   `refreshHoldMs` later, retrying otherwise. It runs BEHIND the closed popup
+   (v0.102.0): nothing the user waits on depends on it.
 
 ### Where the time goes (v0.99.0 — instrumentation only, no behaviour change)
 
@@ -520,6 +524,88 @@ where it went.
 (v0.99.1: the log line is `JSON.stringify`d. An object collapses to `Object` in
 every console reader that is not DevTools itself, which is exactly how this line
 gets read under automation.)
+
+> **That last paragraph was wrong, and the run that "felt much slower" was real.**
+> Every figure above holds for the variation it was measured on. The tail is not
+> 0.7 s in general — it was **13.8 s** on the very next variation tried. See below.
+
+#### The marker that is not always there (v0.102.0, live 2026-08-11)
+
+The report was pushed back on in exactly the right place: *"the popup is shown
+multiple seconds after the new comment has updated on screen — the rest of the
+wait cannot be the write."* It is not, and the four-save table above is a
+measurement of ONE variation (70382641, 8 plies) in a FRESH TAB, which is the
+lucky case in two independent ways.
+
+Seven further saves, instrumented from the page side (a `MutationObserver` for
+the saved text plus a 100 ms recorder of URL / popup / move list / shown marker,
+so the whole round trip reads back as a frame-by-frame movie):
+
+| | 70382641, fresh tab | **70392537, 18 plies** |
+|---|---|---|
+| new text on screen | 10.9 s | **10.1 s** |
+| popup gone | 11.6 s | **23.9 s** |
+| post-visible tail | 0.70 s | **13.75 s** |
+| how it ended | closed | *"Saved — reload the page to see it."* |
+
+The second column is the report. The popup sat for fourteen seconds over a page
+that was **already showing the save**, and then told the user to reload it.
+
+**The cause is the `render` gate's third term, `variationMoveShown`.** That
+marker is the page navigating itself to move 1 after a render — and it does not
+happen when we came home by the OPPOSITE PAGER (`returnToVariation` route 2),
+which lands on the bare path with no `#/<move>/<side>` hash. Measured: the fresh
+variation and the saved text were up at 10.1 s with `shown = -`, and stayed that
+way. So the gate could never be satisfied, burned its whole `refreshBackMs`
+(12 s), and `back: false` reported "not refreshed" about a refresh that had
+plainly worked — followed by the 2.5 s the message is held for.
+
+**Why the first table never saw it: route 1 hides the whole thing.**
+`history.back()` restores the hash, the hash IS the move pointer, so the fresh
+render lands on a move and the marker appears. Route 1 is taken only when the
+pager click grew `history.length` — and **Chrome saturates that at 50**, where a
+push stops growing it and `pushed` reads false. A fresh tab therefore takes route
+1 and a tab that has been browsed in for a while takes route 2, permanently. The
+failing runs above were produced by padding history to 50 with `pushState`, which
+is a one-line way to put a test tab into the state every real session ends up in.
+
+Two changes, both in `refreshVariationPage`:
+
+* **the gate is now the page's own SIGNATURE** — `variationPageSig()`, the
+  variation title plus every move's id and SAN — and no longer asks for a marker
+  or a bare move count. Two variations agreeing on their title and all of their
+  moves are the same line, so there is nothing left for a sibling to fool it
+  with, and a count that happened to match no longer can. Because a signature
+  match would ALSO be satisfied trivially by our own outgoing list (if the
+  sibling never rendered at all), it must come with one piece of positive
+  evidence: the sibling's list was seen on screen and has since been replaced, or
+  another `getGame` completed after we started back (`watchVariationFetch` now
+  counts them and answers `fresh(n)`; with no `PerformanceObserver` it answers
+  yes and the signature stands alone).
+* **the popup closes at `render`, not at the end** — `refreshVariationPage` takes
+  an `onVisible` callback and fires it at that mark. Both of the popup's jobs are
+  finished there: explaining the flick to a sibling variation and back (which is
+  alarming with nothing saying why — the movie shows a stranger's variation on
+  screen for ~1.4 s of every save), and keeping a second Save off a copy that is
+  now stale (a closed popup cannot save at all). What is left is `restore`, which
+  is the board going back to the move it was on.
+
+Measured after, same tab state and same variation as the failing run:
+`{"total":3077,"leave":221,"settle":972,"home":111,"render":914,"restore":859}`,
+popup hidden at the `render` boundary, `restore` behind it, refresh true. An
+edit-mode save on the other host: `{"total":4322,…,"render":1702,"restore":1010}`,
+popup hidden 25 ms before the `render` mark was logged. **Post-visible tail:
+one observation frame, on both.**
+
+The general point, worth more than the fix: `restore`'s ceiling is 9.5 s and the
+old gate's was 12 s, so the popup's lifetime was tied to two phases that can each
+run for many seconds after the user has their answer. It is now tied to neither —
+whatever those two do, the popup is gone when the text appears.
+
+(One number here is not comparable with the table above: the driver WRITE ran
+~8 s in these runs against ~2.4 s in the earlier ones, of which the log says
+`load 5.6s` — a CDP-driven tab loads the edit page slowly. It is all pre-visible
+either way, and none of it is what was being measured.)
 
 `qe.refreshing`: the loaded copy is stale by then (the read was dropped), so a second
 Save would write it back and be refused by the driver's own staleness guard. `tick`
