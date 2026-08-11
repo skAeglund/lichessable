@@ -805,6 +805,7 @@ bending, and the answer was *not* "reuse the class":
   read. Hence a separate class, `.clo-cr-analyse-head`, sized and coloured to
   match its neighbours rather than its twin. **A tier is a claim about weight
   relative to what surrounds the control**, and the surroundings changed.
+  *(Reversed v0.99.0 — see below.)*
 - **Placement**: before Engine, so ⚙ and Hide — the panel's own two controls —
   stay where the user already looks for them.
 
@@ -813,6 +814,37 @@ Measured in the harness (real stylesheet, cache busted) and live at the panel's
 51×18 at 12px, `--clo-text-dim`, zero border — identical to Engine beside it.
 Live: title ends at 278, Analyse 286-337, Engine 345-390, cog 398-417, Hide
 425-458.
+
+### v0.99.0 — …and the vocabulary goes back to the tier's
+
+Reported 2026-08-07: *"Make the 'Analyse' button in /variation/ page stand out
+more"* — the author was missing it entirely. So the second bullet above is
+withdrawn, on the author's own overrule, and `.clo-cr-analyse-head` now wears the
+neutral tier's default treatment: `1px solid var(--clo-line)`, `var(--clo-text)`,
+3px radius, at the header's smaller `2px 8px` padding.
+
+What the reversal costs and does not cost is worth writing down, because the
+v0.66.0 argument was not wrong about the panel:
+
+- **the tier is untouched.** No fill, no green, no amber. An outline in
+  `--clo-line` is the *quietest bordered treatment this design has*, and it is
+  what the row's own Analyse already wears — the two hosts now agree.
+- **the salience comes from being the only bordered control in the header**, not
+  from colour. That is exactly the weight a neutral action should be able to
+  claim, and it is why nothing louder was needed.
+- **"too loud for a panel meant to be read" was a claim about weight; being
+  missed is a claim about existence, and existence wins.** A launcher the author
+  cannot find has no weight to be too loud with. The general form: *§3's tiers
+  rank controls that are all findable; a control below the discovery floor is
+  not in the ranking yet.*
+
+Measured in the harness, old and new rendered in the same run at the live 420px:
+the button **50.7×18 → 60.7×20**, `#949494` → `#bababa`, zero → `1px #3d3a36`;
+the header **31 → 33px** desktop and **61 → 61px** unchanged under
+`html.clo-touch` (the ⚙ at 36.9px still sets that line). One line in both, right
+edge unchanged — Hide still ends at 410 — because `.clo-title` is `flex: 1` and
+absorbs the 10px (220.3 → 210.3 desktop, 115.5 → 113.5 touch). Nothing the JS
+measures moved: the panel sizes itself from live rects.
 
 ### Next
 

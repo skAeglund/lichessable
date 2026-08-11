@@ -1258,10 +1258,14 @@ Currently working (v0.18.x).
     `.clo-cr-analyse-head`), because this page has no trainer row and the panel is
     the surface the board is ABOUT — it is what follows our position once the
     board is open. Same TIER as the row's Analyse (neutral, DESIGN-ui-inventory
-    §3), different vocabulary: every control in that header is bare text, and an
-    outlined button among them would be the loudest thing in a panel whose job is
-    to be read. Measured live at 420px: title ends at 278, Analyse 286-337,
-    Engine 345-390, cog 398-417, Hide 425-458 — one 38px line.
+    §3) and, since v0.99.0, the same VOCABULARY: a `--clo-line` outline. It wore
+    the header's bare text until then, on the argument that an outlined button
+    among `.clo-toggle`/`.clo-engine-toggle` would be the loudest thing in a panel
+    whose job is to be read — withdrawn because the author was missing the button
+    entirely. A control below the discovery floor is not in the tier ranking yet.
+    Still no fill and no green: its salience is being the only bordered control in
+    that header. Measured at 420px: 60.7x20, one 33px line desktop, 61px under
+    `html.clo-touch`; `.clo-title` is `flex: 1` and absorbs the width.
   * `tick` calls `hideVariationButton()` on EVERY non-variation tick, not just
     from `syncButton`: the panel ELEMENT survives the SPA hop into a trainer
     session (`reviewPanelTick` only re-mounts a DETACHED panel), and the mid-quiz

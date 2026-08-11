@@ -124,6 +124,29 @@ Covers note: *"Make our board's arrow look the same as the original chessable bo
 
 ## 3. /variation/ page: Analyse button and the lingering save popup
 
+**(a) DONE (v0.99.0).** `.clo-cr-analyse-head` drops the header's bare text for
+the neutral tier's own outline — `1px var(--clo-line)`, `var(--clo-text)`, at the
+header's smaller padding. No fill, no green: its salience is being the only
+bordered control in that header. Measured old-vs-new in one headless run at the
+live 420px: the button 50.7×18 → **60.7×20**, the header 31 → **33px** desktop and
+**61px unchanged** under `html.clo-touch` (the ⚙ still sets that line), one line in
+both, right edge unchanged because `.clo-title` is `flex: 1`. Reasoning in
+`DESIGN-ui-inventory.md` ("v0.99.0 — …and the vocabulary goes back to the tier's").
+Not seen in a live session.
+
+**(b) INSTRUMENTED, NOT YET MEASURED, NOTHING CHANGED.** `refreshVariationPage`
+logs `[CLO] quick-edit refresh timing (ms): {total, leave, settle, home, render,
+restore}` from its `finally`, and `restoreShownMove` logs its press count and
+total. `render` is the phase boundary that matters: its gate is "the fresh
+variation has rendered", i.e. the moment the new text is on screen, so everything
+logged after it is the tail being complained about. Prediction, and only that:
+the tail is `restore`, floor 700 ms (the hold is unconditional), ceiling 9.5 s,
+expected ~1.5–2 s at two iterations. **This needs one live save on a /variation/
+page to answer** — Claude in Chrome was not available in the session that wrote
+the instrumentation. Analysis and the candidate fix (close the popup on `render`,
+let `restore` finish behind it) are in `DESIGN-quick-edit.md` §6, "Where the time
+goes".
+
 Covers notes:
 - *"Make the 'Analyse' button in /variation/ page stand out more."*
 - *"When saving a comment (at least in /variation/) the popup lingers quite a while,
@@ -186,6 +209,13 @@ Covers note: *"Alternative clickable lines doesn't work fully:
 > (Correction, 2026-08-09: **node IS on this machine** — v24.14.1, and
 > `node --check` is what CLAUDE.md's verification block already assumes. The
 > "no node" claim above was wrong.)
+> (Counter-correction, 2026-08-11: **both notes are right, about different
+> machines** — this folder is carried between a home PC and a work PC. Node
+> v24.14.1 exists on one of them; on the other, PATH, both Program Files trees,
+> LOCALAPPDATA\Programs, scoop shims and fnm were all re-searched and there is no
+> `node.exe` at all. So a session must CHECK rather than assume: `node --version`
+> first, and fall back to the headless-Chrome parse harness when it is missing.
+> `py` works on both.)
 
 ---
 ## 5 DONE

@@ -313,9 +313,11 @@ body {
     <div class="hx-card">
       <h3>Variation-page header — "Analyse" (19b)</h3>
       <p class="hx-note">The standalone <code>/variation/</code> page has no trainer row, so the
-         analysis launcher goes in the panel's own header. Bare text like every control beside it
-         (<code>.clo-cr-analyse-head</code>), not the row's outlined <code>.clo-cr-analyse</code>.
-         Live width there is 420px; measured 2026-08-04 it fits on one 38px line.</p>
+         analysis launcher goes in the panel's own header. Neutral tier, and since v0.99.0 the
+         tier's own outline (<code>.clo-cr-analyse-head</code>) rather than the header's bare text
+         — it was being missed. The only bordered control in the header; no green, no fill.
+         Live width there is 420px; measured 60.7&times;20 on a 33px line (was 50.7&times;18 / 31px),
+         61px unchanged under <code>html.clo-touch</code>.</p>
       <div class="hx-stage">
         <div class="clo-panel clo-panel--review hx-pos" style="width:420px">
           <div class="clo-header">

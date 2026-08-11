@@ -416,7 +416,57 @@ it, while our verify saw it succeed.
 2. `restoreShownMove` presses, confirms, and then requires the move to STILL be shown
    `refreshHoldMs` later, retrying otherwise.
 
-### The popup stays in its SAVING ui through a refresh
+### Where the time goes (v0.99.0 — instrumentation only, no behaviour change)
+
+Reported 2026-08-07: *"when saving a comment (at least in /variation/) the popup
+lingers quite a while, even after the variation has been updated with the new
+text."* Both halves of that are worth separating, because only the second one is
+a complaint about waste:
+
+* the popup is up for **the whole of `refreshVariationPage`** — it is what
+  `qe.refreshing` holds the SAVING ui open for;
+* the page **visibly updates at the end of the `render` phase**, whose composite
+  gate (our path + our move count + a shown marker) is precisely "the fresh
+  variation has rendered". Everything after that is the user looking at an answer
+  they already have.
+
+So `refreshVariationPage` now logs one line per round trip, from its `finally`
+so a timeout or a throw is measured too:
+
+```
+[CLO] quick-edit refresh timing (ms): {total, leave, settle, home, render, restore[, rescue]}
+```
+
+and `restoreShownMove` logs its press count and its own total. Read the log, not
+the constants — every one of those waits ends on an event and only caps out when
+something has gone wrong.
+
+What is already known, and what the log is for:
+
+* **the pre-`render` half is measured** (2026-08-03, §6 above): pushState at t+0,
+  the sibling's `getGame` at t+792 ms, home at t+2.1 s, our own `getGame` at
+  t+2.6 s. That is the round trip the re-read *is*; it is not obviously reducible
+  and none of it is post-visible.
+* **`restore` is entirely post-visible, and has a floor of `refreshHoldMs`
+  (700 ms) even in the perfect case** — the hold is unconditional per iteration,
+  including the one where the move was never lost. Its ceiling is
+  `refreshMoveTries × (refreshMoveWaitMs + refreshHoldMs)` = **9.5 s**, and the
+  loop exists precisely because the page's own navigate-to-move-1 overrides the
+  first press. Two iterations is the expected case, i.e. ~1.5–2 s of tail.
+* **a refresh that returns false adds 2.5 s more** on top, from the
+  `setTimeout` that keeps *"Saved — reload the page to see it"* readable. That
+  one is a message, not a wait, and is correct as it stands.
+
+**Nothing has been changed on the strength of the arithmetic above.** The two
+things that must not be shortened to close the popup sooner are the `finally`
+(what stops a save stranding the user on a sibling) and `qe.refreshing` (what
+stops a second Save writing back a stale comment) — and `restore` is neither, so
+it is where a fix would go if the numbers land where they are predicted to. The
+candidate is not a smaller `refreshHoldMs` but **letting the popup close on
+`render` and leaving `restore` to finish behind it**: the save is complete and
+visible at that point, and putting the board back is housekeeping the user has no
+reason to watch. That trades away nothing the two rules above protect — but it
+needs the measurement first, in case the real tail is somewhere else entirely.
 
 `qe.refreshing`: the loaded copy is stale by then (the read was dropped), so a second
 Save would write it back and be refused by the driver's own staleness guard. `tick`

@@ -7025,6 +7025,22 @@
       const plyCount = document.querySelectorAll(SELECTORS.variationMoves).length;
       let stepped = false, backSel = '', pushed = false, homeTried = false;
       let watching = false; // a late-departure watch has taken over the guard
+      // PHASE CLOCK. The popup sits on "Saved — re-reading the variation…" for
+      // the whole of this function, and the complaint about it (2026-08-07) is
+      // specifically that it outlives the moment the page VISIBLY updates. That
+      // moment is the end of the `render` phase — its composite gate is "the
+      // fresh variation has rendered", which is when the new comment appears —
+      // so everything logged after `render` is time the user spends looking at
+      // the answer they already have. Read the log line, not the constants: most
+      // of these waits end on an event and only cap out when something is wrong.
+      const t0 = performance.now();
+      let lastMark = t0;
+      const phases = {};
+      const mark = (name) => {
+        const now = performance.now();
+        phases[name] = Math.round(now - lastMark);
+        lastMark = now;
+      };
       const fetchWatch = watchVariationFetch(); // armed BEFORE the click
       try {
         const pagers = [SELECTORS.variationPagerNext, SELECTORS.variationPagerPrev]
@@ -7045,6 +7061,7 @@
         // exactly where we were, with no history entry to undo.
         const gone = await quickEditWaitUntil(
           () => siblingVariation(oid), CONFIG.quickEdit.refreshLeaveMs);
+        mark('leave');
         // Whether the router PUSHED or replaced decides whether back() is the
         // way home at all. (history.length saturates at 50 in Chrome, where a
         // push stops growing it — that reads as "replaced" and simply takes
@@ -7071,9 +7088,12 @@
         // chapter refetch this whole round trip exists for is the request being
         // waited for here.
         await fetchWatch.settle();
+        mark('settle');
 
         homeTried = true;
-        if (!await returnToVariation(oid, home, backSel, pushed)) return false;
+        const wentHome = await returnToVariation(oid, home, backSel, pushed);
+        mark('home');
+        if (!wentHome) return false;
 
         // Being back on the URL is NOT being back on the page: React keeps the
         // sibling's move list mounted (it even REUSES the nodes — verified, so
@@ -7087,9 +7107,13 @@
           document.querySelectorAll(SELECTORS.variationMoves).length === plyCount &&
           document.querySelector(SELECTORS.variationMoveShown),
         CONFIG.quickEdit.refreshBackMs);
+        // …and THIS is the moment the saved text is on screen. Every phase after
+        // it is the popup outstaying its welcome.
+        mark('render');
         if (!back) return false;
 
         if (Number.isInteger(shownPly)) await restoreShownMove(shownPly);
+        mark('restore');
         log('quick-edit: variation page re-read in place after the save');
         return true;
       } catch (err) {
@@ -7108,7 +7132,13 @@
         // it would undo the very repair) and `watching` (the late watch).
         if (stepped && !homeTried && !watching && siblingVariation(oid)) {
           await returnToVariation(oid, home, backSel, pushed);
+          mark('rescue');
         }
+        // Logged from the finally so a timeout or a throw is measured too — a
+        // slow save is exactly the case worth reading, and those paths are how
+        // it gets slow. Phases are ELAPSED ms each, in order of occurrence.
+        log('quick-edit refresh timing (ms):',
+          Object.assign({ total: Math.round(performance.now() - t0) }, phases));
         // The late watch takes both of these over with the guard (see below).
         if (!watching) { fetchWatch.stop(); qe.refreshBusy = false; }
       }
@@ -7185,24 +7215,40 @@
         const cur = document.querySelector(SELECTORS.variationMoveShown);
         return cur && Number(cur.id) === plyIndex ? cur : null;
       };
+      // Instrumented because this is the phase that runs ENTIRELY after the
+      // page has visibly updated (section 12c's timing log): how many presses it
+      // really takes, and how much of the time is the confirm-and-hold rather
+      // than the press.
+      const t0 = performance.now();
+      let presses = 0;
+      const spent = () => Math.round(performance.now() - t0);
       for (let i = 0; i < CONFIG.quickEdit.refreshMoveTries; i++) {
         if (!shownAt()) {
           const el = await quickEditWaitUntil(
             () => document.querySelectorAll(SELECTORS.variationMoves)[plyIndex] || null,
             CONFIG.quickEdit.refreshBackMs);
-          if (!el) return false;
+          if (!el) {
+            log('quick-edit: move', plyIndex, 'never appeared —', presses, 'presses,', spent(), 'ms');
+            return false;
+          }
           // The press recipe, not a bare .click(): the same pointer sequence the
           // rest of this file uses on Chessable's own elements.
           pressSquare(el);
+          presses++;
           if (!await quickEditWaitUntil(shownAt, CONFIG.quickEdit.refreshMoveWaitMs)) continue;
         }
         // It has to HOLD. A press that lands while the page is still rendering
         // reads as a success and is then overridden a beat later, which is
         // exactly the failure this whole loop exists to catch.
         await quickEditDelay(CONFIG.quickEdit.refreshHoldMs);
-        if (shownAt()) return true;
+        if (shownAt()) {
+          log('quick-edit: shown move restored —', presses, 'press(es),', spent(), 'ms',
+            '(of which', CONFIG.quickEdit.refreshHoldMs, 'ms is the final hold)');
+          return true;
+        }
       }
-      log('quick-edit: the variation page would not go back to move', plyIndex);
+      log('quick-edit: the variation page would not go back to move', plyIndex,
+        '—', presses, 'presses,', spent(), 'ms');
       return false;
     }
 
@@ -18780,11 +18826,13 @@
     // about — the panel is what follows our position once the board is open —
     // so the launcher goes in its header, beside Engine and the cogwheel.
     //
-    // Bare text, not the trainer row's outlined .clo-cr-analyse: every control
-    // in that header is bare text, and a bordered button among them would read
-    // as the loudest thing in a panel whose job is to be read. Same TIER
-    // (neutral, "an action away from the main task" — DESIGN-ui-inventory §3),
-    // expressed in the vocabulary of the host it lives in.
+    // Neutral tier ("an action away from the main task" — DESIGN-ui-inventory
+    // §3), in the tier's own vocabulary: a --clo-line outline, no fill and no
+    // green. v0.66.0 gave it the header's BARE TEXT instead, on the argument
+    // that a bordered button among .clo-toggle/.clo-engine-toggle would be the
+    // loudest thing in a panel whose job is to be read; withdrawn in v0.99.0
+    // because the author was missing the button entirely, and a control below
+    // the discovery floor is not in the tier ranking yet.
 
     function ensureVariationButton() {
       const header = document.querySelector('#' + PANEL_ID + ' .clo-header');

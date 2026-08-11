@@ -3031,21 +3031,33 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 /* The same control on the standalone variation page (section 19b), where there
    is no trainer row to put it in and it goes in the Lichess panel's own header.
-   SAME TIER (neutral — an action away from the main task), different vocabulary:
-   every control in that header is bare text, so an outlined button among them
-   would be the loudest thing in a panel whose whole job is to be read. Sized and
-   coloured exactly like .clo-toggle / .clo-engine-toggle beside it. */
+   SAME TIER (neutral — an action away from the main task), and since v0.99.0
+   the tier's OWN vocabulary: a #3d3a36 outline and #bababa text, i.e. exactly
+   what .clo-cr-analyse wears in the trainer row, at the header's smaller
+   padding.
+
+   v0.66.0 gave it the header's bare-text vocabulary instead, on the argument
+   that a bordered button among .clo-toggle / .clo-engine-toggle would be the
+   loudest thing in a panel whose whole job is to be read. That was right about
+   the panel and wrong about the control: the author reported missing it
+   entirely (2026-08-07). A launcher nobody finds has no weight to be too loud
+   with, and the tier is still honoured — this is the QUIETEST bordered
+   treatment in the design, and the fill and the greens stay where they were.
+   Its salience comes from being the only outlined thing in the header, not
+   from colour. */
 .clo-cr-analyse-head {
-  border: none;
+  border: 1px solid var(--clo-line);
   background: transparent;
-  color: var(--clo-text-dim);
-  padding: 2px 4px;
+  color: var(--clo-text);
+  padding: 2px 8px;
+  border-radius: 3px;
   cursor: pointer;
   font-size: 12px;
   font-family: inherit;
 }
 
 .clo-cr-analyse-head:hover {
+  border-color: var(--clo-accent);
   color: #fff;
 }
 
