@@ -666,6 +666,155 @@ keyboard. A hand-played line is never re-queued (and a hinted one is not either)
 the verdict exists only on the key path, and playing the move correctly IS
 knowing it.
 
+## 2g. Queueing the `next` key (v0.100.0)
+
+*"Make it possible to queue multiple Correct/Next if the user sends multiple 2
+within a short time. So 4 quick 2s → progress 4 moves."*
+
+A `next` press the mode cannot act on **yet** is remembered and spent the moment
+it can be, instead of being discarded. Tap four times and the line goes four
+moves on.
+
+### It fixes a real drop, not a rhythm
+
+This reads like a convenience and is not. **After every grade there is a window
+of roughly 950 ms in which every press was thrown away**: `settleMs` (400) on the
+way out of the pause, then Chessable's own ~550 ms to take the move and reply.
+For that whole time the phase is `'acting'` and then `'think'` with `cardReady()`
+still false, and both paths ended in `setStatus('Waiting for the board…')` with
+the press gone. Someone tapping steadily at 200–250 ms lost about **four presses
+per card**, which is most of what "it doesn't respond" feels like.
+
+There are exactly two such points, and the queue is placed at both — inside
+`doNext`, not around it:
+
+* **`'acting'`** — an act owns the mode for that ~950 ms. Caught in `onKey`.
+* **`'shown'` with `!cardReady()`** — our board is already showing the move while
+  the trainer is still animating the card *before* it. This one follows **every
+  single grade**, so it is the common case rather than the edge one.
+
+The third bail (`'think'` with no `cardPly()` — a variation change, or the
+trainer still playing its own opening plies) queues too. v0.82.0 made that press
+cost *nothing*; it was still thrown away.
+
+### Two presses make one card, so four taps are four moves
+
+That is not a coincidence to be tidied — it is the mode's governing rule
+(§2) holding: one press shows your move, the next shows the opponent's reply and
+grades. So "4 quick taps → 4 moves shown → 2 cards graded" is the existing shape,
+and the queue adds no new arithmetic.
+
+### Why this is safe where a latch was not
+
+**Every queued press is still a real press.** The count is bounded by the user's
+own taps, nothing runs that they did not ask for, and there is no state to
+forget. That is the whole difference from the hold-to-play-through gesture tried
+first and abandoned (below), and it is why this needs none of that gesture's
+apparatus — no latch, no idle watchdog, no engage/disengage.
+
+Four rules do the rest:
+
+* **Only `next` is ever queued.** `wrong` is a verdict on the card *on screen*,
+  and a verdict applied to a later card would fail a move the user never saw. It
+  is also what CLEARS the queue: someone saying "I didn't know this one" has
+  stopped blasting. `alts` asks about the move in front of them and means nothing
+  deferred.
+* **A queued press can never ask for the next variation.** `queueActionable`
+  deliberately omits the browse state, and the queue is dropped when the
+  variation ends (tick's browse branch) and at a variation change (`applyPlan`).
+  So a tap can never act on a line the user had not seen — the one rule worth
+  carrying over from the abandoned gesture.
+* **It expires** (`queueTtlMs`, 3 s) and is dropped outright by `failAct`, the
+  "never moved on" watchdog and `stop()`. A press stranded by an act that did not
+  land must not fire later against a board that has been re-derived under it.
+* **It drains one at a time and never inside `advanceMs()` of the last.** Two
+  spent in one pass would show your move and the opponent's reply in the same
+  frame, and a move shown for no time is not shown. So it drains at the mode's
+  own advance beat — already a user setting — and Chessable's round trip paces it
+  from there.
+
+`pumpQueue` is called from `applyPlan` and from `tick`, and the first is the one
+that matters: the plan chase reads every ~110 ms while an act is outstanding, so
+a press waiting on `cardReady()` is spent within a beat of the trainer catching
+up rather than on the next 500 ms poll. The `tick` call sits **above** the
+`'think'` gate so it covers `'shown'`, which is where a queued press most often
+waits.
+
+The panel says what is owed (`· 3 queued`). Without it a tap that was remembered
+and a tap that was dropped look identical until the move appears, which is
+exactly the uncertainty this removes — and it is the only place `maxQueued` is
+legible.
+
+### The hold gesture that this replaced
+
+v0.100.0 was first built as **hold `next` to play through the variation**, and it
+worked: confirmed live on 2026-08-11 (five cards from one hold with Auto off and
+nothing proven, the release stopping it within one card, and a key held 6.5 s past
+the end of a variation advancing nothing). It was then abandoned on a hardware
+finding, and the finding is the part worth keeping:
+
+**The Bluetooth ring this mode exists for sends one event per tap, on RELEASE,
+never while held, and never faster than ~200 ms apart.** So there is no key-down
+state to observe at all — no auto-repeat, and a long press is *swallowed by the
+ring* rather than merely undetectable. Every hold-shaped gesture is therefore
+unbuildable on the one device that matters, and so is the long-press fallback.
+
+**Do not reach for `e.repeat` again.** v0.81.0's rule — a repeat is never a press
+— stands unqualified, and the one design that had an argument for bending it has
+been withdrawn for reasons that have nothing to do with the argument.
+
+What was considered and rejected in its place, before the queue was proposed: a
+**double-tap latch** on `next` (the natural reveal→grade rhythm and the
+deliberate trigger are the same gesture, so a mis-fire would play a variation the
+user was only reading) and **`1` as a play-through toggle** (free while the audio
+is off, but `1` is the TTS "say that again" key, which is precisely what a
+blindfold ring user reaches for). The queue is better than both because it is not
+a mode at all.
+
+### v0.100.0 shipped a `ReferenceError` on every reveal (fixed in v0.100.1)
+
+Reported as *"show and grade has stopped working completely — pressing 2 enters
+the mode but the correct move is never shown."* It had.
+
+`isNext` was a local `const` in `onKey`. Lifting the think/shown body out into
+`doNext` left the auto-play agreement exemption still reading it, so **every
+`next` press at the think stage threw** before it could reveal. `doNext` now
+derives it (`const isNext = !isWrong` — exact, since `onKey` only reaches it for
+those two keys and a queued press is always a `next`).
+
+Three things let a one-word fault ship, and each has a standing lesson:
+
+* **`node --check` cannot see it.** It checks syntax; a free identifier is a
+  runtime `ReferenceError`. Nothing in this repo's verification block catches
+  this class.
+* **A transcription-based simulation cannot see it either** — it re-writes the
+  logic rather than executing the file, so the 24 assertions passed against code
+  that was never run. Simulations prove the *design*; they say nothing about the
+  *source*. Do not let a green simulation stand in for a live run of an edit to
+  working code.
+* **A throwing key handler is SILENT.** No status, no board change, no visible
+  log — the press just does nothing. `onKey` is now wrapped in the same
+  one-line-per-distinct-message try/catch `tick` has, and for the reason tick's
+  comment already gives: the failure mode is otherwise invisible from the
+  outside.
+
+**The rule this earns: an EXTRACTION in this file is not shippable on static
+checks alone.** Moving a body into a new function is the refactor most likely to
+strand an identifier, and the only cheap mechanical guard is to re-read the moved
+body for names that were locals of the old scope before running anything. Do that
+first; then verify live.
+
+### Simulated (24 assertions, all passing)
+
+Transcribed bookkeeping with a stepped clock and Chessable's two real delays
+(`settleMs` 400, then 550 ms to reply). Nine sequences: four taps at the ring's
+own 200 ms floor giving four moves and two cards; the same four taps under the
+OLD code, which loses one (the control case); six taps checking no two moves
+share a frame; a tap during an act; `wrong` clearing the queue; a short line
+over-tapped by four, where the surplus is dropped at the boundary and never calls
+`advance()`; expiry; the cap; no card graded twice or out of order; and a single
+tap behaving exactly as it did before.
+
 ## 3. Decisions taken (2026-08-04)
 
 | Question | Answer |
@@ -1308,6 +1457,13 @@ the live comment box is 506 px.
 
 ## 11. Confirmed working
 
+**The press queue (§2g), v0.100.1, 2026-08-11** — confirmed by the user in a real
+session driven from the ring: tapping `next` several times in quick succession
+now moves the line on by that many moves instead of losing the presses to the
+~950 ms an act owns. That is the whole of what the feature claims. The numbers
+around it (`maxQueued`, `queueTtlMs`, the pacing at pace settings other than the
+default) are argued rather than felt — see §12.9.
+
 **The audio and blindfold, end to end (v0.89.1, 2026-08-09)** — course 453453,
 `/learn/` overstudy of 70382641 plus an in-session switch to 71087636, i.e. the
 routes that reschedule nothing. Driven with synthetic key events, with
@@ -1439,6 +1595,20 @@ states where a real control exists.
    meant grading a real review card, which the mapping does not justify — the
    `mid`+colour join and the 7-on-6 count are both verified), and the wording
    with the course setting **on**, which no course tested has.
+9. **The press queue (§2g)** — the core loop is **user-confirmed working**
+   (2026-08-11, v0.100.1: *"the queueing works pretty good"*), in a real session
+   with the ring. What that does NOT cover, none of it measured by anyone:
+   * whether `maxQueued` (8) and `queueTtlMs` (3 s) are the right numbers. Both
+     were argued, neither was felt. The TTL in particular has never been *seen*
+     firing — a press stranded by an act that did not land.
+   * that **over-tapping at the end of a variation** drops the surplus rather
+     than advancing — simulated (case 5), and the one rule here whose failure
+     would be quiet and would answer cards in a line the user had not seen.
+   * that the drain is visibly paced (no two moves in one frame) at every one of
+     the four `paces`, not just the default.
+   * what the ring's ~200 ms floor does to the ceiling: how many deliberate taps
+     actually arrive before the hardware starts dropping them, which is the real
+     bound on "progress N moves" regardless of `maxQueued`.
 8. **Mistake repetitions (§2f) — the whole premise.** `isRepeat()` assumes the
    repetition runs on the SAME lesson plan, with the trainer's own `fen` back on
    the failed ply's `sourceFen`, so `anchor()` lands on a card our board has

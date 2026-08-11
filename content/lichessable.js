@@ -676,6 +676,42 @@
         relaxed: { reveal: 700, advance: 620 },
       },
       defaultPace: 'fast',
+      // --- QUEUEING THE `next` KEY ------------------------------------------
+      //
+      // A press this mode cannot act on YET is REMEMBERED instead of dropped, and
+      // spent the moment it can be. Tap four times and the line goes four moves
+      // on, at whatever pace Chessable allows.
+      //
+      // IT FIXES A REAL DROP, not just a rhythm. After a grade there is a window
+      // of roughly 950ms — `settleMs` (400) on the way out of the pause, then
+      // Chessable's own ~550ms round trip — in which the phase is 'acting' and
+      // then 'think' with `cardReady()` still false. EVERY press landing in it
+      // used to be discarded with "Waiting for the board…", so someone tapping
+      // steadily lost about four presses per card and the mode read as
+      // unresponsive. That is the whole of this feature; the pacing is a
+      // by-product.
+      //
+      // ONLY `next` IS EVER QUEUED. `wrong` is a verdict on the card ON SCREEN,
+      // and a verdict applied to a later card would fail a move the user never
+      // saw — so it is never queued, and it CLEARS the queue (a user saying "I
+      // didn't know this one" has stopped blasting). `alts` asks about the move
+      // in front of them and means nothing deferred.
+      //
+      // EVERY QUEUED PRESS IS STILL A REAL PRESS, which is what makes this safe
+      // where a hold-to-play-through gesture was not: nothing runs that the user
+      // did not ask for, the count is bounded by their own taps, and there is no
+      // latch to forget. (The hold was tried first and abandoned — the Bluetooth
+      // ring this mode exists for sends one event per tap, on RELEASE, never
+      // while held and never faster than ~200ms apart, so there is no key-down
+      // state to observe at all. Do not reach for `e.repeat` again: v0.81.0's
+      // rule that a repeat is never a press stands unqualified.)
+      maxQueued: 8,
+      // A queued press goes stale. The queue is spent against whatever card is
+      // up when it drains, so a press stranded by a failed act must not fire
+      // minutes later against a line the user has moved on from. Comfortably
+      // longer than the ~950ms window above, short enough that a stall drops
+      // them rather than banking them.
+      queueTtlMs: 3000,
       // How often the lesson plan is re-read while waiting for Chessable to
       // finish an act, and for how long. The 500ms poll is the wrong clock for
       // that wait — see startChase. `chaseMs` is the FLOOR: the real interval
@@ -22277,6 +22313,11 @@
       prefixAt: -1,        // the card the last re-walk was done for — one per card
       prefixLogged: false, // …and whether this variation's count has been said once
       handedOver: false,
+      // `next` presses this mode could not act on yet, as timestamps — see
+      // CONFIG.showGrade.maxQueued. Spent one at a time, oldest first, the
+      // moment the state can take one.
+      queue: [],
+      queueSpentAt: 0,   // …and when the last one was, so they drain visibly
       lastAutoSkip: '',  // dedupe key for noteAutoSkip
       chaseTimer: 0,
       chaseUntil: 0,
@@ -22801,6 +22842,9 @@
         sg.proof = null;
         sg.advancing = false;   // the variation change we were chasing has landed
         clearAutoTimer();
+        // Whatever is still queued was tapped at the LAST variation. Spending it
+        // here would answer cards in a line the user has not looked at.
+        clearQueue();
       }
       sg.plies = Array.isArray(plan.plies) ? plan.plies : [];
       // DECIDE THE WHOLE PREFIX ON THE FIRST READ OF THE VARIATION, before any
@@ -22852,6 +22896,12 @@
       // of pure waiting per card. This is the same call tick() makes and it is
       // idempotent, so the poll remains the safety net it always was.
       serveCard();
+      // …and the same argument for the QUEUE. This read is what learns that the
+      // trainer has caught up, which is exactly the condition a press waiting on
+      // `cardReady()` is waiting for — so spending it here rather than on the
+      // next poll is the difference between a queued tap landing in a beat and
+      // landing half a second later.
+      pumpQueue();
     }
 
     /** '<mid><color>' — the join between our plies and getLesson's rows. */
@@ -23545,6 +23595,12 @@
       } else if (sg.phase === 'acting') {
         keys = 'Working…';
       }
+      // WHAT IS STILL OWED. Without this the queue is invisible: a tap that was
+      // remembered and a tap that was dropped look identical until the move
+      // shows up, which is exactly the uncertainty the feature exists to remove.
+      // It is also the only place the cap is legible — a tap that does not raise
+      // this number says so.
+      if (sg.queue.length) keys += '   ·   ' + sg.queue.length + ' queued';
       sg.panel.keys.textContent = keys;
     }
 
@@ -24210,6 +24266,10 @@
       setStatus(msg);
       sg.awaitingFen = '';
       sg.proof = null;   // the act did not land, so nothing was answered
+      // Our board is out of step with the trainer and about to be re-derived, so
+      // a press queued against the old reckoning is a press against a card that
+      // no longer exists. Dropped, not re-aimed.
+      clearQueue();
       unwalkCard();
       sg.cardIdx = -1;
       sg.pressed = false;
@@ -24246,6 +24306,79 @@
         ' — auto-play stands down until the next variation');
     }
 
+    // --- the press queue -----------------------------------------------------
+    //
+    // See CONFIG.showGrade.maxQueued for what this is for and why it is safe.
+    // In short: a `next` press the mode cannot act on YET is remembered and
+    // spent the moment it can be, so tapping four times moves the line four
+    // moves on instead of losing three of them to the ~950ms an act owns.
+    //
+    // EVERY SPENT PRESS GOES THROUGH `doNext`, the same body a live key press
+    // does, so a press spent late is the same press in every respect but its
+    // timing — there is no second path for it to drift down. Same discipline
+    // auto-play's cards follow for the same reason.
+
+    function dropStaleQueued() {
+      if (!sg.queue.length) return;
+      const cutoff = Date.now() - C.queueTtlMs;
+      while (sg.queue.length && sg.queue[0] < cutoff) sg.queue.shift();
+    }
+
+    function queueNext() {
+      dropStaleQueued();
+      // At the cap, further taps are simply not remembered. The cap IS the
+      // answer to "how far ahead may the user commit", and the panel shows the
+      // count, so a tap that does not raise it says so on screen.
+      if (sg.queue.length >= C.maxQueued) return;
+      sg.queue.push(Date.now());
+      syncPanel();
+    }
+
+    function clearQueue() {
+      if (!sg.queue.length) return;
+      sg.queue.length = 0;
+      syncPanel();
+    }
+
+    /** Can a queued press be spent on the state we are in right now? */
+    function queueActionable() {
+      // The browse state is deliberately NOT in here: a queued press must never
+      // ask for the NEXT VARIATION. The user tapped while looking at this line,
+      // and the queue is cleared when it ends (tick's browse branch) — so a tap
+      // can never act on a variation they had not seen. That is the one rule
+      // carried over from the hold gesture this replaced.
+      if (sg.phase === 'think') return Boolean(cardPly());
+      if (sg.phase === 'shown') return sg.pressed || sg.pressing || cardReady();
+      return false;   // 'acting', 'browse', 'off'
+    }
+
+    /**
+     * Spend ONE queued press, if the state can take one.
+     *
+     * ONE AT A TIME, AND NEVER INSIDE `advanceMs()` OF THE LAST. Both halves
+     * matter: two presses spent in the same pass would show your move and the
+     * opponent's reply in the same frame, and the whole mode rests on every
+     * press showing a move — a move shown for no time is not shown. So the
+     * queue drains at the mode's OWN advance beat, which is already a user
+     * setting, and Chessable's round trip paces it from there.
+     *
+     * Called from `tick` (the 500ms net) and from `applyPlan`, which is the one
+     * that matters: the plan chase reads every ~110ms while an act is
+     * outstanding, so a press waiting on the trainer is spent within a beat of
+     * the trainer catching up rather than on the next poll.
+     */
+    function pumpQueue() {
+      dropStaleQueued();
+      if (!sg.queue.length || !sg.active || document.hidden) return;
+      if (sg.phase === 'browse' || reviewBrowseReady()) { clearQueue(); return; }
+      if (Date.now() - sg.queueSpentAt < advanceMs()) return;
+      if (!queueActionable()) return;
+      sg.queue.shift();
+      sg.queueSpentAt = Date.now();
+      doNext(false, true);
+      syncPanel();
+    }
+
     // --- keys ----------------------------------------------------------------
     //
     // CAPTURE phase on `document`, which is section 18's discipline and for its
@@ -24254,7 +24387,27 @@
     // that owns the whole session. Only OUR OWN keys are swallowed — everything
     // else still reaches the trainer.
 
+    /**
+     * A THROW IN HERE IS INVISIBLE, which is why this wrapper exists — `tick`
+     * has the same one for the same reason, and this handler needed it more.
+     * A key listener that throws does not stop the mode, log anything the user
+     * would see, or change the board: the press simply does nothing, and the
+     * only symptom is "show and grade has stopped working". That is exactly how
+     * v0.100.0 shipped a `ReferenceError` on every reveal — one identifier left
+     * behind by an extraction, which `node --check` cannot see and a
+     * transcription-based simulation cannot execute.
+     */
+    let lastKeyError = '';
     function onKey(e) {
+      try {
+        onKeyInner(e);
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        if (msg !== lastKeyError) { lastKeyError = msg; warn('show-and-grade key failed:', err); }
+      }
+    }
+
+    function onKeyInner(e) {
       if (e.altKey || e.ctrlKey || e.metaKey) return;
       const tag = e.target && e.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
@@ -24281,7 +24434,17 @@
       // nothing, drives nothing and touches no state, so it is the one press
       // that is safe (and useful) even while an act is still in flight.
       if (isAgain) { repeatLast(); return; }
-      if (sg.phase === 'acting') return;
+      // A VERDICT IS ABOUT THE CARD ON SCREEN, so it can never be deferred — and
+      // a user saying "I didn't know this one" has stopped blasting, so whatever
+      // they queued before it is no longer what they want. Both directions of
+      // the same fact, and the second is why this clears rather than just
+      // refusing to add.
+      if (isWrong) clearQueue();
+      // THE COMMONEST PLACE A PRESS WAS LOST. An act owns the mode for the
+      // ~950ms it takes Chessable to accept a move and reply, and every press
+      // landing in it used to vanish. Now it is remembered and spent the moment
+      // the act is done — see CONFIG.showGrade.maxQueued.
+      if (sg.phase === 'acting') { if (isNext) queueNext(); return; }
       // CHESSABLE'S OWN STATE DECIDES THIS ONE, not our phase flag (v0.82.0).
       // `anchor()` can legitimately put us in 'think' on the next variation's
       // card 0 a beat before the completed variation's block comes down — the
@@ -24321,6 +24484,22 @@
         if (continuationReviewNow) continuationReviewNow();
         return;
       }
+      doNext(isWrong, false);
+    }
+
+    /**
+     * A `next` (or `wrong`) press acting on the card, from the KEY or from the
+     * QUEUE — one body, so a press spent late is the same press in every respect
+     * but its timing. `fromQueue` exists only so a press that still cannot be
+     * acted on is not queued a second time.
+     */
+    function doNext(isWrong, fromQueue) {
+      // EXACT, not a convenience: `onKey` only reaches here for `next` or
+      // `wrong` (alts and repeat both return above), and a queued press is
+      // always a `next` — so "not wrong" IS "next" at this point. It is spelled
+      // out because the body below was lifted verbatim out of `onKey`, where
+      // this was a local const, and the auto-play exemption still reads it.
+      const isNext = !isWrong;
       // TWO PRESSES PER CARD, AND EVERY PRESS SHOWS A MOVE. First press: your
       // move. Second press: the opponent's, which is also what grades the card.
       // Both keys have that same shape — "wrong" pressed at the think stage
@@ -24345,7 +24524,12 @@
         // desktop and most of a second on a phone, which is exactly why this was
         // reported as a mobile-only fault: on a slow device a steady presser
         // lands in it at the start of nearly every variation.
+        // …AND NOW IT IS REMEMBERED RATHER THAN MERELY MADE FREE. Costing
+        // nothing was the v0.82.0 fix; the press was still thrown away, and this
+        // window — a variation change, or the trainer still playing its own
+        // opening plies — is one of the two places a steady presser loses them.
         if (!cardPly()) {
+          if (!isWrong && !fromQueue) queueNext();
           setStatus('Waiting for the board…');
           return;
         }
@@ -24424,6 +24608,13 @@
           if (sg.pressed) finishAutoCard();
           return;
         }
+        // THE SECOND PLACE A PRESS WAS LOST, and the one that follows every
+        // single grade: our board is already showing the move, but the trainer is
+        // still animating the card BEFORE it, so `cardReady()` is false and both
+        // grades below would bail with "Waiting for the board…". Remember it
+        // instead — this is precisely a press the user has made and the machine
+        // is not ready for, which is the whole definition of the queue.
+        if (!cardReady() && !isWrong && !fromQueue) { queueNext(); return; }
         sg.autoGrading = false;
         // GRADING A CARD BY HAND IS WHAT TAKING THE VARIATION OVER MEANS, so it
         // is settled here as well as at the reveal — the reveal defers the
@@ -24863,6 +25054,8 @@
       sg.pos = null;
       sg.lastMove = null;
       sg.markedUnknown = false;
+      sg.queue.length = 0;
+      sg.queueSpentAt = 0;
       if (autoPlayShowGradeHold) autoPlayShowGradeHold(true);
       if (drawing()) {
         buildBoard();
@@ -24892,6 +25085,7 @@
       sg.autoGrading = false;
       sg.pressed = false;
       sg.proof = null;      // nothing left to watch for the trainer's verdict
+      sg.queue.length = 0;  // …and nothing left to spend them on
       sg.advancing = false;
       if (sg.timerPaused) { resumeTrainerTimer(); sg.timerPaused = false; }
       applyTimerBar(false); // give their clock back, whatever else went wrong
@@ -25035,6 +25229,7 @@
         warn('show-and-grade: the board never moved on — re-reading the card');
         sg.awaitingFen = '';
         sg.proof = null;   // a press the trainer never took is not an answer
+        clearQueue();      // …and neither is one queued behind it (see failAct)
         unwalkCard();
         sg.cardIdx = -1;
       }
@@ -25047,6 +25242,10 @@
         if (sg.timerPaused) { resumeTrainerTimer(); sg.timerPaused = false; }
         if (sg.phase !== 'acting') sg.phase = 'browse';
         clearAutoTimer();
+        // The variation is over, so a queued tap has nothing left to spend
+        // itself on here — and the one thing a press MEANS in this state is
+        // "next variation", which is never something a deferred tap may ask for.
+        clearQueue();
         // …unless we are chasing the variation change we just asked for: the
         // browse state outlives the press by a few hundred ms, and killing the
         // chase here put the next variation's first card straight back on the
@@ -25111,6 +25310,11 @@
         // handed back, which is exactly the case worth covering.
         maintainPause();
       }
+      // ABOVE THE 'think' GATE, so it covers 'shown' too — which is where a
+      // queued press most often waits, our board being a move ahead of a trainer
+      // that has not finished animating. The safety net under `applyPlan`'s own
+      // call, which is the prompt one.
+      pumpQueue();
       if (sg.phase !== 'think') { syncPanel(); return; }
 
       if (!cardPly()) {

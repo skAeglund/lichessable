@@ -1743,6 +1743,27 @@ Currently working (v0.18.x).
     `continuationReviewNow` — SPACE is shared with the heads-up's "Review now",
     and the two DO overlap; resolved by PRIORITY (inside 'shown' the press means
     alternatives, everywhere else it goes here), never by assuming they cannot.
+  * A `next` PRESS THE MODE CANNOT ACT ON YET IS QUEUED, NOT DROPPED (§2g) —
+    four quick taps move the line four moves on. It exists because ~950ms after
+    every grade (`settleMs`, then Chessable's own round trip) the phase is
+    'acting' and then 'think' with `cardReady()` false, and every press landing
+    there used to vanish. Both queue points are INSIDE `doNext`, the one body a
+    live press and a queued press share. Only `next` is ever queued (`wrong` is a
+    verdict on the card ON SCREEN and CLEARS the queue); a queued press may never
+    ask for the next variation (`queueActionable` omits the browse state, and the
+    queue is dropped there and at a variation change), so a tap can never answer
+    a line the user had not seen.
+    `onKey` IS WRAPPED IN A TRY/CATCH like `tick`'s, and for the same reason: a
+    key handler that throws is SILENT — no status, no board change, nothing the
+    user sees but "the mode stopped working". v0.100.0 shipped a `ReferenceError`
+    on every reveal (`isNext`, left behind by lifting the body into `doNext`),
+    which `node --check` cannot see and a transcription-based simulation cannot
+    execute. AN EXTRACTION IN THIS FILE IS NOT SHIPPABLE ON STATIC CHECKS ALONE.
+    THE RING SENDS ONE EVENT PER TAP, ON RELEASE, NEVER WHILE HELD AND NEVER
+    FASTER THAN ~200ms APART (ground-truthed 2026-08-11). So no hold, long-press
+    or auto-repeat gesture is buildable on the device this mode exists for — a
+    hold version was built, verified live and withdrawn. NEVER act on `e.repeat`:
+    v0.81.0's rule stands unqualified.
   * TWO PRESSES PER CARD, AND EVERY PRESS SHOWS A MOVE — the governing rule, and
     the one a "tidier" state machine breaks. The first press plays YOUR move on our
     board; the second shows the OPPONENT'S REPLY and is also what GRADES the card,

@@ -243,7 +243,58 @@ Covers note: *"Alternative clickable lines doesn't work fully:
 
 ---
 
-## 6. Show and grade: hold "correct" to auto-play
+## 6 DONE (v0.100.0) — but NOT as a hold
+
+Landed as **§2g of `DESIGN-show-and-grade.md`**: a `next` press the mode cannot act
+on *yet* is **queued** rather than dropped, so four quick taps move the line four
+moves on. Two presses make one card, so that is 4 moves / 2 cards — the mode's
+existing arithmetic, unchanged.
+
+**The hold was built first, verified live, and then withdrawn on a hardware
+finding.** The ring this mode exists for sends **one event per tap, on release,
+never while held, and never faster than ~200 ms apart** — so there is no key-down
+state to observe, and a long press is *swallowed by the ring* rather than merely
+undetectable. Every hold-shaped gesture is unbuildable on the one device that
+matters. (The hold itself worked: five cards from one hold with Auto off and
+nothing proven, release stopping it within one card, and a key held 6.5 s past the
+end of a variation advancing nothing. Kept only as the record in §2g.)
+
+**Do not reach for `e.repeat` again** — v0.81.0's rule stands unqualified, and the
+one design that had an argument for bending it is gone for unrelated reasons.
+
+The queue turns out to be the better feature anyway, and not only because it fits
+the hardware:
+
+* **it fixes a real drop.** After every grade there is a ~950 ms window
+  (`settleMs` 400, then Chessable's own ~550 ms) in which the phase is `'acting'`
+  and then `'think'` with `cardReady()` false — every press landing there was
+  discarded with "Waiting for the board…". At 200–250 ms taps that is about four
+  presses lost per card, which is most of what "it doesn't respond" feels like.
+* **every queued press is still a real press**, so nothing runs that the user did
+  not ask for and there is no latch to forget — which is exactly what a
+  play-through toggle could not promise.
+
+Rejected on the way: a **double-tap latch** on `2` (the natural reveal→grade
+rhythm and the deliberate trigger are the same gesture) and **`1` as a toggle**
+(it is the TTS "say that again" key, which is what a blindfold ring user reaches
+for).
+
+Simulated over 9 sequences / 24 assertions, including a control case showing the
+old code losing a press from the same four taps.
+
+**Confirmed working by the user on the ring, 2026-08-11** (v0.100.1). What is
+still only argued, not felt: `maxQueued` (8), `queueTtlMs` (3 s), the pacing at
+the non-default `paces`, and the boundary drop — `DESIGN-show-and-grade.md` §12.9.
+
+**v0.100.0 shipped broken and v0.100.1 is the fix.** Lifting `onKey`'s body into
+`doNext` stranded `isNext`, a local of the old scope, so every reveal threw a
+`ReferenceError` and the mode "stopped working completely". `node --check` cannot
+see that class and a transcription-based simulation does not execute the source,
+so both passed. `onKey` now carries `tick`'s try/catch — a throwing key handler is
+otherwise entirely silent — and the standing rule is in CLAUDE.md: **an extraction
+in this file is not shippable on static checks alone.**
+
+<details><summary>original note</summary>
 
 Covers note: *"'Show and grade' idea: hold down 'correct' (2) to auto-play moves"*
 
@@ -263,6 +314,8 @@ Covers note: *"'Show and grade' idea: hold down 'correct' (2) to auto-play moves
 >
 > Also say how it composes with the Auto toggle and whether the hold should
 > count as `handedOver`.
+
+</details>
 
 ---
 
