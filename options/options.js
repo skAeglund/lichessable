@@ -16,6 +16,11 @@ const AUTO_REVIEW_KEY = 'cloAutoReviewClickables';
 // takes the keyboard from MoveTrainer's own single-key shortcuts while it is
 // focused, which is not something to hand anyone who did not ask for it.
 const TEXT_MOVE_KEY = 'cloTextMove';
+// must match CONFIG.retry.pinPromptKey in content/lichessable.js. Opt-OUT (absent
+// = ON, the cloLineHeadsUp shape): the offer costs one glance at the corner of
+// the screen and nothing else, and the whole point of it is that the moment the
+// user has an opinion about a move is the moment they get it wrong.
+const PIN_PROMPT_KEY = 'cloPinPrompt';
 // must match CONFIG.showGrade.key in content/lichessable.js. Opt-OUT since
 // v0.81.0 (absent = ON, so only an explicit false is ever stored as "off"). It
 // used to be opt-IN because the mode takes two keys off MoveTrainer2 for a whole
@@ -57,7 +62,7 @@ async function init() {
   $('loadedVersion').textContent = chrome.runtime.getManifest().version;
   const stored = await chrome.storage.local.get(
     [TOKEN_KEY, BUILD_KEY, HEADS_UP_KEY, AUTO_REVIEW_KEY, TEXT_MOVE_KEY,
-     SHOW_GRADE_KEY, TOUCH_KEY, TOUCH_DEVICE_KEY,
+     PIN_PROMPT_KEY, SHOW_GRADE_KEY, TOUCH_KEY, TOUCH_DEVICE_KEY,
      DIFFICULT_THRESHOLD_KEY, DIFFICULT_RECENT_KEY]);
   if (stored[TOKEN_KEY]) $('token').value = stored[TOKEN_KEY];
   const build = stored[BUILD_KEY];
@@ -65,6 +70,7 @@ async function init() {
   $('headsUp').checked = stored[HEADS_UP_KEY] !== false;
   $('autoReview').checked = stored[AUTO_REVIEW_KEY] === true;
   $('textMove').checked = stored[TEXT_MOVE_KEY] === true;
+  $('pinPrompt').checked = stored[PIN_PROMPT_KEY] !== false;
   $('showGrade').checked = stored[SHOW_GRADE_KEY] !== false;
   const touch = stored[TOUCH_KEY];
   $('touchUi').value = touch === 'touch' || touch === 'desktop' ? touch : 'auto';
@@ -105,6 +111,15 @@ $('headsUp').addEventListener('change', async () => {
   setStatus($('headsUp').checked
     ? 'Clickable-line heads-up on.'
     : 'Clickable-line heads-up off.');
+});
+
+$('pinPrompt').addEventListener('change', async () => {
+  // Saved immediately; the content script's storage listener picks it up in
+  // every open trainer tab, no reload needed.
+  await chrome.storage.local.set({ [PIN_PROMPT_KEY]: $('pinPrompt').checked });
+  setStatus($('pinPrompt').checked
+    ? 'You will be offered the pin right after a mistake.'
+    : 'Pin offer off — pin from the Mistakes list instead.');
 });
 
 $('textMove').addEventListener('change', async () => {

@@ -402,10 +402,11 @@ body {
   <div class="hx-grid">
     <div class="hx-card" style="flex:1 1 100%">
       <h3>Everything at once — browse state, mistakes logged, lines queued</h3>
-      <p class="hx-note">Overstudy (2) + auto-play (3) + mistakes (2) + continuation (3) = ten
+      <p class="hx-note">Overstudy (2) + auto-play (3) + mistakes (2) + continuation (4) = eleven
          controls in four groups, read left to right as mistakes → practice → session →
          settings. Exactly one is filled: <em>Review queued lines</em>, named by
-         <code>reviewRowPrimary()</code>.</p>
+         <code>reviewRowPrimary()</code>. This is the widest the row ever gets — the
+         worst case for §5.1 of DESIGN-pinned-mistakes.md.</p>
       <div class="hx-stage">
         <div class="clo-review hx-pos">
           <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
@@ -415,6 +416,7 @@ body {
           </span>
           <span class="clo-review-grp clo-cr">
             <button type="button" class="clo-cr-drill">Drill mistakes (3)</button>
+            <button type="button" class="clo-cr-pin">Drill pinned (2)</button>
             <button type="button" class="clo-cr-queue clo-rowprimary">Review queued lines (2)</button>
             <button type="button" class="clo-cr-analyse">Analyse</button>
           </span>
@@ -487,6 +489,21 @@ body {
         </div>
         <p class="hx-note" style="margin:0 10px">Live quiz → <b>none</b>. Retry is visible, refuses
           if pressed (v0.57.0), and must not also be the loudest thing under the board.</p>
+
+        <div class="clo-review hx-pos">
+          <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
+          <span class="clo-review-grp clo-cr">
+            <button type="button" class="clo-cr-pin clo-rowprimary">Drill pinned (2)</button>
+            <button type="button" class="clo-cr-analyse">Analyse</button>
+          </span>
+          <span class="clo-review-grp clo-os">
+            <button type="button" class="clo-review-btn">Overstudy</button>
+          </span>
+        </div>
+        <p class="hx-note" style="margin:0 10px">Browse, nothing failed this session but two pinned
+          moves have come round → <b>Drill pinned</b> (section 16b). Ranked BELOW Retry: a move
+          failed today outranks a pin that has been waiting four hours. The fill is the whole
+          notification — amber is forbidden on anything that launches.</p>
 
         <div class="clo-review hx-pos">
           <button type="button" class="clo-review-title" aria-expanded="true">LiChessable</button>
@@ -2020,20 +2037,154 @@ body {
 </section>
 
 <!-- ===================================================================== -->
+<section class="hx-sec" id="s-pin" data-title="Pinned-mistake corner">
+  <h2>The pinned-mistake corner (sections 16c &amp; 16d)</h2>
+  <p>One corner of the viewport for everything the pinned list says to the user. The two can
+     never appear together — the offer is trainer-only, the launcher is everywhere BUT a
+     trainer page — so they share the spot rather than stacking. Both are <code>fixed</code>,
+     which the board and panel are forbidden: section 11's ban is on anchoring to
+     <em>scrolling content</em>, and neither of these is anchored to content.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card">
+      <h3>16c — the offer, right after the mistake</h3>
+      <p class="hx-note">Raised off the mistake log, so it needs no capture of its own. It does
+         NOT swallow keys (the user is still playing on Chessable's board) and its buttons
+         <code>blur()</code> themselves. One offer per move per session; it takes itself away
+         after 30 s.</p>
+      <div class="hx-stage">
+        <div class="clo-pin-prompt hx-pos">
+          <div class="clo-pin-prompt__head">
+            <span class="clo-pin-prompt__title">Pin this mistake?</span>
+            <button type="button" class="clo-pin-prompt__x">×</button>
+          </div>
+          <div class="clo-pin-prompt__move">8…Nc6</div>
+          <div class="clo-pin-prompt__where">Alapin: 2…d5 main line · played Nb4</div>
+          <div class="clo-pin-prompt__note">Pinned moves come back in the drill — half an hour,
+            four hours, a day — until you have answered one clean three times.</div>
+          <div class="clo-pin-prompt__btns">
+            <button type="button" class="clo-pin-prompt__no">Not now</button>
+            <button type="button" class="clo-pin-prompt__yes">Pin it</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>…and what it says once pressed</h3>
+      <p class="hx-note">It stays up for four seconds saying what happened, rather than vanishing
+         — which reads as the press having missed. The note and both buttons are hidden, so the
+         panel shrinks instead of leaving a dead row.</p>
+      <div class="hx-stage">
+        <div class="clo-pin-prompt hx-pos">
+          <div class="clo-pin-prompt__head">
+            <span class="clo-pin-prompt__title">Pinned</span>
+            <button type="button" class="clo-pin-prompt__x">×</button>
+          </div>
+          <div class="clo-pin-prompt__move">8…Nc6</div>
+          <div class="clo-pin-prompt__where">Back in the drill in 30 min — unpin it in the
+            Mistakes list.</div>
+          <div class="clo-pin-prompt__note" hidden></div>
+          <div class="clo-pin-prompt__btns" hidden></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>16d — the floating launcher</h3>
+      <p class="hx-note">On every chessable.com page EXCEPT a trainer session, where our board
+         would go over a live quiz whose timer is running (<code>openDrill</code> refuses a
+         standalone pass there whatever the caller says). Filled green: it launches a quiz, so
+         amber — which in the trainer row means "you have N outstanding items" on something
+         that only opens a list — would be the wrong vocabulary.</p>
+      <div class="hx-stage hx-row">
+        <div class="clo-pin-dock hx-pos">
+          <button type="button" class="clo-pin-dock__btn">★ Drill pinned (3)</button>
+        </div>
+        <div class="clo-pin-dock hx-pos">
+          <button type="button" class="clo-pin-dock__btn">★ Drill pinned (1)</button>
+          <div class="clo-pin-dock__msg">Could not open the drill — close whatever board is open
+            and try again.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>The standalone drill (section 20)</h3>
+      <p class="hx-note">The same board and the same panel the trainer drill uses, with nothing of
+         Chessable's underneath — centred in the viewport over a scrim, sized from the window
+         rather than from their board. It is the one run that survives a path change: both ticks
+         check <code>cr.standalone</code> before their teardowns.</p>
+      <div class="hx-stage" style="position:relative;min-height:430px;background:#1a1a17">
+        <div class="clo-cr-scrim" style="position:absolute"></div>
+        <div style="position:absolute;left:50%;top:16px;transform:translateX(-50%);width:300px">
+          <div style="position:relative;width:300px;height:300px">
+            <div data-hx-board="r1bqkb1r/pp2pppp/2n2n2/3p4/3P4/2N2N2/PP2PPPP/R1BQKB1R w" data-hx-size="300"></div>
+          </div>
+          <div class="clo-cr-panel clo-cr-standalone" style="position:relative;left:0;top:8px;width:300px">
+            <div class="clo-cr-title">Pinned mistake 2 of 3</div>
+            <div class="clo-cr-prompt">Your move — Black</div>
+            <div class="clo-cr-progress">Alapin: 2…d5 main line · played Nb4 · streak 1/3</div>
+            <div class="clo-cr-actions">
+              <button type="button" class="clo-cr-btn">Hint</button>
+              <button type="button" class="clo-cr-btn">Skip move</button>
+              <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
 <section class="hx-sec" id="s-mx" data-title="Mistake popup &amp; shield">
   <h2>Mistake popup &amp; retry shield</h2>
 
   <div class="hx-grid">
     <div class="hx-card">
       <h3>Popup — the session history (v0.61.0)</h3>
-      <p class="hx-note">The whole session, not just what is outstanding: grouped by chapter,
+      <p class="hx-note">The <b>Pinned</b> group (section 16b) sits above the chapters — the
+         moves the user asked to keep, with their streak and when each next comes round, each
+         droppable with one press of the ★. That list is the only place a pin is visible,
+         which is what catches one left quizzing a move an edit has since removed.
+         Below it: the whole session, not just what is outstanding — grouped by chapter,
          each section foldable and headed with how much of it is left. An already-retried move
          stays in the list — dimmed, ✓, unticked — and can be taken again. <strong>All/None</strong>
          per chapter is what makes "go through these again" one gesture.</p>
       <div class="hx-stage">
         <div class="clo-mx-popup hx-pos">
-          <div class="clo-mx-title">Mistakes this session — 2 of 4 outstanding</div>
+          <div class="clo-mx-title">Mistakes this session — 2 of 4 outstanding · 1 pinned due</div>
           <div class="clo-mx-list">
+            <div class="clo-mx-group clo-mx-group--pins">
+              <div class="clo-mx-group-head">
+                <button type="button" class="clo-mx-group-fold" aria-expanded="true">
+                  <span class="clo-mx-group-caret">▾</span>
+                  <span class="clo-mx-group-name">Pinned</span>
+                  <span class="clo-mx-group-count">1 of 2 due</span>
+                </button>
+                <button type="button" class="clo-mx-group-pick">All</button>
+              </div>
+              <div class="clo-mx-pin-note">Kept across sessions. Drilled clean 3 times, on 3
+                separate occasions, and a pin retires itself; a miss puts it back to the start.
+                Only the drill counts.</div>
+              <div class="clo-mx-group-body">
+                <label class="clo-mx-item">
+                  <input type="checkbox" checked>
+                  <span class="clo-mx-item-move">14…Qb6</span>
+                  <span class="clo-mx-item-title">Alapin: 2…d5, 7.Bd3</span>
+                  <span class="clo-mx-item-state">1/3 · due now</span>
+                  <button type="button" class="clo-mx-item-pin clo-mx-item-pin--on">★</button>
+                </label>
+                <label class="clo-mx-item clo-mx-item--done">
+                  <input type="checkbox">
+                  <span class="clo-mx-item-move">9.Nbd2</span>
+                  <span class="clo-mx-item-title">Rossolimo: 3…g6 main</span>
+                  <span class="clo-mx-item-state">2/3 · in 19 h</span>
+                  <button type="button" class="clo-mx-item-pin clo-mx-item-pin--on">★</button>
+                </label>
+              </div>
+            </div>
             <div class="clo-mx-group">
               <div class="clo-mx-group-head">
                 <button type="button" class="clo-mx-group-fold" aria-expanded="true">
@@ -2049,12 +2200,14 @@ body {
                   <span class="clo-mx-item-move">8…Nc6</span>
                   <span class="clo-mx-item-title">Alapin: 2…d5 main line</span>
                   <span class="clo-mx-item-wrong">played Nb4</span>
+                  <button type="button" class="clo-mx-item-pin">☆</button>
                 </label>
                 <label class="clo-mx-item">
                   <input type="checkbox" checked>
                   <span class="clo-mx-item-move">12…Rb7</span>
                   <span class="clo-mx-item-title">Alapin: 2…d5 main line</span>
                   <span class="clo-mx-item-wrong">timed out</span>
+                  <button type="button" class="clo-mx-item-pin clo-mx-item-pin--on">★</button>
                 </label>
                 <label class="clo-mx-item clo-mx-item--done">
                   <input type="checkbox">
@@ -2062,6 +2215,7 @@ body {
                   <span class="clo-mx-item-title">Alapin: 2…Nf6, 5.d4</span>
                   <span class="clo-mx-item-wrong">played Bd3</span>
                   <span class="clo-mx-item-done">✓</span>
+                  <button type="button" class="clo-mx-item-pin">☆</button>
                 </label>
               </div>
             </div>

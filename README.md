@@ -40,6 +40,7 @@ it.
 | Chapter sort | 14 | `CLAUDE.md` |
 | Wrong-guess engine check | 15 | `CLAUDE.md` |
 | Mistake log and retry runner | 16, 17 | `DESIGN-retry-mistakes.md` |
+| Pinned mistakes (kept across sessions) | 16b | `DESIGN-pinned-mistakes.md` |
 | Clickable-line review, mid-quiz heads-up, important lines | 18, 18b, 18c | `DESIGN-continuation-review.md` |
 | Analysis board (trainer and variation page) | 19, 19b | `CLAUDE.md` |
 | Analysis board: "Add as variation" | 19c | `DESIGN-add-as-variation.md` |

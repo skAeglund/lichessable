@@ -330,6 +330,14 @@
       autoKey: 'cloAutoReviewClickables', // chrome.storage.local; absent = off
       autoDelayMs: 700,     // after the lines are ready, so the completion settles
 
+      // --- standalone drill (section 20, off a trainer page) ----------------
+      // Our board with nothing of Chessable's underneath it, opened from the
+      // floating launcher (16d). The board is sized from the VIEWPORT rather
+      // than from theirs, since there is no theirs.
+      standaloneMaxPx:    460,  // never larger than this, however big the window
+      standaloneMinPx:    240,  // …and never smaller: below this a drag is guesswork
+      standaloneMarginPx: 16,
+      standalonePanelPx:  150,  // room kept under the board for the panel
       // --- mistake drill (section 20) --------------------------------------
       // The same overlays in a third mode: this session's failed moves, one
       // after another, on our own board. `leadPlies` is how much run-up each
@@ -1027,6 +1035,32 @@
       // length is meant to become a setting, and a stored log cannot be
       // back-filled.
       leadPlies: 4,
+      // --- pinned mistakes (section 16b) ------------------------------------
+      // A mistake the user marked BY HAND, which outlives the session. This is
+      // the one thing in this feature that may live in chrome.storage.local:
+      // the log above must not, because it is filled AUTOMATICALLY and a stale
+      // automatic list drills moves nobody chose. A pin is chosen one move at a
+      // time, which is exactly the difference — see DESIGN-pinned-mistakes.md
+      // §2.2, because the two decisions look contradictory from a distance.
+      pinKey: 'cloPinnedMistakes',
+      // Anki's learning steps: the gap before a pinned move is asked for again,
+      // indexed by the streak it is on. A clean answer once the gap has elapsed
+      // advances the streak; a miss puts it back to 0, i.e. back to half an
+      // hour rather than a day out. The 4-hour step is what makes three credits
+      // three SITTINGS — the chain cannot be completed in one, whatever the
+      // user does — and the streak TARGET is this array's own length, derived
+      // rather than declared, so the two cannot disagree.
+      pinSteps: [30 * 60 * 1000, 4 * 3600 * 1000, 24 * 3600 * 1000],
+      pinMaxPerCourse: 200, // oldest `pinnedAt` dropped past this, with a console line
+      // --- the offer made right after the mistake (section 16c) -------------
+      // Long enough to be read and answered between two moves of a quiz, short
+      // enough that an unanswered one is gone before it becomes furniture.
+      pinPromptKey:    'cloPinPrompt', // chrome.storage.local, opt-OUT (absent = on)
+      pinPromptMs:      30000,
+      pinPromptFlashMs: 4000,  // how long "Pinned — back in 30 min" stays up
+      // The floating launcher (16d) polls slower than everything else here: its
+      // whole question is "has a timestamp passed", and it is on every page.
+      pinDockPollMs:    1500,
       // Runner pacing. A variation switch is a drawer click (or, from a review
       // session, one navigation); either way the trainer needs a moment before
       // the new oid is readable, so retries are spaced.
@@ -1173,6 +1207,9 @@
   const QE_SHIELD_ID = 'lichessable-qe-shield';  // "Saving…" cover in the driver popup window (section 12)
   const CHAPTER_WIDGET_ID = 'lichessable-chapter'; // chapter sort button (section 14)
   const AC_CHIP_ID  = 'lichessable-ac-chip';  // wrong-guess check chip (section 15)
+  const CR_SCRIM_ID = 'lichessable-cr-scrim'; // standalone drill backdrop (section 20)
+  const PIN_PROMPT_ID = 'lichessable-pin-prompt'; // "pin this mistake?" (section 16c)
+  const PIN_DOCK_ID = 'lichessable-pin-dock';     // floating drill launcher (16d)
   const AC_POPUP_ID = 'lichessable-ac-popup'; // wrong-guess check popup (section 15)
   const MX_CLUSTER_ID = 'lichessable-mx';       // "Mistakes (N)" / Retry cluster (section 17)
   const MX_POPUP_ID   = 'lichessable-mx-popup'; // the mistake list popup (section 17)
@@ -1328,6 +1365,18 @@
   /** The error every chrome.* call throws in such an orphaned script. */
   const isDeadContextError = (err) =>
     /Extension context invalidated/i.test(String((err && err.message) || err));
+
+  /**
+   * A pressed button gives up focus. Every surface of ours that does NOT
+   * swallow keys needs this — the heads-up (18b), the pin prompt (16c) and the
+   * floating launcher (16d) all leave MoveTrainer2's single-key shortcuts alone
+   * on purpose, so a focused button of ours would re-fire on the next space.
+   * Hoisted out of the continuation module, which had it first.
+   */
+  function blurButton(e) {
+    const el = e && e.currentTarget;
+    if (el && typeof el.blur === 'function') el.blur();
+  }
 
   /**
    * Resolves once the service worker has run at least once in this browser
@@ -4679,6 +4728,14 @@
     if (counts && counts.lines > 0) return 'clickables';
     const pending = (mistakeLogApi && mistakeLogApi.pending()) || [];
     if (pending.length) return 'retry';
+    // Below Retry on purpose (section 16b): a move failed TODAY outranks a pin
+    // that has been waiting four hours. This is also the whole notification
+    // mechanism for pins coming due — the row's colour rules forbid the obvious
+    // design, since amber means "you have N outstanding items" and never
+    // launches anything, and a control that both announces a count and launches
+    // cannot be amber. Nothing else is needed for a pin falling due mid-session:
+    // the row recomputes every tick and the gap check is a timestamp compare.
+    if (pinApi && pinApi.due(readQuickEditBid()).length) return 'pinned';
     return null;
   }
 
@@ -12683,6 +12740,658 @@
   }
 
   // ==========================================================================
+  // 16b) Pinned mistakes (top document — EVERY chessable.com page)
+  //
+  // A mistake the user marks BY HAND, which outlives the session it was made
+  // in and keeps coming back until it has been answered clean three times, in
+  // three different sittings. Everything else in this extension forgets a
+  // failed move when the browser session ends; this is the one list that does
+  // not, and it is opt-in one move at a time.
+  //
+  // READ DESIGN-pinned-mistakes.md before changing anything here. What follows
+  // is only what an edit ELSEWHERE can break.
+  //
+  // THE PIN IS NOT A FLAG ON A LOG ENTRY, and must never become one: the
+  // mistake log is chrome.storage.session with a 12 h TTL whose every write
+  // prunes expired entries (section 16), so a pin stored there would die
+  // overnight with the thing it is pinning. A record here is SELF-CONTAINED —
+  // it carries every field section 20's drillLine and the popup's list need —
+  // because its whole job is to produce a playable card in a session where the
+  // log is empty, which is every session after the first.
+  //
+  // …AND THE LOG STILL MUST NOT MOVE TO storage.local. The exemption argued
+  // here is for an EXPLICITLY CHOSEN list; the log is filled automatically, and
+  // a stale automatic list drills moves the user never chose. The two decisions
+  // look contradictory from a distance and are not.
+  //
+  // THE WHOLE STORE IS HELD, EVERY COURSE AT ONCE (v0.104.0), and it loads on
+  // every top document rather than only in a trainer session. Two surfaces need
+  // that: the floating launcher (16d) offers the drill on pages that have no
+  // course at all, and a standalone drill pass can hold cards from several
+  // courses. A record therefore carries its own `bid` — `unpin` and `note` have
+  // to find their way home from an oid alone, and the oid is all a drill card
+  // knows. Records written by v0.103.0 have no `bid`; `load` fills it in from
+  // the map they were stored under.
+  //
+  // NOTHING HERE IS RESCHEDULED AND CHESSABLE'S BOARD IS NEVER TOUCHED. That is
+  // what makes a list this durable safe at all: the only consumer is the drill
+  // (section 20), which navigates nothing and writes nothing back — a pinned
+  // card that acquired either would be a different and far more dangerous
+  // feature. The retry runner (section 17) deliberately does NOT walk pins and
+  // never grants them credit: two credit sources let the gap be farmed by
+  // alternating them.
+  //
+  // A pin stores `oid` + `sourceFen` + `san` and never re-reads the course,
+  // while this extension itself makes editing variations easy (sections 12,
+  // 19c, 19d) — so an edited line can leave a pin quizzing a move the course no
+  // longer plays. `drillLine` refuses a card whose SAN will not resolve, which
+  // catches ILLEGAL but not CHANGED; the mitigation is the visible, one-click
+  // list in the mistake popup, not cleverness.
+  // ==========================================================================
+
+  // Assigned by initPinnedMistakes. Read by section 17's popup (the pin toggle
+  // and the Pinned group), by section 20 (the launcher and the credit hook in
+  // finishDrillCard), by the prompt (16c) and floating launcher (16d), and by
+  // reviewRowPrimary(). Null-safe everywhere: a document where this has not run
+  // simply has no pins.
+  let pinApi = null;
+
+  function initPinnedMistakes() {
+    const C = CONFIG.retry;
+    const STEPS = C.pinSteps;
+
+    const pn = {
+      byBid: null,         // { bid: { "<oid>:<mkey>": record } } — EVERY course
+      removed: new Set(),  // "<bid>|<key>" unpinned since the last save
+      loading: false,
+      saveTimer: 0,
+      dead: false,
+    };
+
+    const keyOf = (oid, mkey) => String(oid) + ':' + String(mkey);
+
+    function noteDead(err) {
+      if (!isDeadContextError(err)) return false;
+      if (pn.dead) return true;
+      pn.dead = true;
+      warn('pinned mistakes: the extension was reloaded — this tab is running an ' +
+        'orphaned content script and can no longer read or write pins. Reload the page.');
+      return true;
+    }
+
+    // --- the store (chrome.storage.local) ------------------------------------
+
+    async function load() {
+      if (pn.loading) return;
+      pn.loading = true;
+      try {
+        const stored = await chrome.storage.local.get(C.pinKey);
+        const all = stored[C.pinKey] || {};
+        const mine = {};
+        let n = 0;
+        for (const [bid, recs] of Object.entries(all)) {
+          mine[bid] = {};
+          for (const [key, rec] of Object.entries(recs || {})) {
+            if (!rec) continue;
+            // v0.103.0 wrote no `bid`. The map it was stored under IS the
+            // answer, so this heals in place rather than needing a migration.
+            mine[bid][key] = rec.bid ? rec : Object.assign({}, rec, { bid: String(bid) });
+            n++;
+          }
+        }
+        pn.byBid = mine;
+        log('pinned mistakes: loaded', n, 'pin(s) across',
+          Object.keys(mine).length, 'course(s)');
+      } catch (err) {
+        if (!noteDead(err)) warn('pinned mistakes: could not read the store:', err);
+        if (!pn.byBid) pn.byBid = {};
+      } finally {
+        pn.loading = false;
+      }
+    }
+
+    function scheduleSave() {
+      clearTimeout(pn.saveTimer);
+      pn.saveTimer = setTimeout(save, CONFIG.autoPlay.saveDebounceMs);
+    }
+
+    /**
+     * Merged, never overwritten: chrome.storage.local is shared by the whole
+     * profile, so a background overstudy tab of the same course would otherwise
+     * drop what the review tab pinned. A record's `lastSeenAt` is what orders
+     * two versions of it — it moves on every encounter and carries the streak
+     * that encounter produced — and our own removals, which include a
+     * RETIREMENT, are applied after the merge, or another tab's stale copy
+     * would put a finished pin straight back.
+     */
+    async function save() {
+      if (!pn.byBid) return;
+      try {
+        const stored = await chrome.storage.local.get(C.pinKey);
+        const all = stored[C.pinKey] || {};
+        for (const [bid, recs] of Object.entries(pn.byBid)) {
+          const merged = Object.assign({}, all[bid] || {});
+          for (const [key, rec] of Object.entries(recs)) {
+            const other = merged[key];
+            const newer = other && (other.lastSeenAt || 0) > (rec.lastSeenAt || 0);
+            merged[key] = newer ? other : rec;
+          }
+          all[bid] = merged;
+        }
+        for (const gone of pn.removed) {
+          const cut = gone.indexOf('|');
+          const bid = gone.slice(0, cut), key = gone.slice(cut + 1);
+          if (all[bid]) delete all[bid][key];
+        }
+        pn.removed.clear();
+        for (const bid of Object.keys(all)) {
+          // The cap is the only pruning there is — a pin has no TTL, because
+          // the user chose it. Oldest `pinnedAt` goes, and says so: a list that
+          // silently forgets what was put into it is worse than one that
+          // refuses to grow.
+          const keys = Object.keys(all[bid]);
+          if (keys.length > C.pinMaxPerCourse) {
+            keys.sort((a, b) => (all[bid][a].pinnedAt || 0) - (all[bid][b].pinnedAt || 0));
+            const drop = keys.slice(0, keys.length - C.pinMaxPerCourse);
+            for (const key of drop) delete all[bid][key];
+            warn('pinned mistakes: past the', C.pinMaxPerCourse, 'per-course cap — dropped the',
+              drop.length, 'oldest pin(s) for course', bid);
+          }
+          if (!Object.keys(all[bid]).length) delete all[bid];
+        }
+        await chrome.storage.local.set({ [C.pinKey]: all });
+        pn.byBid = all; // converge on what was actually stored
+      } catch (err) {
+        if (noteDead(err)) return;
+        warn('pinned mistakes: could not save the store:', err);
+      }
+    }
+
+    // Another tab of the same profile pinned, unpinned or drilled something.
+    // Skipped while a save of our own is pending, which would otherwise be
+    // overwritten by a picture taken before it.
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes[C.pinKey] || pn.dead) return;
+      if (pn.saveTimer || pn.removed.size) return;
+      load();
+    });
+
+    // --- the steps -----------------------------------------------------------
+
+    /**
+     * When a record next comes round. `lastSeenAt` is stamped at PIN time as
+     * well as on every encounter, so the failure that created the pin is
+     * encounter zero and the first drill is one short step away from it.
+     */
+    function dueAt(rec) {
+      if (!rec) return Infinity;
+      const streak = Math.min(Math.max(rec.streak || 0, 0), STEPS.length - 1);
+      return (rec.lastSeenAt || rec.pinnedAt || 0) + STEPS[streak];
+    }
+
+    const isDue = (rec) => Date.now() >= dueAt(rec);
+
+    /** "due now", "in 25 min", "in 3 h", "in 2 days" — the popup's own words. */
+    function dueLabel(rec) {
+      const left = dueAt(rec) - Date.now();
+      if (left <= 0) return 'due now';
+      const mins = Math.round(left / 60000);
+      if (mins < 60) return 'in ' + Math.max(1, mins) + ' min';
+      const hours = Math.round(left / 3600000);
+      if (hours < 48) return 'in ' + hours + ' h';
+      return 'in ' + Math.round(hours / 24) + ' days';
+    }
+
+    /** "1/3" — how much of the chain this pin has behind it. */
+    const streakLabel = (rec) => ((rec && rec.streak) || 0) + '/' + STEPS.length;
+
+    // --- the list ------------------------------------------------------------
+
+    /**
+     * Pins, soonest-due first. `bid` null means EVERY course — which is what
+     * the floating launcher (16d) asks for, since it shows on pages that have
+     * no course of their own. Records are entry-SHAPED on purpose: drillLine,
+     * moveLabel and the popup's own row builder take one unchanged.
+     */
+    function allPins(bid) {
+      if (!pn.byBid) return [];
+      const out = [];
+      for (const [b, recs] of Object.entries(pn.byBid)) {
+        if (bid != null && String(bid) !== b) continue;
+        for (const rec of Object.values(recs)) if (rec) out.push(rec);
+      }
+      return out.sort((a, b) => dueAt(a) - dueAt(b));
+    }
+
+    const duePins = (bid) => allPins(bid).filter(isDue);
+
+    /** The live record for one move, whatever course it is in — a drill card
+     *  knows only its oid. Read-only by convention: everything that changes one
+     *  goes through pin/unpin/note, which are what save. */
+    function record(oid, mkey) {
+      if (!pn.byBid) return null;
+      const key = keyOf(oid, mkey);
+      for (const recs of Object.values(pn.byBid)) if (recs[key]) return recs[key];
+      return null;
+    }
+
+    /**
+     * Pins a mistake-log entry (or anything with the same shape). The record
+     * COPIES every field the drill and the list need rather than referring back
+     * to the log, which will be gone by the next session.
+     */
+    function pin(entry, bid) {
+      if (!pn.byBid || !entry || !entry.oid || !entry.mkey) return false;
+      const home = String(bid || entry.bid || readQuickEditBid() || '');
+      if (!home) {
+        warn('pinned mistakes: refusing to pin a move with no course to file it under');
+        return false;
+      }
+      const key = keyOf(entry.oid, entry.mkey);
+      if (record(entry.oid, entry.mkey)) return false;
+      if (!entry.san || !entry.sourceFen) {
+        warn('pinned mistakes: refusing to pin a move with no position to play it from');
+        return false;
+      }
+      const now = Date.now();
+      if (!pn.byBid[home]) pn.byBid[home] = {};
+      pn.byBid[home][key] = {
+        isPin: true, bid: home,
+        oid: String(entry.oid), lid: entry.lid || '', mid: entry.mid,
+        ply: entry.ply, mkey: entry.mkey,
+        san: entry.san, color: entry.color, sourceFen: entry.sourceFen,
+        lead: Array.isArray(entry.lead) ? entry.lead : [],
+        num: entry.num || null,
+        title: entry.title || '', chapter: entry.chapter || '',
+        wrong: Array.isArray(entry.wrong) ? entry.wrong.slice(-2) : [],
+        streak: 0,
+        // Encounter zero is the failure that just happened, so the first drill
+        // is one short step from the mistake rather than from whenever the user
+        // next opens the popup.
+        lastSeenAt: now,
+        pinnedAt: now,
+      };
+      pn.removed.delete(home + '|' + key);
+      scheduleSave();
+      log('pinned mistakes: pinned',
+        (mistakeLogApi && mistakeLogApi.moveLabel(entry)) || entry.san,
+        'in', entry.title || '#' + entry.oid);
+      return true;
+    }
+
+    function unpin(oid, mkey) {
+      const rec = record(oid, mkey);
+      if (!rec) return false;
+      const key = keyOf(oid, mkey);
+      const home = String(rec.bid || '');
+      if (pn.byBid[home]) delete pn.byBid[home][key];
+      pn.removed.add(home + '|' + key);
+      scheduleSave();
+      log('pinned mistakes: unpinned', key);
+      return true;
+    }
+
+    /**
+     * A drill card has just been answered. Returns what it did to the pin, or
+     * null when the move is not pinned at all — which is the ordinary case, so
+     * the caller does not have to ask first.
+     *
+     * THE GAP IS CHECKED BEFORE THE STAMP. A card that came up BECAUSE it was
+     * due therefore always credits, and one drilled on request inside its own
+     * window runs perfectly normally and simply advances nothing: the gap
+     * governs scheduling and credit, never availability.
+     *
+     * A miss anywhere puts the streak back to 0, i.e. back to the 30-minute
+     * step — a failed pin comes back in half an hour rather than being pushed a
+     * day out, which is the whole reason the steps grow from something short.
+     */
+    function note(oid, mkey, clean) {
+      const rec = record(oid, mkey);
+      if (!rec) return null;
+      const due = isDue(rec);
+      rec.lastSeenAt = Date.now();
+      let outcome;
+      if (!clean) { rec.streak = 0; outcome = 'lapse'; }
+      else if (!due) outcome = 'early';
+      else if (++rec.streak >= STEPS.length) {
+        const home = String(rec.bid || '');
+        if (pn.byBid[home]) delete pn.byBid[home][keyOf(oid, mkey)];
+        pn.removed.add(home + '|' + keyOf(oid, mkey));
+        outcome = 'retired';
+      } else outcome = 'credit';
+      scheduleSave();
+      const name = (mistakeLogApi && mistakeLogApi.moveLabel(rec)) || rec.san;
+      const said = outcome === 'retired'
+        ? 'answered clean ' + STEPS.length + ' times over ' + STEPS.length +
+          ' sittings — unpinned'
+        : outcome === 'credit'
+          ? 'clean, streak ' + streakLabel(rec) + ', next ' + dueLabel(rec)
+          : outcome === 'lapse'
+            ? 'missed, streak back to ' + streakLabel(rec) + ', next ' + dueLabel(rec)
+            : 'drilled inside its own window — no credit, still ' + streakLabel(rec);
+      log('pinned mistakes:', name, '—', said);
+      return outcome;
+    }
+
+    pinApi = {
+      ready: () => Boolean(pn.byBid),
+      all: allPins,
+      due: duePins,
+      isDue,
+      dueAt,
+      dueLabel,
+      streakLabel,
+      steps: () => STEPS.length,
+      record,
+      isPinned: (oid, mkey) => Boolean(record(oid, mkey)),
+      pin,
+      unpin,
+      /** One click from the popup: pin what is not pinned, drop what is. */
+      toggle(entry, bid) {
+        if (!entry) return false;
+        if (!record(entry.oid, entry.mkey)) return pin(entry, bid);
+        unpin(entry.oid, entry.mkey);
+        return true;
+      },
+      note,
+    };
+
+    window.addEventListener('pagehide', () => {
+      clearTimeout(pn.saveTimer);
+      save(); // best effort — flush an unsaved pin
+    });
+    load();
+    log('pinned mistakes active (top document)');
+  }
+
+  // ==========================================================================
+  // 16c) "Pin this mistake?" (top document — /practice/ and /learn/)
+  //
+  // The pin toggle in the mistake popup (16b) is correct and almost never
+  // reached: pinning is a decision made ABOUT A MOVE, and the moment the user
+  // has an opinion about a move is the moment they get it wrong — not later,
+  // in a list, between variations. So the offer goes to them there.
+  //
+  // Raised off the mistake LOG rather than off any new capture: section 16
+  // already samples the trainer's own per-ply record every 900 ms and writes an
+  // entry the instant an attempt count grows, and that entry is everything a
+  // pin needs. This module only watches for one it has not offered yet.
+  //
+  // WHAT IT MUST NOT DO, and each of these has a precedent it is copying:
+  // * NOT SWALLOW KEYS. The user is still playing on Chessable's board and
+  //   needs MoveTrainer2's single-key shortcuts (section 18b's heads-up made
+  //   exactly this call). Its buttons blur() themselves after a press instead,
+  //   or the next space would re-fire them.
+  // * NOT COVER THE BOARD, the trainer row, or the alt-check chip. It sits in
+  //   the bottom-right corner of the VIEWPORT — a corner nothing else here uses
+  //   (the chip is placed under the board in document coordinates) and the same
+  //   corner the floating launcher (16d) uses, so "pins talk to you here" is
+  //   one place rather than two.
+  // * NOT NAG. One offer per move per session: dismissed is dismissed
+  //   (`declined`), and an offer nobody answers takes itself away after
+  //   `pinPromptMs`. It is opt-out entirely via `cloPinPrompt`.
+  //
+  // Deliberately NOT raised for entries that were already in the log when the
+  // page loaded: the log survives a reload for 12 h, and being met on arrival
+  // by an offer about a move failed an hour ago is the nagging above.
+  // ==========================================================================
+
+  function initPinPrompt() {
+    const C = CONFIG.retry;
+
+    const pp = {
+      el: null,
+      ui: null,
+      entry: null,        // the mistake being offered
+      shownAt: 0,
+      declined: new Set(), // "oid:mkey" the user said no to, this document
+      offered: new Set(),  // …and every one already put in front of them
+      // Nothing already in the log when this document started is ever offered.
+      since: Date.now(),
+      enabled: true,
+      flashUntil: 0,
+    };
+
+    const keyOf = (e) => e.oid + ':' + e.mkey;
+
+    // Opt-OUT, the cloShowGrade shape: absent means on, and only an explicit
+    // false is ever stored.
+    try {
+      chrome.storage.local.get(C.pinPromptKey).then((got) => {
+        pp.enabled = got[C.pinPromptKey] !== false;
+      }).catch(() => {});
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || !changes[C.pinPromptKey]) return;
+        pp.enabled = changes[C.pinPromptKey].newValue !== false;
+        if (!pp.enabled) hide();
+      });
+    } catch (err) {
+      warn('pin prompt: storage unavailable:', err);
+    }
+
+    function build() {
+      const stale = document.getElementById(PIN_PROMPT_ID);
+      if (stale) stale.remove();
+
+      const el = document.createElement('div');
+      el.id = PIN_PROMPT_ID;
+      el.className = 'clo-pin-prompt';
+      el.hidden = true;
+
+      const head = document.createElement('div');
+      head.className = 'clo-pin-prompt__head';
+      const title = document.createElement('span');
+      title.className = 'clo-pin-prompt__title';
+      title.textContent = 'Pin this mistake?';
+      const off = document.createElement('button');
+      off.type = 'button';
+      off.className = 'clo-pin-prompt__x';
+      off.textContent = '×';
+      off.title = 'Not this one';
+      off.addEventListener('click', (e) => { decline(); blurButton(e); });
+      head.append(title, off);
+
+      const move = document.createElement('div');
+      move.className = 'clo-pin-prompt__move';
+      const where = document.createElement('div');
+      where.className = 'clo-pin-prompt__where';
+
+      const note = document.createElement('div');
+      note.className = 'clo-pin-prompt__note';
+      note.textContent = 'Pinned moves come back in the drill — half an hour, four hours, ' +
+        'a day — until you have answered one clean three times.';
+
+      const btns = document.createElement('div');
+      btns.className = 'clo-pin-prompt__btns';
+      const no = document.createElement('button');
+      no.type = 'button';
+      no.className = 'clo-pin-prompt__no';
+      no.textContent = 'Not now';
+      no.addEventListener('click', (e) => { decline(); blurButton(e); });
+      const yes = document.createElement('button');
+      yes.type = 'button';
+      yes.className = 'clo-pin-prompt__yes';
+      yes.textContent = 'Pin it';
+      yes.addEventListener('click', (e) => { accept(); blurButton(e); });
+      btns.append(no, yes);
+
+      el.append(head, move, where, note, btns);
+      document.body.appendChild(el);
+      pp.el = el;
+      pp.ui = { title, move, where, note, btns };
+    }
+
+    function show(entry) {
+      if (!pp.el || !pp.el.isConnected) build();
+      pp.entry = entry;
+      pp.shownAt = Date.now();
+      pp.flashUntil = 0;
+      pp.offered.add(keyOf(entry));
+      pp.ui.title.textContent = 'Pin this mistake?';
+      pp.ui.move.textContent = (mistakeLogApi && mistakeLogApi.moveLabel(entry)) || entry.san;
+      const wrong = (mistakeLogApi && mistakeLogApi.wrongLabel(entry)) || '';
+      pp.ui.where.textContent =
+        [entry.title || '#' + entry.oid, wrong].filter(Boolean).join(' · ');
+      pp.ui.note.hidden = false;
+      pp.ui.btns.hidden = false;
+      pp.el.hidden = false;
+      log('pin prompt: offering', pp.ui.move.textContent);
+    }
+
+    function hide() {
+      if (pp.el) pp.el.hidden = true;
+      pp.entry = null;
+      pp.flashUntil = 0;
+    }
+
+    function decline() {
+      if (pp.entry) pp.declined.add(keyOf(pp.entry));
+      hide();
+    }
+
+    /** Pinned — and the panel stays up for a moment saying so, rather than
+     *  vanishing, which reads as the press having missed. */
+    function accept() {
+      const entry = pp.entry;
+      if (!entry || !pinApi) { hide(); return; }
+      const ok = pinApi.pin(entry, (mistakeLogApi && mistakeLogApi.bid()) || readQuickEditBid());
+      pp.declined.add(keyOf(entry)); // either way, this move is settled
+      if (!ok) { hide(); return; }
+      const rec = pinApi.record(entry.oid, entry.mkey);
+      pp.ui.title.textContent = 'Pinned';
+      pp.ui.where.textContent = rec
+        ? 'Back in the drill ' + pinApi.dueLabel(rec) + ' — unpin it in the Mistakes list.'
+        : 'Unpin it in the Mistakes list.';
+      pp.ui.note.hidden = true;
+      pp.ui.btns.hidden = true;
+      pp.entry = null;
+      pp.flashUntil = Date.now() + C.pinPromptFlashMs;
+    }
+
+    function tick() {
+      if (!pp.el || pp.el.hidden) {
+        if (!pp.enabled || !isTrainerPath()) return;
+      } else {
+        // Our own board covers the screen; an offer behind it cannot be read
+        // and its buttons cannot be reached.
+        if (!pp.enabled || !isTrainerPath() ||
+            (continuationActive && continuationActive())) { hide(); return; }
+        if (pp.flashUntil) {
+          if (Date.now() > pp.flashUntil) hide();
+          return;
+        }
+        if (Date.now() - pp.shownAt > C.pinPromptMs) { decline(); return; }
+        // A move pinned from the popup while this is up has been answered.
+        if (pp.entry && pinApi && pinApi.isPinned(pp.entry.oid, pp.entry.mkey)) hide();
+        return;
+      }
+      if (continuationActive && continuationActive()) return;
+      if (!mistakeLogApi || !pinApi || !pinApi.ready()) return;
+      // NEWEST first: with two mistakes inside one sampling interval the second
+      // is the one the user is looking at.
+      const fresh = mistakeLogApi.all()
+        .filter((e) => e.ts > pp.since && !pp.offered.has(keyOf(e)) &&
+          !pp.declined.has(keyOf(e)) && !pinApi.isPinned(e.oid, e.mkey) &&
+          e.san && e.sourceFen)
+        .sort((a, b) => b.ts - a.ts);
+      if (fresh.length) show(fresh[0]);
+    }
+
+    setInterval(tick, CONFIG.review.pollMs);
+    log('pin prompt active (top document)');
+  }
+
+  // ==========================================================================
+  // 16d) The floating "Drill pinned" launcher (top document — EVERY page)
+  //
+  // The row's own launcher (section 20) is course-scoped and browse-state
+  // gated, which was the honest limit of a control living in the trainer row:
+  // you learn a pin is due only while studying that course, between
+  // variations. This is the answer to that — a small dock in the bottom-right
+  // corner of any chessable.com page, showing when ANY course has a pin due,
+  // and opening the drill on a board of our own that needs no page under it
+  // (section 20's standalone mode).
+  //
+  // NOT ON A TRAINER PATH, deliberately and unconditionally. There our board
+  // would go over a live quiz whose timer is running, and the row already has
+  // the launcher for the browse state. So the two never compete and neither can
+  // interrupt a card: `openDrill` refuses a standalone pass on a trainer path
+  // even if this asked for one.
+  // ==========================================================================
+
+  function initPinDock() {
+    const dk = { el: null, label: null, msg: null, msgUntil: 0, count: -1 };
+
+    function build() {
+      const stale = document.getElementById(PIN_DOCK_ID);
+      if (stale) stale.remove();
+      const el = document.createElement('div');
+      el.id = PIN_DOCK_ID;
+      el.className = 'clo-pin-dock';
+      el.hidden = true;
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'clo-pin-dock__btn';
+      btn.addEventListener('click', (e) => {
+        blurButton(e);
+        const due = (pinApi && pinApi.due(null)) || [];
+        if (!due.length) { flash('Nothing due just now.'); return; }
+        if (continuationDrill && continuationDrill(due, { standalone: true })) return;
+        // The only refusals left are "a board of ours is already up" and "not
+        // one of these could be rebuilt" — both worth a sentence, since a press
+        // that appears to do nothing is worse than the refusal.
+        flash('Could not open the drill — close whatever board is open and try again.');
+      });
+
+      const msg = document.createElement('div');
+      msg.className = 'clo-pin-dock__msg';
+      msg.hidden = true;
+
+      el.append(btn, msg);
+      document.body.appendChild(el);
+      dk.el = el;
+      dk.label = btn;
+      dk.msg = msg;
+    }
+
+    function flash(text) {
+      if (!dk.msg) return;
+      dk.msg.textContent = text;
+      dk.msg.hidden = false;
+      dk.msgUntil = Date.now() + CONFIG.retry.pinPromptFlashMs;
+    }
+
+    function tick() {
+      const off = isTrainerPath() || (continuationActive && continuationActive());
+      const due = off ? [] : ((pinApi && pinApi.due(null)) || []);
+      if (!due.length) {
+        if (dk.el) { dk.el.hidden = true; dk.count = -1; }
+        return;
+      }
+      if (!dk.el || !dk.el.isConnected) build();
+      if (dk.msgUntil && Date.now() > dk.msgUntil) { dk.msg.hidden = true; dk.msgUntil = 0; }
+      if (due.length !== dk.count) {
+        dk.count = due.length;
+        // The count is in the LABEL, and the control is green — the row's own
+        // rule (DESIGN-ui-inventory §3.2): amber means "you have N outstanding
+        // items" on something that only opens a list, and this launches a quiz.
+        dk.label.textContent = '★ Drill pinned (' + due.length + ')';
+        const courses = new Set(due.map((r) => String(r.bid || ''))).size;
+        dk.label.title = due.length + ' pinned move' + (due.length > 1 ? 's have' : ' has') +
+          ' come round again' + (courses > 1 ? ', across ' + courses + ' courses' : '') +
+          '. They are asked for on a board of our own, right here — nothing is ' +
+          'loaded, nothing is rescheduled, and Chessable is not touched.';
+      }
+      dk.el.hidden = false;
+    }
+
+    setInterval(tick, CONFIG.retry.pinDockPollMs);
+    tick();
+    log('pinned-mistake dock active (top document)');
+  }
+
+  // ==========================================================================
   // 17) Retry this session's mistakes (top document — /practice/ and /learn/)
   //
   // The runner walks the variations that hold this session's failed moves and
@@ -12777,7 +13486,14 @@
         'play only the failed moves — it takes over again after each one.',
     };
 
-    const entryKey = (entry) => entry.oid + ':' + entry.mkey;
+    // A pinned move and this session's own failure of it are two DIFFERENT
+    // rows in the popup — the Pinned group lists one, its chapter the other —
+    // so they need separate selection keys or ticking one would tick both.
+    const entryKey = (entry) => (entry.isPin ? 'pin:' : '') + entry.oid + ':' + entry.mkey;
+
+    // The Pinned group's fold key. It shares `rr.collapsed` with the chapters,
+    // whose keys are lids — a leading ':' cannot collide with one.
+    const PIN_GROUP_ID = ':pinned';
     const plyOf = (entry) =>
       (typeof entry.ply === 'number' ? entry.ply
         : (typeof entry.mid === 'number' ? entry.mid * 2 : 0));
@@ -13364,11 +14080,24 @@
       cancel.className = 'clo-mx-cancel';
       cancel.textContent = 'Close';
       cancel.addEventListener('click', closePopup);
-      /** The ticked rows, or null after saying why there are none. */
-      const chosenEntries = () => {
-        const chosen = historyEntries().filter(isChecked);
+      /**
+       * The ticked rows, or null after saying why there are none. `withPins`
+       * is what separates the two buttons below: the DRILL takes pinned rows
+       * (that is the list's only consumer), Retry does not — it walks whole
+       * VARIATIONS as overstudy, and whether the pinned move specifically was
+       * answered clean is muddier there than the drill's own "no miss, no
+       * hint", while a second credit source would let the gap be farmed by
+       * alternating the two (DESIGN-pinned-mistakes.md §2.3).
+       */
+      const chosenEntries = (withPins) => {
+        const chosen = (withPins ? pinRows().filter(isChecked) : [])
+          .concat(historyEntries().filter(isChecked));
         if (chosen.length) return chosen;
-        status.textContent = 'Nothing selected.';
+        // Ticking a pin and pressing Retry is a real thing to do, and "Nothing
+        // selected" would be a lie about it.
+        status.textContent = !withPins && pinRows().some(isChecked)
+          ? 'Retry walks this session’s own variations — use Drill for pinned moves.'
+          : 'Nothing selected.';
         status.hidden = false;
         return null;
       };
@@ -13384,7 +14113,7 @@
         'the opponent’s move before each is played for you. Nothing is loaded and ' +
         'nothing is rescheduled, and the “You play” setting above does not apply.';
       drill.addEventListener('click', () => {
-        const chosen = chosenEntries();
+        const chosen = chosenEntries(true);
         if (!chosen) return;
         if (continuationDrill && continuationDrill(chosen)) { closePopup(); return; }
         // The popup is reachable mid-quiz, where our board would cover a live
@@ -13398,7 +14127,7 @@
       start.className = 'clo-mx-start';
       start.textContent = 'Retry selected';
       start.addEventListener('click', async () => {
-        const chosen = chosenEntries();
+        const chosen = chosenEntries(false);
         if (!chosen) return;
         // Same shape as "Drill selected" above: the popup is reachable mid-quiz,
         // startRun refuses there, and a press that appears to do nothing is
@@ -13447,10 +14176,23 @@
 
     const historyEntries = () => (mistakeLogApi && mistakeLogApi.all()) || [];
 
-    /** Ticked by default: the outstanding set, i.e. exactly what "Retry" on the
-     *  row would walk. An already-retried move is offered, never re-imposed. */
-    const defaultChecked = (entry) =>
-      Boolean(mistakeLogApi && mistakeLogApi.isPending(entry));
+    /** Every pin for this course (section 16b), soonest-due first. These are
+     *  NOT log entries — they outlive the session — but they are entry-shaped,
+     *  so every row builder and the drill take them unchanged. */
+    const pinRows = () => (pinApi &&
+      pinApi.all((mistakeLogApi && mistakeLogApi.bid()) || readQuickEditBid())) || [];
+
+    /**
+     * Ticked by default: for a session mistake, the outstanding set, i.e.
+     * exactly what "Retry" on the row would walk — an already-retried move is
+     * offered, never re-imposed. For a PIN, the ones whose gap has elapsed,
+     * i.e. exactly what the row's own "Drill pinned" would take. One inside its
+     * window is listed and tickable, just not imposed: the gap governs
+     * scheduling and credit, never availability.
+     */
+    const defaultChecked = (entry) => (entry.isPin
+      ? Boolean(pinApi && pinApi.isDue(entry))
+      : Boolean(mistakeLogApi && mistakeLogApi.isPending(entry)));
 
     function isChecked(entry) {
       const key = entryKey(entry);
@@ -13483,10 +14225,17 @@
      */
     function renderList(history) {
       const groups = mistakeLogApi ? mistakeLogApi.byChapter(history) : [];
-      const sig = groups.map((g) => g.lid + '/' + g.name +
+      const pins = pinRows();
+      // The pins' part of the signature carries the STREAK and the due state,
+      // not a timestamp: "in 3 h" would otherwise redraw the list on every tick
+      // and yank a checkbox out from under the pointer, which is the whole
+      // reason this signature exists.
+      const sig = 'pins:' + pins.map((r) => entryKey(r) + ':' + (r.streak || 0) +
+        (defaultChecked(r) ? '!' : '.') + (isChecked(r) ? '+' : '-')).join(',') + '|' +
+        groups.map((g) => g.lid + '/' + g.name +
         (rr.collapsed.has(g.lid) ? '<' : '>') +
         g.entries.map((e) => entryKey(e) + ':' + e.ts + (isChecked(e) ? '+' : '-') +
-          (e.retried ? 'r' : '')).join(',')).join('|');
+          (e.retried ? 'r' : '') + (isPinned(e) ? 'p' : '')).join(',')).join('|');
       if (sig === rr.listSig) return;
       rr.listSig = sig;
       // A tick rebuilds the whole list (the header counts and All/None follow
@@ -13496,11 +14245,19 @@
       const scroll = rr.els.list.scrollTop;
       rr.els.list.textContent = '';
       const pending = history.filter(defaultChecked);
-      rr.els.title.textContent = pending.length
+      const duePins = pins.filter((r) => pinApi && pinApi.isDue(r)).length;
+      rr.els.title.textContent = (pending.length
         ? 'Mistakes this session — ' + pending.length + ' of ' + history.length + ' outstanding'
-        : 'Mistakes this session (' + history.length + ')';
+        : 'Mistakes this session (' + history.length + ')') +
+        // Said in the title as well as in the group, because a long session's
+        // history scrolls and the pins sit at the top of it.
+        (duePins ? ' · ' + duePins + ' pinned due' : '');
+      // ABOVE the chapters, deliberately: these are the moves the user asked to
+      // be shown again, and they are the one part of this popup that is not
+      // about the session in front of them.
+      if (pins.length) rr.els.list.appendChild(buildPinGroup(pins));
       for (const group of groups) rr.els.list.appendChild(buildGroup(group));
-      if (!history.length) {
+      if (!history.length && !pins.length) {
         const empty = document.createElement('div');
         empty.className = 'clo-mx-empty';
         empty.textContent = 'No failed moves logged in this session.';
@@ -13508,6 +14265,134 @@
       }
       rr.els.list.scrollTop = scroll;
       syncChosenCount();
+    }
+
+    const isPinned = (entry) =>
+      Boolean(pinApi && !entry.isPin && pinApi.isPinned(entry.oid, entry.mkey));
+
+    /**
+     * THE PINNED GROUP (section 16b) — every pin for this course, with its
+     * streak and when it next comes round, each droppable in one click.
+     *
+     * That visibility is not a nicety: a pin stores a position and a SAN and
+     * never re-reads the course, so a line the user later edits leaves a pin
+     * quizzing a move the course no longer plays, indefinitely and silently.
+     * This list is the mitigation.
+     */
+    function buildPinGroup(pins) {
+      const root = document.createElement('div');
+      root.className = 'clo-mx-group clo-mx-group--pins';
+      const open = !rr.collapsed.has(PIN_GROUP_ID);
+      const due = pins.filter((r) => pinApi && pinApi.isDue(r)).length;
+
+      const head = document.createElement('div');
+      head.className = 'clo-mx-group-head';
+
+      const fold = document.createElement('button');
+      fold.type = 'button';
+      fold.className = 'clo-mx-group-fold';
+      fold.setAttribute('aria-expanded', open ? 'true' : 'false');
+      const caret = document.createElement('span');
+      caret.className = 'clo-mx-group-caret';
+      caret.textContent = open ? '▾' : '▸';
+      const name = document.createElement('span');
+      name.className = 'clo-mx-group-name';
+      name.textContent = 'Pinned';
+      const tally = document.createElement('span');
+      tally.className = 'clo-mx-group-count';
+      tally.textContent = due ? due + ' of ' + pins.length + ' due' : pins.length + ' waiting';
+      fold.append(caret, name, tally);
+      fold.addEventListener('click', () => {
+        if (open) rr.collapsed.add(PIN_GROUP_ID); else rr.collapsed.delete(PIN_GROUP_ID);
+        rr.listSig = '';
+        renderList(historyEntries());
+      });
+
+      const allOn = pins.every(isChecked);
+      const pick = document.createElement('button');
+      pick.type = 'button';
+      pick.className = 'clo-mx-group-pick';
+      pick.textContent = allOn ? 'None' : 'All';
+      pick.title = allOn
+        ? 'Untick every pinned move'
+        : 'Tick every pinned move, the ones not due yet included';
+      pick.addEventListener('click', () => {
+        for (const rec of pins) setChecked(rec, !allOn);
+        rr.listSig = '';
+        renderList(historyEntries());
+      });
+
+      head.append(fold, pick);
+      root.appendChild(head);
+      if (!open) return root;
+
+      const note = document.createElement('div');
+      note.className = 'clo-mx-pin-note';
+      note.textContent = 'Kept across sessions. Drilled clean ' +
+        ((pinApi && pinApi.steps()) || 3) + ' times, on ' +
+        ((pinApi && pinApi.steps()) || 3) + ' separate occasions, and a pin retires ' +
+        'itself; a miss puts it back to the start. Only the drill counts.';
+      root.appendChild(note);
+
+      const body = document.createElement('div');
+      body.className = 'clo-mx-group-body';
+      for (const rec of pins) body.appendChild(buildPinItem(rec));
+      root.appendChild(body);
+      return root;
+    }
+
+    /** One pinned move: its label, where it is from, how far along it is, and
+     *  the ★ that drops it. */
+    function buildPinItem(rec) {
+      const row = document.createElement('label');
+      row.className = 'clo-mx-item' + (defaultChecked(rec) ? '' : ' clo-mx-item--done');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = isChecked(rec);
+      box.addEventListener('change', () => {
+        setChecked(rec, box.checked);
+        rr.listSig = '';
+        renderList(historyEntries());
+      });
+      const move = document.createElement('span');
+      move.className = 'clo-mx-item-move';
+      move.textContent = (mistakeLogApi && mistakeLogApi.moveLabel(rec)) || rec.san;
+      const name = document.createElement('span');
+      name.className = 'clo-mx-item-title';
+      name.textContent = rec.title || '#' + rec.oid;
+      const state = document.createElement('span');
+      state.className = 'clo-mx-item-state';
+      state.textContent = ((pinApi && pinApi.streakLabel(rec)) || '') + ' · ' +
+        ((pinApi && pinApi.dueLabel(rec)) || '');
+      row.append(box, move, name, state, pinButton(rec, true));
+      return row;
+    }
+
+    /**
+     * The ★ that pins or unpins, on both kinds of row. It is a BUTTON inside a
+     * <label>, so the click has to be cancelled or the label would also toggle
+     * the row's checkbox — the one thing a press here must not do.
+     */
+    function pinButton(entry, on) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'clo-mx-item-pin' + (on ? ' clo-mx-item-pin--on' : '');
+      btn.textContent = on ? '★' : '☆';
+      btn.title = on
+        ? 'Pinned — kept across sessions until you have drilled it clean ' +
+          ((pinApi && pinApi.steps()) || 3) + ' times on separate occasions. Click to unpin.'
+        : 'Pin this move: it survives the session and keeps coming back in the ' +
+          'mistake drill — half an hour, four hours, a day — until you have answered ' +
+          'it clean three times.';
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!pinApi) return;
+        pinApi.toggle(entry, (mistakeLogApi && mistakeLogApi.bid()) || readQuickEditBid());
+        rr.listSig = '';
+        renderList(historyEntries());
+      });
+      return btn;
     }
 
     /** One chapter: a foldable header and its mistakes, oldest first. */
@@ -13605,13 +14490,21 @@
             'tick it to go through it';
         row.appendChild(mark);
       }
+      // Section 16b, LAST on every row of both kinds — per-MOVE, so this is the
+      // only surface the toggle can live on (the trainer row is per-session),
+      // and a control that moves column depending on whether the row is done is
+      // one the eye has to hunt for.
+      row.appendChild(pinButton(entry, isPinned(entry)));
       return row;
     }
 
     /** "n selected" under the list — the one number both buttons act on. */
     function syncChosenCount() {
       if (!rr.els || !rr.els.chosen) return;
-      const n = historyEntries().filter(isChecked).length;
+      // Pins count too: they are half of what "Drill selected" acts on, and a
+      // count that ignored them would read as nothing being ticked.
+      const n = historyEntries().filter(isChecked).length +
+        pinRows().filter(isChecked).length;
       rr.els.chosen.textContent = n ? n + ' selected' : 'Nothing selected';
     }
 
@@ -14050,10 +14943,13 @@
   // OUR board instead of Chessable's; same null-safe bridge pattern.
   let continuationAnalysisFen = null;
 
-  // (entries) => boolean — opens the mistake drill (section 20) on a list of
-  // mistake-log entries, false when it cannot (no board, already running,
-  // nothing usable). Section 17's mistake popup is the only outside caller;
-  // the drill's own launcher sits on this module's cluster.
+  // (entries, opts?) => boolean — opens the mistake drill (section 20) on a list
+  // of mistake-log entries, false when it cannot (no board, already running,
+  // nothing usable). `opts.standalone` asks for the modal board that needs no
+  // page of Chessable's under it, and is REFUSED on a trainer path whatever the
+  // caller says. Two outside callers: section 17's mistake popup and the pinned
+  // list's floating launcher (16d); the drill's own launchers sit on this
+  // module's cluster.
   let continuationDrill = null;
 
   // (uci) => boolean — plays a move on the analysis board (section 19), false
@@ -14149,6 +15045,12 @@
       analyseBtn: null,   // "Analyse" (section 19)
       varBtn: null,       // …and its variation-page twin, in the panel header (19b)
       drillBtn: null,     // "Drill mistakes" (section 20)
+      pinBtn: null,       // "Drill pinned" (sections 16b + 20)
+      // A drill running with no Chessable board under it — the floating
+      // launcher's pass (16d). It is the ONE run that outlives leaving the
+      // trainer, so both ticks check it before their teardowns.
+      standalone: false,
+      scrim: null,
       // Lines already sent round again by a "didn't know" verdict (section 23
       // on a clickable line), by line key. Per RUN, and the whole of what stops
       // a second pass re-queueing itself for ever.
@@ -14201,7 +15103,7 @@
     continuationAnalysisFen = () => (cr.active && cr.mode === 'analysis' ? anFen() : null);
     // Section 20: the mistake popup can start a drill, and hears back whether
     // the board could be opened at all.
-    continuationDrill = (entries) => openDrill(entries);
+    continuationDrill = (entries, opts) => openDrill(entries, opts);
     // Section 9's row: how many lines each of the two launchers would open, so
     // reviewRowPrimary can decide which control the row fills. Counts only —
     // whether either button is SHOWING stays syncButton's business, and the
@@ -17918,6 +18820,24 @@
     const pendingMistakes = () => (mistakeLogApi && mistakeLogApi.pending()) || [];
 
     /**
+     * The PINNED moves that are due (section 16b), as drillable cards. A pin
+     * record is entry-shaped, so nothing below this line knows the difference.
+     *
+     * Where this session has also failed one of them, the SESSION entry is used
+     * instead: it carries this session's own `wrong` data, its `lead` is from
+     * the variation as it is now, and answering it credits the pin just the
+     * same — `pinApi.note` keys on oid:mkey, not on which list the card came
+     * out of.
+     */
+    function duePinnedMistakes() {
+      const due = (pinApi && pinApi.due(readQuickEditBid())) || [];
+      if (!due.length) return [];
+      const logged = new Map(((mistakeLogApi && mistakeLogApi.all()) || [])
+        .map((e) => [e.oid + ':' + e.mkey, e]));
+      return due.map((rec) => logged.get(rec.oid + ':' + rec.mkey) || rec);
+    }
+
+    /**
      * Walks `sans` from `startFen`, producing the quiz's own ply shape, or null
      * if any of them does not resolve — a card is never guessed at.
      */
@@ -17974,24 +18894,51 @@
      * Deliberately NOT beginRun: that one belongs to the clickable lines and
      * clears the heads-up queue, which has nothing to do with a drill.
      */
-    function openDrill(entries) {
+    function openDrill(entries, opts) {
       if (cr.active || !entries || !entries.length) return false;
+      // STANDALONE (v0.104.0): a pass opened from the floating launcher (16d),
+      // on a page that has no board of Chessable's at all. The browse gate
+      // below is meaningless there — and would refuse every such pass — so it
+      // is skipped, and both ticks learn to leave `cr.standalone` alone
+      // instead. It is refused on a TRAINER path whatever the caller says: our
+      // board would cover a live quiz whose timer is running, which is the one
+      // thing this whole feature promises not to do.
+      const standalone = Boolean(opts && opts.standalone) && !isTrainerPath();
+      if (opts && opts.standalone && !standalone) return false;
       // The browse state, exactly as for the cluster's own launcher. Not merely
       // a policy: the watchdog closes any active overlay the moment the browse
       // gates go false, so a drill started mid-quiz would flash up and be torn
       // down on the next tick — which is what the popup's Drill button did
       // before this line (seen live), leaving no board and no message.
-      if (!reviewBrowseReady()) return false;
+      if (!standalone && !reviewBrowseReady()) return false;
       const queue = [];
+      const seen = new Set();
       let dropped = 0;
       for (const entry of entries) {
         const line = drillLine(entry);
-        if (line) queue.push(line);
-        else dropped++;
+        if (!line) { dropped++; continue; }
+        // One card per MOVE. The two lists overlap by construction — a pinned
+        // move failed again today is in both — and asking for it twice in one
+        // pass would also grade the pin twice, the second time inside its own
+        // window (§3.4).
+        if (seen.has(line.key)) continue;
+        seen.add(line.key);
+        queue.push(line);
       }
       if (dropped) warn('mistake drill:', dropped, 'logged move(s) could not be rebuilt — skipped');
       if (!queue.length) return false;
-      if (!showOverlays()) return false; // cr.mode is still 'quiz'
+      // Set BEFORE showOverlays, which reads it for the orientation and for the
+      // modal dressing, and cleared again if the open is refused.
+      cr.standalone = standalone;
+      cr.queue = queue;
+      if (!showOverlays()) {
+        // The dressing went on inside showOverlays; a refusal has to take it
+        // off again, or a scrim is left over a page with no board on it.
+        cr.standalone = false;
+        applyStandaloneChrome();
+        cr.queue = [];
+        return false;
+      }
       cr.mode = 'drill';
       cr.drill = { done: 0, clean: 0 };
       cr.choosing = false;
@@ -17999,9 +18946,9 @@
       cr.ui.chooser.hidden = true;
       cr.ui.actions.hidden = false;
       cr.boardEl.hidden = false;
-      cr.queue = queue;
       positionOverlays();
-      log('mistake drill: started,', queue.length, 'move(s)');
+      log('mistake drill: started,', queue.length, 'move(s)',
+        standalone ? '(standalone)' : '');
       startLine(0);
       return true;
     }
@@ -18019,6 +18966,14 @@
       if (!entry) return;
       cr.drill.done++;
       const clean = cleanOverride === undefined ? (!cr.attempts && !cr.hint) : cleanOverride;
+      // Section 16b. A separate axis from the session's own list, so it is
+      // graded whichever list the card came from — and a MISS is what puts a
+      // pin's streak back to zero, which is why this runs above the clean-only
+      // return below. `cleanOverride` counts here for the same reason it counts
+      // below: refusing show-and-grade's self-report would leave a mode whose
+      // whole purpose is a session played without moving a piece unable to
+      // advance a pin at all.
+      if (pinApi) pinApi.note(entry.oid, entry.mkey, clean);
       if (!clean) {
         log('mistake drill:', cr.line.label, '— answered with help, still on the list');
         return;
@@ -18295,7 +19250,36 @@
      * (portrait layouts where it has not rendered) the panel parks below the
      * board instead and sizes itself.
      */
+    /**
+     * THE STANDALONE DRILL'S PLACEMENT (section 20, v0.104.0). There is no
+     * board of Chessable's to pin ours onto and no comment column to cover, so
+     * this is a plain modal: a square board centred in the viewport with the
+     * panel under it, over a scrim.
+     *
+     * `position: fixed`, which everything else on this board is forbidden — and
+     * the rule it bends is not the one it looks like. Section 11's ban is on
+     * anchoring a FIXED element to SCROLLING CONTENT, which makes it chase the
+     * page. Nothing here is anchored to content: this is a modal, anchored to
+     * the viewport, which is what the mistake popup and every menu here already
+     * use. The class is doubled so it outranks the base rule without it knowing.
+     */
+    function positionStandalone() {
+      const m = C.standaloneMarginPx;
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const size = Math.max(C.standaloneMinPx, Math.min(C.standaloneMaxPx,
+        vw - 2 * m, vh - C.standalonePanelPx - 3 * m));
+      const left = Math.max(m, Math.round((vw - size) / 2));
+      const top = Math.max(m, Math.round((vh - size - C.standalonePanelPx) / 2));
+      setInlinePx(cr.boardEl, { left, top, width: size, height: size });
+      setInlinePx(cr.panel, { left, top: top + size + 8, width: size });
+      // The panel's height is its content's here — unlike the trainer host,
+      // where it is sized to the comment column it covers.
+      if (cr.panel.style.height) cr.panel.style.height = '';
+      return true;
+    }
+
     function positionOverlays() {
+      if (cr.standalone) return positionStandalone();
       const board = getReviewBoard();
       if (!board) return false;
       const rect = board.getBoundingClientRect();
@@ -18385,12 +19369,19 @@
       const plies = linePath().length;
       const done = Math.min(cr.plyIdx, plies);
       if (drilling) {
+        // Section 16b: a card whose move is pinned says so, and says how far
+        // along the chain it is — this answer is about to advance or reset it,
+        // and a user who does not know that cannot decide to take it seriously.
+        const rec = entry && pinApi ? pinApi.record(entry.oid, entry.mkey) : null;
+        const what = rec ? 'Pinned mistake' : 'Mistake';
         cr.ui.title.textContent = total > 1
-          ? 'Mistake ' + (cr.lineIdx + 1) + ' of ' + total
-          : 'Mistake';
+          ? what + ' ' + (cr.lineIdx + 1) + ' of ' + total
+          : what;
         const where = (entry && (entry.title || '#' + entry.oid)) || '';
         const wrong = (entry && mistakeLogApi && mistakeLogApi.wrongLabel(entry)) || '';
-        cr.ui.progress.textContent = [shortDrillTitle(where), wrong].filter(Boolean).join(' · ');
+        const streak = rec ? 'streak ' + pinApi.streakLabel(rec) : '';
+        cr.ui.progress.textContent =
+          [shortDrillTitle(where), wrong, streak].filter(Boolean).join(' · ');
       } else {
         // The outline says "important" at a glance; the word is what says it
         // unambiguously, and it costs nothing here — the title is one line of
@@ -18587,10 +19578,16 @@
     /** Mounts, places and reveals the two overlays. False when the board is not
      *  measurable, in which case nothing has been shown. */
     function showOverlays() {
-      const userColor = trainerUserColor();
+      // A standalone pass has no board to read an orientation off — the CARDS
+      // carry one, and startLine applies it per card anyway, so this is only a
+      // resting value for the first paint.
+      const userColor = cr.standalone
+        ? ((cr.queue[0] && cr.queue[0].userColor) || cr.userColor || 'w')
+        : trainerUserColor();
       if (userColor) cr.userColor = userColor;
       if (!cr.userColor) { warn('continuation: board orientation unreadable — not opening'); return false; }
       if (!cr.boardEl || !cr.boardEl.isConnected) buildOverlays();
+      applyStandaloneChrome();
       // Placed BEFORE it is shown: an overlay revealed at 0,0 because the board
       // happened to be mid-render would flash in the page's top-left corner.
       if (!positionOverlays()) { warn('continuation: board not measurable — not opening'); return false; }
@@ -18896,6 +19893,10 @@
       if (cr.boardEl) cr.boardEl.hidden = true;
       if (cr.panel) cr.panel.hidden = true;
       cr.midQuiz = false;
+      // Before releaseTrainer, so the scrim cannot outlive the board it dims
+      // behind. Nulled FIRST: applyStandaloneChrome reads the flag.
+      cr.standalone = false;
+      applyStandaloneChrome();
       // AFTER the overlays are down, so Chessable's board is visible again as
       // it un-dims. Called on every close, not just the tidy ones: a run torn
       // down by a variation change must not leave the session paused either.
@@ -18921,6 +19922,35 @@
       // board at once rather than a poll later.
       if (wasActive && analysing) scheduleRefresh();
       syncButton();
+    }
+
+    /**
+     * The modal dressing, applied and removed in ONE place so no exit path can
+     * leave the scrim up over a page with no board on it. Called from
+     * showOverlays and from closeReview.
+     */
+    function applyStandaloneChrome() {
+      // Keyed on the FLAG alone, never on cr.active: showOverlays calls this
+      // before it sets active, and closeReview clears the flag before calling
+      // it — so both ends are covered by one condition.
+      if (cr.boardEl) cr.boardEl.classList.toggle('clo-cr-standalone', Boolean(cr.standalone));
+      if (cr.panel) cr.panel.classList.toggle('clo-cr-standalone', Boolean(cr.standalone));
+      if (!cr.standalone) { if (cr.scrim) cr.scrim.hidden = true; return; }
+      if (!cr.scrim || !cr.scrim.isConnected) {
+        const stale = document.getElementById(CR_SCRIM_ID);
+        if (stale) stale.remove();
+        const el = document.createElement('div');
+        el.id = CR_SCRIM_ID;
+        el.className = 'clo-cr-scrim';
+        el.hidden = true;
+        // The page behind is live — a stray press could navigate away mid-pass
+        // — so the scrim eats it. It is NOT a way out: Exit is, like every
+        // other run here, because a mis-tap must not end a drill halfway.
+        el.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); });
+        document.body.appendChild(el);
+        cr.scrim = el;
+      }
+      cr.scrim.hidden = false;
     }
 
     // --- launcher on the overstudy widget ------------------------------------
@@ -18970,18 +20000,30 @@
       drill.className = 'clo-cr-drill';
       drill.addEventListener('click', () => openDrill(pendingMistakes()));
 
+      // Section 16b: the same drill, over the moves the user pinned in earlier
+      // sessions and that have come round again. Its own launcher rather than a
+      // number folded into the one above, because that count means exactly
+      // "failed this session" and this one does not.
+      const pinned = document.createElement('button');
+      pinned.type = 'button';
+      pinned.className = 'clo-cr-pin';
+      pinned.addEventListener('click', () => openDrill(duePinnedMistakes()));
+
       // Task order, not append order (v0.58.0, DESIGN-ui-inventory §3.2): the
       // drill leads, since it spends the mistake group immediately to the left;
       // then the one clickable-lines launcher (queueBtn and button share a
       // slot); then Analyse, which is the free-play escape hatch and used to sit
       // BETWEEN the two practice launchers.
-      cluster.append(drill, queueBtn, button, analyse);
+      // Pinned sits after the session's own drill for the reason
+      // reviewRowPrimary ranks it lower: a move failed TODAY comes first.
+      cluster.append(drill, pinned, queueBtn, button, analyse);
       widget.appendChild(cluster);
       cr.cluster = cluster;
       cr.button = button;
       cr.queueBtn = queueBtn;
       cr.analyseBtn = analyse;
       cr.drillBtn = drill;
+      cr.pinBtn = pinned;
       return true;
     }
 
@@ -19062,17 +20104,38 @@
       // mid-quiz would cover a live quiz board.
       const mistakes = pendingMistakes().length;
       const showDrill = !cr.active && mistakes > 0 && reviewBrowseReady();
-      cr.cluster.hidden = !(show || showQueue || showAnalyse || showDrill);
+      // Section 16b, on the same gate: pins are course-scoped and this row is
+      // the only surface they have, so a pin coming due is learned about while
+      // studying that course, between variations. There is no background
+      // surface to put a notification on and none should be invented.
+      const pins = (pinApi && pinApi.due(readQuickEditBid()).length) || 0;
+      const showPin = !cr.active && pins > 0 && reviewBrowseReady();
+      cr.cluster.hidden = !(show || showQueue || showAnalyse || showDrill || showPin);
       cr.queueBtn.hidden = !showQueue;
       cr.button.hidden = !show;
       cr.analyseBtn.hidden = !showAnalyse;
       cr.drillBtn.hidden = !showDrill;
+      cr.pinBtn.hidden = !showPin;
       // The row's one filled control (reviewRowPrimary), not this module's own
       // judgement of its own importance — which is what had the rarest button
       // in the extension wearing the loudest treatment (finding F6).
       const primary = reviewRowPrimary();
       cr.queueBtn.classList.toggle('clo-rowprimary', showQueue && primary === 'queue');
       cr.button.classList.toggle('clo-rowprimary', show && primary === 'clickables');
+      // The notification that a pin is due IS the fill (see reviewRowPrimary):
+      // amber, the row's "you have N outstanding items" colour, is forbidden on
+      // anything that launches, and this launches.
+      cr.pinBtn.classList.toggle('clo-rowprimary', showPin && primary === 'pinned');
+      if (showPin) {
+        cr.pinBtn.textContent = pins > 1
+          ? 'Drill pinned (' + pins + ')' : 'Drill pinned move';
+        cr.pinBtn.title = 'Go through the ' + (pins > 1 ? pins + ' pinned moves' : 'pinned move') +
+          ' that ' + (pins > 1 ? 'have' : 'has') + ' come round again, on our own board. ' +
+          'A pinned move keeps coming back — half an hour, four hours, a day — until you ' +
+          'have answered it clean three times on three separate occasions; a miss puts it ' +
+          'back to the start. Nothing is loaded and nothing is rescheduled. Pin and unpin ' +
+          'moves in the Mistakes list.';
+      }
       if (showDrill) {
         cr.drillBtn.textContent = mistakes > 1
           ? 'Drill mistakes (' + mistakes + ')' : 'Drill mistake';
@@ -19803,11 +20866,6 @@
      * swallow keys (unlike the quiz panel: the user is still playing on
      * Chessable's board and needs their shortcuts).
      */
-    function blurButton(e) {
-      const el = e && e.currentTarget;
-      if (el && typeof el.blur === 'function') el.blur();
-    }
-
     /** Queues the shown lines for the moment the variation completes. The panel
      *  stays up (with its button spent) until the user moves on, so the press
      *  visibly did something. */
@@ -20234,6 +21292,11 @@
     }
 
     function tick() {
+      // Before every other gate, and so before BOTH hosts' teardowns: a
+      // standalone drill (16d) is the one run that is not about the page it is
+      // on, so no path change, variation change or browse-state flip may close
+      // it. Only Exit and the last card do.
+      if (cr.active && cr.standalone) { positionOverlays(); return; }
       if (isVariationPath()) { variationTick(); return; }
       // The panel element itself SURVIVES the hop from the variation page to a
       // trainer session — chessable.com never reloads the document, and
@@ -25723,7 +26786,8 @@
     // before initAltCheck only by convention (the bridge vars are null-safe).
     // initMistakeLog must likewise run before initRetryRunner, which reads the
     // log through mistakeLogApi (also null-safe, but the first tick would
-    // otherwise show an empty count).
+    // otherwise show an empty count), and initPinnedMistakes sits between them
+    // for the same reason.
     initReviewOverstudy();
     initOverstudyAutoPause();
     initTopPanel();
@@ -25731,6 +26795,17 @@
     initAutoPlay();
     initAltCheck();
     initMistakeLog();
+    // After initMistakeLog only by convention (it borrows its moveLabel for a
+    // console line, null-safe); before initRetryRunner and
+    // initContinuationReview, both of which read the pinned list on their first
+    // tick — through null-safe bridges, so this is about the first render
+    // rather than correctness.
+    initPinnedMistakes();
+    // Both read the pinned list through pinApi, so after it. The dock also
+    // calls continuationDrill, which initContinuationReview assigns below —
+    // null-safe, and it is only reached by a press.
+    initPinPrompt();
+    initPinDock();
     initRetryRunner();
     initContinuationReview();
     // After initAutoPlay (whose bridge it needs to announce a typed answer) and

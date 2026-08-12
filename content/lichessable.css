@@ -2226,6 +2226,53 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-size: 11px;
 }
 
+/* --- pinned mistakes in the list (section 16b) --------------------------------
+   The Pinned group sits above the chapters: these are the moves the user asked
+   to be shown again, and they are the one part of this popup that is not about
+   the session in front of them. It is also the ONLY place a pin is visible, and
+   that is load-bearing rather than tidy — a pin stores a position and a SAN and
+   never re-reads the course, so a line edited later would otherwise leave one
+   quizzing a move the course no longer plays, indefinitely and silently. */
+.clo-mx-group--pins .clo-mx-group-name { color: var(--clo-attention); }
+
+.clo-mx-pin-note {
+  color: var(--clo-line-hover);
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 3px 0 1px 10px;
+}
+
+/* "1/3 · in 3 h" — the streak and when it next comes round. Same weight as the
+   wrong label it stands in for on these rows. */
+.clo-mx-item-state {
+  flex: none;
+  color: #8a8478;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* The ★ toggle, on every row of both kinds. A star rather than a colour: this
+   is the one control here that changes something OUTSIDE the session, so it has
+   to be recognisable as the same thing wherever it appears, and the two states
+   must differ in SHAPE and not only in brightness. */
+.clo-mx-item-pin {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  font-family: inherit;
+}
+
+.clo-mx-item-pin:hover { color: var(--clo-attention); }
+.clo-mx-item-pin--on { color: var(--clo-attention); }
+
+/* A dimmed row must not dim the one control that gets it out of that state. */
+.clo-mx-item--done .clo-mx-item-pin--on { opacity: 1; }
+
 .clo-mx-item-move { color: var(--clo-text-bright); font-weight: 600; white-space: nowrap; }
 .clo-mx-item-title {
   color: var(--clo-text-dim);
@@ -2335,6 +2382,211 @@ html.clo-injecting .legal-square-capture-mt2 {
 }
 
 .clo-mx-cancel:hover { color: #fff; }
+
+/* --- the pinned-mistake corner (sections 16c and 16d) ------------------------
+   ONE corner of the viewport for everything the pinned list says to the user:
+   the offer made right after a mistake, and the launcher for pins that have
+   come round. They can never appear together — the offer is trainer-only and
+   the launcher is everywhere BUT a trainer page — so they share the spot rather
+   than stacking, and the user learns one place to look.
+
+   `position: fixed`, unlike the panel and the overlays. Section 11's ban on
+   fixed is about anchoring to SCROLLING CONTENT, which makes an element chase
+   the page; neither of these is anchored to content. They are notifications,
+   anchored to the viewport, exactly like the popups here already are.
+
+   BELOW our own board (z 100000) and above everything of Chessable's: a drill
+   in progress must cover them, which is also the belt to the JS braces that
+   hide both while a board is up. */
+.clo-pin-prompt,
+.clo-pin-dock {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 99990;
+  box-sizing: border-box;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.clo-pin-prompt[hidden],
+.clo-pin-dock[hidden] { display: none; }
+
+/* --- 16c: "Pin this mistake?" ---------------------------------------------- */
+.clo-pin-prompt {
+  width: 268px;
+  padding: 10px 12px;
+  border: 1px solid var(--clo-attention-line);
+  border-radius: 4px;
+  background: var(--clo-bg);
+  color: var(--clo-text);
+  font-size: 13px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+.clo-pin-prompt__head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+/* Amber, and it is the ONE place amber is right here: this is a notice, not a
+   control — the thing it names is outstanding and the panel launches nothing.
+   The buttons under it carry the actions and wear the row's own vocabulary. */
+.clo-pin-prompt__title {
+  flex: 1;
+  color: var(--clo-attention);
+  font-weight: 500;
+}
+
+.clo-pin-prompt__x {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  font-family: inherit;
+}
+
+.clo-pin-prompt__x:hover { color: #fff; }
+
+.clo-pin-prompt__move {
+  color: var(--clo-text-bright);
+  font-weight: 600;
+  font-size: 15px;
+  margin-top: 4px;
+}
+
+.clo-pin-prompt__where {
+  color: var(--clo-text-dim);
+  font-size: 12px;
+  margin-top: 1px;
+}
+
+.clo-pin-prompt__note {
+  color: var(--clo-line-hover);
+  font-size: 11px;
+  line-height: 1.35;
+  margin-top: 6px;
+}
+
+.clo-pin-prompt__note[hidden] { display: none; }
+
+.clo-pin-prompt__btns {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.clo-pin-prompt__btns[hidden] { display: none; }
+
+.clo-pin-prompt__no {
+  border: none;
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-pin-prompt__no:hover { color: #fff; }
+
+/* Filled green: inside this little panel it IS the one thing to do next, which
+   is the same claim .clo-rowprimary makes in the trainer row. */
+.clo-pin-prompt__yes {
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
+  color: #fff;
+  padding: 3px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-pin-prompt__yes:hover {
+  background: var(--clo-accent-hover);
+  border-color: var(--clo-accent-hover);
+}
+
+/* --- 16d: the floating launcher -------------------------------------------- */
+.clo-pin-dock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 300px;
+}
+
+/* Filled green, and this one is not a modifier of anything: it is alone on the
+   page, so there is no row for it to be the primary OF — the fill just says
+   "there is something to do". Amber would be wrong for the reason it is wrong
+   in the row: this launches a quiz, it does not open a list. */
+.clo-pin-dock__btn {
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  white-space: nowrap;  /* a launcher label that wraps stops reading as a button */
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+}
+
+.clo-pin-dock__btn:hover {
+  background: var(--clo-accent-hover);
+  border-color: var(--clo-accent-hover);
+}
+
+.clo-pin-dock__msg {
+  padding: 6px 10px;
+  border: 1px solid var(--clo-bg-sunken);
+  border-radius: 4px;
+  background: var(--clo-bg);
+  color: var(--clo-danger);
+  font-size: 12px;
+  line-height: 1.35;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+}
+
+.clo-pin-dock__msg[hidden] { display: none; }
+
+/* --- the standalone drill's modal (section 20) -------------------------------
+   The same board and the same panel, with nothing of Chessable's underneath.
+   Doubled classes so these beat the base rules' `position: absolute` without
+   those rules having to know this mode exists — and `fixed` is right here for
+   the reason given above the pinned corner: a modal is anchored to the
+   viewport, not to content. */
+.clo-cr-board.clo-cr-standalone,
+.clo-cr-panel.clo-cr-standalone {
+  position: fixed;
+}
+
+/* The panel is sized to a comment column on the trainer; here it is sized to
+   the board above it, so its content decides the height. */
+.clo-cr-panel.clo-cr-standalone {
+  align-items: stretch;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.clo-cr-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 99995;
+  background: rgba(0, 0, 0, 0.62);
+  /* The page behind is live and a stray press could navigate away mid-pass. */
+  touch-action: none;
+}
+
+.clo-cr-scrim[hidden] { display: none; }
 
 /* --- retry transition shield (section 17) ------------------------------------
    Covers Chessable's board between the item's last failed move being answered
@@ -3074,7 +3326,14 @@ html.clo-injecting .legal-square-capture-mt2 {
    cards. What connects it to the mistakes is its label and its count, which is
    where that connection belongs — the grouping (§3.2) puts it at the head of
    this cluster, right after the mistake group it draws from. */
-.clo-cr-drill {
+/* "Drill pinned" (section 16b) is the same action over a different list, so it
+   is the same control — an ordinary green-outline practice launcher, filled
+   only when reviewRowPrimary() names 'pinned'. It must NOT be amber however
+   overdue its moves are: in this row amber means "you have N outstanding
+   items" on something that only opens a list, and this launches a quiz. The
+   urgency goes through the fill, which is the mechanism the row already has. */
+.clo-cr-drill,
+.clo-cr-pin {
   border: 1px solid var(--clo-accent);
   background: transparent;
   color: var(--clo-accent-text);
@@ -3085,10 +3344,13 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-family: inherit;
 }
 
-.clo-cr-drill:hover {
+.clo-cr-drill:hover,
+.clo-cr-pin:hover {
   background: rgba(98, 153, 36, 0.25);
   color: #fff;
 }
+
+.clo-cr-pin[hidden] { display: none; }
 
 /* --- analysis board move list (section 19) ---------------------------------
    The one line of moves played on the analysis board, filling the panel between
@@ -4235,6 +4497,7 @@ html.clo-touch .clo-cr-open,
 html.clo-touch .clo-cr-queue,
 html.clo-touch .clo-cr-analyse,
 html.clo-touch .clo-cr-drill,
+html.clo-touch .clo-cr-pin,
 html.clo-touch .clo-cr-btn,
 html.clo-touch .clo-ap-cog,
 html.clo-touch .clo-qe-save {
@@ -4497,9 +4760,49 @@ html.clo-touch .clo-mx-mode {
 }
 
 html.clo-touch .clo-mx-item-wrong,
+html.clo-touch .clo-mx-item-state,
+html.clo-touch .clo-mx-pin-note,
 html.clo-touch .clo-mx-note {
   font-size: 13px;
 }
+
+/* The ★ is the smallest real control in this popup and the only one that
+   changes anything outside the session — it needs a finger-sized target of its
+   own, not the row's. */
+html.clo-touch .clo-mx-item-pin {
+  font-size: 18px;
+  padding: 8px 10px;
+}
+
+/* The pinned corner (16c, 16d). Both are reached with a thumb on a phone and
+   neither is anchored to anything the JS measures, so only type and padding
+   change here — the same rule the rest of this block follows. */
+html.clo-touch .clo-pin-prompt {
+  width: 300px;
+  font-size: 15px;
+}
+
+html.clo-touch .clo-pin-prompt__move { font-size: 17px; }
+html.clo-touch .clo-pin-prompt__where { font-size: 13px; }
+html.clo-touch .clo-pin-prompt__note { font-size: 13px; }
+
+html.clo-touch .clo-pin-prompt__yes,
+html.clo-touch .clo-pin-prompt__no {
+  font-size: 15px;
+  padding: 8px 14px;
+}
+
+html.clo-touch .clo-pin-prompt__x {
+  font-size: 20px;
+  padding: 4px 8px;
+}
+
+html.clo-touch .clo-pin-dock__btn {
+  font-size: 16px;
+  padding: 12px 18px;
+}
+
+html.clo-touch .clo-pin-dock__msg { font-size: 14px; }
 
 /* The history's chapter headers: both are real controls, so both get a tap
    target — the fold in particular is the full width of the row. */

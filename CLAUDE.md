@@ -33,7 +33,14 @@ the same failed moves asked for on OUR OWN board, one card each, with no
 navigation and nothing rescheduled (section 20). The "Mistakes" list behind both
 is the WHOLE session's history, grouped by chapter and foldable: a move already
 gone through stays in it, dimmed and unticked, and can be retried or drilled as
-often as the session lasts. A completed variation whose comment holds clickable
+often as the session lasts. A move can also be PINNED (section
+16b), which is the one thing here that outlives the session: it comes back in
+the drill after half an hour, four hours and a day, and retires itself once it
+has been answered clean three times over three sittings. The offer to pin is
+made in the bottom-right corner RIGHT AFTER the mistake (16c) — the moment the
+user has an opinion about a move — and pins that have come round again are
+launched from that same corner ON ANY CHESSABLE PAGE (16d), onto a board of our
+own that needs nothing of Chessable's under it. A completed variation whose comment holds clickable
 subvariation lines offers "Review clickable(s)" — the button is deliberately not
 named after "continuations", since a line branching off earlier in the variation
 continues nothing — which quizzes those lines on
@@ -148,6 +155,8 @@ Currently working (v0.18.x).
   * `DESIGN-difficult-moves.md` — sections 13b/13c/13d
   * `DESIGN-continuation-review.md` — section 18 (§7) and the heads-up 18b (§6, §8)
   * `DESIGN-retry-mistakes.md` — sections 16/17 (§7 = the log and runner as built)
+  * `DESIGN-pinned-mistakes.md` — section 16b, and the pinned arms of 17's popup
+    and 20's launcher
   * `DESIGN-quick-edit.md` — section 12, incl. §6 refreshing the host after a save
   * `DESIGN-quick-edit-arrows.md` — section 12b only
   * `DESIGN-show-and-grade.md` — sections 23 and 23b
@@ -689,9 +698,11 @@ Currently working (v0.18.x).
     The overstudy pair got a wrapper (`.clo-os`) for this; it used to be two
     loose children of the row.
   * ONE PRIMARY. `reviewRowPrimary()` (top level, beside `reviewStatusHost()`)
-    returns a ROLE — `'stop' | 'queue' | 'clickables' | 'retry' | null` — and
-    each module applies `.clo-rowprimary` in its own `sync*`, but ONLY to a
-    control that is also showing. Two states answer null deliberately: mid-quiz
+    returns a ROLE — `'stop' | 'queue' | 'clickables' | 'retry' | 'pinned' |
+    null` — and each module applies `.clo-rowprimary` in its own `sync*`, but
+    ONLY to a control that is also showing. `'pinned'` (section 16b) is LAST on
+    purpose: a move failed today outranks a pin that has been waiting four
+    hours. Two states answer null deliberately: mid-quiz
     (nothing in this row acts on the card being answered) and a clean browse
     state with nothing outstanding. A named control that is HIDDEN fills
     nothing, which is why the function needs no clause about our own overlays —
@@ -940,7 +951,8 @@ Currently working (v0.18.x).
     ANSWERING is what reschedules it — the opposite of what a retry pass is for. (The
     CLICK itself reschedules nothing, measured 2026-08-09; section 13c is built on
     exactly that. This rule is about what the runner does NEXT.)
-  * IT OWNS TWO BRIDGES. `mistakeLogApi` — `pending()` (not retried, not
+  * IT OWNS TWO BRIDGES (three counting section 16b's `pinApi`, which is a
+    module of its own). `mistakeLogApi` — `pending()` (not retried, not
     overstudy-mode) drives the count, `reviewRowPrimary()`, the row's Retry and
     section 20's launcher, while `all()` drives the popup; plus `markDone`, which
     section 20's drill calls so the two launchers share ONE list and cannot disagree
@@ -975,6 +987,89 @@ Currently working (v0.18.x).
     plays; 'only' lifts auto-play's `handedOver` rule through `resumeAfterHandover`,
     scoped to the variation the pass is DRIVING and cleared on every other tick.
     Never let that lift leak into an ordinary session.
+- Pinned mistakes (sections 16b-16d, v0.104.0): a mistake the user marks BY
+  HAND, which outlives the session and keeps coming back in the drill until it
+  has been answered clean three times over three sittings. Store, steps and
+  credit are 16b; the offer made right after a mistake is 16c; the floating
+  launcher is 16d. The pin toggle and the Pinned group live in section 17's
+  popup, and a launcher in section 20's cluster.
+  **READ `DESIGN-pinned-mistakes.md` BEFORE CHANGING ANYTHING HERE.** What
+  follows is only what an edit ELSEWHERE can break.
+  * `chrome.storage.local`, key `cloPinnedMistakes`, `{ bid: { "oid:mkey": rec } }`,
+    THE WHOLE STORE HELD AT ONCE and loaded in EVERY top document (v0.104.0) —
+    16d shows on pages that have no course, and one standalone pass can hold
+    cards from several. A record therefore carries its own `bid`, since `unpin`
+    and `note` have to find their way home from the oid a drill card knows;
+    v0.103.0 records have none and `load` fills it in from the map they were
+    stored under. — AND THE MISTAKE LOG STILL MUST NOT GO THERE. The two look contradictory
+    from a distance: the log is filled AUTOMATICALLY, so a stale one drills
+    moves nobody chose, while a pin is chosen one move at a time. That is the
+    whole of the exemption and it does not generalise.
+  * A RECORD IS SELF-CONTAINED, never a reference into the log — which is gone
+    by the next session. It carries every field `drillLine`, `moveLabel` and the
+    popup's row builder need, and is ENTRY-SHAPED so all three take one
+    unchanged. It also carries `isPin: true`, which is what the popup's
+    `entryKey` and `defaultChecked` branch on: a pinned move and this session's
+    own failure of it are two different ROWS.
+  * NO TTL AND NO PRUNING except `pinMaxPerCourse` (200, oldest `pinnedAt`, with
+    a console line). Writes MERGE on `lastSeenAt` and apply our own removals
+    AFTER the merge — a retirement is a removal, and another tab's stale copy
+    would otherwise put a finished pin straight back.
+  * `CONFIG.retry.pinSteps` IS THE SCHEDULE AND ITS LENGTH IS THE TARGET
+    (30 min → 4 h → 24 h). Derived, not declared, so the two cannot disagree.
+    The 4-hour step is what makes three credits three SITTINGS; the short first
+    step is what makes a LAPSE come back in half an hour rather than a day out.
+  * ONLY THE DRILL CREDITS (`finishDrillCard` → `pinApi.note`). Retry
+    deliberately does not: it walks whole variations, where "was this move
+    answered clean" is muddier than `!cr.attempts && !cr.hint`, and two credit
+    sources let the gap be farmed by alternating them. Show-and-grade's
+    `cleanOverride` IS accepted, or section 23 could never advance a pin.
+  * THE GAP GOVERNS SCHEDULING AND CREDIT, NEVER AVAILABILITY. A pin inside its
+    window is not auto-queued but is drillable from the popup, and running it
+    there simply advances nothing (`note` checks the gap BEFORE stamping
+    `lastSeenAt`).
+  * IT OWNS ONE BRIDGE, `pinApi`, null-safe. `all(bid)`/`due(bid)` TAKE A COURSE
+    and `null` means every course: the row launcher, `reviewRowPrimary()`'s
+    `'pinned'` role and the popup all pass the current bid, 16d passes null.
+    `isDue`/`dueLabel`/`streakLabel`/`record`/`isPinned`/`pin`/`unpin`/`toggle`
+    drive the popup and 16c, and `note()` is the ONE write the drill makes.
+  * `pin(entry, bid)` NEEDS A COURSE and refuses without one — a record with no
+    `bid` cannot be unpinned or retired, since both start from an oid.
+  * IT WATCHES `chrome.storage.onChanged` and reloads, but NOT while a save of
+    its own is pending: that picture was taken before our write.
+  * THE ROW'S launcher stays course-scoped and browse-state gated; 16d is what
+    lifts that limit, and it does it by being somewhere else entirely.
+  * NOTHING IS RESCHEDULED AND CHESSABLE'S BOARD IS NEVER TOUCHED — section 20's
+    guarantees are what make a list this durable safe at all.
+  * A PIN MUST BE DROPPABLE IN ONE CLICK. It stores `oid` + `sourceFen` + `san`
+    and never re-reads the course, while sections 12/19c/19d make editing
+    variations easy — `drillLine` refuses a card whose SAN will not resolve,
+    which catches ILLEGAL but not CHANGED. The visible list is the mitigation,
+    not cleverness.
+- "Pin this mistake?" (section 16c, v0.104.0): a small body-mounted panel in the
+  BOTTOM-RIGHT CORNER of the viewport, raised the moment a new mistake-log entry
+  appears, offering the pin there and then. Opt-OUT (`CONFIG.retry.pinPromptKey`
+  = `cloPinPrompt`, absent = ON; options-page checkbox).
+  * IT MUST NOT SWALLOW KEYS — section 18b's rule, for section 18b's reason: the
+    user is still playing on Chessable's board and needs MoveTrainer2's
+    single-key shortcuts. Its buttons `blurButton()` themselves instead, or the
+    next space would re-fire them. `blurButton` is TOP-LEVEL now, hoisted out of
+    the continuation module, and shared by all three key-passing surfaces.
+  * ITS SOURCE IS THE MISTAKE LOG, never a capture of its own: section 16
+    already writes an entry the instant an attempt count grows, and that entry
+    is everything a pin needs. `pp.since` is stamped at init so nothing already
+    in the 12 h log is offered on arrival.
+  * ONE OFFER PER MOVE PER DOCUMENT (`offered` + `declined`), gone by itself
+    after `pinPromptMs`. It hides while `continuationActive()`.
+- The floating "Drill pinned" launcher (section 16d, v0.104.0): the same corner,
+  on EVERY chessable.com page, showing whenever ANY course has a pin due —
+  `pinApi.due(null)`. It is the answer to 16b's course-scoped limit.
+  * NOT ON A TRAINER PATH, and that is enforced TWICE: this module hides there,
+    and `openDrill` refuses a standalone pass on a trainer path whatever the
+    caller says. Our board over a live quiz whose timer is running is the one
+    thing this feature must never do, and the row already has the launcher for
+    the browse state.
+  * It calls `continuationDrill(entries, { standalone: true })`.
 - Continuation review (section 18): quizzes the clickable subvariation lines a
   completed variation ends with — opponent plies auto-played, the USER'S OWN COLOUR
   asked for, lines run in sequence. Nothing is recorded as proven and nothing is
@@ -1480,9 +1575,34 @@ Currently working (v0.18.x).
   are unaffected. `closeReview` skips `navigateToLineEnd` for anything but a
   quiz: a drill's positions come from the log, and the comment column holds
   nothing matching them.
-  Both launchers are browse-state gated ("Drill mistakes (N)" on the section-18
-  cluster, "Drill selected" in the mistake popup through the `continuationDrill`
-  bridge, which returns FALSE when it cannot open so the popup can say why): our
+  A card can also come from section 16b's PINNED list — the records are
+  entry-shaped, so nothing below `duePinnedMistakes()` knows the difference —
+  and `finishDrillCard` grades every card against `pinApi.note` whichever list
+  it came from, above its own clean-only return, since a MISS is what resets a
+  pin's streak. `openDrill` dedupes by `line.key`: the two lists overlap by
+  construction (a pinned move failed again today is in both) and grading it
+  twice in one pass would credit it once and then refuse the second inside its
+  own window.
+  STANDALONE MODE (v0.104.0, `cr.standalone`) is how 16d's launcher runs a pass
+  on a page with no board of Chessable's: the SAME overlays as a modal —
+  `positionStandalone` centres them in the viewport over a `.clo-cr-scrim`, and
+  `applyStandaloneChrome` is the ONE place the dressing goes on and off, so no
+  exit path can leave a scrim over a page with no board. Three rules:
+  * `position: fixed` here, which the overlays are otherwise forbidden. The ban
+    in section 11 is on anchoring a fixed element to SCROLLING CONTENT; a modal
+    is anchored to the viewport, like every popup in this file. Doubled class
+    (`.clo-cr-board.clo-cr-standalone`) so it outranks the base rule.
+  * BOTH TICKS CHECK `cr.standalone` BEFORE ANY TEARDOWN — it is the one run
+    that is not about the page it is on, so no path change, variation change or
+    browse-state flip may close it. Only Exit and the last card do.
+  * ORIENTATION comes from the queue's first card, not `trainerUserColor()`;
+    pieces fall back to `PIECE_GLYPH` when no Chessable board has been seen in
+    this tab, since `boardPieceSvg` is filled by cloning theirs.
+  Four launchers now, three of them browse-state gated ("Drill mistakes (N)" and
+  "Drill pinned (N)" on the section-18 cluster, "Drill selected" in the mistake
+  popup through the `continuationDrill` bridge, which returns FALSE when it
+  cannot open so the popup can say why; 16d's is the fourth and is the only one
+  that is not): our
   board overlays Chessable's, so offering this mid-quiz would cover a live quiz
   board. The gate lives in `openDrill` itself, NOT only in `syncButton` — the
   popup is reachable mid-quiz, and the watchdog closes any active overlay the
