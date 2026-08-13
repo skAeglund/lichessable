@@ -166,6 +166,13 @@ along in the `.crx`. It is inert (nothing references it, no permissions, no
       (log in, leave **all scope checkboxes unchecked**, click Create).
    3. Copy the token (starts with `lip_`), paste it into the options page,
       click **Test** (should say "Token works ✓"), then **Save**.
+   *Skipping step 5 on a second profile:* create a file called
+   `local-token.json` beside `manifest.json` holding
+   `{"lichessToken": "lip_..."}`. The worker seeds it into extension storage on
+   load, so the options page needs no visit. It is **gitignored** and must stay
+   that way — a token committed once lives in every clone and in every packed
+   `.crx`. It never overwrites a token already saved, so pasting a new one in
+   the options page always wins; to rotate, edit the file and clear the field.
 6. Open an Explore page, e.g. `https://www.chessable.com/explore/287495/`,
    or the Analysis board, `https://www.chessable.com/analysis/`. The
    "Lichess Database" panel appears to the right of Chessable's content

@@ -21,6 +21,19 @@ const TEXT_MOVE_KEY = 'cloTextMove';
 // the screen and nothing else, and the whole point of it is that the moment the
 // user has an opinion about a move is the moment they get it wrong.
 const PIN_PROMPT_KEY = 'cloPinPrompt';
+// Section 16e (DESIGN-chessable-sync.md). All four must match CONFIG.pinSync in
+// content/lichessable.js. THIS PAGE CANNOT TALK TO CHESSABLE — it is a different
+// origin, so it holds no JWT — which is the whole reason these exist: the
+// content script publishes the writable courses and the last result, and reads
+// back the choice and the "sync now" ping. The pins themselves it CAN read,
+// since storage.sync belongs to the extension.
+const PIN_SYNC_KEY     = 'cloPinSync';
+const PIN_SYNC_STATUS  = 'cloPinSyncStatus';
+const PIN_SYNC_COURSES = 'cloPinSyncCourses';
+const PIN_SYNC_NOW     = 'cloPinSyncNow';
+// must match CONFIG.retry.pinItemPrefix / pinSteps.
+const PIN_ITEM_PREFIX  = 'cloPin:';
+const PIN_STEPS = [30 * 60 * 1000, 4 * 3600 * 1000, 24 * 3600 * 1000];
 // must match CONFIG.showGrade.key in content/lichessable.js. Opt-OUT since
 // v0.81.0 (absent = ON, so only an explicit false is ever stored as "off"). It
 // used to be opt-IN because the mode takes two keys off MoveTrainer2 for a whole
@@ -214,4 +227,127 @@ $('test').addEventListener('click', async () => {
   }
 });
 
+
+// --- section 16e: the sync picker, and the pin list -------------------------
+
+function dueAt(rec) {
+  const streak = Math.min(Math.max(rec.streak || 0, 0), PIN_STEPS.length - 1);
+  return (rec.lastSeenAt || rec.pinnedAt || 0) + PIN_STEPS[streak];
+}
+
+function dueLabel(rec) {
+  const left = dueAt(rec) - Date.now();
+  if (left <= 0) return 'due now';
+  const mins = Math.round(left / 60000);
+  if (mins < 60) return 'in ' + Math.max(1, mins) + ' min';
+  const hours = Math.round(left / 3600000);
+  if (hours < 48) return 'in ' + hours + ' h';
+  return 'in ' + Math.round(hours / 24) + ' days';
+}
+
+/** The pins this device holds, soonest first. Read straight out of
+ *  storage.sync — no Chessable call, so this works on any device and with the
+ *  transport switched off. */
+async function renderPins() {
+  const table = $('pinList'), note = $('pinListNote');
+  let recs = [];
+  try {
+    const all = await chrome.storage.sync.get(null);
+    recs = Object.entries(all)
+      .filter(([k, v]) => k.startsWith(PIN_ITEM_PREFIX) && v && v.san)
+      .map(([, v]) => v)
+      .sort((a, b) => dueAt(a) - dueAt(b));
+  } catch (err) {
+    note.textContent = 'Could not read the pins: ' + err;
+    table.hidden = true;
+    return;
+  }
+  const body = table.querySelector('tbody');
+  body.textContent = '';
+  for (const rec of recs) {
+    const tr = document.createElement('tr');
+    const due = Date.now() >= dueAt(rec);
+    if (due) tr.className = 'due';
+    const cells = [
+      ['move', (rec.num ? rec.num + (rec.color === 'b' ? '...' : '.') : '') + rec.san],
+      ['line', [rec.chapter, rec.title].filter(Boolean).join(' — ')],
+      ['streak', (rec.streak || 0) + '/' + PIN_STEPS.length],
+      ['due', dueLabel(rec)],
+    ];
+    for (const [cls, text] of cells) {
+      const td = document.createElement('td');
+      td.className = cls;
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+  table.hidden = !recs.length;
+  const dueCount = recs.filter((r) => Date.now() >= dueAt(r)).length;
+  note.textContent = recs.length
+    ? recs.length + ' pinned move(s), ' + dueCount + ' due now.'
+    : 'No pinned mistakes on this device yet.';
+}
+
+async function renderSync() {
+  const sel = $('syncCourse');
+  const stored = await chrome.storage.local.get([PIN_SYNC_KEY, PIN_SYNC_STATUS, PIN_SYNC_COURSES]);
+  const pref = stored[PIN_SYNC_KEY] || {};
+  const courses = stored[PIN_SYNC_COURSES] || [];
+  const status = stored[PIN_SYNC_STATUS];
+  while (sel.options.length > 1) sel.remove(1);
+  for (const c of courses) {
+    const opt = document.createElement('option');
+    opt.value = c.bid;
+    opt.textContent = c.name;
+    sel.appendChild(opt);
+  }
+  sel.value = (pref.on && pref.bid) ? String(pref.bid) : '';
+  // A course the picker has never heard of (the list is published by whichever
+  // device last visited Chessable) must not read as "off".
+  if (pref.on && pref.bid && sel.value !== String(pref.bid)) {
+    const opt = document.createElement('option');
+    opt.value = String(pref.bid);
+    opt.textContent = 'Course ' + pref.bid;
+    sel.appendChild(opt);
+    sel.value = String(pref.bid);
+  }
+  $('syncCoursesNote').textContent = courses.length
+    ? 'Courses you can write to, as of the last Chessable page you opened.'
+    : 'Open any Chessable page once and come back — this page cannot ask ' +
+      'Chessable for your courses itself.';
+  $('syncStatus').textContent = status
+    ? (status.text + ' (' + new Date(status.at).toLocaleString() + ')')
+    : 'Not synced on this device yet.';
+  $('syncStatus').className = 'fineprint' + (status && !status.ok ? ' error' : '');
+}
+
+$('syncCourse').addEventListener('change', async () => {
+  const bid = $('syncCourse').value;
+  await chrome.storage.local.set({ [PIN_SYNC_KEY]: { on: Boolean(bid), bid, lid: 0 } });
+  setStatus(bid
+    ? 'Sync course set. Open a Chessable page to finish setting it up.'
+    : 'Pin sync switched off — pins stay on this device.');
+  renderSync();
+});
+
+$('syncNow').addEventListener('click', async () => {
+  // The content script is the only thing that can reach Chessable, so this is
+  // a ping it watches for rather than a call. The value has to CHANGE for
+  // storage.onChanged to fire on the other side.
+  await chrome.storage.local.set({ [PIN_SYNC_NOW]: Date.now() });
+  setStatus('Asked the open Chessable tab to sync. Open one if there is none.');
+});
+
+// Both halves update themselves: the content script writes the status and the
+// course list from another document, and pins arrive from another DEVICE.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && (changes[PIN_SYNC_STATUS] || changes[PIN_SYNC_COURSES] ||
+      changes[PIN_SYNC_KEY])) renderSync();
+  if (area === 'sync' && Object.keys(changes).some((k) => k.startsWith(PIN_ITEM_PREFIX)))
+    renderPins();
+});
+
 init();
+renderSync();
+renderPins();

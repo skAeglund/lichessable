@@ -78,6 +78,40 @@
 const ALLOWED_URL_PREFIX = 'https://explorer.lichess.org/';
 const TOKEN_KEY = 'lichessToken'; // must match content/lichessable.js and options/options.js
 
+// A token this browser profile can start with, so a new profile (or a reinstall,
+// or the phone) does not need it pasted in by hand. It lives in an UNTRACKED
+// file — `local-token.json`, gitignored — rather than in any source file here,
+// which is the whole point: a secret committed once is in every clone and in
+// every .crx packed from them for ever, and CLAUDE.md's "never store the token
+// in the repo" rule exists for that reason rather than because the token's
+// scope is frightening. Absent file = exactly the behaviour before this: the
+// options page asks for a token.
+//
+// It NEVER overwrites a token already in storage, so pasting a new one in the
+// options page wins permanently and rotating the old one costs nothing here.
+const LOCAL_TOKEN_FILE = 'local-token.json';
+
+async function seedTokenFromLocalFile() {
+  try {
+    const stored = await chrome.storage.local.get(TOKEN_KEY);
+    if (stored && stored[TOKEN_KEY]) return; // never clobber a real answer
+    const res = await fetch(chrome.runtime.getURL(LOCAL_TOKEN_FILE));
+    if (!res.ok) return;
+    const body = await res.json();
+    const token = body && typeof body[TOKEN_KEY] === 'string' && body[TOKEN_KEY].trim();
+    if (!token) return;
+    await chrome.storage.local.set({ [TOKEN_KEY]: token });
+    // Deliberately no token value in the log line — see the rule above.
+    console.log('[CLO] seeded the Lichess token from ' + LOCAL_TOKEN_FILE);
+  } catch (err) {
+    // No file, bad JSON, nothing to do. This must never break the worker.
+  }
+}
+
+chrome.runtime.onInstalled.addListener(seedTokenFromLocalFile);
+chrome.runtime.onStartup.addListener(seedTokenFromLocalFile);
+seedTokenFromLocalFile(); // and on every worker wake, which is what a reload is
+
 // Overstudy tabs may only ever point at Chessable's learn route:
 // /learn/<courseId>/<variationId>[/<listId>][/w|b] — ground-truthed against
 // Chessable's own Overstudy buttons (they navigate to e.g.

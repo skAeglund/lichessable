@@ -123,6 +123,10 @@ already exists for the notification job.
 
 ### 3.1 The store
 
+> Superseded by §9 (v0.105.0): the store moved to `chrome.storage.sync` with one
+> item per pin. The record shape below is unchanged — only where it lives and how
+> it is keyed.
+
 `chrome.storage.local`, key `cloPinnedMistakes`:
 
 ```
@@ -510,3 +514,95 @@ Same caveat as §7.7, now covering more: the prompt, the dock, the profile-wide
 store and the standalone board are source-correct and harness-measured. None of
 them has been in front of a trainer.
 
+
+---
+
+## 9. The store went cross-device (v0.105.0)
+
+§5.4 asked for a decision about backup rather than an oversight, and §5.3 asked
+whether 200/course was right. Both are answered here, by the same change.
+
+### 9.1 The question was "sync between devices, cheaply"
+
+The user studies the same courses on a PC and on a phone. A pin is the one thing
+in this extension that outlives its session, so it is the one thing worth
+carrying between them. The options weighed:
+
+| | works | costs |
+|---|---|---|
+| `chrome.storage.sync` | wherever Chrome Sync runs | a shape change, ~40 lines |
+| export/import blob in the options page | anywhere | manual, per sitting |
+| a store on Chessable (a variation comment as the blob, `getList` + `importGame`) | anywhere logged in | ~150 lines, a live-verified write, and abusing their store |
+
+`storage.sync` won on effort per unit of result, and above all on FAILURE MODE:
+where it does not sync it behaves exactly as the old store did (§9.3), so
+shipping it blind costs nothing and needs no test to justify.
+
+### 9.2 One item per pin, because 8 KB is the item ceiling
+
+sync's limits are 100 KB total, **8 KB per item**, 512 items, 1800 writes/hour.
+A record measured 479 bytes with its key (a real FEN, four lead plies, a long
+title AND a long chapter name), so the whole store as ONE value fits about
+twenty pins and then every save fails — silently, as far as a user who pins in
+one corner of the screen is concerned.
+
+So the item is the PIN: `cloPin:<bid>:<oid>:<mkey>`. Everything above the store
+is untouched — `pn.byBid` is still the same map in memory, and `pinApi` did not
+change. What the shape buys beyond fitting:
+
+* **conflict resolution per pin.** Two devices pinning different moves both
+  land; only the same move drilled on both races, and `lastSeenAt` already
+  settled that for two tabs.
+* **a write budget that scales.** `save()` diffs against what is stored and
+  issues one `set` and one `remove` carrying only what changed, instead of
+  rewriting every pin on every credit.
+
+What it does NOT buy is **tombstones**: a deletion is an absent key and nothing
+else. That is the whole reason `migrateLegacyStore` REMOVES the old
+`cloPinnedMistakes` blob (after the write it was folded into has landed) rather
+than merging it on every load — a blob left in place would put every unpinned
+and every retired record back, for ever.
+
+### 9.3 A fork that cannot sync loses nothing
+
+Every Chromium fork — i.e. the Android side of this, where `chrome.windows` is
+already known to be missing — implements `storage.sync` as local storage under
+another name: writes succeed, nothing crosses. So on the phone the feature
+behaves exactly as it did in v0.104.0, and on the PC pins now follow the Chrome
+profile. `AREA` is the one hedge left, for a fork missing the area altogether.
+
+This also answers §5.4: pins are now backed up wherever Chrome Sync runs, which
+is the cheap 80% of "the first store whose loss the user would feel".
+
+### 9.4 §5.3 answered: the cap is global now
+
+`pinMaxPerCourse` (200) came from the store being keyed by course. The ceiling
+now comes from the transport and counts every course at once, so the cap does
+too: `pinMaxTotal` = 180, oldest `pinnedAt` dropped, one console line. 213 fat
+records would fill sync's 100 KB; 180 leaves room for a record growing a field.
+A per-course cap underneath that could never fire, so it was removed rather than
+left as decoration.
+
+### 9.5 One bug this uncovered
+
+`pn.saveTimer` was never cleared when the save it scheduled FIRED, and a spent
+timer id is truthy — so `chrome.storage.onChanged`'s "skip while a save of our
+own is pending" guard switched the listener off permanently in any document that
+had saved once. Harmless while the only other writer was another tab of the same
+profile (a page reload healed it); not harmless when the other writer is another
+device. `save()` clears it first thing now, and `pn.saving` covers the in-flight
+window the timer used to.
+
+### 9.6 It is checked, not argued
+
+`dev/check-pin-store.js` executes the real `initPinnedMistakes` — sliced out of
+`content/lichessable.js` by brace matching, the discipline
+`dev/check-continuation-lines.js` established — against a fake `chrome.storage`
+with TWO devices sharing one sync area: migration, the write diff,
+deletion-by-absent-key, cross-device pickup, the global cap, retirement, and
+§9.5's listener. Controls were run for §9.5 and for deletion propagation: both
+FAIL against a source with the change reverted.
+
+Still not verified live, per §8.3 — and the one thing only a live run can answer
+is whether the phone's browser carries pins at all (§9.3 predicts it does not,
+at no cost).

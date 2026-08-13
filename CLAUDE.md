@@ -995,25 +995,47 @@ Currently working (v0.18.x).
   popup, and a launcher in section 20's cluster.
   **READ `DESIGN-pinned-mistakes.md` BEFORE CHANGING ANYTHING HERE.** What
   follows is only what an edit ELSEWHERE can break.
-  * `chrome.storage.local`, key `cloPinnedMistakes`, `{ bid: { "oid:mkey": rec } }`,
-    THE WHOLE STORE HELD AT ONCE and loaded in EVERY top document (v0.104.0) —
-    16d shows on pages that have no course, and one standalone pass can hold
-    cards from several. A record therefore carries its own `bid`, since `unpin`
-    and `note` have to find their way home from the oid a drill card knows;
-    v0.103.0 records have none and `load` fills it in from the map they were
-    stored under. — AND THE MISTAKE LOG STILL MUST NOT GO THERE. The two look contradictory
-    from a distance: the log is filled AUTOMATICALLY, so a stale one drills
-    moves nobody chose, while a pin is chosen one move at a time. That is the
-    whole of the exemption and it does not generalise.
+  * `chrome.storage.SYNC` (v0.105.0), ONE ITEM PER PIN, keyed
+    `cloPin:<bid>:<oid>:<mkey>` — which is the whole of the cross-device
+    transport: no account of ours, no host permission, no server. THE SHAPE IS
+    THE FEATURE: sync caps an ITEM at 8 KB and a record measures ~480 bytes, so
+    the old single-item store fit about twenty pins and then every save failed.
+    In memory it is still `{ bid: { "oid:mkey": rec } }`, THE WHOLE STORE HELD
+    AT ONCE and loaded in EVERY top document (v0.104.0) — 16d shows on pages
+    that have no course, and one standalone pass can hold cards from several. A
+    record therefore carries its own `bid`, since `unpin` and `note` have to
+    find their way home from the oid a drill card knows; where it is missing
+    (v0.103.0 wrote none) the item KEY is the answer.
+    A DELETION IS AN ABSENT KEY AND NOTHING ELSE — there are no tombstones — so
+    the pre-v0.105.0 `cloPinnedMistakes` blob is migrated ONCE and then REMOVED
+    from storage.local (`migrateLegacyStore`, after the write it was folded into
+    has landed). Merging it on every load instead would put every unpinned and
+    every RETIRED record back, for ever. For the same reason `save()` diffs
+    against what is stored and issues ONE `set` and ONE `remove`: sync counts
+    write operations (1800/hour), and a pruned or retired pin leaves by being
+    absent from the write.
+    A browser with no Chrome Sync behind it — every Chromium fork, i.e. the
+    Android side of this — does NOT fail: storage.sync there is local storage
+    under another name, so the feature behaves exactly as it did before. `AREA`
+    is the one remaining hedge, for a fork missing the area altogether.
+    — AND THE MISTAKE LOG STILL MUST NOT GO IN EITHER OF THESE. The two look
+    contradictory from a distance: the log is filled AUTOMATICALLY, so a stale
+    one drills moves nobody chose, while a pin is chosen one move at a time.
+    That is the whole of the exemption and it does not generalise.
   * A RECORD IS SELF-CONTAINED, never a reference into the log — which is gone
     by the next session. It carries every field `drillLine`, `moveLabel` and the
     popup's row builder need, and is ENTRY-SHAPED so all three take one
     unchanged. It also carries `isPin: true`, which is what the popup's
     `entryKey` and `defaultChecked` branch on: a pinned move and this session's
     own failure of it are two different ROWS.
-  * NO TTL AND NO PRUNING except `pinMaxPerCourse` (200, oldest `pinnedAt`, with
-    a console line). Writes MERGE on `lastSeenAt` and apply our own removals
-    AFTER the merge — a retirement is a removal, and another tab's stale copy
+  * NO TTL AND NO PRUNING except `pinMaxTotal` (180, oldest `pinnedAt`, with a
+    console line). It is GLOBAL, across every course, because so is the ceiling
+    it comes from (sync allows 100 KB and 512 items in total; a fat record is
+    479 bytes with its key, so 213 would fill it). It REPLACED the per-course
+    cap of 200 in v0.105.0 — that number came from the store being keyed by
+    course, and any per-course cap under this one could never fire.
+    Writes MERGE on `lastSeenAt` and apply our own removals AFTER the merge — a
+    retirement is a removal, and another tab's (or another DEVICE's) stale copy
     would otherwise put a finished pin straight back.
   * `CONFIG.retry.pinSteps` IS THE SCHEDULE AND ITS LENGTH IS THE TARGET
     (30 min → 4 h → 24 h). Derived, not declared, so the two cannot disagree.
@@ -1036,7 +1058,12 @@ Currently working (v0.18.x).
   * `pin(entry, bid)` NEEDS A COURSE and refuses without one — a record with no
     `bid` cannot be unpinned or retired, since both start from an oid.
   * IT WATCHES `chrome.storage.onChanged` and reloads, but NOT while a save of
-    its own is pending: that picture was taken before our write.
+    its own is pending or in flight: that picture was taken before our write.
+    `save()` clears `pn.saveTimer` the moment it FIRES — a spent timer id stays
+    truthy, which switched that listener off permanently in any document that
+    had saved once (harmless while the store was per-profile and a tab reload
+    healed it; not harmless now that the other writer can be another device).
+    `dev/check-pin-store.js` covers exactly this.
   * THE ROW'S launcher stays course-scoped and browse-state gated; 16d is what
     lifts that limit, and it does it by being somewhere else entirely.
   * NOTHING IS RESCHEDULED AND CHESSABLE'S BOARD IS NEVER TOUCHED — section 20's
@@ -1070,6 +1097,56 @@ Currently working (v0.18.x).
     thing this feature must never do, and the row already has the launcher for
     the browse state.
   * It calls `continuationDrill(entries, { standalone: true })`.
+- Pin sync through Chessable (section 16e, v0.106.0): the transport that carries
+  pinned mistakes to a device Chrome Sync cannot reach — i.e. the phone, whose
+  browser is a Chromium fork with no Google sync behind it. `storage.sync` stays
+  the store; this is a second transport over it.
+  **READ `DESIGN-chessable-sync.md` BEFORE CHANGING ANYTHING HERE** — §4 is the
+  wire, established live 2026-08-12, and every fact in it was needed. What
+  follows is only what an edit ELSEWHERE can break.
+  * THE PAYLOAD IS BASE32, NEVER BASE64, and this is the finding that shapes the
+    feature. Chessable's comment parser rewrites move-like substrings, and
+    base64's alphabet contains every letter and digit a SAN is made of — a real
+    payload came back with `@@SANStart@@7a3@@SANEnd@@` spliced into it. A SAN
+    needs a lowercase file letter, so RFC 4648's `A-Z2-7` cannot spell one. The
+    corruption is CONTENT-DEPENDENT and silent, so a synthetic test can pass
+    while the feature is broken.
+  * THE CARD'S MOVE IS `--`, WHICH IS WHAT MAKES IT INFORMATIONAL — `nColor: 0`,
+    never quizzed, never scheduled. Change that move and the extension starts
+    putting a real SRS card in the user's course. `getList` reports it with
+    `moves: []`, the signature our own walk already skips
+    ([lichessable.js:3169](content/lichessable.js:3169)), so it cannot pollute
+    the repertoire index or the coverage report either.
+  * `oid` ON THE ENTRY IS THE ENTIRE OVERWRITE. It is the one field section 19d
+    must never send (`DESIGN-add-as-puzzle.md` §2.2); here it is the store.
+    Without it every push CREATES, and the store forks silently.
+  * PRESENCE IS ASKED OF `getList`, NEVER OF `getLesson`: a DELETED variation
+    still answers the lesson call, so a user who deletes the card by hand would
+    otherwise read its ghost for ever.
+  * IT NEEDS TOMBSTONES AND `storage.sync` DOES NOT (`pinGoneKey`, one item,
+    aged out at `pinGoneDays`). The blob is rewritten whole, so "present
+    remotely, absent locally" is ambiguous — without tombstones a retired pin
+    comes back for ever, or a new one is swallowed. `noteGone` is called from
+    BOTH removal paths (unpin and the retirement branch of `note`); a removal
+    that skips it is a deletion that undoes itself on the next exchange.
+  * IT OWNS ONE BRIDGE, `pinSyncApi`, null-safe: `touch()` (a local change wants
+    a push — called from the pin store's own `scheduleSave`), `now()` and
+    `state()`. It CALLS `pinApi.exportAll`/`merge`, which are pure store
+    operations for exactly this reason: the transport never reaches into `pn`,
+    and `dev/check-pin-store.js` keeps checking both with no network in it.
+  * IT STANDS DOWN WHILE `continuationActive()` — a merge can delete the card
+    being drilled.
+  * IT ADOPTS A COURSE CALLED "LiChessable" (`autoName`) ON A DEVICE THAT HAS
+    NEVER BEEN CONFIGURED, so a second device needs no setup. "Configured" is
+    `hasOwnProperty(prefKey)`, NOT `pref.on` — switching the picker to Off writes
+    `{on:false}` and that is a DECISION the auto-pick must never undo on the next
+    page load. Exact name match, case- and whitespace-insensitive.
+  * THE OPTIONS PAGE CANNOT TALK TO CHESSABLE (different origin, no JWT), which
+    is why the content script PUBLISHES the writable course list and the last
+    status into `storage.local` and watches `cloPinSyncNow` for the page's
+    "Sync now". The pin LIST on that page is read straight from `storage.sync`
+    and needs none of this.
+
 - Continuation review (section 18): quizzes the clickable subvariation lines a
   completed variation ends with — opponent plies auto-played, the USER'S OWN COLOUR
   asked for, lines run in sequence. Nothing is recorded as proven and nothing is
@@ -1114,7 +1191,16 @@ Currently working (v0.18.x).
       opacity through `.clo-sg-arrow` rather than touching that shared class.
     Pieces are Chessable's own live `<svg>` nodes CLONED (`cloneNode(true)`, never
     innerHTML, no vendored art); geometry is ALL percentages, so a resize needs no
-    JS. The arrow/circle geometry is chessground's, MEASURED off a live board —
+    JS. THE HARVEST IS PERSISTED (v0.108.0, `cloBoardPieces` in storage.local,
+    written by `saveBoardPieceCache` and read once per top document by
+    `loadBoardPieceCache` from `start()`), because section 20's standalone pass
+    opens on pages that have NO board to clone from and every piece fell back to
+    `PIECE_GLYPH` there. `boardPieceLive` is what keeps a live read authoritative:
+    the harvest stops at twelve SEEN, not at a full map, so cached art is replaced
+    if Chessable ever changes its own. Coming back it goes through `parsePieceSvg`
+    — DOMParser and `importNode`, NEVER innerHTML, plus `scrubSvgNode` — since our
+    own storage is still a string of markup.
+    The arrow/circle geometry is chessground's, MEASURED off a live board —
     and `dev/harness.html` keeps its OWN copy of those numbers and does not update
     itself, so CHANGE ONE, CHANGE BOTH.
   * A LINE WHOSE NUMBERS FIT NOTHING WE CAN RECONSTRUCT IS DROPPED, never guessed
@@ -1596,8 +1682,16 @@ Currently working (v0.18.x).
     that is not about the page it is on, so no path change, variation change or
     browse-state flip may close it. Only Exit and the last card do.
   * ORIENTATION comes from the queue's first card, not `trainerUserColor()`;
-    pieces fall back to `PIECE_GLYPH` when no Chessable board has been seen in
-    this tab, since `boardPieceSvg` is filled by cloning theirs.
+    pieces come out of the PERSISTED harvest (section 11c) — this is the mode
+    that needed it, since the pages it opens on have no board to clone from —
+    and fall back to `PIECE_GLYPH` only on a profile that has never had a
+    Chessable board on screen while the extension was loaded.
+  * SIZE IS THE VIEWPORT'S SHAPE, not the device's: `standaloneMaxPx` caps a
+    LANDSCAPE window only, and in portrait the board fills the width
+    (`standalonePortraitMarginPx`). Asking `wantsTouchUi()` would answer the
+    wrong question twice over — a phone in Chrome's "Desktop site" lays out at
+    ~980 CSS px, where the old 460px cap spent half the screen on nothing, and a
+    narrow desktop window wants the same answer a phone does.
   Four launchers now, three of them browse-state gated ("Drill mistakes (N)" and
   "Drill pinned (N)" on the section-18 cluster, "Drill selected" in the mistake
   popup through the `continuationDrill` bridge, which returns FALSE when it
@@ -1955,6 +2049,20 @@ section 23. To run a control, point `CLO_SRC` at a copy with the change
 reverted and confirm it FAILS — an early version of that control silently read
 the good source and passed against a copy that still had the bug.
 
+After touching section 16b's store — `load`, `save`, `migrateLegacyStore`,
+`indexItems`, `itemKey` or the caps:
+
+```
+node dev/check-pin-store.js
+```
+
+Same discipline as the check above: it EXECUTES the real `initPinnedMistakes`,
+sliced out by `dev/slice-source.js`, against a fake `chrome.storage` with TWO
+devices sharing one sync area — migration off the pre-v0.105.0 blob, the write
+diff, deletion-by-absent-key, the global cap, retirement, and that a device
+still hears about the other one after saving itself. Run a control (`CLO_SRC`
+pointed at a copy with the change reverted) and confirm it FAILS.
+
 It discovers every module-level bridge in `content/lichessable.js` (the
 `let x = null;` idiom, assigned a function or object by the owning section's
 init) and fails if one is not named in CLAUDE.md, or if CLAUDE.md still calls
@@ -2069,6 +2177,13 @@ tab. Logs appear in the mt1 IFRAME's console context — filter the console for
 
 ## Never
 
-- Ask for, log, or store the actual `lip_` token value anywhere in the repo.
+- Ask for, log, or store the actual `lip_` token value anywhere TRACKED in the
+  repo. The one sanctioned home is `local-token.json` — gitignored, seeded into
+  `chrome.storage.local` by `seedTokenFromLocalFile` in background.js on install,
+  on startup and on every worker wake, and NEVER overwriting a token already
+  stored. A missing file is the ordinary case and behaves exactly as before it
+  existed (the options page asks). The rule is about git history and packed
+  .crx files, not about the token's scope: a secret committed once is in every
+  clone for ever. Do not print the value in a log line either.
 - Add permissions, hosts, or libraries without explicit discussion.
 - Fix Chessable-markup breakage anywhere except `SELECTORS`.

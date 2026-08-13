@@ -77,6 +77,46 @@
     unaffected either way.
   </p>
 
+  <h2>Pinned mistakes on more than one device</h2>
+
+  <label for="syncCourse">Carry pins through this course</label>
+  <select id="syncCourse">
+    <option value="">Off — pins stay on this device</option>
+  </select>
+  <p class="fineprint" id="syncCoursesNote"></p>
+  <p class="fineprint">
+    A device that has never been set up here adopts a course called
+    <code>LiChessable</code> by itself, if you have one. Make that course once
+    and every other device picks it up on its own; choosing anything here — including
+    <em>Off</em> — is a decision, and is never overridden.
+  </p>
+
+  <div class="row">
+    <button id="syncNow" class="secondary">Sync now</button>
+  </div>
+  <p class="fineprint" id="syncStatus" aria-live="polite"></p>
+
+  <p class="fineprint">
+    Pins already follow Chrome Sync wherever you are signed in to Chrome with
+    extension sync on. Most Android browsers that can run extensions have no
+    Chrome Sync behind them, so this is the transport for those: the pins are
+    written into a single <strong>informational card</strong> — a card with no
+    move, which Chessable never quizzes or schedules — in a course of your own.
+    Every device signed in to your Chessable account then reads and writes that
+    one card. Pick the same course on each device. The card is called
+    <code>CLO-SYNC &middot; do not delete</code>; you may move it to any chapter
+    you like, but if you delete it the pins it was carrying go with it.
+    Nothing else about your courses is read or written, and nothing leaves your
+    Chessable account.
+  </p>
+
+  <h2>Pins on this device</h2>
+  <p class="fineprint" id="pinListNote">Reading…</p>
+  <table id="pinList" class="pins" hidden>
+    <thead><tr><th>Move</th><th>Line</th><th>Streak</th><th>Due</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
   <label class="inline"><input type="checkbox" id="pinPrompt"> Offer to pin a mistake right after you make it</label>
 
   <p class="fineprint">

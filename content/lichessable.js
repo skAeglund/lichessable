@@ -334,9 +334,15 @@
       // Our board with nothing of Chessable's underneath it, opened from the
       // floating launcher (16d). The board is sized from the VIEWPORT rather
       // than from theirs, since there is no theirs.
-      standaloneMaxPx:    460,  // never larger than this, however big the window
+      // The cap applies to a LANDSCAPE window only. Held upright — a phone,
+      // or a narrow desktop window — the width IS the budget and the board
+      // fills it: a 460px board inside Chrome's ~980px "Desktop site" layout
+      // viewport (the thing section 6's touch latch exists because of) is half
+      // a phone screen spent on nothing.
+      standaloneMaxPx:    575,  // never larger than this in landscape
       standaloneMinPx:    240,  // …and never smaller: below this a drag is guesswork
       standaloneMarginPx: 16,
+      standalonePortraitMarginPx: 6, // portrait fills the width; just enough to breathe
       standalonePanelPx:  150,  // room kept under the board for the panel
       // --- mistake drill (section 20) --------------------------------------
       // The same overlays in a third mode: this session's failed moves, one
@@ -763,6 +769,37 @@
       altCacheMax: 24,    // variations remembered per session; a lesson is ~9 KB
     },
 
+    // --- pin sync through Chessable (section 16e) -------------------------
+    // The transport that works where Chrome Sync does not, i.e. on the phone.
+    // Everything about the wire is in DESIGN-chessable-sync.md §4; these are
+    // only the knobs.
+    pinSync: {
+      prefKey:   'cloPinSync',        // storage.local: { on, bid, lid }
+      slotKey:   'cloSyncSlot',       // storage.SYNC: { bid, lid, oid } — the pointer
+      statusKey: 'cloPinSyncStatus',  // storage.local: what the options page reads
+      coursesKey:'cloPinSyncCourses', // storage.local: writable courses, for its picker
+      nowKey:    'cloPinSyncNow',     // storage.local: the options page's "Sync now"
+      // The card. `--` is what makes it INFORMATIONAL (§4.5) — never quizzed,
+      // never scheduled — so this string is load-bearing, not cosmetic.
+      cardMove:  '--',
+      cardName:  'CLO-SYNC · do not delete',
+      // A course of this name is adopted on a device that has never been
+      // configured (autoPickCourse) — so a second device needs no setup at all
+      // if the user keeps one. Matched case- and whitespace-insensitively, and
+      // EXACTLY: "LiChessable notes" is a course about something else.
+      autoName:  'LiChessable',
+      startFen:  'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+      // base32, NOT base64: Chessable's comment parser marks up move-like
+      // substrings, and base64's alphabet contains every letter and digit a SAN
+      // is made of (§4.4, where a payload came back with @@SANStart@@ in it).
+      marker:    'CLOSYNC1.',
+      blobVersion: 1,
+      pullMs:    10 * 60 * 1000,  // how stale a pull may be before a page re-reads
+      pushMs:    45 * 1000,       // debounce after a local change
+      tickMs:    15 * 1000,
+      maxBytes:  120000,          // §4.3 proved 128 KB; stop short of it
+    },
+
     // --- Touch-sized UI (section 6, applyTouchUiClass) ----------------------
     touch: {
       // chrome.storage.local; 'auto' | 'touch' | 'desktop' (options page). The
@@ -1035,14 +1072,39 @@
       // length is meant to become a setting, and a stored log cannot be
       // back-filled.
       leadPlies: 4,
-      // --- pinned mistakes (section 16b) ------------------------------------
+    // --- pinned mistakes (section 16b) ------------------------------------
       // A mistake the user marked BY HAND, which outlives the session. This is
       // the one thing in this feature that may live in chrome.storage.local:
       // the log above must not, because it is filled AUTOMATICALLY and a stale
       // automatic list drills moves nobody chose. A pin is chosen one move at a
       // time, which is exactly the difference — see DESIGN-pinned-mistakes.md
       // §2.2, because the two decisions look contradictory from a distance.
+      // …and, since v0.105.0, in chrome.storage.SYNC, which is the whole of the
+      // cross-device transport: no account of ours, no host permission, no
+      // server. `pinKey` is now only the pre-v0.105.0 single-item store, read
+      // once at load and then removed. See the store block for the shape and
+      // why it had to change.
       pinKey: 'cloPinnedMistakes',
+      pinItemPrefix: 'cloPin:', // one sync item per pin: cloPin:<bid>:<oid>:<mkey>
+      // TOMBSTONES, and they exist for section 16e alone (DESIGN-chessable-sync
+      // §2.4). storage.sync needs none — a deletion there is an absent key,
+      // which is unambiguous — but the Chessable blob is rewritten WHOLE, so
+      // "present remotely, absent locally" would otherwise be indistinguishable
+      // from "added on the other device", and the store would either resurrect
+      // retired pins for ever or swallow new ones. ONE item, not one per
+      // deletion: ~45 bytes each against the 8 KB item cap, hence the count cap
+      // as well as the age one.
+      pinGoneKey:  'cloPinGone',
+      pinGoneDays: 60,   // ≫ the ~28.5 h a pin needs to retire
+      pinGoneMax:  120,
+      // The cap is GLOBAL, where until v0.105.0 it was per course (200) — that
+      // number came from the store being keyed by course, and the ceiling now
+      // comes from the transport, which counts every device's pins at once:
+      // storage.sync allows 100 KB and 512 items in total. A fat record (a long
+      // variation title AND a long chapter name) measures 479 bytes including
+      // its key, so 213 of them would fill it; 180 leaves room for a record
+      // growing a field. A per-course cap under this one could never fire.
+      pinMaxTotal: 180,
       // Anki's learning steps: the gap before a pinned move is asked for again,
       // indexed by the streak it is on. A clean answer once the gap has elapsed
       // advances the streak; a miss puts it back to 0, i.e. back to half an
@@ -1051,7 +1113,6 @@
       // user does — and the streak TARGET is this array's own length, derived
       // rather than declared, so the two cannot disagree.
       pinSteps: [30 * 60 * 1000, 4 * 3600 * 1000, 24 * 3600 * 1000],
-      pinMaxPerCourse: 200, // oldest `pinnedAt` dropped past this, with a console line
       // --- the offer made right after the mistake (section 16c) -------------
       // Long enough to be read and answered between two moves of a quiz, short
       // enough that an unanswered one is gone before it becomes furniture.
@@ -5383,6 +5444,15 @@
   // on the page. Module-level, so the two boards share one cache and a type
   // seen by either is available to both.
   const boardPieceSvg = new Map();
+  // …and which of those came off a board in THIS document rather than out of
+  // storage. Only a live read is authoritative, so the harvest stops when all
+  // twelve have been SEEN, not when the map is merely full: that is what lets
+  // a cached set be replaced if Chessable ever changes its art.
+  const boardPieceLive = new Set();
+
+  const PIECE_CACHE_KEY = 'cloBoardPieces'; // chrome.storage.local
+  const PIECE_SVG_MAX = 24000;   // one piece; a board's art is a few hundred bytes
+  const PIECE_CACHE_MAX = 120000; // all twelve together
 
   /**
    * Caches piece SVGs from the live board. Cloning THEIR node (never
@@ -5392,14 +5462,110 @@
    * uses the same [data-piece] markup.
    */
   function harvestBoardPieces() {
-    if (boardPieceSvg.size >= 12) return; // every type seen; nothing left to learn
+    if (boardPieceLive.size >= 12) return; // every type seen; nothing left to learn
     const board = getReviewBoard();
     if (!board) return;
+    let grew = false;
     for (const el of board.querySelectorAll(SELECTORS.reviewPiece)) {
       const code = el.getAttribute('data-piece');
-      if (!code || !/^[wb][PNBRQK]$/.test(code) || boardPieceSvg.has(code)) continue;
+      if (!code || !/^[wb][PNBRQK]$/.test(code) || boardPieceLive.has(code)) continue;
       const svg = el.querySelector('svg');
-      if (svg) boardPieceSvg.set(code, svg.cloneNode(true));
+      if (!svg) continue;
+      boardPieceSvg.set(code, svg.cloneNode(true));
+      boardPieceLive.add(code);
+      grew = true;
+    }
+    if (grew) saveBoardPieceCache();
+  }
+
+  /**
+   * Persists the harvested art (section 11c). THE CACHE IS WHAT MAKES THE
+   * STANDALONE DRILL (20) LOOK LIKE CHESSABLE: that pass opens on the
+   * dashboard, a course page — anywhere a pin is due — and those pages carry
+   * no board at all, so there is nothing to clone off and every piece fell
+   * back to a Unicode glyph. It only ever LOOKED right on a tab that had
+   * navigated SPA-style from a page with a board, which is why it reads as
+   * "works on the PC, broken on the phone".
+   * Debounced: the harvest runs per render and the write is worth doing once.
+   */
+  let boardPieceSaveTimer = null;
+  function saveBoardPieceCache() {
+    if (boardPieceSaveTimer) return;
+    boardPieceSaveTimer = setTimeout(() => {
+      boardPieceSaveTimer = null;
+      const out = {};
+      let total = 0, n = 0;
+      for (const [code, node] of boardPieceSvg) {
+        let s = '';
+        try { s = new XMLSerializer().serializeToString(node); } catch (e) { continue; }
+        if (!s || s.length > PIECE_SVG_MAX) continue;
+        total += s.length;
+        out[code] = s;
+        n++;
+      }
+      if (!n || total > PIECE_CACHE_MAX) return;
+      try {
+        const p = chrome.storage.local.set({ [PIECE_CACHE_KEY]: out });
+        if (p && p.catch) p.catch(() => {});
+      } catch (e) { /* orphaned content script; the next document will save */ }
+    }, 1000);
+  }
+
+  /** Fills in whatever this document has not seen live. Async, and only ever
+   *  additive, so a board that renders first still wins. */
+  function loadBoardPieceCache() {
+    let p = null;
+    try { p = chrome.storage.local.get(PIECE_CACHE_KEY); } catch (e) { return; }
+    if (!p || !p.then) return;
+    p.then((got) => {
+      const stored = got && got[PIECE_CACHE_KEY];
+      if (!stored || typeof stored !== 'object') return;
+      let n = 0;
+      for (const code of Object.keys(stored)) {
+        if (!/^[wb][PNBRQK]$/.test(code) || boardPieceLive.has(code)) continue;
+        const node = parsePieceSvg(stored[code]);
+        if (node) { boardPieceSvg.set(code, node); n++; }
+      }
+      // One line, and only when something came back: on a page with no board of
+      // Chessable's this is the only evidence the art is there at all, and the
+      // drill that needs it opens on exactly such a page.
+      if (n) log('board pieces: restored', n, 'of', Object.keys(stored).length, 'from storage');
+    }).catch(() => {});
+  }
+
+  /**
+   * Markup back into a node. DOMParser, NEVER innerHTML — this file's rule
+   * about dynamic markup holds for our own storage too. The parsed document
+   * is inert (nothing in it runs, no subresource is fetched), and the node is
+   * scrubbed anyway before it is imported into the live one: what comes out
+   * of storage is only as trustworthy as whatever put it there.
+   */
+  function parsePieceSvg(markup) {
+    if (typeof markup !== 'string' || !markup || markup.length > PIECE_SVG_MAX) return null;
+    let doc = null;
+    try { doc = new DOMParser().parseFromString(markup, 'image/svg+xml'); } catch (e) { return null; }
+    const root = doc && doc.documentElement;
+    if (!root || root.nodeName.toLowerCase() !== 'svg') return null;
+    if (root.querySelector('parsererror')) return null;
+    scrubSvgNode(root);
+    try { return document.importNode(root, true); } catch (e) { return null; }
+  }
+
+  /** Drops the two element types that can execute and every attribute that
+   *  can carry a handler or a URL. Piece art is paths and fills; nothing here
+   *  removes anything a Chessable piece actually uses. */
+  function scrubSvgNode(root) {
+    const els = [root].concat(Array.prototype.slice.call(root.querySelectorAll('*')));
+    for (const el of els) {
+      const name = (el.nodeName || '').toLowerCase();
+      if (name === 'script' || name === 'foreignobject' || name === 'image' || name === 'use') {
+        if (el.parentNode) el.parentNode.removeChild(el);
+        continue;
+      }
+      for (const attr of Array.prototype.slice.call(el.attributes || [])) {
+        const an = attr.name.toLowerCase();
+        if (an.startsWith('on') || an === 'href' || an.endsWith(':href')) el.removeAttribute(attr.name);
+      }
     }
   }
 
@@ -12803,8 +12969,10 @@
     const pn = {
       byBid: null,         // { bid: { "<oid>:<mkey>": record } } — EVERY course
       removed: new Set(),  // "<bid>|<key>" unpinned since the last save
+      gone: null,          // { "<bid>:<oid>:<mkey>": <ms> } — tombstones, for 16e
       loading: false,
-      saveTimer: 0,
+      saveTimer: 0,        // a save is SCHEDULED (cleared the moment it fires)
+      saving: false,       // …and one is in flight
       dead: false,
     };
 
@@ -12819,29 +12987,96 @@
       return true;
     }
 
-    // --- the store (chrome.storage.local) ------------------------------------
+    // --- the store (chrome.storage.SYNC, ONE ITEM PER PIN) -------------------
+
+    // Pins are the one thing here worth carrying between DEVICES — they outlive
+    // the session by design, and a phone and a PC studying the same course are
+    // the ordinary case. chrome.storage.sync is the entire transport: it needs
+    // no permission we do not already hold, no account of ours and no server.
+    //
+    // IT COSTS A SHAPE CHANGE, and that is the whole of this block. sync caps an
+    // ITEM at 8 KB; a record is ~400 bytes of JSON, so the old single-item store
+    // fits about twenty pins and then every save fails — silently as far as the
+    // user is concerned, since a pin is made in one corner of the screen. So
+    // each pin is its own item, `cloPin:<bid>:<oid>:<mkey>`, which also buys
+    // per-pin conflict resolution: two devices pinning different moves both
+    // land, and only the same move drilled on both races, which `lastSeenAt`
+    // already settles. What it does NOT buy is tombstones — a deletion is the
+    // ABSENCE of a key and nothing else — which is why the legacy blob has to be
+    // removed rather than merged on every load (see migrateLegacyStore).
+    //
+    // A BROWSER WITH NO CHROME SYNC BEHIND IT DOES NOT FAIL. Every Chromium fork
+    // — i.e. the Android side of this — implements storage.sync as local storage
+    // wearing a different name: writes succeed, nothing crosses, and the feature
+    // behaves exactly as it did before v0.105.0. AREA is the one hedge left, for
+    // a fork missing the area altogether.
+    const AREA = (chrome.storage && chrome.storage.sync) || chrome.storage.local;
+    const AREA_NAME = (chrome.storage && chrome.storage.sync) ? 'sync' : 'local';
+
+    /** The item key for one pin. Mirrors `pn.removed`'s own "<bid>|<key>"
+     *  encoding: everything after the FIRST separator is `keyOf`'s own key, so
+     *  an mkey is never re-parsed. */
+    const itemKey = (bid, key) => C.pinItemPrefix + bid + ':' + key;
+
+    /** Every pin in a raw storage read, as { bid: { key: rec } }. Anything not
+     *  ours is skipped — under the AREA fallback this map holds the whole of
+     *  storage.local. */
+    function indexItems(stored) {
+      const out = {};
+      for (const [k, rec] of Object.entries(stored || {})) {
+        if (!rec || typeof k !== 'string' || !k.startsWith(C.pinItemPrefix)) continue;
+        const rest = k.slice(C.pinItemPrefix.length);
+        const cut = rest.indexOf(':');
+        if (cut < 0) continue;
+        const bid = rest.slice(0, cut), key = rest.slice(cut + 1);
+        if (!bid || !key) continue;
+        if (!out[bid]) out[bid] = {};
+        // v0.103.0 wrote no `bid`. The key it is stored under IS the answer, so
+        // this heals in place rather than needing a migration of its own.
+        out[bid][key] = rec.bid ? rec : Object.assign({}, rec, { bid });
+      }
+      return out;
+    }
+
+    /** "<bid>:<oid>:<mkey>" — the key section 16e's blob uses, and the one a
+     *  tombstone is filed under. `keyOf`'s key with the course in front. */
+    const globalKey = (bid, key) => String(bid) + ':' + key;
+
+    /** Files a deletion. Every removal goes through here as well as through
+     *  `pn.removed`: that set is about THIS save, a tombstone is about every
+     *  device that has not heard yet. */
+    function noteGone(bid, key) {
+      if (!pn.gone) pn.gone = {};
+      pn.gone[globalKey(bid, key)] = Date.now();
+    }
+
+    /** Drops tombstones nothing can still need: older than `pinGoneDays`, and
+     *  then oldest-first down to `pinGoneMax` so the single item cannot grow
+     *  past sync's 8 KB. */
+    function pruneGone(gone) {
+      const floor = Date.now() - C.pinGoneDays * 86400000;
+      for (const [k, ts] of Object.entries(gone)) if (!(ts > floor)) delete gone[k];
+      const keys = Object.keys(gone);
+      if (keys.length > C.pinGoneMax) {
+        keys.sort((a, b) => gone[a] - gone[b]);
+        for (const k of keys.slice(0, keys.length - C.pinGoneMax)) delete gone[k];
+      }
+      return gone;
+    }
 
     async function load() {
       if (pn.loading) return;
       pn.loading = true;
       try {
-        const stored = await chrome.storage.local.get(C.pinKey);
-        const all = stored[C.pinKey] || {};
-        const mine = {};
-        let n = 0;
-        for (const [bid, recs] of Object.entries(all)) {
-          mine[bid] = {};
-          for (const [key, rec] of Object.entries(recs || {})) {
-            if (!rec) continue;
-            // v0.103.0 wrote no `bid`. The map it was stored under IS the
-            // answer, so this heals in place rather than needing a migration.
-            mine[bid][key] = rec.bid ? rec : Object.assign({}, rec, { bid: String(bid) });
-            n++;
-          }
-        }
+        const stored = await AREA.get(null);
+        const mine = indexItems(stored);
         pn.byBid = mine;
+        pn.gone = pruneGone(Object.assign({}, stored[C.pinGoneKey] || {}));
+        let n = 0;
+        for (const recs of Object.values(mine)) n += Object.keys(recs).length;
         log('pinned mistakes: loaded', n, 'pin(s) across',
-          Object.keys(mine).length, 'course(s)');
+          Object.keys(mine).length, 'course(s) from storage.' + AREA_NAME);
+        await migrateLegacyStore();
       } catch (err) {
         if (!noteDead(err)) warn('pinned mistakes: could not read the store:', err);
         if (!pn.byBid) pn.byBid = {};
@@ -12850,25 +13085,91 @@
       }
     }
 
+    /**
+     * The pre-v0.105.0 store: one storage.LOCAL item holding every pin of every
+     * course. Read ONCE, folded into whatever sync already has on `lastSeenAt`
+     * like any other merge here, written, and only then REMOVED.
+     *
+     * THE REMOVAL IS THE POINT, and it is why this is a migration rather than a
+     * second source read on every load: a deletion in the per-item store is an
+     * absent key, so a legacy blob left in place would put every unpinned and
+     * every RETIRED record back on the next load, for ever. It is removed only
+     * after the write it was folded into has landed, so a failure here simply
+     * leaves the old store to be tried again.
+     */
+    async function migrateLegacyStore() {
+      if (pn.removed.size) return; // a save of our own is mid-flight; next load
+      let legacy = null;
+      try {
+        const stored = await chrome.storage.local.get(C.pinKey);
+        legacy = stored[C.pinKey];
+      } catch (err) {
+        if (!noteDead(err)) warn('pinned mistakes: could not read the old store:', err);
+        return;
+      }
+      if (!legacy || !Object.keys(legacy).length) return;
+      const writes = {};
+      let n = 0;
+      for (const [bid, recs] of Object.entries(legacy)) {
+        for (const [key, rec] of Object.entries(recs || {})) {
+          if (!rec) continue;
+          const held = pn.byBid[bid] && pn.byBid[bid][key];
+          if (held && (held.lastSeenAt || 0) >= (rec.lastSeenAt || 0)) continue;
+          const filled = rec.bid ? rec : Object.assign({}, rec, { bid: String(bid) });
+          if (!pn.byBid[bid]) pn.byBid[bid] = {};
+          pn.byBid[bid][key] = filled;
+          writes[itemKey(bid, key)] = filled;
+          n++;
+        }
+      }
+      try {
+        if (n) await AREA.set(writes);
+        await chrome.storage.local.remove(C.pinKey);
+        log('pinned mistakes: migrated', n, 'pin(s) out of the old single-item store');
+      } catch (err) {
+        if (noteDead(err)) return;
+        warn('pinned mistakes: could not migrate the old store — it is left in ' +
+          'place and will be tried again on the next load:', err);
+      }
+    }
+
     function scheduleSave() {
       clearTimeout(pn.saveTimer);
       pn.saveTimer = setTimeout(save, CONFIG.autoPlay.saveDebounceMs);
+      // Section 16e, null-safe: it debounces far longer than this does, so a
+      // drill of twenty cards still costs one POST.
+      if (pinSyncApi) pinSyncApi.touch();
     }
 
     /**
-     * Merged, never overwritten: chrome.storage.local is shared by the whole
-     * profile, so a background overstudy tab of the same course would otherwise
-     * drop what the review tab pinned. A record's `lastSeenAt` is what orders
-     * two versions of it — it moves on every encounter and carries the streak
-     * that encounter produced — and our own removals, which include a
-     * RETIREMENT, are applied after the merge, or another tab's stale copy
-     * would put a finished pin straight back.
+     * Merged, never overwritten: the area is shared by the whole profile AND,
+     * now, by every device, so a background overstudy tab — or a phone — would
+     * otherwise drop what the review tab pinned. A record's `lastSeenAt` is what
+     * orders two versions of it — it moves on every encounter and carries the
+     * streak that encounter produced — and our own removals, which include a
+     * RETIREMENT, are applied after the merge, or another tab's stale copy would
+     * put a finished pin straight back.
+     *
+     * ONE `set` AND ONE `remove` PER SAVE, carrying only what actually changed:
+     * sync counts write OPERATIONS (1800/hour, 120/minute), and a save that
+     * rewrote every pin would spend the budget on records nobody touched. The
+     * diff is also what applies the caps — a pruned pin is simply a key present
+     * in storage and absent from `all`.
      */
     async function save() {
+      // The timer has FIRED, so it is no longer pending. Clearing it here is
+      // what makes the onChanged guard below mean "a save is scheduled" — a
+      // spent id stays truthy for ever, which used to switch that listener off
+      // permanently in any document that had saved once (harmless while the
+      // store was per-profile and a tab reload healed it; not harmless now that
+      // the other writer can be another device).
+      pn.saveTimer = 0;
       if (!pn.byBid) return;
+      if (pn.saving) { scheduleSave(); return; } // one writer at a time
+      pn.saving = true;
       try {
-        const stored = await chrome.storage.local.get(C.pinKey);
-        const all = stored[C.pinKey] || {};
+        const stored = await AREA.get(null);
+        const all = indexItems(stored);
         for (const [bid, recs] of Object.entries(pn.byBid)) {
           const merged = Object.assign({}, all[bid] || {});
           for (const [key, rec] of Object.entries(recs)) {
@@ -12878,41 +13179,89 @@
           }
           all[bid] = merged;
         }
-        for (const gone of pn.removed) {
+        // Taken as a LIST and forgotten only once the write below has landed: a
+        // removal dropped from the set by a save that then threw is one this
+        // document has applied to `pn.byBid` and storage has not, i.e. an
+        // unpinned or retired record that the next save would read back and
+        // resurrect. Anything unpinned while we await stays in the set for the
+        // save after this one.
+        const applied = Array.from(pn.removed);
+        for (const gone of applied) {
           const cut = gone.indexOf('|');
           const bid = gone.slice(0, cut), key = gone.slice(cut + 1);
           if (all[bid]) delete all[bid][key];
         }
-        pn.removed.clear();
-        for (const bid of Object.keys(all)) {
-          // The cap is the only pruning there is — a pin has no TTL, because
-          // the user chose it. Oldest `pinnedAt` goes, and says so: a list that
-          // silently forgets what was put into it is worse than one that
-          // refuses to grow.
-          const keys = Object.keys(all[bid]);
-          if (keys.length > C.pinMaxPerCourse) {
-            keys.sort((a, b) => (all[bid][a].pinnedAt || 0) - (all[bid][b].pinnedAt || 0));
-            const drop = keys.slice(0, keys.length - C.pinMaxPerCourse);
-            for (const key of drop) delete all[bid][key];
-            warn('pinned mistakes: past the', C.pinMaxPerCourse, 'per-course cap — dropped the',
-              drop.length, 'oldest pin(s) for course', bid);
-          }
-          if (!Object.keys(all[bid]).length) delete all[bid];
+        // Tombstones merge like everything else here — another tab (or 16e's
+        // pull) may have filed one we have never seen, and the LATER stamp
+        // wins, since re-pinning a move after it was deleted is a new fact.
+        const goneAll = Object.assign({}, stored[C.pinGoneKey] || {});
+        for (const [k, ts] of Object.entries(pn.gone || {}))
+          if (!(goneAll[k] > ts)) goneAll[k] = ts;
+        pruneGone(goneAll);
+        // The cap is the only pruning there is — a pin has no TTL, because the
+        // user chose it. Oldest `pinnedAt` goes, and says so: a list that
+        // silently forgets what was put into it is worse than one that refuses
+        // to grow. It spans every course, because so does the ceiling it comes
+        // from.
+        const flat = [];
+        for (const [bid, recs] of Object.entries(all))
+          for (const key of Object.keys(recs)) flat.push([bid, key, recs[key]]);
+        if (flat.length > C.pinMaxTotal) {
+          flat.sort((a, b) => (a[2].pinnedAt || 0) - (b[2].pinnedAt || 0));
+          const drop = flat.slice(0, flat.length - C.pinMaxTotal);
+          for (const [bid, key] of drop) delete all[bid][key];
+          warn('pinned mistakes: past the', C.pinMaxTotal, 'pin cap — dropped the',
+            drop.length, 'oldest pin(s) across every course.');
         }
-        await chrome.storage.local.set({ [C.pinKey]: all });
-        pn.byBid = all; // converge on what was actually stored
+        for (const bid of Object.keys(all))
+          if (!Object.keys(all[bid]).length) delete all[bid];
+
+        const writes = {};
+        const removes = [];
+        let live = 0;
+        for (const [bid, recs] of Object.entries(all)) {
+          for (const [key, rec] of Object.entries(recs)) {
+            const k = itemKey(bid, key);
+            live++;
+            if (JSON.stringify(stored[k]) !== JSON.stringify(rec)) writes[k] = rec;
+          }
+        }
+        for (const k of Object.keys(stored)) {
+          if (!k.startsWith(C.pinItemPrefix)) continue;
+          const rest = k.slice(C.pinItemPrefix.length);
+          const cut = rest.indexOf(':');
+          const bid = cut < 0 ? '' : rest.slice(0, cut), key = rest.slice(cut + 1);
+          if (!all[bid] || !all[bid][key]) removes.push(k);
+        }
+        if (JSON.stringify(goneAll) !== JSON.stringify(stored[C.pinGoneKey] || {}))
+          writes[C.pinGoneKey] = goneAll;
+        if (Object.keys(writes).length) await AREA.set(writes);
+        if (removes.length) await AREA.remove(removes);
+        for (const gone of applied) pn.removed.delete(gone);
+        pn.byBid = all;  // converge on what was actually stored
+        pn.gone = goneAll;
+        if (Object.keys(writes).length || removes.length)
+          log('pinned mistakes: saved', Object.keys(writes).length, 'and removed',
+            removes.length, 'item(s);', live, 'pin(s) held');
       } catch (err) {
         if (noteDead(err)) return;
         warn('pinned mistakes: could not save the store:', err);
+        if (/QUOTA|MAX_ITEMS/i.test(String((err && err.message) || err)))
+          warn('pinned mistakes: that is storage.' + AREA_NAME + '\'s own ceiling ' +
+            '(sync allows 100 KB, 512 items, 8 KB per item). Unpin something, or ' +
+            'lower CONFIG.retry.pinMaxTotal.');
+      } finally {
+        pn.saving = false;
       }
     }
 
-    // Another tab of the same profile pinned, unpinned or drilled something.
-    // Skipped while a save of our own is pending, which would otherwise be
-    // overwritten by a picture taken before it.
+    // Another tab of the same profile — or the same account on another DEVICE —
+    // pinned, unpinned or drilled something. Skipped while a save of our own is
+    // pending, which would otherwise be overwritten by a picture taken before it.
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || !changes[C.pinKey] || pn.dead) return;
-      if (pn.saveTimer || pn.removed.size) return;
+      if (area !== AREA_NAME || pn.dead) return;
+      if (!Object.keys(changes).some((k) => k.startsWith(C.pinItemPrefix))) return;
+      if (pn.saveTimer || pn.saving || pn.removed.size) return;
       load();
     });
 
@@ -13026,6 +13375,7 @@
       const home = String(rec.bid || '');
       if (pn.byBid[home]) delete pn.byBid[home][key];
       pn.removed.add(home + '|' + key);
+      noteGone(home, key);
       scheduleSave();
       log('pinned mistakes: unpinned', key);
       return true;
@@ -13057,6 +13407,7 @@
         const home = String(rec.bid || '');
         if (pn.byBid[home]) delete pn.byBid[home][keyOf(oid, mkey)];
         pn.removed.add(home + '|' + keyOf(oid, mkey));
+        noteGone(home, keyOf(oid, mkey));
         outcome = 'retired';
       } else outcome = 'credit';
       scheduleSave();
@@ -13094,6 +13445,73 @@
         return true;
       },
       note,
+
+      // --- section 16e (DESIGN-chessable-sync.md) ----------------------------
+      // Two pure store operations, so the transport never reaches into `pn` and
+      // both stay checkable in dev/check-pin-store.js with no network in it.
+
+      /** Everything a blob carries: pins under "<bid>:<oid>:<mkey>", plus the
+       *  tombstones, which are half the answer — see merge(). */
+      exportAll() {
+        const pins = {};
+        for (const [bid, recs] of Object.entries(pn.byBid || {}))
+          for (const [key, rec] of Object.entries(recs)) pins[globalKey(bid, key)] = rec;
+        return { pins, gone: Object.assign({}, pn.gone || {}) };
+      },
+
+      /**
+       * Folds a remote blob in. The rules, in the order they are applied per
+       * key (DESIGN-chessable-sync.md §2.4):
+       *   * a remote tombstone LATER than our record's own `lastSeenAt` deletes
+       *     it — that is a deliberate unpin or a retirement on another device,
+       *     and it must not come back;
+       *   * otherwise the higher `lastSeenAt` wins, exactly as two tabs settle
+       *     it, so a pin drilled on the phone lands here with its streak;
+       *   * a remote record we have never seen is taken, unless our own
+       *     tombstone says WE deleted it after it was written there.
+       * Remote tombstones are absorbed either way, so this device goes on
+       * telling the third device about a deletion it heard about second-hand.
+       *
+       * Never partially applies a blob the caller could not parse: the caller
+       * hands in objects, and a null one is simply nothing to do.
+       */
+      merge(pins, gone) {
+        if (!pn.byBid) return null;
+        const out = { added: 0, updated: 0, deleted: 0 };
+        for (const [gk, ts] of Object.entries(gone || {})) {
+          if (!(pn.gone && pn.gone[gk] >= ts)) {
+            if (!pn.gone) pn.gone = {};
+            pn.gone[gk] = Math.max(pn.gone[gk] || 0, ts);
+          }
+        }
+        for (const [gk, rec] of Object.entries(pins || {})) {
+          if (!rec || !rec.oid || !rec.mkey) continue;
+          const cut = gk.indexOf(':');
+          if (cut < 0) continue;
+          const bid = gk.slice(0, cut), key = gk.slice(cut + 1);
+          const held = pn.byBid[bid] && pn.byBid[bid][key];
+          const stamp = rec.lastSeenAt || 0;
+          const mine = pn.gone && pn.gone[gk];
+          if (mine && mine > stamp) continue;             // we deleted it, later
+          if (held && (held.lastSeenAt || 0) >= stamp) continue;
+          if (!pn.byBid[bid]) pn.byBid[bid] = {};
+          pn.byBid[bid][key] = rec.bid ? rec : Object.assign({}, rec, { bid });
+          pn.removed.delete(bid + '|' + key);
+          if (held) out.updated++; else out.added++;
+        }
+        for (const [gk, ts] of Object.entries(gone || {})) {
+          const cut = gk.indexOf(':');
+          if (cut < 0) continue;
+          const bid = gk.slice(0, cut), key = gk.slice(cut + 1);
+          const held = pn.byBid[bid] && pn.byBid[bid][key];
+          if (!held || (held.lastSeenAt || 0) > ts) continue;
+          delete pn.byBid[bid][key];
+          pn.removed.add(bid + '|' + key);
+          out.deleted++;
+        }
+        if (out.added || out.updated || out.deleted) scheduleSave();
+        return out;
+      },
     };
 
     window.addEventListener('pagehide', () => {
@@ -13102,6 +13520,418 @@
     });
     load();
     log('pinned mistakes active (top document)');
+  }
+
+  // ==========================================================================
+  // 16e. PIN SYNC THROUGH CHESSABLE — the transport for devices Chrome Sync
+  //      cannot reach. READ DESIGN-chessable-sync.md BEFORE CHANGING ANY OF IT.
+  // ==========================================================================
+
+  // Assigned by initPinSync. Read by nothing else today — it exists so the
+  // options page's "Sync now" and the panel have one way in, and so a document
+  // where this never ran (an iframe, a page with no session) simply has none.
+  let pinSyncApi = null;
+
+  function initPinSync() {
+    const C = CONFIG.pinSync;
+    const ps = {
+      pref: null,        // { on, bid, lid }
+      configured: false, // the preference KEY exists — see loadPref
+      slot: null,        // { bid, lid, oid }
+      busy: false,
+      lastPull: 0,
+      pushAt: 0,         // when a local change asked for a push
+      lastSent: '',      // signature of the last push, not the payload — see exchange()
+      dead: false,
+      timer: 0,
+    };
+
+    // --- encoding (§2.3) -----------------------------------------------------
+
+    const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+    /** RFC 4648 base32, unpadded. NOT base64 — see §4.4: base64's alphabet can
+     *  spell a SAN, and Chessable's comment parser rewrites those. */
+    function b32encode(bytes) {
+      let out = '', bits = 0, val = 0;
+      for (const b of bytes) {
+        val = (val << 8) | b; bits += 8;
+        while (bits >= 5) { out += B32[(val >>> (bits - 5)) & 31]; bits -= 5; }
+      }
+      if (bits) out += B32[(val << (5 - bits)) & 31];
+      return out;
+    }
+
+    function b32decode(str) {
+      let bits = 0, val = 0;
+      const out = [];
+      for (const ch of str) {
+        const i = B32.indexOf(ch);
+        if (i < 0) continue; // whitespace or markup: skip, never guess
+        val = (val << 5) | i; bits += 5;
+        if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; }
+      }
+      return new Uint8Array(out);
+    }
+
+    /**
+     * JSON with every object's keys in sorted order, for COMPARISON ONLY.
+     *
+     * `chrome.storage` normalises key order to alphabetical when it stores a
+     * value, but a record just folded in from a remote blob is still in the
+     * order that blob's JSON had. So a plain `JSON.stringify` comparison calls
+     * two identical stores different and the exchange writes the whole blob
+     * back — once per absorbed pin, on every device that absorbed it. Measured
+     * live 2026-08-12: a pin taken from another device produced a POST on the
+     * NEXT page load too, with nothing whatever changed.
+     */
+    function stableStringify(value) {
+      if (value === null || typeof value !== 'object') return JSON.stringify(value);
+      if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
+      const keys = Object.keys(value).sort();
+      return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',') + '}';
+    }
+
+    async function encodeBlob(obj) {
+      const json = JSON.stringify(obj);
+      const gz = new Uint8Array(await new Response(new Blob([json]).stream()
+        .pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+      return { text: C.marker + b32encode(gz), json };
+    }
+
+    /** null when the text is not ours or does not decode — never a partial
+     *  answer, since half a blob would read as "everything else was deleted". */
+    async function decodeBlob(text) {
+      if (typeof text !== 'string' || !text.startsWith(C.marker)) return null;
+      try {
+        const buf = b32decode(text.slice(C.marker.length));
+        const json = await new Response(new Blob([buf]).stream()
+          .pipeThrough(new DecompressionStream('gzip'))).text();
+        const blob = JSON.parse(json);
+        if (!blob || typeof blob !== 'object' || !blob.pins) return null;
+        return blob;
+      } catch (err) {
+        warn('pin sync: the stored blob did not decode —', String(err).slice(0, 120));
+        return null;
+      }
+    }
+
+    // --- the wire (§2.1, §2.2) -----------------------------------------------
+
+    /** The one move pair the card is made of. `--` is what makes it
+     *  informational; `fenB === fenW` because no move is played. */
+    function cardEntry(comment, oid) {
+      const fen = C.startFen;
+      const row = {
+        mid: 0, sanW: C.cardMove, sanB: null, nagW: null, nagB: null,
+        fen, fenW: fen, fenB: fen, isKey: false,
+        drawW: null, drawB: null,
+        commentW: comment, commentB: null, commentBW: null, commentBB: null,
+        lastBlack: '', move: '1.' + C.cardMove + ' ',
+      };
+      const entry = {
+        head: {
+          event: '', site: '', date: '', round: '', white: '', black: '',
+          result: '*', eco: '', variant: '', annotator: '', plycount: '',
+          eventDate: '', source: '', sourceData: '', fen, setup: '',
+        },
+        color: 'white', name: C.cardName, orig: C.cardName,
+        lid: 0, moves: [row], line: '1.' + C.cardMove,
+      };
+      // THE WHOLE OVERWRITE IS THIS FIELD (§4.2). Without it the write creates
+      // a second card every time and the store forks silently.
+      if (oid != null) entry.oid = oid;
+      return entry;
+    }
+
+    /** POSTs one entry. Returns the oid it created or overwrote. `oid` is what
+     *  makes this an overwrite (§4.2) — the one thing section 19d must never
+     *  send. Errors carry the server's own words, like every other write here. */
+    async function postCard(cr, bid, entry) {
+      const res = await fetch(chessableApiUrl(CONFIG.continuation.addPuzzlePath, { uid: cr.uid, bid }), {
+        method: 'POST',
+        headers: chessableHeaders(cr, true),
+        credentials: 'include',
+        body: JSON.stringify({ data: JSON.stringify([entry]) }),
+      });
+      const text = await res.text();
+      let body = null;
+      try { body = JSON.parse(text); } catch (err) { /* keep the raw text below */ }
+      if (!res.ok) {
+        const said = (body && body.error && body.error.message) || text.slice(0, 200);
+        throw new Error('HTTP ' + res.status + (said ? ' — ' + said : ''));
+      }
+      const oids = body && body.game && body.game.oids;
+      if (!Array.isArray(oids) || !oids.length) throw new Error('no oid came back');
+      return String(oids[0]);
+    }
+
+    /** The card's comment, or null when there is no card / no comment. A
+     *  comment is stored as JSON; our text is the `key:"C"` nodes (§4.1). */
+    async function readCard(cr, slot) {
+      const body = await chessableApiFetch(
+        chessableApiUrl(CONFIG.showGrade.lessonPath,
+          { uid: cr.uid, oid: slot.oid, bid: slot.bid }),
+        { headers: chessableHeaders(cr), credentials: 'include' });
+      const rows = body && body.lesson && body.lesson.moves;
+      if (!Array.isArray(rows) || !rows.length) return null;
+      let raw = rows[0].comment_white;
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        const data = Array.isArray(parsed.data) ? parsed.data : [];
+        return data.filter((d) => d && d.key === 'C').map((d) => String(d.val || '')).join('');
+      } catch (err) {
+        return null;
+      }
+    }
+
+    /**
+     * Where the card is, creating it if the chosen course has none.
+     *
+     * PRESENCE IS ASKED OF `getList`, NEVER OF `getLesson`: a deleted variation
+     * still answers the lesson call (§4.6), so a user who deletes the card by
+     * hand would otherwise keep reading its ghost for ever.
+     */
+    async function ensureSlot(cr, bid) {
+      const course = await fetchCourse(bid, cr, false);
+      const found = (course.vars || []).find((v) => v.name === C.cardName);
+      if (found) return { bid: String(bid), oid: String(found.oid), lid: 0 };
+      const blank = await encodeBlob({ v: C.blobVersion, at: Date.now(), pins: {}, gone: {} });
+      const oid = await postCard(cr, bid, cardEntry(blank.text));
+      await dropCourseCache(bid);
+      log('pin sync: created the sync card in course', bid, '— oid', oid);
+      return { bid: String(bid), oid, lid: 0 };
+    }
+
+    // --- the slot pointer ----------------------------------------------------
+    //
+    // In storage.SYNC, which layers the two transports properly: the pointer
+    // rides Chrome Sync where that works, and the payload rides Chessable
+    // everywhere. A device Chrome Sync never reaches simply finds the card by
+    // name instead (ensureSlot), which is why losing the pointer costs nothing.
+
+    async function loadSlot() {
+      try {
+        const got = await chrome.storage.sync.get(C.slotKey);
+        const slot = got && got[C.slotKey];
+        if (slot && slot.bid && slot.oid) ps.slot = slot;
+      } catch (err) { noteDead(err); }
+    }
+
+    async function saveSlot(slot) {
+      ps.slot = slot;
+      try { await chrome.storage.sync.set({ [C.slotKey]: slot }); } catch (err) { noteDead(err); }
+    }
+
+    function noteDead(err) {
+      if (!isDeadContextError(err)) return false;
+      if (ps.dead) return true;
+      ps.dead = true;
+      warn('pin sync: the extension was reloaded — this tab can no longer sync. Reload the page.');
+      return true;
+    }
+
+    // --- what the options page reads and writes ------------------------------
+
+    async function setStatus(text, ok, extra) {
+      const status = Object.assign({ at: Date.now(), text, ok: Boolean(ok) }, extra || {});
+      try { await chrome.storage.local.set({ [C.statusKey]: status }); } catch (err) { noteDead(err); }
+    }
+
+    /** The writable courses, published for the options page's picker — it has
+     *  no Chessable session of its own (different origin), so this is the only
+     *  way it can offer a list. One cached call; never a window. */
+    async function publishCourses(cr) {
+      try {
+        const targets = await importTargetsOnce(cr);
+        // fetchImportTargets has already dropped the courses that refuse an
+        // import, so this list IS the writable set.
+        const list = ((targets && targets.books) || [])
+          .map((b) => ({ bid: String(b.bid), name: b.name }));
+        if (list.length) await chrome.storage.local.set({ [C.coursesKey]: list });
+      } catch (err) {
+        if (!noteDead(err)) warn('pin sync: could not list writable courses:', String(err).slice(0, 120));
+      }
+    }
+
+    // --- the loop ------------------------------------------------------------
+
+    /**
+     * One full exchange: read what is there, fold it in, write back what we
+     * hold. Both halves in one visit, because a pull that finds nothing new
+     * still has to push whatever this device pinned since the last one.
+     *
+     * REFUSED WHILE ANYTHING IS RUNNING ON OUR BOARD (`continuationActive`) —
+     * a merge can delete the very card being drilled.
+     */
+    async function exchange(reason) {
+      if (ps.busy || ps.dead) return false;
+      if (!ps.pref || !ps.pref.on || !ps.pref.bid) return false;
+      if (!pinApi || !pinApi.ready()) return false;
+      if (continuationActive && continuationActive()) return false;
+      const cr = chessableCreds();
+      if (!cr) { await setStatus('No Chessable session on this page.', false); return false; }
+      ps.busy = true;
+      try {
+        if (!ps.slot || String(ps.slot.bid) !== String(ps.pref.bid)) {
+          await saveSlot(await ensureSlot(cr, ps.pref.bid));
+        }
+        const text = await readCard(cr, ps.slot);
+        const remote = text ? await decodeBlob(text) : null;
+        let folded = null;
+        if (remote) folded = pinApi.merge(remote.pins, remote.gone);
+        const mine = pinApi.exportAll();
+        const blob = { v: C.blobVersion, at: Date.now(), pins: mine.pins, gone: mine.gone };
+        const enc = await encodeBlob(blob);
+        const count = Object.keys(mine.pins).length;
+        // WHAT IS COMPARED IS THE CONTENT, NOT THE PAYLOAD. `at` is a fresh
+        // timestamp on every build, so two byte-identical stores encode to two
+        // different strings — comparing those would POST on every poll of every
+        // open tab, for ever, and the gzip stream is not stable across runs
+        // anyway. The signature is the pins and the tombstones and nothing else.
+        const sig = stableStringify({ pins: mine.pins, gone: mine.gone });
+        const remoteSig = remote
+          ? stableStringify({ pins: remote.pins || {}, gone: remote.gone || {} })
+          : null;
+        if (enc.text.length > C.maxBytes) {
+          await setStatus('Too much to store (' + Math.round(enc.text.length / 1024) +
+            ' KB) — nothing was written.', false, { pins: count });
+          warn('pin sync: payload', enc.text.length, 'bytes is past the', C.maxBytes, 'cap');
+          return false;
+        }
+        // Nothing new to write: an idle tab must not POST every ten minutes
+        // just because it woke up.
+        const same = sig === remoteSig;
+        if (!same) {
+          await postCard(cr, ps.slot.bid, cardEntry(enc.text, ps.slot.oid));
+          ps.lastSent = sig;
+        }
+        ps.lastPull = Date.now();
+        ps.pushAt = 0;
+        const said = folded && (folded.added || folded.updated || folded.deleted)
+          ? 'Synced — took ' + folded.added + ' new, ' + folded.updated + ' updated, ' +
+            folded.deleted + ' deleted.'
+          : (same ? 'Synced — nothing had changed.' : 'Synced — sent ' + count + ' pin(s).');
+        await setStatus(said, true, { pins: count, bid: String(ps.slot.bid), oid: String(ps.slot.oid) });
+        log('pin sync:', said, '(' + reason + ')');
+        return true;
+      } catch (err) {
+        if (noteDead(err)) return false;
+        const said = String((err && err.message) || err).slice(0, 200);
+        await setStatus('Failed: ' + said, false);
+        warn('pin sync: exchange failed —', said);
+        return false;
+      } finally {
+        ps.busy = false;
+      }
+    }
+
+    function tick() {
+      if (ps.dead || !ps.pref || !ps.pref.on) return;
+      const now = Date.now();
+      if (ps.pushAt && now >= ps.pushAt) { exchange('local change'); return; }
+      if (now - ps.lastPull >= C.pullMs) exchange('poll');
+    }
+
+    // --- preferences ---------------------------------------------------------
+
+    async function loadPref() {
+      try {
+        const got = await chrome.storage.local.get([C.prefKey]);
+        // CONFIGURED IS "THE KEY EXISTS", NOT "A COURSE IS SET". Switching the
+        // picker to Off writes { on: false }, and that is a DECISION — the
+        // auto-pick below must not undo it on the next page load. Only a device
+        // whose user has never touched the picker is fair game.
+        ps.configured = Object.prototype.hasOwnProperty.call(got, C.prefKey);
+        ps.pref = Object.assign({ on: false, bid: '', lid: 0 }, got[C.prefKey] || {});
+      } catch (err) {
+        if (!noteDead(err)) { ps.pref = { on: false, bid: '', lid: 0 }; ps.configured = true; }
+      }
+    }
+
+    /**
+     * Adopts a course called "LiChessable" when this device has never been
+     * configured. That is the whole of setup on a second device: keep a course
+     * by that name and the pins follow you to it.
+     *
+     * Refuses silently when there is none — a device with no such course simply
+     * stays idle until the picker is used, which is what it did before.
+     */
+    async function autoPickCourse(cr) {
+      if (!cr || ps.configured) return false;
+      let books = null;
+      try {
+        const targets = await importTargetsOnce(cr);
+        books = (targets && targets.books) || [];
+      } catch (err) {
+        return false; // no session, no courses, no opinion
+      }
+      const want = C.autoName.trim().toLowerCase();
+      const hits = books.filter((b) => String(b.name || '').trim().toLowerCase() === want);
+      if (!hits.length) return false;
+      if (hits.length > 1) {
+        warn('pin sync: ' + hits.length + ' courses are called "' + C.autoName +
+          '" — taking the first (' + hits[0].bid + '). Pick one by hand in the ' +
+          'options page if that is the wrong one.');
+      }
+      ps.pref = { on: true, bid: String(hits[0].bid), lid: 0 };
+      ps.configured = true;
+      try {
+        await chrome.storage.local.set({ [C.prefKey]: ps.pref });
+      } catch (err) {
+        if (noteDead(err)) return false;
+      }
+      log('pin sync: adopted the course called "' + C.autoName + '" (' + hits[0].bid +
+        ') — nothing was configured on this device');
+      return true;
+    }
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (ps.dead) return;
+      if (area === 'local' && changes[C.prefKey]) {
+        const next = changes[C.prefKey].newValue || {};
+        ps.configured = true;
+        const bidChanged = String(next.bid || '') !== String((ps.pref || {}).bid || '');
+        ps.pref = Object.assign({ on: false, bid: '', lid: 0 }, next);
+        if (bidChanged) { ps.slot = null; ps.lastSent = ''; }
+        if (ps.pref.on) exchange('settings changed');
+      }
+      // "Sync now" from the options page, which cannot call Chessable itself.
+      if (area === 'local' && changes[C.nowKey] && changes[C.nowKey].newValue) {
+        exchange('asked for');
+      }
+      // Another device's pin landed in storage.sync (Chrome Sync DOES work
+      // here): push it on, so a PC that syncs both ways keeps the phone fed.
+      if (area === 'sync' && !ps.pushAt &&
+          Object.keys(changes).some((k) => k.startsWith(CONFIG.retry.pinItemPrefix))) {
+        ps.pushAt = Date.now() + C.pushMs;
+      }
+    });
+
+    pinSyncApi = {
+      /** Section 16b's own writes ask for a push; the debounce is what keeps a
+       *  drill of twenty cards to one POST. */
+      touch() { if (ps.pref && ps.pref.on && !ps.pushAt) ps.pushAt = Date.now() + C.pushMs; },
+      now: () => exchange('asked for'),
+      state: () => ({ on: Boolean(ps.pref && ps.pref.on), slot: ps.slot, busy: ps.busy }),
+    };
+
+    (async () => {
+      await loadPref();
+      await loadSlot();
+      const cr = chessableCreds();
+      // Before the first exchange, so a fresh device syncs on the page that
+      // adopted the course rather than on the next one. Both this and
+      // publishCourses go through the same memoised getImportData call.
+      if (cr && !ps.configured) await autoPickCourse(cr);
+      if (cr) publishCourses(cr);
+      ps.timer = setInterval(tick, C.tickMs);
+      if (ps.pref && ps.pref.on) exchange('page load');
+      log('pin sync ' + (ps.pref && ps.pref.on
+        ? 'active (course ' + ps.pref.bid + ')'
+        : 'idle (no course chosen)'));
+    })();
   }
 
   // ==========================================================================
@@ -19264,9 +20094,17 @@
      * use. The class is doubled so it outranks the base rule without it knowing.
      */
     function positionStandalone() {
-      const m = C.standaloneMarginPx;
       const vw = window.innerWidth, vh = window.innerHeight;
-      const size = Math.max(C.standaloneMinPx, Math.min(C.standaloneMaxPx,
+      // PORTRAIT FILLS THE WIDTH, landscape keeps the cap. The cap is there to
+      // stop the board sprawling across a wide window; upright there is no
+      // sprawl to stop, and the vertical clause below still keeps the panel on
+      // screen. Geometric on purpose rather than asking `wantsTouchUi()`: what
+      // decides this is the shape of the window, and a narrow desktop window
+      // wants the same answer a phone does.
+      const portrait = vh > vw;
+      const m = portrait ? C.standalonePortraitMarginPx : C.standaloneMarginPx;
+      const cap = portrait ? Infinity : C.standaloneMaxPx;
+      const size = Math.max(C.standaloneMinPx, Math.min(cap,
         vw - 2 * m, vh - C.standalonePanelPx - 3 * m));
       const left = Math.max(m, Math.round((vw - size) / 2));
       const top = Math.max(m, Math.round((vh - size - C.standalonePanelPx) / 2));
@@ -26788,6 +27626,12 @@
     // log through mistakeLogApi (also null-safe, but the first tick would
     // otherwise show an empty count), and initPinnedMistakes sits between them
     // for the same reason.
+    // Before any of them: the piece art (section 11c) is read back from
+    // storage so a board of OURS can be drawn on a page that has none of
+    // Chessable's — the standalone drill (20) opens on the dashboard, where
+    // there is nothing to clone from. Additive and async; a live board still
+    // wins, and this is the only read, so a page with a board pays one get.
+    loadBoardPieceCache();
     initReviewOverstudy();
     initOverstudyAutoPause();
     initTopPanel();
@@ -26806,6 +27650,13 @@
     // null-safe, and it is only reached by a press.
     initPinPrompt();
     initPinDock();
+    // Section 16e, after the store it carries: it calls pinApi.exportAll/merge
+    // on its first exchange and stands down entirely when there is none. It is
+    // the only module here that talks to Chessable about pins, and it runs on
+    // EVERY chessable page (the pins it carries belong to no one course), so it
+    // sits with the other two top-document pin modules rather than with the
+    // trainer's.
+    initPinSync();
     initRetryRunner();
     initContinuationReview();
     // After initAutoPlay (whose bridge it needs to announce a typed answer) and

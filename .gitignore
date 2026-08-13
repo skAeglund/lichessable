@@ -5,3 +5,7 @@ lichessable.pem
 # Vendored Stockfish WASM build (108 MB — exceeds GitHub's push limit).
 # Download manually; see README "Local engine (optional)".
 engine/vendor/
+
+# Local Lichess API token, seeded into chrome.storage on load (background.js,
+# seedTokenFromLocalFile). Never commit a token — see CLAUDE.md "Never".
+local-token.json

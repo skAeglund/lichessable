@@ -97,3 +97,29 @@ button:hover {
 code {
   font-size: 12px;
 }
+
+/* --- pinned mistakes: sync + the list (section 16e) ---------------------- */
+
+table.pins {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 6px 0 12px;
+  font-size: 13px;
+}
+
+table.pins th,
+table.pins td {
+  text-align: left;
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid #ddd;
+  vertical-align: top;
+}
+
+table.pins th { color: #666; font-weight: 600; }
+table.pins td.move { font-weight: 600; white-space: nowrap; }
+table.pins td.line { color: #666; }
+table.pins td.due  { white-space: nowrap; }
+table.pins tr.due td.due { color: #3c7a1e; font-weight: 600; }
+
+/* #status.error is id-scoped; the sync line is a fineprint paragraph. */
+.fineprint.error { color: #b3261e; }
