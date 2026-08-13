@@ -1392,10 +1392,11 @@ Currently working (v0.18.x).
   board shortcuts while that field has focus, or typing "f" would flip the board
   and an arrow would walk the move list instead of the caret; Escape blurs the
   field rather than closing the board on a half-typed sentence. The text is
-  APPENDED to the comment of the move the board was showing when the analysis
-  opened. That move
-  is read BEFORE the overlays go up (`analysisEntryMove` → `reviewMoveDescriptor`
-  — the review ply index maps 1:1 onto the edit page) and stored on `cr.an.entry`,
+  APPENDED to the comment of ONE OF TWO mainline moves: the one the board was
+  showing when the analysis opened (`cr.an.entry`), or THE ONE AFTER IT
+  (`cr.an.entryNext`, v0.110.0 — see below). Both
+  are read BEFORE the overlays go up (`analysisEntryMove` → `reviewMoveDescriptor`
+  — the review ply index maps 1:1 onto the edit page),
   because the line's numbers only name real positions relative to THAT move. A
   shown SUB-move is REFUSED: the board is then inside a comment line, so the
   position our moves continue from is not where any mainline comment hangs, and
@@ -1408,7 +1409,36 @@ Currently working (v0.18.x).
   a detour: `cr.an.pending` holds the composed text and
   `onAnalysisQuickEditResult` sends it once rights come back — but only while
   text, oid and plyIndex still match, since a probe window is up for seconds and
-  the board is live behind it.
+  the board is live behind it. THE MOVE IT COMES BACK TO IS `addTargetMove()`,
+  never `cr.an.entry`: a press may have chosen the NEXT move, and `cr.an.addTo`
+  is what survives the wait — which is why `resetAnSave` spends `choose` but
+  deliberately NOT `addTo`.
+  AFTER WHICH MOVE (19f, v0.110.0). A line worked out here is very often an
+  ALTERNATIVE to the move the variation actually plays next ("1.e4 c5 2.Nc3"
+  analysed from after 1...c5 in order to show 2.Nf3), and an alternative belongs
+  in the comment of the move it replaces, not of the move before it. Both moves
+  name the SAME position on our board — the analysis starts where the shown move
+  ends, which is where the next move is played from — so `analysisLinePgn()` and
+  everything under it are UNCHANGED and the text is byte-identical either way.
+  Only its home moves, which is the whole of the feature.
+  * SECTION 9'S ONE-BUTTON RULE, for section 9's reason. With a next move, the
+    press ASKS (`cr.an.choose`) and "Add as line" is replaced by its two answers,
+    "After <cur>" / "After <next>"; at the END of a variation there is no second
+    answer and the button saves on one press exactly as it always has. So the
+    single-press contract above is intact wherever it was ever the only option.
+  * `analysisEntryMove()` returns `{ move, next }`, and BOTH hosts must report
+    `next` or the chooser silently never appears. The review host takes
+    `reviewMoves[plyIndex + 1]`; the variation host takes the LIST POSITION after
+    the shown element, not `id + 1` — the two agree, but only the list can say
+    there is no next move.
+  * ESCAPE CLOSES THE QUESTION, not the board — the nearer thing to back out of,
+    the same reading Escape already has in the lead-in field. That clause sits
+    ABOVE `closeReview` in the document-capture handler and is scoped to
+    `cr.mode === 'analysis'`.
+  * The quick-edit worker matches by plyIndex and VERIFIES san + colour, so the
+    next move's descriptor rides the unchanged 'save' job. `cr.an.job` carries
+    the SAN now, because `resetAnSave` spends the choice before the sentence
+    reporting the save is built.
   ONE PRESS SAVES (v0.43.0). The arming press this started with was removed on
   request; what replaces it is that the status line shows `analysisPreview()` —
   the EXACT text a press would append — for as long as the button is idle. So

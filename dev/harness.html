@@ -1791,6 +1791,37 @@ body {
     </div>
 
     <div class="hx-card">
+      <h3>“Add as line” asking after which move (19)</h3>
+      <p class="hx-note">When the variation carries on past the analysed position there are two
+         homes for the same text, so the one press asks instead of writing: “Add as line” is
+         replaced by its two answers, each naming its own move. Section 9’s one-button rule — no
+         chooser where there is no choice, in which case the row is unchanged from the card above.
+         <strong>Measure this one:</strong> two extra buttons in a row that already wraps, and the
+         longest the idle status line gets before a save.</p>
+      <div class="hx-stage">
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Analysis</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">⏮</button>
+            <button type="button" class="clo-cr-btn">◀</button>
+            <button type="button" class="clo-cr-btn">▶</button>
+            <button type="button" class="clo-cr-btn">Remove from here</button>
+          </div>
+          <input type="text" class="clo-cr-anprefix" placeholder="lead-in, e.g. “An example continuation:”">
+          <div class="clo-cr-anstatus">Where does it go — after c5 or after Nc3? Adds: (2.Nf3 d6 3.d4)</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">After c5</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">After Nc3</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as variation</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as puzzle</button>
+            <button type="button" class="clo-cr-btn">Flip</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
       <h3>“Add as variation” armed (19c)</h3>
       <p class="hx-note">The second write takes two presses: the first one describes exactly what it
          would create, in the status line, because the sentence (name, course, branch point) does not

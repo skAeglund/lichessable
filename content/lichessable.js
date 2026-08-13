@@ -17707,6 +17707,18 @@
         // hang it on, with `entryWhy` saying which case it was.
         entry: null,
         entryWhy: '',
+        // The mainline move AFTER that one, when the variation has one. A line
+        // worked out here is very often an ALTERNATIVE to it ("1.e4 c5 2.Nc3"
+        // analysed from after 1...c5 in order to show 2.Nf3), and an
+        // alternative belongs in the comment of the move it replaces, not of
+        // the move before it. Null at the end of a variation, where there is no
+        // second answer to offer.
+        entryNext: null,
+        // Which of the two an "Add as line" press writes to, and whether the
+        // press is currently ASKING. Only ever 'next' by an explicit choice, so
+        // a variation with no next move behaves exactly as it always has.
+        addTo: 'cur',
+        choose: false,
         // "Add as line": idle | checking (rights probe) | saving. `msg` is the
         // panel's status line, `bad` its colour; an empty msg leaves the line
         // to the live preview of what a press would write.
@@ -17813,11 +17825,20 @@
 
     /**
      * The mainline move Chessable's board is showing — the move this analysis
-     * carries on FROM, and therefore the one whose comment an added line
-     * belongs after (Chessable's "Comments After", the only field quick-edit
-     * reaches). Returns { move } or { why }, never null: every refusal has a
-     * sentence the panel can print, since a greyed-out button with no reason is
-     * the one outcome a user cannot act on.
+     * carries on FROM, and therefore ONE of the two moves whose comment an
+     * added line can belong after (Chessable's "Comments After", the only field
+     * quick-edit reaches). Returns { move, next } or { why }, never null: every
+     * refusal has a sentence the panel can print, since a greyed-out button
+     * with no reason is the one outcome a user cannot act on.
+     *
+     * `next` is the mainline move AFTER it, when there is one — the second
+     * offer. Both name the SAME position on our board (the analysis starts
+     * where the shown move ends, which is where the next move is played from),
+     * so the line's own text is identical either way and only its home moves:
+     * a line that is an ALTERNATIVE to the next move reads as one when it sits
+     * in that move's comment, and as a continuation of the game when it sits in
+     * the previous move's. `next` is absent at the end of the variation, and
+     * there this feature has never had a choice to offer.
      *
      * A shown SUB-move is refused outright: the board is then inside a comment
      * line, so the position our moves continue from is not the one the comment
@@ -17841,11 +17862,19 @@
       if (!desc) return { why: 'The move on the board could not be read.' };
       const oid = readQuickEditOid();
       if (!oid) return { why: 'This variation could not be identified.' };
+      const bid = readQuickEditBid() || '';
+      const moves = [...document.querySelectorAll(SELECTORS.reviewMoves)];
+      const after = moves[desc.plyIndex + 1];
+      const nextDesc = after ? reviewMoveDescriptor(after) : null;
       return {
         move: {
-          oid, bid: readQuickEditBid() || '',
+          oid, bid,
           san: desc.san, color: desc.color, plyIndex: desc.plyIndex,
         },
+        next: nextDesc ? {
+          oid, bid,
+          san: nextDesc.san, color: nextDesc.color, plyIndex: nextDesc.plyIndex,
+        } : null,
       };
     }
 
@@ -17875,6 +17904,11 @@
       if (!desc) return { why: 'The move on the board could not be read.' };
       const m = VARIATION_PATH_RE.exec(location.pathname);
       if (!m) return { why: 'This variation could not be identified.' };
+      // The move after it, by LIST POSITION rather than by id + 1: the id is the
+      // ply index and the list is in ply order, so the two agree — but only the
+      // list can say that there IS no next move.
+      const after = moves[moves.indexOf(shown) + 1];
+      const nextDesc = after ? variationMoveDescriptor(after) : null;
       // No bid here, and none is needed: the edit driver addresses the variation
       // by oid, and rights come from the page itself (variationEditRights).
       return {
@@ -17882,6 +17916,10 @@
           oid: m[1], bid: '',
           san: desc.san, color: desc.color, plyIndex: desc.plyIndex,
         },
+        next: nextDesc ? {
+          oid: m[1], bid: '',
+          san: nextDesc.san, color: nextDesc.color, plyIndex: nextDesc.plyIndex,
+        } : null,
       };
     }
 
@@ -17930,12 +17968,16 @@
 
     /** Drops any watchdog and sets the state + status — every path out of a
      *  press goes through here, including 19c's, which is why it also spends a
-     *  pending confirm: the sentence describing it is about to be replaced. */
+     *  pending confirm: the sentence describing it is about to be replaced.
+     *  A pending "after which move?" goes for the same reason, and `addTo`
+     *  deliberately does NOT: it is what a rights probe comes back to, and it
+     *  is re-answered by the press that raises the question again. */
     function resetAnSave(state, msg, bad) {
       clearTimeout(cr.an.waitTimer);
       cr.an.waitTimer = 0;
       cr.an.save.state = state || 'idle';
       cr.an.pending = null;
+      cr.an.choose = false;
       if (cr.an.addVar) { cr.an.addVar.state = 'idle'; cr.an.addVar.plan = null; cr.an.addVar.at = 0; }
       if (cr.an.addPuzzle) {
         cr.an.addPuzzle.state = 'idle'; cr.an.addPuzzle.plan = null; cr.an.addPuzzle.at = 0;
@@ -17943,28 +17985,60 @@
       setAnStatus(msg || '', bad);
     }
 
+    /** The move an "Add as line" press writes to: the one the board was showing,
+     *  or — by an explicit choice — the one after it. Falls back to the shown
+     *  move whenever there is no next one, so `addTo` can never point at
+     *  nothing. */
+    function addTargetMove() {
+      const an = cr.an;
+      return (an.addTo === 'next' && an.entryNext) ? an.entryNext : an.entry;
+    }
+
     /** What a press would write, spelled out — shown while the button is idle,
      *  so the exact text is on screen BEFORE it is pressed rather than after.
      *  Empty when there is nothing to add. */
     function analysisPreview() {
-      if (!cr.an.entry || !cr.an.moves.length) return '';
+      const an = cr.an;
+      if (!an.entry || !an.moves.length) return '';
       const text = analysisCommentText();
-      return text ? 'Adds after ' + cr.an.entry.san + ': ' + text : '';
+      if (!text) return '';
+      // With a move after this one there are two homes for the same text, so
+      // the press asks rather than writes — and the preview must not name a
+      // target that has not been chosen yet.
+      if (an.entryNext) {
+        const where = 'after ' + an.entry.san + ' or after ' + an.entryNext.san;
+        return an.choose
+          ? 'Where does it go — ' + where + '? Adds: ' + text
+          : 'Adds ' + where + ' (the press asks which): ' + text;
+      }
+      return 'Adds after ' + an.entry.san + ': ' + text;
     }
 
     /**
-     * "Add as line": append the analysis line to the entry move's comment, via
-     * the unchanged quick-edit 'save' job. ONE press does it — the status line
-     * above the button has been showing the exact text all along, so there is
-     * nothing a confirming press would tell the user that they cannot already
-     * see. (It is also recoverable: the pencil's Edit tab opens that comment.)
+     * "Add as line": append the analysis line to a mainline move's comment, via
+     * the unchanged quick-edit 'save' job.
+     *
+     * ONE press does it where there is only one place for it to go — the status
+     * line above the button has been showing the exact text all along, so there
+     * is nothing a confirming press would tell the user that they cannot
+     * already see. (It is also recoverable: the pencil's Edit tab opens that
+     * comment.)
+     *
+     * Where the variation CARRIES ON past the position analysed, that press
+     * asks WHICH of the two moves instead, and the answer is the second press.
+     * Section 9's one-button rule, for section 9's reason: a chooser is raised
+     * only when there is a choice, and where there is not, the button opens the
+     * only answer there is. `choice` is 'cur' | 'next' from those two buttons,
+     * and absent from the one that raises them.
      */
-    function addLineToComment() {
+    function addLineToComment(choice) {
       const an = cr.an;
       // A pressed button keeps focus, and space/Enter would then fire it again
       // — one line appended twice (the heads-up panel's buttons blur for the
       // same reason).
-      if (cr.ui && cr.ui.anAdd) cr.ui.anAdd.blur();
+      if (cr.ui) {
+        for (const b of [cr.ui.anAdd, cr.ui.anAddCur, cr.ui.anAddNext]) if (b) b.blur();
+      }
       if (an.save.state === 'saving' || an.save.state === 'checking') return;
       if (!an.moves.length) {
         resetAnSave('idle', 'Play the moves you want to add first.', true);
@@ -17974,6 +18048,17 @@
         resetAnSave('idle', an.entryWhy || 'There is no move to add this line to.', true);
         return;
       }
+      if (choice === 'cur' || choice === 'next') {
+        an.addTo = (choice === 'next' && an.entryNext) ? 'next' : 'cur';
+        an.choose = false;
+      } else if (an.entryNext) {
+        // The question, not the answer: nothing is written by this press.
+        an.addTo = 'cur';
+        an.choose = !an.choose;
+        setAnStatus('', false);
+        return;
+      }
+      const target = addTargetMove();
       const text = analysisCommentText();
       if (!text) {
         resetAnSave('idle', 'The line could not be written out.', true);
@@ -17992,23 +18077,24 @@
       // there (which matters, since the variation host has no bid to key on).
       const rights = isVariationPath()
         ? variationEditRights()
-        : (quickEditApi ? quickEditApi.rightsFor(an.entry.bid) : null);
+        : (quickEditApi ? quickEditApi.rightsFor(target.bid) : null);
       if (rights === false) {
         resetAnSave('idle', "You don't have edit rights for this course.", true);
         return;
       }
       if (rights === null) {
         const started = quickEditApi &&
-          quickEditApi.probe(an.entry.bid, an.entry.oid, popupDriverBounds(cr.panel));
+          quickEditApi.probe(target.bid, target.oid, popupDriverBounds(cr.panel));
         if (!started) {
           resetAnSave('idle', 'Could not check edit rights for this course.', true);
           return;
         }
         resetAnSave('checking', 'Checking edit rights…', false);
         // The press said "save"; the probe is a detour on the way, so the save
-        // goes ahead by itself once rights are known — but only if the text is
-        // still the one that was pressed for (onAnalysisQuickEditResult).
-        cr.an.pending = { text, oid: an.entry.oid, plyIndex: an.entry.plyIndex };
+        // goes ahead by itself once rights are known — but only if the text AND
+        // the move it was aimed at are still the ones that were pressed for
+        // (onAnalysisQuickEditResult).
+        cr.an.pending = { text, oid: target.oid, plyIndex: target.plyIndex };
         // Nothing about a probe may fail silently: quick-edit's own watchdog
         // only unsticks ITS popup and the alt check's, so this one is ours.
         cr.an.waitTimer = setTimeout(() => {
@@ -18021,12 +18107,15 @@
       sendAddLine(text);
     }
 
-    /** Hands the composed text to the quick-edit worker and starts the wait. */
+    /** Hands the composed text to the quick-edit worker and starts the wait.
+     *  The target is read here rather than passed in, so the two callers cannot
+     *  disagree about it; the job carries the SAN because `resetAnSave` spends
+     *  the choice, and the sentence reporting the save names the move. */
     function sendAddLine(text) {
-      const entry = cr.an.entry;
+      const entry = addTargetMove();
       if (!entry) return;
       resetAnSave('saving', 'Saving to Chessable…', false);
-      cr.an.job = { oid: entry.oid, plyIndex: entry.plyIndex };
+      cr.an.job = { oid: entry.oid, plyIndex: entry.plyIndex, san: entry.san };
       log('analysis: adding line to variation', entry.oid, 'ply', entry.plyIndex, ':', text);
       try {
         chrome.runtime.sendMessage({
@@ -18063,10 +18152,13 @@
         if (rights === true) {
           // Carry out the press that started the probe — but only if it still
           // means the same thing: the line, the lead-in or the move it hangs
-          // off may all have moved on while the probe window was up.
+          // off may all have moved on while the probe window was up. The move
+          // is `addTargetMove()`, not `entry`: the press may have chosen the
+          // NEXT move, and `addTo` survives the wait for exactly this.
           const pending = cr.an.pending;
-          const same = pending && pending.oid === cr.an.entry.oid &&
-            pending.plyIndex === cr.an.entry.plyIndex && pending.text === analysisCommentText();
+          const target = addTargetMove();
+          const same = pending && target && pending.oid === target.oid &&
+            pending.plyIndex === target.plyIndex && pending.text === analysisCommentText();
           resetAnSave('idle', '', false);
           if (same) sendAddLine(pending.text);
           else log('analysis: the line changed while edit rights were checked — not saving');
@@ -18094,8 +18186,7 @@
         // the one host that could re-read in place (refreshVariationPage), but
         // that round trip pages away and back with our board still up; saying so
         // is the honest, cheap answer.
-        resetAnSave('idle', 'Added to the comment on ' +
-          (cr.an.entry ? cr.an.entry.san : 'that move') + '.' +
+        resetAnSave('idle', 'Added to the comment on ' + (job.san || 'that move') + '.' +
           (isVariationPath() ? ' Reload the page to see it.' : ''), false);
       } else {
         resetAnSave('idle', msg.error === 'another quick-edit is in progress'
@@ -19622,6 +19713,7 @@
       // and the move that was shown is what an added line hangs off.
       const entry = analysisEntryMove();
       cr.an.entry = entry.move || null;
+      cr.an.entryNext = entry.next || null;
       cr.an.entryWhy = entry.why || '';
       if (!showOverlays()) { cr.mode = 'quiz'; return; }
       cr.view = cr.userColor; // start from the course colour, flippable from here
@@ -19735,13 +19827,40 @@
       if (ui.anPrefix.value !== cr.addPrefix && document.activeElement !== ui.anPrefix) {
         ui.anPrefix.value = cr.addPrefix;
       }
-      ui.anAdd.disabled = busy || !cr.an.moves.length || !cr.an.entry;
+      // The question can only stand while it can be answered — the same shape
+      // as the two arming presses below, which drop when what they promised
+      // stops being true.
+      const canAdd = Boolean(cr.an.moves.length && cr.an.entry) && !busy;
+      if (cr.an.choose && (!canAdd || !cr.an.entryNext)) cr.an.choose = false;
+      const choosing = cr.an.choose;
+      ui.anAdd.hidden = choosing;
+      ui.anAdd.disabled = !canAdd;
       ui.anAdd.textContent = 'Add as line';
-      ui.anAdd.title = cr.an.entry
-        ? 'Append this line to the comment on ' + cr.an.entry.san +
-          ' in your course, where Chessable prints it as clickable moves. ' +
-          'Saves on one press; needs edit rights.'
-        : (cr.an.entryWhy || 'There is no move to add this line to.');
+      ui.anAdd.title = !cr.an.entry
+        ? (cr.an.entryWhy || 'There is no move to add this line to.')
+        : cr.an.entryNext
+          ? 'Append this line to a comment in your course, where Chessable prints it ' +
+            'as clickable moves. Asks first whether it goes after ' + cr.an.entry.san +
+            ' — the move this analysis started from — or after the next move, ' +
+            cr.an.entryNext.san + ', which is where an alternative to it belongs. ' +
+            'Needs edit rights.'
+          : 'Append this line to the comment on ' + cr.an.entry.san +
+            ' in your course, where Chessable prints it as clickable moves. ' +
+            'Saves on one press; needs edit rights.';
+      ui.anAddCur.hidden = !choosing;
+      ui.anAddNext.hidden = !choosing;
+      if (choosing) {
+        ui.anAddCur.disabled = !canAdd;
+        ui.anAddNext.disabled = !canAdd;
+        ui.anAddCur.textContent = 'After ' + cr.an.entry.san;
+        ui.anAddNext.textContent = 'After ' + cr.an.entryNext.san;
+        ui.anAddCur.title = 'Put it in the comment on ' + cr.an.entry.san +
+          ', the move this analysis started from — where the line reads as a ' +
+          'continuation of the game. Saves on this press. Escape to change your mind.';
+        ui.anAddNext.title = 'Put it in the comment on ' + cr.an.entryNext.san +
+          ', the next move of the variation — where the line reads as an ' +
+          'ALTERNATIVE to it. Saves on this press. Escape to change your mind.';
+      }
 
       // "Add as variation" (19c). Deliberately NOT disabled for want of an
       // entry move — it can also branch from a variation's starting position,
@@ -20162,8 +20281,19 @@
       anBtn('Flip', 'Turn the board around (F)', anFlip);
       // Writes to the course — hence the arming press, and the green of every
       // other button in here that does something rather than navigates.
-      const anAdd = anBtn('Add as line', '', addLineToComment);
+      const anAdd = anBtn('Add as line', '', () => addLineToComment());
       anAdd.classList.add('clo-cr-btn--primary');
+      // The two answers to the question that button asks when the variation
+      // carries on past the analysed position (section 9's one-button rule:
+      // raised only when there IS a choice). Shown INSTEAD of it, so the row
+      // never offers three ways to do one thing, and each names its own move —
+      // "current"/"next" alone says which is which but not what either is.
+      const anAddCur = anBtn('After current', '', () => addLineToComment('cur'));
+      anAddCur.classList.add('clo-cr-btn--primary');
+      anAddCur.hidden = true;
+      const anAddNext = anBtn('After next', '', () => addLineToComment('next'));
+      anAddNext.classList.add('clo-cr-btn--primary');
+      anAddNext.hidden = true;
       // The second write (19c). Two presses, because what it creates is a card
       // the user will be quizzed on — and because the sentence describing it
       // does not fit anywhere but the status line.
@@ -20268,7 +20398,8 @@
         grid, layer, shapes, promo, title, prompt, progress, actions, hint, skip, exit,
         chooser, chooseAll, chooseFinal,
         browseBtn, nav, navStart, navBack, navFwd, navEnd,
-        list, anActions, anStart, anBack, anFwd, anCut, anAdd, anAddVar, anAddPuzzle, anOpen,
+        list, anActions, anStart, anBack, anFwd, anCut, anAdd, anAddCur, anAddNext,
+        anAddVar, anAddPuzzle, anOpen,
         anPrefix, anDest, anStatus,
       };
       cr.orientation = null; // the grid is built on the first startLine
@@ -22502,7 +22633,18 @@
         // swallow for the trainer's sake; here it needs the board shortcuts kept
         // off its own controls for the same reason as the two above.
         if (cl.popup && !cl.popup.hidden && cl.popup.contains(e.target)) return;
-        if (e.key === 'Escape') { closeReview('escaped', true); return; }
+        if (e.key === 'Escape') {
+          // A pending "after which move?" is the nearer thing to back out of —
+          // the same reading as Escape in the lead-in field, which steps out of
+          // the field rather than closing the whole board.
+          if (cr.mode === 'analysis' && cr.an.choose) {
+            cr.an.choose = false;
+            setAnStatus('', false);
+            return;
+          }
+          closeReview('escaped', true);
+          return;
+        }
         // Section 23 on our own board: the same two keys and the same two
         // presses on a mistake drill AND on a clickable line, so either can be
         // worked through from a ring exactly like a review session. Not while
