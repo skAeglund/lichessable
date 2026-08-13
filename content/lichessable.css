@@ -3722,6 +3722,47 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
   animation: none;
 }
 
+/* THE RESTING SHELL (v0.111.0). The panel's own surface, held on screen EMPTY
+   for as long as the variation still has a line to point out, so that raising
+   one changes only what is INSIDE the box — see syncHeadsUpShell for when it
+   is up and why only in the steady landscape slot.
+
+   The fade above answers "this appeared". It says nothing about how MUCH
+   appears at once, and that was the real complaint: surface, border, title, a
+   176px+ board, the move rows and two buttons all arriving beside a position
+   the user is being quizzed on. With the surface already there, only the
+   content arrives — and mid-quiz nothing is lost by keeping the space, because
+   the column under it prints one sentence for the whole variation.
+
+   CHILDREN ARE display:none, not hidden and not transparent. The panel is a
+   flex column with a gap, so anything left in the flow would keep its space and
+   the empty box would end up the height of the last thing shown in it, by
+   accident. The height that matters is the SLOT's, written inline by
+   placeHeadsUp — that is what makes the box the same size before and after.
+
+   pointer-events: none because there is nothing here to press yet; without it
+   the :hover rule above would light an empty box up under a passing cursor.
+   Doubled class so the resting brightness beats --important's, which is a
+   statement about a line and applies only once there is one. */
+.clo-cr-heads.clo-cr-heads--idle {
+  --clo-heads-rest: 0.6;
+  pointer-events: none;
+}
+
+/* Doubled class again, and load-bearing rather than tidy: every child here has
+   a display of its own a few rules further down (`__head` is a flex row), and a
+   single-class `> *` only TIES those at (0,1,0) — later-wins would then leave
+   the shell showing its content. */
+.clo-cr-heads.clo-cr-heads--idle > * {
+  display: none;
+}
+
+/* With the shell already up it is the CONTENT that arrives, so that is what
+   fades: the same half second, applied one level down. */
+.clo-cr-heads--in-content > * {
+  animation: clo-heads-in 0.5s ease-out;
+}
+
 .clo-cr-heads__head {
   display: flex;
   align-items: center;

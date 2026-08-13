@@ -1305,6 +1305,19 @@ Currently working (v0.18.x).
     the board; this panel only reads and renders, and the guard made the feature
     impossible to verify under automation, where a driven tab always reports itself
     hidden.
+  * THE PANEL'S SURFACE OUTLIVES THE OFFER (the resting shell, v0.111.0, §8.6a).
+    In the steady landscape slot — the mid-quiz comment column, `cr.hu.shelf` — the
+    panel is held on screen EMPTY (`clo-cr-heads--idle`, children `display: none`)
+    for as long as the variation still has a line to point out, so raising one
+    changes only what is inside the box; `showHeadsUp` then fades the CONTENT
+    (`--in-content`) instead of the panel. Three consequences elsewhere:
+    `hideHeadsUp` ends in `syncHeadsUpShell()`, so `resetHeadsUp` MUST clear its
+    state before hiding or the shell comes back for the variation just left;
+    `showOverlays` sets `cr.active = true` BEFORE its `hideHeadsUp()`, or the shell
+    is put straight back over the quiz panel it just made way for (same z-index, so
+    DOM order would decide); and in that slot the panel's HEIGHT is the slot's, not
+    its content's — a box that grew as the offer landed is the change the shell
+    exists to remove. Portrait is untouched and still wants work of its own.
 - Important lines (section 18c, v0.49.0): a clickable line whose FIRST move
   carries a "!" ("3.c3! d5") is one the author is pointing at, and every host of
   it says so. Almost no new reading: `moveAnnotation` (DOM) and

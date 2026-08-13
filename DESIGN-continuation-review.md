@@ -1545,6 +1545,93 @@ COLUMN, which prints one sentence and hides nothing.
 > resting value for ever and the rule looks dead. Set `transition: none` on the
 > element before reading (that is how the figures above were taken).
 
+## 8.6a The resting shell (v0.111.0)
+
+The fade of 8.6 answers *"this appeared"*. It says nothing about how MUCH appears at
+once, and that turned out to be the real complaint: surface, border, title, a mini
+board of 176px or more, the move rows and two buttons all arriving together, beside
+a position the user is being quizzed on. Half a second of easing does not make six
+things one thing.
+
+So the panel's own SURFACE is now on screen BEFORE it has anything to say, and
+raising a line changes only what is inside it.
+
+**Why this costs nothing.** Mid-quiz the slot the panel lands in is Chessable's
+comment column, and that column prints one sentence — "Quiz — White to play!" — for
+the whole variation. `placeHeadsUp` already took it for exactly that reason
+(v0.63.0). Taking it a move earlier hides nothing that was not going to be hidden
+anyway; the space is simply kept.
+
+**Conditional on the variation, not on the session.** `scanHeadsUp` already counts
+the lines that could ever be pointed out (`pointable`, the `raisable` filter minus
+the ones already in the course); the shell is up only when that count is non-zero
+AND the scan was of THIS variation (`scannedOid === cr.oid`). An empty rectangle
+over the column of a variation that will never fill it is a rectangle nobody asked
+for. It stays up for the rest of the variation once the offers have been taken —
+that is the point, not an oversight: a box that came and went per offer would be the
+churn this removes.
+
+**Only the steady landscape slot** (`cr.hu.shelf`, set by `placeHeadsUp` — the only
+code that knows which placement it took):
+
+* the mid-quiz COLUMN, and only when `stackedTrainerLayout()` is false. Portrait
+  stacks that column under the board, where the panel is a thing that ARRIVES among
+  the trainer's own controls rather than a space being kept, and where the column is
+  regularly as tall as the board — an empty slab. Portrait is left exactly as it
+  was, and wants work of its own.
+* the browse state excludes itself: there the cover is the comment BOX, whose
+  content is precisely what a shell would be hiding.
+* every other placement (the board's gutter, under the trainer row) is sized to its
+  content, so there is no slot to keep.
+
+**The box must not resize.** A shell that grew as the offer landed would be the very
+change it exists to remove, so in the steady slot the panel's HEIGHT is now the
+slot's rather than its content's — `at.height = cover.height`, which until now only
+the spoiler took. The comment that argued against it ("a fixed height would leave it
+half empty, since over a column it is the WIDTH that limits the board") is still
+true and is now the accepted price: measured in the harness at the ground-truthed
+455px column width, the panel takes a 317px board (width-capped) into a 610px slot
+and stands with **182px of quiet surface under its buttons**. The content stays
+TOP-aligned rather than centred, so the title, the board and the buttons are in the
+same place whether one line is offered or three — the dead space is at the bottom,
+where nothing has to be found twice. The children are `display: none` while idle
+rather than hidden or transparent: the panel is a flex column with a gap, so
+anything left in the flow would give the empty box the height of whatever was last
+shown in it, by accident rather than by the slot.
+
+**What fades.** `showHeadsUp` reads whether the shell was up and picks:
+`.clo-cr-heads--in` (the whole panel, as before) when the panel arrives from
+nothing, `.clo-cr-heads--in-content` (`> *`, the same half second one level down)
+when the surface was already there. Same restart-by-reflow trick for both.
+
+Both idle rules are written DOUBLED (`.clo-cr-heads.clo-cr-heads--idle`), and the
+child one is load-bearing rather than tidy: every child has a display of its own a
+few rules further down (`__head` is a flex row), so a single-class `> *` only TIES
+those at (0,1,0) and later-wins leaves the shell showing its content — which is
+exactly what the first harness measurement of this change came back with. The panel
+rule is doubled for the same class of reason: it has to outrank `--important`'s
+resting brightness, which is a statement about a line and has no business applying
+before there is one. Measured: shell `brightness(0.6)`, panel `0.78`, important
+`0.92`.
+
+Two smaller rulings:
+
+* **× takes the shell with it** (`cr.hu.shellOff`, cleared per variation). That
+  button has always meant "give the column back", and a surface returning empty on
+  the next tick would be the press ignored.
+* **It stands down while `cr.active`.** Our quiz panel covers the same column at the
+  same z-index, so which of the two wins would be DOM order. `showOverlays` now sets
+  `cr.active = true` BEFORE calling `hideHeadsUp()`, since that function hands over
+  to `syncHeadsUpShell` and would otherwise put the shell straight back over the
+  panel being opened.
+
+`hideHeadsUp` ends in `syncHeadsUpShell()`, so every path that takes the offer away
+— moving on, queueing, auto-play replaying, an unreadable frame — leaves the space
+behind. `resetHeadsUp` therefore clears its state BEFORE hiding, or the shell would
+come back for the variation just left. `fitHeadsUpMini` and `positionHeadsUp` both
+bail on the idle class: the first would measure padding and call it a board, the
+second would repark an empty box in the gutter when the slot went away.
+
 ## 8.7 Keys, and the setting
 
 Unlike the quiz panel this one must **not** swallow keys — the user is still playing

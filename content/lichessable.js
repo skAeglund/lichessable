@@ -16125,6 +16125,10 @@
         // opacity. null so the first placement always logs its answer.
         covering: null,
         fit: '',          // signature of the layout fitHeadsUpMini last measured
+        // --- the resting shell (v0.111.0; see syncHeadsUpShell) ------------
+        pointable: 0,     // lines this variation may still raise — what the shell waits for
+        shelf: false,     // the last placement was the steady landscape slot
+        shellOff: false,  // x was pressed: the column goes back for this variation
       },
     };
 
@@ -20761,8 +20765,11 @@
       // Placed BEFORE it is shown: an overlay revealed at 0,0 because the board
       // happened to be mid-render would flash in the page's top-left corner.
       if (!positionOverlays()) { warn('continuation: board not measurable — not opening'); return false; }
-      hideHeadsUp(); // the quiz owns the screen from here
       cr.active = true;
+      // AFTER the flag, not before: hideHeadsUp hands over to syncHeadsUpShell,
+      // which would put the resting shell straight back over the panel we are
+      // opening (same z-index, so DOM order would decide it).
+      hideHeadsUp(); // the quiz owns the screen from here
       cr.panel.hidden = false;
       syncButton();
       return true;
@@ -21612,7 +21619,9 @@
     }
 
     function resetHeadsUp() {
-      hideHeadsUp();
+      // CLEARED BEFORE THE HIDE, not after: hideHeadsUp now hands over to
+      // syncHeadsUpShell, which would otherwise raise the shell for the
+      // variation just left — its lines are still in hand at that point.
       cr.hu.lines = [];
       cr.hu.fens = null;
       cr.hu.ply = -1;
@@ -21620,6 +21629,9 @@
       cr.hu.tries = 0;
       cr.hu.seen = new Set();
       cr.hu.armed = new Map();
+      cr.hu.pointable = 0;
+      cr.hu.shellOff = false;
+      hideHeadsUp();
     }
 
     function hideHeadsUp() {
@@ -21628,6 +21640,9 @@
       cr.hu.hideTimer = 0;
       disarmOff(); // a pending confirm must never survive into the next showing
       if (cr.hu.el) cr.hu.el.hidden = true;
+      // …and the surface comes straight back if this variation can still raise
+      // a line: what goes away is the OFFER, not the space kept for it.
+      syncHeadsUpShell();
     }
 
     /** Where the trainer is, as last reported by pollHeadsUpPly. */
@@ -21951,6 +21966,12 @@
       // 0,0 because the board happened to be mid-render would flash in the
       // page's top-left corner.
       if (!placeHeadsUp()) return;
+      // WHAT IS ALREADY ON SCREEN DECIDES WHAT FADES. With the resting shell up
+      // the surface, the border and the hole in Chessable's column were all
+      // there a move ago, so only the CONTENT arrives - which is the whole
+      // point of the shell, and what fading the panel as a whole cannot buy.
+      const shell = !cr.hu.el.hidden && cr.hu.el.classList.contains('clo-cr-heads--idle');
+      cr.hu.el.classList.remove('clo-cr-heads--idle');
       cr.hu.shown = group;
       cr.hu.el.hidden = false;
       // Restart the fade-in by hand: the element is REUSED rather than created,
@@ -21959,9 +21980,9 @@
       // before the class goes back on — without it the browser coalesces the
       // pair and nothing restarts. (CSS declines the animation outright where
       // the panel covers the comment box; see the stylesheet.)
-      cr.hu.el.classList.remove('clo-cr-heads--in');
+      cr.hu.el.classList.remove('clo-cr-heads--in', 'clo-cr-heads--in-content');
       void cr.hu.el.offsetWidth;
-      cr.hu.el.classList.add('clo-cr-heads--in');
+      cr.hu.el.classList.add(shell ? 'clo-cr-heads--in-content' : 'clo-cr-heads--in');
       // The board can only be fitted against a laid-out panel, and everything
       // above ran on a display:none one — so the measuring pass is here, once
       // the panel is really up.
@@ -21970,6 +21991,10 @@
 
     function dismissHeadsUp(e) {
       if (cr.hu.shown) cr.hu.seen.add(cr.hu.shown.sig);
+      // x has always meant "give the column back", so it takes the resting
+      // shell with it for the rest of the variation — a surface that came
+      // straight back empty would be the press ignored.
+      cr.hu.shellOff = true;
       hideHeadsUp();
       blurButton(e);
     }
@@ -22134,7 +22159,14 @@
      * a 176px board squeezed into the gutter; × gives the column back.
      */
     function positionHeadsUp() {
-      if (cr.hu.el && !cr.hu.el.hidden) placeHeadsUp();
+      const el = cr.hu.el;
+      if (!el || el.hidden) return;
+      // The resting shell belongs to the steady slot and nowhere else, so a
+      // resize or a scroll that takes that slot away has to take IT away too -
+      // placing it blindly would repark an empty box in the board's gutter
+      // until the next tick noticed.
+      if (el.classList.contains('clo-cr-heads--idle')) { syncHeadsUpShell(); return; }
+      placeHeadsUp();
     }
 
     /**
@@ -22175,6 +22207,10 @@
         return;
       }
       if (el.hidden) return; // nothing to measure yet — showHeadsUp comes back
+      // The resting shell has its children display:none, so every measurement
+      // below would come back as padding. It has no board to fit either;
+      // showHeadsUp drops the class and calls again with real content.
+      if (el.classList.contains('clo-cr-heads--idle')) return;
       const sig = [Math.round(box.width), Math.round(box.height),
         ui.moves.childElementCount, ui.note.hidden ? 0 : 1, ui.arm.hidden ? 0 : 1].join('|');
       if (cr.hu.fit === sig) return;
@@ -22233,6 +22269,15 @@
       // covering — the content-sized placements below are better.
       const column = spoiler ? null : usable(SELECTORS.reviewCommentCol, C.headsUpCoverMinPx);
       const cover = spoiler || column;
+      // THE STEADY SLOT, and the only placement the resting shell is ever held
+      // in (syncHeadsUpShell). A mid-quiz column in a LANDSCAPE layout is a
+      // fixed rectangle beside the board that says nothing for the whole
+      // variation; portrait stacks it under the board, where the panel is a
+      // thing that arrives among the trainer's own controls rather than a space
+      // being kept, and where an empty one is regularly a slab as tall as the
+      // board. The browse state excludes itself - there the cover is the
+      // comment BOX, whose content is exactly what a shell would be hiding.
+      cr.hu.shelf = Boolean(column) && !stackedTrainerLayout(rect);
       // The resting dim is opaque and applies everywhere, so this class no
       // longer gates it — it gates the FADE-IN, which is opacity by definition
       // and would make the comment underneath legible for half a second. Only
@@ -22249,11 +22294,15 @@
       }
       if (cover) {
         const at = { left: cover.left + sx, top: cover.top + sy, width: cover.width };
-        // The spoiler is covered ENTIRELY; the column is not. Down there nothing
-        // needs hiding, so the panel keeps its content height and simply takes
-        // the room at the top — a fixed height would leave it half empty, since
-        // over a column it is the WIDTH that limits the board.
-        if (spoiler) at.height = cover.height;
+        // The spoiler is covered ENTIRELY, and so is the steady slot: there the
+        // panel is on screen BEFORE it has anything in it, so its height has to
+        // be the slot's rather than its content's - a box that grew as the
+        // offer landed would be the very change the shell exists to remove.
+        // (It can leave the panel half empty, since over a column it is the
+        // WIDTH that limits the board. That is the price of a box that does not
+        // move.) Every other column cover keeps its content height and simply
+        // takes the room at the top.
+        if (spoiler || cr.hu.shelf) at.height = cover.height;
         else if (el.style.height) el.style.height = '';
         setInlinePx(el, at);
         cr.hu.coverRect = cover;
@@ -22330,12 +22379,58 @@
       if (autoPlayReplaying && autoPlayReplaying()) { hideHeadsUp(); return; }
       if (!cr.hu.shown) {
         const group = headsUpGroup();
-        if (group) showHeadsUp(group);
+        if (group) { showHeadsUp(group); return; }
+        syncHeadsUpShell();
         return;
       }
       // Still ours to show? The user moving on is what takes it down.
       if (headsUpPly() - cr.hu.shown.startPly > 1) { hideHeadsUp(); return; }
       positionHeadsUp();
+    }
+
+    /**
+     * THE RESTING SHELL (v0.111.0): the panel's own surface, held on screen
+     * EMPTY for as long as the variation still has a line that may be pointed
+     * out, so that raising one changes only what is inside it.
+     *
+     * The complaint it answers is that fading in did not help with how MUCH
+     * arrives at once - surface, border, title, a mini board, the move rows and
+     * two buttons, all beside a position the user is being quizzed on. Mid-quiz
+     * the slot the panel lands in is Chessable's comment column, which prints
+     * nothing but "Quiz - White to play!" for the whole variation (which is why
+     * placeHeadsUp took it in the first place, v0.63.0), so there is nothing to
+     * lose by taking it a move early: the space is simply kept, and the offer
+     * appears in it.
+     *
+     * CONDITIONAL ON THE VARIATION, not on the session: no clickable line to
+     * point out, no shell. `pointable` is what scanHeadsUp already counted, and
+     * the scan must have been of THIS variation (`scannedOid`) - an empty
+     * rectangle over the column of a variation that will never fill it is a
+     * rectangle nobody asked for.
+     *
+     * It stands down while a review is up (`cr.active`): our quiz panel covers
+     * the same column at the same z-index, so which of the two would win is DOM
+     * order.
+     */
+    function syncHeadsUpShell() {
+      const el = cr.hu.el;
+      if (!el) return;
+      if (!(cr.hu.enabled && !cr.hu.shellOff && !cr.active && !cr.hu.shown &&
+            cr.hu.pointable > 0 && cr.hu.scannedOid === cr.oid)) { dropHeadsUpShell(); return; }
+      // Raised, placed, and dropped again if it did not land in the steady slot
+      // - all inside one task, so a placement that fails is never painted.
+      el.classList.add('clo-cr-heads--idle');
+      el.hidden = false;
+      if (!placeHeadsUp() || !cr.hu.shelf) dropHeadsUpShell();
+    }
+
+    /** Takes the shell away. Never touches a panel that is really SHOWN - the
+     *  idle class is the whole test, since both states share one element. */
+    function dropHeadsUpShell() {
+      const el = cr.hu.el;
+      if (!el || !el.classList.contains('clo-cr-heads--idle')) return;
+      el.classList.remove('clo-cr-heads--idle');
+      el.hidden = true;
     }
 
     async function scanHeadsUp(oid) {
@@ -22392,6 +22487,7 @@
       cr.userColor = userColor;
       const live = candidates.filter((l) => !l.inCourse);
       const pointable = raisable.filter((l) => !l.inCourse).length;
+      cr.hu.pointable = pointable; // the resting shell's whole condition
       log('heads-up: ' + lines.length + ' clickable line(s) in this variation, ' +
         pointable + ' can be pointed out' +
         (live.length > pointable ? ' (+' + (live.length - pointable) + ' written inside them)' : '') +

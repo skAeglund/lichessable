@@ -1702,14 +1702,18 @@ body {
     </div>
 
     <div class="hx-card">
-      <h3>Mid-quiz — over the comment column</h3>
+      <h3>Mid-quiz — over the comment column (the steady slot)</h3>
       <p class="hx-note">A live quiz renders no comment, so the column holding it is empty but for
-         "Quiz — Black to play!". The panel takes its width (455 here) but keeps its CONTENT height:
-         over a column it is the width that limits the board, and a fixed height would leave the
-         panel half empty. Both buttons stand — the variation is still running, so waiting for its
-         end is a real choice.</p>
+         "Quiz — Black to play!". The panel takes the whole slot, 455x610 here — WIDTH and HEIGHT
+         both, since v0.111.0: the resting shell below is on screen before there is anything to put
+         in it, so the box cannot be allowed to grow as the offer lands. Over a column it is the
+         WIDTH that limits the board (317px here, against 610 of slot), so the panel stands with
+         182px of quiet surface under its buttons. That is the measured price of a box that does
+         not move — and the content stays TOP-aligned, so the title, the board and the buttons are
+         in the same place whether one line is being offered or three. Both buttons stand — the variation is still running, so waiting for
+         its end is a real choice.</p>
       <div class="hx-stage">
-        <div class="clo-cr-heads hx-pos hx-fit" style="width:455px" data-hx-fit-cap="610">
+        <div class="clo-cr-heads hx-pos hx-fit" style="width:455px;height:610px" data-hx-fit-cap="610">
           <div class="clo-cr-heads__head">
             <span class="clo-cr-heads__title">Clickable line</span>
             <button type="button" class="clo-cr-heads__off">Turn off</button>
@@ -1720,6 +1724,38 @@ body {
             <div class="clo-cr-mini hx-mini"
                  data-hx-board="rnbqkb1r/pp2pppp/5n2/3p4/3P4/5N2/PP2PPPP/RNBQKB1R w"
                  data-hx-shapes="arrow:c1:g5:"></div>
+            <div class="clo-cr-heads__moves">
+              <div class="clo-cr-heads__move">Bxc7</div>
+            </div>
+          </div>
+          <div class="clo-cr-heads__btns">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__arm">Review on variation end</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary clo-cr-heads__now">Review now</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Mid-quiz — the resting shell (v0.111.0)</h3>
+      <p class="hx-note">The same slot, held EMPTY for as long as the variation still has a line to
+         point out. Everything the card above holds is here in the markup and display:none
+         (<code>.clo-cr-heads--idle</code>), so raising the offer changes only what is inside the
+         box — the surface, the border and the hole in Chessable's column were already there. It
+         rests a shade darker than a panel with something to read (brightness 0.6 against 0.78) and
+         takes no pointer, so a passing cursor cannot light an empty box up. Only in this slot:
+         every other placement is sized to its content, where an empty box is a box nobody asked
+         for.</p>
+      <div class="hx-stage">
+        <div class="clo-cr-heads clo-cr-heads--idle hx-pos" style="width:455px;height:610px">
+          <div class="clo-cr-heads__head">
+            <span class="clo-cr-heads__title">Clickable line</span>
+            <button type="button" class="clo-cr-heads__off">Turn off</button>
+            <button type="button" class="clo-cr-heads__x">×</button>
+          </div>
+          <div class="clo-cr-heads__lead">The opponent can also respond with:</div>
+          <div class="clo-cr-heads__body">
+            <div class="clo-cr-mini" style="width:176px;height:176px"></div>
             <div class="clo-cr-heads__moves">
               <div class="clo-cr-heads__move">Bxc7</div>
             </div>
