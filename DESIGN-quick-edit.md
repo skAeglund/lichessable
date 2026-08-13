@@ -683,3 +683,80 @@ the pencil lingers `touchPencilMs` (~4 s) instead of the 200 ms mouse hide — t
 move (which also navigates the board there), then tap the lingering pencil. Any
 scroll hides the pencil immediately: it is fixed-positioned from the move's rect at
 show time and would otherwise float over the wrong move.
+
+### 8b. Placement on a phone (v0.109.0)
+
+Two reports, one cause:
+
+> "when you edit text, the panel is no longer visible on screen, so you can't see
+> what you write. And even before you write, it's often placed too far down so
+> that you can't see the whole panel."
+
+`placePopup` clamped against `window.innerWidth/innerHeight`, i.e. against the
+**layout** viewport. On Android neither number is what the user can see:
+
+* Chrome's "Desktop site" — which section 6's touch latch exists because of —
+  lays the page out at ~980 CSS px wide and correspondingly tall. A phone screen
+  showing 760 of ~2100 CSS px of page will happily accept a popup `top` of 1792
+  ("inside the viewport") that is several hundred pixels below the fold. That is
+  the second half of the report.
+* An on-screen keyboard resizes the **visual** viewport only (`interactive-widget`
+  defaults to `resizes-visual`), so `innerHeight` does not move at all when it
+  opens. The popup autofocuses its text field on open, the keyboard comes up over
+  the bottom half of the screen — and the popup, placed a beat earlier against a
+  viewport that still claims to be full height, is behind it. That is the first
+  half, and it is why the feature is unusable rather than merely awkward: the one
+  thing you need to see while typing is the thing that is covered.
+
+The fix is two top-level helpers, `visualViewportBox()` and `placeFixedPopup()`:
+
+* `visualViewport.offsetLeft/offsetTop` is the visible rectangle's own offset
+  **within the layout viewport**, i.e. already in the coordinate space a
+  `position: fixed` element is placed in, and its `width`/`height` are CSS pixels
+  of that same space. So a box built from those four numbers can be used verbatim
+  for `left`/`top`, with no scroll or scale arithmetic of our own. Where
+  `visualViewport` is missing the box falls back to `innerWidth/innerHeight`,
+  which is the old behaviour exactly — desktop is unchanged, and measurably so
+  (`dev/check-popup-placement.js`, first case).
+* `maxHeight`/`maxWidth` are written **before** the size is read. A popup taller
+  than the visible band has to be measured at the height it will actually be, or
+  the clamp pushes its top off the top of the screen instead. The function returns
+  the height it allowed so `placePopup` can cap the text fields to what is left
+  after the label, tabs, scope, status and actions (~170px on touch) — the edit
+  box keeping its own `40vh` wherever that is the smaller of the two, so nothing
+  about a desktop window changes.
+
+Placement alone is not enough, because the keyboard arrives **after** it: the
+popup follows `visualViewport`'s `resize` and `scroll` for as long as it is open,
+rAF-throttled (a pinch-pan fires those continuously). Those listeners are bound
+once per document rather than per popup — `buildPopup` runs again whenever the
+element is detached by a re-render, while `visualViewport` outlives every element
+we build.
+
+And the page must not zoom around the field in the first place, which is the same
+problem section 22 solved for the move field: the viewport meta is pinned to
+`maximum-scale=1` while a field is focused. That lock is now top level and **keyed
+by owner**, since the popup and the move field can both hold one and the last to
+let go is what restores the page. `closePopup` releases ours by hand — hiding a
+focused field does not reliably fire its blur, and a lock left behind costs the
+user pinch-zoom on the whole page. The blur release is DEFERRED by a tick and
+settled on where the focus ended up: a blur fires before the focus that follows
+it, so moving from Append to Edit (or switching tabs, which hides the focused
+field) would otherwise restore the page zoom and take it straight back, which on
+iOS is a visible flicker.
+
+The touch popup is also **wider** since v0.109.0 — 340px against the desktop
+280, and 420 for the arrows tab — because everything inside it grew for a
+fingertip while its width did not, leaving the buttons and the comment box
+cramped around them. Both are `min(…, 100vw - 16px)`, which only bites on a
+narrow layout viewport; the real cap is `placeFixedPopup`'s, against what is
+visible.
+
+**Verification.** `dev/check-popup-placement.js` executes the two helpers, sliced
+out of the source, against the viewport shapes above — scrolled desktop-site,
+keyboard up, pinch-zoomed 2x, a move in the visible corner, the 400px arrows tab
+on a 360px screen. Every one of them passes on a full-size desktop window with the
+pre-fix arithmetic, which is the whole reason the check is worth having; a control
+run with the old clamp fails three. The check asserts the numbers are finite,
+because the first control run of it came back green against the bug: a `NaN`
+loses every comparison.

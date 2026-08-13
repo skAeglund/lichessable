@@ -1627,7 +1627,10 @@ html.clo-injecting .legal-square-capture-mt2 {
   font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
   /* The arrows tab is tall enough to reach the fold on a short window; the
-     popup scrolls rather than hiding its own Save button. */
+     popup scrolls rather than hiding its own Save button. This is only the
+     value it starts at: placePopup overwrites both caps inline with what is
+     VISIBLE, since 100vh/100vw are the layout viewport and a phone with its
+     keyboard up is most of a screen shorter than that. */
   max-height: calc(100vh - 12px);
   overflow-y: auto;
 }
@@ -4631,15 +4634,25 @@ html.clo-touch .clo-qe-pencil {
   font-size: 18px;
 }
 
+/* A fingertip needs more room than a cursor: the type is 16px here (also what
+   stops the browser zooming into a focused field), the tap targets are bigger,
+   and 280px of desktop width leaves the buttons and the comment box cramped
+   around them. The min() only bites on a genuinely narrow layout viewport —
+   placeFixedPopup caps the width against what is VISIBLE, which is the smaller
+   number whenever the page is zoomed. The arrows rule below carries the same
+   specificity as this one and must stay AFTER it, or the board would come out
+   at this width. */
 html.clo-touch .clo-qe-popup {
   font-size: 16px;
+  width: min(340px, calc(100vw - 16px));
+  padding: 10px 12px;
 }
 
 /* Drawing an arrow with a fingertip needs bigger squares and bigger swatches;
    the board is all percentages, so only the popup's width has to grow — kept
    inside the viewport, which is the one dimension a phone cannot spare. */
 html.clo-touch .clo-qe-popup--arrows {
-  width: min(400px, calc(100vw - 16px));
+  width: min(420px, calc(100vw - 16px));
 }
 
 html.clo-touch .clo-qe-swatch {

@@ -647,6 +647,30 @@ Currently working (v0.18.x).
     unlike our board overlays): MoveTrainer2 binds single-key shortcuts on `document`
     and does not skip focused text fields, so typing a comment would otherwise drive
     the trainer. The default action still inserts the character; Escape closes.
+  * IT IS PLACED AGAINST THE **VISUAL** VIEWPORT, never `window.innerHeight`
+    (`placeFixedPopup` + `visualViewportBox`, both top level, both shared with the
+    pencil). A phone's keyboard shrinks what is VISIBLE and leaves the layout
+    viewport exactly as it was, and Chrome's "Desktop site" lays the page out a
+    couple of thousand CSS pixels tall — so the old innerHeight clamp parked the
+    popup below anything on screen, and the popup's own autofocus then raised a
+    keyboard over what was left of it. It also FOLLOWS that box for as long as it
+    is open (visualViewport `resize` + `scroll`, rAF-throttled, bound ONCE per
+    document — buildPopup runs again on every detach, visualViewport does not).
+    Both caps are written INLINE by `placePopup` and outrank the stylesheet's
+    `100vh`/fixed widths, which are the layout viewport again; the edit box keeps
+    its own 40vh wherever that is the smaller of the two, so a desktop window is
+    unchanged. `dev/check-popup-placement.js` executes the real helpers against
+    those viewport shapes — no desktop browser and no harness page can be put
+    into them.
+  * THE VIEWPORT LOCK IS SHARED AND KEYED BY OWNER (`lockViewport(owner)` /
+    `unlockViewport(owner)` / `viewportLocked(owner)`, hoisted to top level out of
+    section 22 in v0.109.0): this popup takes one while any of its fields has
+    focus, the move field takes one while it is being typed into, and the LAST
+    owner to let go is what restores the page's own meta. Never let either module
+    own the meta again — whichever blurred first would hand the other's zoom back
+    mid-edit. `closePopup` releases ours by hand: hiding a focused field does not
+    reliably fire its blur, and a lock left behind costs the user pinch-zoom on
+    the whole page.
   * PROMOTION ALTERNATIVES ARE REFUSED in popup and driver — the edit board's picker
     markup is UNVERIFIED, the same reason auto-play (13), section 22 and section 23
     refuse them.
@@ -1779,8 +1803,9 @@ Currently working (v0.18.x).
   Chrome and Safari scale the WHOLE PAGE up around a focused field ANYWAY
   whenever the layout viewport is wider than the screen (Chrome's "Desktop site",
   which section 6's touch latch exists because of, guarantees exactly that). The
-  board then goes off screen mid-quiz. So `lockViewport()` rewrites the PAGE'S
-  OWN `meta[name=viewport]` to `maximum-scale=1` for as long as the field is
+  board then goes off screen mid-quiz. So `lockViewport()` — top level and
+  OWNER-KEYED since v0.109.0, section 12's popup holds one too — rewrites the
+  PAGE'S OWN `meta[name=viewport]` to `maximum-scale=1` for as long as the field is
   being typed into and `unlockViewport()` restores the original string verbatim,
   so pinch-zoom is the user's again the moment they are done. Armed on
   POINTERDOWN as well as on focus — iOS decides the zoom as part of the focus and
@@ -2048,6 +2073,22 @@ alternative for six weeks, and v0.100.0's stranded `isNext` did the same in
 section 23. To run a control, point `CLO_SRC` at a copy with the change
 reverted and confirm it FAILS — an early version of that control silently read
 the good source and passed against a copy that still had the bug.
+
+After touching the popup placement helpers — `visualViewportBox`,
+`placeFixedPopup` — or the quick-edit popup's own `placePopup`:
+
+```
+node dev/check-popup-placement.js
+```
+
+Same discipline again: it EXECUTES both helpers, sliced out by
+`dev/slice-source.js`, against the viewport shapes a phone presents and a
+desktop cannot be put into — a "Desktop site" layout viewport thousands of CSS
+pixels tall, an on-screen keyboard, a pinch-zoom offset. Every case passes on a
+full-size window with the pre-fix arithmetic, which is why the check exists.
+Run a control (`CLO_SRC` at a copy with the change reverted) and confirm it
+FAILS — the first control run of this very file came back green because a NaN
+loses every comparison, which is now asserted against.
 
 After touching section 16b's store — `load`, `save`, `migrateLegacyStore`,
 `indexItems`, `itemKey` or the caps:

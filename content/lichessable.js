@@ -6681,6 +6681,118 @@
     }
   }
 
+  // --- what is actually on screen, and keeping it there ----------------------
+  //
+  // A `position: fixed` element is placed in the LAYOUT viewport, which on a
+  // phone is regularly not what the user can see: pinch-zoom and — the case
+  // this exists for — an on-screen keyboard both shrink the VISUAL viewport
+  // and leave `window.innerHeight` exactly as it was. Clamping a popup against
+  // innerHeight therefore parks it under the keyboard, or below the fold of a
+  // "Desktop site" layout that is a couple of thousand CSS pixels tall.
+  //
+  // `visualViewport.offsetLeft/offsetTop` is the visible rectangle's own offset
+  // WITHIN the layout viewport, i.e. already in the coordinate space a fixed
+  // element is placed in, and its width/height are CSS pixels of that same
+  // space — so a box built from them can be used verbatim for `left`/`top`.
+  // Everything degrades to the old innerWidth/innerHeight answer where
+  // visualViewport is missing.
+
+  function visualViewportBox() {
+    const vv = window.visualViewport;
+    if (!vv) return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    return { left: vv.offsetLeft || 0, top: vv.offsetTop || 0, width: vv.width, height: vv.height };
+  }
+
+  /**
+   * Places a fixed-position popup under `rect` (its anchor's viewport rect),
+   * clamped into what is visible on BOTH axes. Returns the height it was
+   * allowed, so the caller can cap its own scroll container to it.
+   *
+   * The measurement order matters: `maxHeight` is written BEFORE the height is
+   * read, or a popup taller than the visible area measures its unclamped
+   * height and the clamp then pushes its top off the top of the screen.
+   */
+  function placeFixedPopup(el, rect, opts) {
+    const o = opts || {};
+    const box = visualViewportBox();
+    const gap = o.gap != null ? o.gap : 6;
+    const pad = o.pad != null ? o.pad : 4;
+    const room = Math.max(o.minHeight || 140, box.height - pad * 2 - 4);
+    el.style.maxHeight = room + 'px';
+    // …and the same on the other axis, for the pinch-zoomed case: a popup with
+    // a CSS width wider than what is visible cannot be clamped into it, only
+    // shrunk. Everything inside is percentage-based or `width: 100%`.
+    el.style.maxWidth = Math.max(o.minWidth || 220, box.width - pad * 2) + 'px';
+    const width = el.offsetWidth || 280;
+    const height = Math.min(el.offsetHeight || 160, room);
+    const left = Math.min(Math.max(rect.left, box.left + pad),
+      box.left + box.width - width - pad * 2);
+    const top = Math.min(Math.max(rect.bottom + gap, box.top + pad),
+      box.top + box.height - height - pad * 2);
+    el.style.left = Math.round(Math.max(box.left + pad, left)) + 'px';
+    el.style.top = Math.round(Math.max(box.top + pad, top)) + 'px';
+    return room;
+  }
+
+  // Mobile Chrome and Safari scale the WHOLE PAGE up around a focused text
+  // field whenever the layout viewport is wider than the screen — which
+  // Chrome's "Desktop site" guarantees, and which is exactly the setting the
+  // touch latch above exists because of. The board (or, for the quick-edit
+  // popup, the popup itself) then goes off screen and the user is looking at
+  // nothing but their own input. The 16px type under `html.clo-touch` is only
+  // half the cure: it answers the "this text is too small to edit" trigger,
+  // not the page-scale zoom the browser does anyway.
+  //
+  // The other half is the page's OWN viewport meta, pinned to scale 1 for
+  // exactly as long as a field is being typed into and restored byte for byte
+  // afterwards — so pinch-zoom is the user's again the moment they are done.
+  // Only ever on a touch device: no desktop browser does this, and a page's
+  // viewport is not something to rewrite for nothing. Existing scale tokens are
+  // STRIPPED rather than appended to (a duplicated key is not reliably
+  // last-one-wins across engines), and `user-scalable=no` is deliberately not
+  // sent — Chrome ignores it and it is an accessibility anti-pattern. A page
+  // with no viewport meta at all is left alone: adding one would relayout the
+  // whole site.
+  //
+  // Arm it on POINTERDOWN as well as on focus, because iOS decides the zoom as
+  // part of the focus itself and a meta written from the focus handler can be
+  // one beat too late.
+  //
+  // TWO OWNERS (section 22's move field and section 12's popup), so the lock is
+  // keyed: the last one to let go is what restores the page, and neither can
+  // drop the other's lock. `viewportLocked(owner)` is how a module's own
+  // self-healing tick asks whether IT still holds one.
+  const vpLock = { meta: null, prev: '', owners: new Set() };
+
+  function lockViewport(owner) {
+    if (!wantsTouchUi()) return;
+    vpLock.owners.add(owner);
+    if (vpLock.meta) return;
+    const meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) return;
+    const prev = meta.getAttribute('content') || '';
+    vpLock.meta = meta;
+    vpLock.prev = prev;
+    const kept = prev.split(',')
+      .map((s) => s.trim())
+      .filter((s) => s && !/^(maximum-scale|minimum-scale|user-scalable)\s*=/i.test(s));
+    kept.push('maximum-scale=1');
+    meta.setAttribute('content', kept.join(', '));
+  }
+
+  function unlockViewport(owner) {
+    vpLock.owners.delete(owner);
+    if (vpLock.owners.size || !vpLock.meta) return;
+    // Only put back what we found. If the page rewrote the meta underneath us
+    // (Chessable does not, but a re-render is always possible), leaving its own
+    // value alone is safer than restoring a stale one.
+    if (vpLock.meta.isConnected) vpLock.meta.setAttribute('content', vpLock.prev);
+    vpLock.meta = null;
+    vpLock.prev = '';
+  }
+
+  const viewportLocked = (owner) => vpLock.owners.has(owner);
+
   // --- review-side UI (hover pencil + popup) ---------------------------------
 
   /**
@@ -6725,6 +6837,7 @@
       popup: null,
       els: null,              // cached popup child refs
       pencilTarget: null,     // move element the pencil currently points at
+      vpBound: false,         // visualViewport listeners bound (once per document)
       popupTarget: null,      // move element the open popup refers to
       hideTimer: 0,
       saving: false,
@@ -7000,7 +7113,19 @@
           if (type === 'keydown' && e.key === 'Escape' && !qe.saving) closePopup();
         });
       }
+      // Typing into any of these raises a phone's keyboard, which is both why
+      // the page must not zoom around them (lockViewport) and why the popup
+      // has to follow the visible area afterwards (bindViewportFollow).
+      // pointerdown as well as focus: iOS decides the zoom as part of the
+      // focus, so a meta written from the focus handler can be one beat late.
+      for (const el of [textarea, editArea, sanInput]) {
+        el.addEventListener('pointerdown', lockPopupViewport);
+        el.addEventListener('focus', lockPopupViewport);
+        el.addEventListener('blur', releasePopupViewport);
+      }
+
       document.body.appendChild(popup);
+      bindViewportFollow();
 
       qe.popup = popup;
       qe.els = {
@@ -7815,31 +7940,104 @@
       qe.pencilTarget = null;
     }
 
+    // Beside the move, but never off the visible edge: a move at the right of a
+    // narrow screen would otherwise put its own pencil past it, and the 32px
+    // touch pencil is wide enough for that to happen on an ordinary phone.
     function showPencilFor(moveEl) {
       ensureElements();
       qe.pencilTarget = moveEl;
       cancelHide();
       const rect = moveEl.getBoundingClientRect();
-      qe.pencil.style.left = Math.round(rect.right + 2) + 'px';
-      qe.pencil.style.top = Math.round(rect.top - 2) + 'px';
       qe.pencil.hidden = false;
+      const box = visualViewportBox();
+      const w = qe.pencil.offsetWidth || 22;
+      const left = Math.min(rect.right + 2, box.left + box.width - w - 4);
+      qe.pencil.style.left = Math.round(Math.max(box.left + 2, left)) + 'px';
+      qe.pencil.style.top = Math.round(rect.top - 2) + 'px';
+    }
+
+    // The popup takes the keyboard, so it takes a viewport lock of its own —
+    // same cure and same reasoning as section 22's move field, which is why
+    // the lock is shared and keyed rather than owned by either of them.
+    const QE_VP_OWNER = 'quickedit';
+    const lockPopupViewport = () => lockViewport(QE_VP_OWNER);
+    const unlockPopupViewport = () => unlockViewport(QE_VP_OWNER);
+
+    /**
+     * A blur fires BEFORE the focus that follows it, so tabbing from Append to
+     * Edit — or switching tabs, which hides the focused field — would restore
+     * the page's zoom for one turn of the event loop and take it straight back:
+     * a visible flicker on iOS. Settle it on the next tick instead, by where
+     * the focus actually ended up. closePopup still releases immediately; a
+     * deferred release arriving after it is a no-op.
+     */
+    function releasePopupViewport() {
+      setTimeout(() => {
+        const active = document.activeElement;
+        if (qe.popup && !qe.popup.hidden && active && qe.popup.contains(active)) return;
+        unlockPopupViewport();
+      }, 0);
     }
 
     /**
-     * Under the move, clamped into the viewport on BOTH axes — measured rather
-     * than assumed, because the arrows tab carries a board and is both wider
-     * and several times taller than the text tabs. Without the vertical clamp
-     * its Save button lands below the fold, which on the variation page (where
-     * the moves sit low on the page) is most of the time.
+     * Follows the VISUAL viewport for as long as the popup is open. On Android
+     * the field autofocuses, the keyboard comes up, the visible area loses its
+     * bottom half — and `window.innerHeight` does not move at all, so a popup
+     * placed once at open time ends up behind the keyboard the user is typing
+     * on. This is what puts it back, on every resize (keyboard, rotation) and
+     * every scroll (pinch-pan, and the scroll the browser itself does to bring
+     * a focused field into view).
+     *
+     * Bound ONCE per document, not per popup: buildPopup runs again whenever
+     * the element is detached, while visualViewport outlives every element we
+     * build. rAF-throttled — a pinch-pan fires these continuously.
+     */
+    let vpFrame = 0;
+    function onViewportShift() {
+      if (vpFrame) return;
+      vpFrame = requestAnimationFrame(() => {
+        vpFrame = 0;
+        if (qe.popup && !qe.popup.hidden && qe.popupTarget) placePopup(qe.popupTarget);
+      });
+    }
+    function bindViewportFollow() {
+      if (qe.vpBound || !window.visualViewport) return;
+      qe.vpBound = true;
+      window.visualViewport.addEventListener('resize', onViewportShift);
+      window.visualViewport.addEventListener('scroll', onViewportShift);
+    }
+
+    /**
+     * Under the move, clamped into what is VISIBLE on both axes — measured
+     * rather than assumed, because the arrows tab carries a board and is both
+     * wider and several times taller than the text tabs. Without the vertical
+     * clamp its Save button lands below the fold, which on the variation page
+     * (where the moves sit low on the page) is most of the time.
+     *
+     * VISIBLE, not `window.innerHeight`: on a phone the two are routinely a
+     * whole keyboard apart, and under Chrome's "Desktop site" the layout
+     * viewport is a couple of thousand CSS pixels tall while the screen shows a
+     * few hundred of them — so the old innerHeight clamp parked the popup far
+     * below anything the user could see, and the keyboard raised by its own
+     * autofocus then covered whatever was left. placeFixedPopup does the
+     * arithmetic against visualViewport; see it for why that is the right box
+     * for a fixed element.
      */
     function placePopup(moveEl) {
-      const rect = moveEl.getBoundingClientRect();
-      const width = qe.popup.offsetWidth || 280;
-      const height = qe.popup.offsetHeight || 160;
-      qe.popup.style.left =
-        Math.round(Math.max(4, Math.min(rect.left, window.innerWidth - width - 8))) + 'px';
-      qe.popup.style.top =
-        Math.round(Math.max(4, Math.min(rect.bottom + 6, window.innerHeight - height - 8))) + 'px';
+      const room = placeFixedPopup(qe.popup, moveEl.getBoundingClientRect(), { minHeight: 160 });
+      // The popup scrolls to fit, but a text field that fills it on its own
+      // leaves Save an unexplained scroll away — and the edit box's own 40vh is
+      // a share of the LAYOUT viewport, i.e. of the wrong box again. Give the
+      // fields what is left after the label, tabs, scope, status and actions
+      // (~170px on a touch phone) and let the popup keep the rest. The edit box
+      // keeps its 40vh where that is the smaller of the two, so nothing about
+      // this changes on a desktop window.
+      if (qe.els) {
+        const fieldMax = Math.max(64, Math.round(room - 170));
+        qe.els.textarea.style.maxHeight = fieldMax + 'px';
+        qe.els.editArea.style.maxHeight =
+          Math.min(fieldMax, Math.round(window.innerHeight * 0.4)) + 'px';
+      }
     }
 
     function openPopup(moveEl) {
@@ -7937,6 +8135,9 @@
     }
 
     function closePopup() {
+      // Hiding a focused field does not reliably fire its blur, and a lock left
+      // behind costs the user pinch-zoom on the whole page.
+      unlockPopupViewport();
       if (qe.popup) qe.popup.hidden = true;
       qe.popupTarget = null;
       qe.saving = false;
@@ -23629,58 +23830,16 @@
       browse: false,    // the variation is over: the field is an Enter, not a move
       carryAt: 0,       // …and Enter was pressed at: take the keyboard back
       advanceAt: 0,     // last "next variation" press, for the double-Enter guard
-      vpMeta: null,     // the page's viewport meta while we have it pinned
-      vpPrev: null,     // …and its own content string, restored verbatim
       busyTimer: 0,
       classTimer: 0,
     };
 
-    // --- keeping the page where it is on a phone -----------------------------
-    //
-    // Mobile Chrome and Safari scale the WHOLE PAGE up around a focused text
-    // field, and here that field is focused in the middle of a quiz with the
-    // board already placed: the board goes off screen and the user is looking
-    // at nothing but their own input. The 16px type under `html.clo-touch` is
-    // the half of the cure that stops the "this text is too small to edit"
-    // trigger; this is the other half, for the zoom the browser does anyway
-    // because the page's layout viewport is wider than the screen.
-    //
-    // The cure is the page's OWN viewport meta, pinned to scale 1 for exactly
-    // as long as the field is being typed into and restored byte for byte
-    // afterwards — so pinch-zoom is the user's again the moment they are done.
-    // Only ever on a touch device: no desktop browser does this, and a page's
-    // viewport is not something to rewrite for nothing.
-    //
-    // Armed on POINTERDOWN as well as focus, because iOS decides on the zoom as
-    // part of the focus itself and a meta written from the focus handler can be
-    // one beat too late. A page with no viewport meta at all is left alone —
-    // adding one would relayout the whole site.
-
-    function lockViewport() {
-      if (tm.vpMeta || !wantsTouchUi()) return;
-      const meta = document.querySelector('meta[name="viewport"]');
-      if (!meta) return;
-      const prev = meta.getAttribute('content') || '';
-      tm.vpMeta = meta;
-      tm.vpPrev = prev;
-      // Drop whatever the page said about scale and say scale 1 instead; a
-      // duplicated key is not reliably "last one wins" across engines.
-      const kept = prev.split(',')
-        .map((s) => s.trim())
-        .filter((s) => s && !/^(maximum-scale|minimum-scale|user-scalable)\s*=/i.test(s));
-      kept.push('maximum-scale=1');
-      meta.setAttribute('content', kept.join(', '));
-    }
-
-    function unlockViewport() {
-      if (!tm.vpMeta) return;
-      // Only put back what we found. If the page rewrote the meta underneath us
-      // (Chessable does not, but a re-render is always possible), leaving its
-      // own value alone is safer than restoring a stale one.
-      if (tm.vpMeta.isConnected) tm.vpMeta.setAttribute('content', tm.vpPrev);
-      tm.vpMeta = null;
-      tm.vpPrev = null;
-    }
+    // Keeping the page where it is on a phone: the shared viewport lock (top
+    // level, and section 12's popup holds one too), keyed by owner so
+    // neither module can drop the other's.
+    const VP_OWNER = 'textmove';
+    const lockVp = () => lockViewport(VP_OWNER);
+    const unlockVp = () => unlockViewport(VP_OWNER);
 
     // --- reading the position ------------------------------------------------
 
@@ -24056,10 +24215,10 @@
       });
       input.addEventListener('input', onType);
       // Clicking the field is a request for it, whatever Escape said earlier.
-      input.addEventListener('focus', () => { tm.dismissed = false; lockViewport(); });
+      input.addEventListener('focus', () => { tm.dismissed = false; lockVp(); });
       // Before the focus, not after it — see lockViewport.
-      input.addEventListener('pointerdown', lockViewport);
-      input.addEventListener('blur', unlockViewport);
+      input.addEventListener('pointerdown', lockVp);
+      input.addEventListener('blur', unlockVp);
 
       root.appendChild(input);
       widget.appendChild(root);
@@ -24103,12 +24262,12 @@
       const carry = tm.carryAt && (Date.now() - tm.carryAt) < C.carryFocusMs;
       if (wantsTouchUi() && !carry) return;
       tm.carryAt = 0;
-      if (wantsTouchUi()) lockViewport();  // ahead of the focus, as on a tap
+      if (wantsTouchUi()) lockVp();  // ahead of the focus, as on a tap
       tm.ui.input.focus({ preventScroll: true });
     }
 
     function hide() {
-      unlockViewport();
+      unlockVp();
       if (!tm.ui) return;
       if (document.activeElement === tm.ui.input) tm.ui.input.blur();
       tm.ui.input.value = '';
@@ -24140,7 +24299,7 @@
       // Self-healing, and the only thing that catches a lock left behind: a
       // React re-render takes the focused input away with it, and a removed
       // element's blur never fires. The page's zoom is not ours to keep.
-      if (tm.vpMeta && document.activeElement !== tm.ui.input) unlockViewport();
+      if (viewportLocked(VP_OWNER) && document.activeElement !== tm.ui.input) unlockVp();
 
       // The variation is over. The field stays — see setBrowse — but it is an
       // Enter and nothing else, so none of the position machinery runs.
