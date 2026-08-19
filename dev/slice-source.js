@@ -8,7 +8,9 @@ const LINES = SRC.split('\n');
 
 function findDecl(name) {
   const pats = [
-    new RegExp('^\\s*function\\s+' + name + '\\s*\\('),
+    // `async` too — section 24's walk is one, and a slice that silently misses
+    // a declaration is worse than one that throws.
+    new RegExp('^\\s*(?:async\\s+)?function\\s+' + name + '\\s*\\('),
     new RegExp('^\\s*const\\s+' + name + '\\s*='),
   ];
   for (let i = 0; i < LINES.length; i++) {

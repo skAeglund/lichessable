@@ -3250,6 +3250,41 @@ html.clo-injecting .legal-square-capture-mt2 {
   color: var(--clo-text-bright);
 }
 
+/* The key-move lead-in's own controls (section 23c). On OUR panel rather than
+   on the trainer row: they belong to the thing on screen and last for seconds,
+   and under DESIGN-ui-inventory §3 this feature has no control that acts on the
+   session. Neutral outline throughout — nothing here is "the one thing to do
+   next", the replay already is. */
+.clo-sg-lead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.clo-sg-lead[hidden] { display: none; }
+
+.clo-sg-lead-btn {
+  border: 1px solid var(--clo-line);
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 3px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.2;
+  font-family: inherit;
+}
+
+.clo-sg-lead-btn:hover:not(:disabled) {
+  border-color: var(--clo-line-hover);
+  color: var(--clo-text-bright);
+}
+
+.clo-sg-lead-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* What the two keys do RIGHT NOW. Quiet: it is a reminder for the first few
    cards, not the content — and once the ring is in hand nobody reads it. */
 .clo-sg-keys {
@@ -4404,6 +4439,400 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 .clo-cov-del:disabled { opacity: 0.5; cursor: default; }
 .clo-cov-del[hidden] { display: none; }
 
+
+/* ===========================================================================
+   24) Course tree — the Miller-column browser on /course/<bid>/
+   (DESIGN-course-tree.md; §12 is the live measurement behind every number)
+
+   Body-mounted and fixed, like section 21's panel, whose corner it shares.
+   THE BOTTOM-RIGHT CORNER OF A COURSE PAGE NOW HAS THREE OCCUPANTS: section
+   21's launcher (bottom 16px), this one (stacked above it) and section 16d's
+   pin dock, which shows on every page and takes 16px too. 21 and 16d already
+   overlapped before this existed; the stack is why this one does not make a
+   third. Anything else added to this corner has to solve the whole cluster.
+   =========================================================================== */
+
+.clo-ct-launch {
+  position: fixed;
+  right: 16px;
+  /* One row above section 21's launcher, which sits at 16px. */
+  bottom: 54px;
+  z-index: 99999;
+  /* Neutral outline, not a fill: DESIGN-ui-inventory §3's "an action away from
+     the main task". The coverage launcher beside it is the filled green one,
+     and two fills in one corner is two primaries. */
+  border: 1px solid var(--clo-line);
+  background: var(--clo-bg);
+  color: var(--clo-text-bright);
+  padding: 7px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.clo-ct-launch:hover { border-color: var(--clo-line-hover); }
+.clo-ct-launch[hidden] { display: none; }
+
+.clo-ct {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  /* Wider than the coverage panel: three columns beside a board is what this
+     surface IS, and §12.1 says a column is two to five rows, so the width goes
+     on the columns rather than on their height. */
+  width: 880px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 90px);
+  box-sizing: border-box;
+  border: 1px solid var(--clo-bg-sunken);
+  border-radius: 4px;
+  background: var(--clo-bg);
+  color: var(--clo-text);
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+}
+
+/* display:flex would defeat the hidden attribute without this. */
+.clo-ct[hidden] { display: none; }
+
+.clo-ct-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--clo-bg-raised);
+  border-bottom: 1px solid var(--clo-bg-sunken);
+  border-radius: 4px 4px 0 0;
+}
+
+.clo-ct-title {
+  flex: 1;
+  font-weight: 600;
+  color: var(--clo-text-bright);
+}
+
+.clo-ct-btn {
+  border: 1px solid var(--clo-accent);
+  background: transparent;
+  color: var(--clo-accent-text);
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-ct-btn:hover:not(:disabled) { border-color: var(--clo-accent-hover); color: #fff; }
+.clo-ct-btn:disabled { opacity: 0.5; cursor: default; }
+.clo-ct-btn--cancel { border-color: var(--clo-attention-line); color: var(--clo-attention); }
+
+.clo-ct-x {
+  border: none;
+  background: transparent;
+  color: var(--clo-text-dim);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.clo-ct-x:hover { color: #fff; }
+
+.clo-ct-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px 10px;
+}
+
+.clo-ct-status {
+  padding: 4px 0 6px;
+  color: var(--clo-text-dim);
+}
+
+.clo-ct-status--warn { color: var(--clo-attention); }
+.clo-ct-status[hidden] { display: none; }
+
+.clo-ct-summary { padding: 2px 0 6px; }
+.clo-ct-summary[hidden] { display: none; }
+.clo-ct-summary-line { color: var(--clo-text-bright); }
+
+.clo-ct-note {
+  color: var(--clo-text-faint);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+/* --- the breadcrumb -------------------------------------------------------- */
+
+.clo-ct-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px;
+  padding: 5px 0 7px;
+  border-bottom: 1px solid var(--clo-line);
+  margin-bottom: 8px;
+}
+
+.clo-ct-crumb {
+  border: none;
+  background: transparent;
+  color: var(--clo-accent-text);
+  padding: 1px 3px;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.clo-ct-crumb:hover { background: var(--clo-bg-raised); color: #fff; }
+
+.clo-ct-num {
+  color: var(--clo-text-faint);
+  font-size: 12px;
+}
+
+/* --- the stage: board on the left, columns to the right -------------------- */
+
+.clo-ct-stage {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* Reuses .clo-cr-mini wholesale (section 11c). The edge is written inline from
+   CONFIG.courseTree.boardPx so there is one source of truth, as the heads-up
+   board does. */
+.clo-ct-board { flex: none; }
+.clo-ct-board .clo-cr-piece--glyph { font-size: inherit; }
+
+.clo-ct-cols {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.clo-ct-col {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  background: var(--clo-bg-sunken);
+  /* §12.1: the worst column measured anywhere was nine rows, so this is a
+     safety valve rather than a layout decision. */
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.clo-ct-col-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--clo-bg-raised);
+  border-bottom: 1px solid var(--clo-line);
+  font-size: 11px;
+  color: var(--clo-text-dim);
+  position: sticky;
+  top: 0;
+}
+
+.clo-ct-col-stm { flex: 1; }
+.clo-ct-col-n { color: var(--clo-text-faint); }
+
+/* --- a row ----------------------------------------------------------------- */
+
+.clo-ct-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 4px 6px 5px;
+  border-bottom: 1px solid var(--clo-line);
+  cursor: pointer;
+}
+
+.clo-ct-row:last-child { border-bottom: none; }
+.clo-ct-row:hover { background: var(--clo-bg-raised); }
+
+/* The row the current path took. A left rule rather than a fill: a fill would
+   compete with the hover state, and this is "where you are", not "press this". */
+.clo-ct-row--on {
+  background: var(--clo-bg);
+  box-shadow: inset 2px 0 0 var(--clo-accent);
+}
+
+/* §3.4's weight, without needing game data: at a glance the main line is fat
+   and the sideline is thin. Vertical, so it costs no line of text. */
+.clo-ct-bar {
+  flex: none;
+  width: 3px;
+  align-self: stretch;
+  display: flex;
+  align-items: flex-end;
+  background: var(--clo-line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.clo-ct-bar-fill {
+  width: 100%;
+  background: var(--clo-accent);
+  opacity: 0.7;
+}
+
+.clo-ct-row-main { flex: 1; min-width: 0; }
+
+.clo-ct-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1px;
+  line-height: 1.5;
+}
+
+/* Every ply of a folded run is its own control — that is what lets the board
+   stand INSIDE a run (§3.3), and it is why the fold is a rendering rather than
+   a discarding. */
+.clo-ct-san {
+  border: none;
+  background: transparent;
+  color: var(--clo-text-bright);
+  padding: 0 2px;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clo-ct-san:hover { background: var(--clo-accent); color: #fff; }
+
+.clo-ct-more {
+  border: none;
+  background: transparent;
+  color: var(--clo-text-faint);
+  padding: 0 3px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  text-decoration: underline dotted;
+}
+
+.clo-ct-more:hover { color: var(--clo-text-bright); }
+
+.clo-ct-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--clo-text-faint);
+}
+
+.clo-ct-count {
+  min-width: 1.4em;
+  text-align: right;
+  color: var(--clo-text-dim);
+}
+
+.clo-ct-tag { color: var(--clo-text-faint); }
+.clo-ct-tag--loop { color: var(--clo-attention); }
+
+.clo-ct-link {
+  color: var(--clo-text-faint);
+  text-decoration: none;
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clo-ct-link:hover { color: var(--clo-accent-text); text-decoration: underline; }
+
+/* Section 6c's two positive answers, drawn the same way and in the same two
+   colours — blue for "your repertoire plays this", orange for "it reaches the
+   position after it another way". DRAWN, never a glyph, for 6c's reason: two
+   marks that must be told apart at a glance need exact geometry, and the hollow
+   one is a BORDER so both share an outer diameter. The unprepared-reply warning
+   is deliberately absent here: it is comparative on Lichess popularity, which
+   §7 forbids fetching per column. */
+.clo-ct-badge {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.clo-ct-badge--in { background: var(--clo-rep-in); }
+.clo-ct-badge--trans { border: 2px solid var(--clo-rep-trans); box-sizing: border-box; }
+
+.clo-ct-empty {
+  padding: 10px 4px;
+  color: var(--clo-text-faint);
+}
+
+/* --- the other starting positions (§12.6) ---------------------------------- */
+
+.clo-ct-roots {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--clo-line);
+}
+
+.clo-ct-roots[hidden] { display: none; }
+
+.clo-ct-roots-toggle {
+  border: none;
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 2px 0;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.clo-ct-roots-toggle:hover { color: var(--clo-text-bright); }
+
+.clo-ct-roots-list {
+  max-height: 200px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+.clo-ct-root {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.clo-ct-root-pick {
+  flex: none;
+  border: 1px solid var(--clo-line);
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 1px 6px;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.clo-ct-root-pick:hover { border-color: var(--clo-accent); color: var(--clo-accent-text); }
+
 /* --- touch-sized UI (html.clo-touch) ----------------------------------------
    Set by applyTouchUiClass() in lichessable.js on the <html> of whichever
    document this script runs in (the mt1 iframe for the panel, the top document
@@ -4971,3 +5400,47 @@ html.clo-touch .clo-sg-menu input[type="checkbox"] {
 html.clo-touch .clo-sg-menu-row {
   padding: 3px 0;
 }
+
+/* The lead-in controls are pressed with a thumb while a board fills the
+   screen (section 23c). */
+html.clo-touch .clo-sg-lead-btn {
+  font-size: 15px;
+  padding: 7px 14px;
+}
+
+/* --- 24) the course tree ----------------------------------------------------
+   §3.1 promised this degrades to a phone as ONE column plus the breadcrumb —
+   the same interaction, not a different mode — and that is what the narrow
+   rule below does: the board goes above the columns and every column but the
+   LAST is hidden, which is exactly what a Finder column browser does on a
+   narrow window. The breadcrumb is already the path, so nothing is lost.
+
+   Keyed on WIDTH, not on html.clo-touch, and deliberately: a narrow desktop
+   window wants the same answer a phone does, and a phone in Chrome's "Desktop
+   site" lays out at ~980 CSS px, where three columns still fit and are still
+   what the user wants (section 20's standaloneMaxPx reasoning, same trap). */
+@media (max-width: 780px) {
+  .clo-ct-stage { flex-direction: column; }
+  .clo-ct-board { align-self: center; }
+  .clo-ct-cols { width: 100%; }
+  .clo-ct-cols > .clo-ct-col:not(:last-child) { display: none; }
+}
+
+html.clo-touch .clo-ct-launch { font-size: 15px; padding: 9px 16px; }
+html.clo-touch .clo-ct { font-size: 15px; }
+html.clo-touch .clo-ct-btn { font-size: 14px; padding: 7px 14px; }
+html.clo-touch .clo-ct-x { font-size: 22px; padding: 0 6px; }
+html.clo-touch .clo-ct-crumb { font-size: 15px; padding: 4px 6px; }
+html.clo-touch .clo-ct-num { font-size: 13px; }
+html.clo-touch .clo-ct-san { font-size: 15px; padding: 3px 5px; }
+html.clo-touch .clo-ct-more { font-size: 13px; padding: 3px 6px; }
+html.clo-touch .clo-ct-meta { font-size: 13px; }
+html.clo-touch .clo-ct-col-head { font-size: 12px; padding: 6px 8px; }
+html.clo-touch .clo-ct-row { padding: 7px 8px 8px; }
+html.clo-touch .clo-ct-roots-toggle { font-size: 14px; padding: 6px 0; }
+html.clo-touch .clo-ct-root { font-size: 13px; padding: 4px 0; }
+html.clo-touch .clo-ct-root-pick { font-size: 12px; padding: 4px 8px; }
+/* The badge is a mark, not a tap target — but at 15px type an 8px dot is the
+   one thing on the row that stops reading as deliberate. Section 6c sizes its
+   own the same way, for the same reason. */
+html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }

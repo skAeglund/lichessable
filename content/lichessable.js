@@ -767,6 +767,63 @@
       // why a correct field name alone would still have read as empty.
       lessonPath: '/api/v1/getLesson',
       altCacheMax: 24,    // variations remembered per session; a lesson is ~9 KB
+      // --- the key-move lead-in (section 23c) -------------------------------
+      //
+      // Under Study: Key Moves the trainer plays the whole non-key prefix
+      // ITSELF at variation load and asks only from the first key move on — so
+      // you arrive at a position with no memory of how you got there. This
+      // replays those plies on OUR board, at a pace a human can follow, while
+      // Chessable's own board is covered. It is a DISPLAY: nothing is played on
+      // their board, nothing is graded, nothing is recorded.
+      //
+      // Everything about it is in DESIGN-key-move-leadin.md; §2 is the gate and
+      // the live ground truth it is built on.
+      leadKey: 'cloKeyLeadIn',            // storage.local; opt-IN, absent = off
+      leadSpeedKey: 'cloKeyLeadInSpeed',  // storage.local; key into leadPaces
+      // ITS OWN PRESETS, and they can be faster than `paces` above: nothing here
+      // waits on Chessable, so these are about what a human can follow and
+      // nothing else. Milliseconds per ply, measured from the last one landing.
+      leadPaces: { brisk: 320, normal: 520, relaxed: 800 },
+      defaultLeadPace: 'normal',
+      // HOW LONG THE TRAINER MAY STAND STILL before its clock is stopped.
+      //
+      // §3.3 of the design: pausing for the whole lead-in would be simpler and
+      // is wrong — a paused board takes no input, so section 13 could not inject
+      // the cards it is answering underneath us, and the parallel loop would
+      // quietly collapse into a sequential one. So the pause is OBSERVED rather
+      // than assumed: while the trainer is still moving it is answering, and
+      // when it has been sitting on the same position this long it is waiting
+      // for a user who cannot see the board.
+      leadPauseAfterMs: 1500,
+      // THE COVER IS RAISED OFF A MUTATION, NOT OFF THE POLL (v0.114.0).
+      //
+      // Reported from a real session: the next variation's first card flashes on
+      // Chessable's board before our board covers it. §6 of the design has the
+      // arithmetic — their board first moves 81 ms after the plan swaps, and our
+      // 500 ms tick plus an async MAIN-world read cannot be inside that, not even
+      // close. So the page itself asks for the read: a MutationObserver on the
+      // trainer's board and on the drawer row carrying the current variation —
+      // both of which change at React-render speed — triggers one AT ONCE.
+      //
+      // ARMED ONLY AROUND THE TRANSITION, which is what keeps it cheap: while the
+      // browse state is up (the variation is over, the next one is coming) and for
+      // `leadArmTailMs` after it goes. Mid-quiz the board mutates on every move
+      // and none of those can be a variation change, so nothing is asked.
+      leadArmTailMs: 2500,
+      // …and no faster than this, so one animation run is one read rather than
+      // sixty-five. A plan read is a whole-variation JSON round trip.
+      leadNudgeMs: 120,
+      // HOW LONG THE HAND-OVER WAITS FOR THE TRAINER once our own replay has
+      // caught up. §5.1's last step: our board is standing on the position the
+      // first card is asked from, and uncovering before the trainer is there
+      // shows the user the tail of the very animation this exists to cover. When
+      // it never arrives — a card auto-play declined, an injection that did not
+      // land, a repetition that went somewhere else — this is what stops the
+      // wait, with one line naming both positions (§5.4).
+      leadWaitMs: 3000,
+      // The fail-open watchdog (§5.4). A display that is wrong gets out of the
+      // way: covered is the worse state, always.
+      leadMaxMs: 45000,
     },
 
     // --- pin sync through Chessable (section 16e) -------------------------
@@ -1256,6 +1313,31 @@
       minGames:     50,   // explorer total below which the estimate is truncated, not multiplied
       maxRanked:    120,  // gaps ranked with Lichess data; the rest keep score 0
     },
+
+    // "Show me this course as a tree" (section 24) — see DESIGN-course-tree.md,
+    // whose §12 is the live measurement every number here comes from.
+    courseTree: {
+      pollMs: 500,        // mount/position watchdog, and SPA course switches
+
+      // §12.1: 93-98% of a course's positions have exactly one continuation, so
+      // the fold is the whole feature. §12.2: it is also why a folded run can be
+      // eighty plies long — a model game is one unbranched line — hence a
+      // DISPLAY cap rather than a fold cap. `foldShow` plies, then "+N more",
+      // expandable in place; the run itself is never shortened.
+      foldShow: 6,
+      foldMax:  400,      // pure runaway guard on the fold walk; never reached in practice
+
+      // §12.1 again: the worst column measured anywhere was nine rows, so a
+      // column needs no scroll design. This is a guard, not a layout decision.
+      maxRows:    40,
+      maxColumns: 3,      // columns kept on screen; the breadcrumb carries the rest
+      maxDepth:   240,    // path depth cap — with §12.5's cycle, a hard stop is required
+
+      maxNames:   6,      // variation names remembered per move, for the row's links
+      maxNameLen: 60,
+      chunkVars:  20,     // yield to the event loop every N variations (a 500-line course is ~8 s)
+      boardPx:    240,    // the preview board's resting edge
+    },
   };
 
   const PANEL_ID = 'lichessable-panel';
@@ -1282,6 +1364,8 @@
   const CR_HEADS_ID   = 'lichessable-cr-heads'; // mid-quiz "the opponent can also…" heads-up (section 18b)
   const COV_BTN_ID    = 'lichessable-cov-btn';  // "Repertoire coverage" launcher (section 21)
   const COV_PANEL_ID  = 'lichessable-cov';      // the coverage report panel (section 21)
+  const CT_BTN_ID     = 'lichessable-ct-btn';   // "Course tree" launcher (section 24)
+  const CT_PANEL_ID   = 'lichessable-ct';       // the course tree browser (section 24)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
@@ -1348,12 +1432,58 @@
   function sanToUci(pos, san) {
     if (typeof CloSan === 'undefined' || !pos) return null;
     const want = String(san).replace(/[+#]+$/, '');
+    const legal = [];
     for (const mv of CloSan.generateMoves(pos)) {
       const uci = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
       const got = CloSan.moveToSan(pos, uci);
       if (got && got.replace(/[+#]+$/, '') === want) return uci;
+      legal.push({ mv, uci });
     }
-    return null;
+    return sanToUciRelaxed(pos, want, legal);
+  }
+
+  /**
+   * Second pass for `sanToUci`, and ONLY ever reached when the exact compare
+   * above has already failed — so it can turn a refusal into a resolution and
+   * can never change a move that already resolved.
+   *
+   * CHESSABLE OVER-DISAMBIGUATES (ground-truthed 2026-08-19, course 291847,
+   * "Scotch 4...Qh4?!"): after 1.e4 e5 2.Nf3 Nc6 3.d4 exd4 4.Nxd4 Qh4 5.Nc3 Bb4
+   * 6.Be2 Qxe4 it writes **Ndb5**, where only the d4 knight can LEGALLY reach
+   * b5 — the c3 knight is pinned by the bishop on b4 — so the strictly correct
+   * SAN, and what CloSan.moveToSan produces, is "Nb5". An exact string compare
+   * then drops the whole line: a false "could not be replayed" in the coverage
+   * report (21) and a hole in the course tree (24).
+   *
+   * So: parse the WRITTEN san into (piece, from-file?, from-rank?, target,
+   * promotion), filter the legal moves by whichever hints are actually present,
+   * and resolve only when EXACTLY ONE survives. An ambiguous relaxed match
+   * still refuses — "never guessed at" is the one rule this pass must not bend.
+   */
+  const RELAXED_SAN_RE = /^([KQRBN])?([a-h])?([1-8])?x?([a-h][1-8])(?:=?([QRBN]))?$/;
+
+  function sanToUciRelaxed(pos, want, legal) {
+    // Castling has no target square to parse and is never over-disambiguated.
+    if (/^[O0]-[O0]/.test(want)) return null;
+    const m = RELAXED_SAN_RE.exec(want);
+    if (!m) return null;
+    const piece = m[1] || 'P';
+    const fromFile = m[2] || '';
+    const fromRank = m[3] || '';
+    const to = m[4];
+    const promo = (m[5] || '').toLowerCase();
+    let found = null;
+    for (const cand of legal) {
+      if (squareName(cand.mv.to) !== to) continue;
+      if ((cand.mv.promo || '') !== promo) continue;
+      if ((pos.board[cand.mv.from] || '').toUpperCase() !== piece) continue;
+      const from = squareName(cand.mv.from);
+      if (fromFile && from[0] !== fromFile) continue;
+      if (fromRank && from[1] !== fromRank) continue;
+      if (found) return null; // still ambiguous — refuse rather than pick one
+      found = cand.uci;
+    }
+    return found;
   }
 
   // Frame targeting. Explore/Analysis render inside mt1 iframes: any OTHER
@@ -14306,7 +14436,8 @@
         // Our own board covers the screen; an offer behind it cannot be read
         // and its buttons cannot be reached.
         if (!pp.enabled || !isTrainerPath() ||
-            (continuationActive && continuationActive())) { hide(); return; }
+            (continuationActive && continuationActive()) ||
+            (keyLeadInActive && keyLeadInActive())) { hide(); return; }
         if (pp.flashUntil) {
           if (Date.now() > pp.flashUntil) hide();
           return;
@@ -14317,6 +14448,7 @@
         return;
       }
       if (continuationActive && continuationActive()) return;
+      if (keyLeadInActive && keyLeadInActive()) return;
       if (!mistakeLogApi || !pinApi || !pinApi.ready()) return;
       // NEWEST first: with two mistakes inside one sampling interval the second
       // is the one the user is looking at.
@@ -15968,6 +16100,16 @@
   // be answered with the same two keys instead of by playing the move, which is
   // what makes the drill usable from a ring like the rest of the mode.
   let showGradeEnabled = null;
+
+  // () => boolean — true while the key-move lead-in (section 23c) is replaying
+  // the moves the trainer played for itself, with our board over Chessable's.
+  // Everything that reads or writes that board has to stand down: section 22
+  // (type a move), the mid-quiz heads-up (18b) and the pin prompt (16c), which
+  // would otherwise draw over the replay or accept a move into a board the user
+  // cannot see. Section 13 is DELIBERATELY not held — it is answering the cards
+  // underneath, which is the whole of the design's parallel loop.
+  // Assigned by initShowGrade; null-safe like every other bridge here.
+  let keyLeadInActive = null;
 
   // () => ?string — the FEN on the analysis board (section 19), or null when it
   // is not up. This is what makes the panel, the database and the engine follow
@@ -22377,6 +22519,11 @@
       // the replay hands back is raised the moment it does. Scanning and the
       // ply clock above keep running, so nothing is missed by waiting.
       if (autoPlayReplaying && autoPlayReplaying()) { hideHeadsUp(); return; }
+      // The key-move lead-in (23c) has our own board over Chessable's and is
+      // walking the run-up: this panel would draw over the replay, and the
+      // position it is about is one the user is being shown rather than played.
+      // Hidden rather than dismissed, for the same reason as the line above.
+      if (keyLeadInActive && keyLeadInActive()) { hideHeadsUp(); return; }
       if (!cr.hu.shown) {
         const group = headsUpGroup();
         if (group) { showHeadsUp(group); return; }
@@ -22803,6 +22950,10 @@
       document.addEventListener(type, (e) => {
         if (cr.active || e.ctrlKey || e.metaKey || e.altKey) return;
         if (showGradeActive && showGradeActive()) return;
+        // …and while the key-move lead-in has our board up (23c), for the same
+        // reason one register earlier: space is its BACK key, and 18b hides
+        // itself for the duration anyway.
+        if (keyLeadInActive && keyLeadInActive()) return;
         const tag = e.target && e.target.tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
         if (!CONFIG.showGrade.keys.alts.includes(e.key)) return;
@@ -24528,6 +24679,7 @@
       // fighting it for every keystroke.
       if (!tm.enabled || !isTrainerPath() ||
           (continuationActive && continuationActive()) ||
+          (keyLeadInActive && keyLeadInActive()) ||
           (showGradeActive && showGradeActive())) {
         hide();
         return;
@@ -24738,6 +24890,24 @@
       prefixDone: false,
       prefixAt: -1,        // the card the last re-walk was done for — one per card
       prefixLogged: false, // …and whether this variation's count has been said once
+      // THE FIRST CARD THE TRAINER ACTUALLY ASKED in this variation, as an
+      // index into `plies` — set by the first anchor and never moved again.
+      //
+      // v0.112.0 ADDED THIS TO FIX A BUG THAT DOES NOT EXIST, and the correction
+      // is worth more than the fix: it was believed that under Key Moves the
+      // pre-key user plies sat in the prefix walk unproven and stopped it dead.
+      // They do not. Chessable clears `isUserMove` on the WHOLE non-key prefix
+      // itself, including plies of the user's own colour, and pagestate.js takes
+      // that flag straight off the plan — so the walk never saw them, and
+      // `start = 0` and `start = firstCard` produce the identical walk. Ground
+      // truth: DESIGN-key-move-leadin.md §2, and §4.6 of DESIGN-show-and-grade.md;
+      // `dev/check-prefix-walk.js` executes both functions against it.
+      //
+      // WHAT IT IS STILL FOR is `cardIsProven`'s guard below: a trainer standing
+      // on a card BEFORE its own first one — a mistake repetition walking
+      // backwards — is refused auto-play rather than granted it. That is the one
+      // answer this index changes, and it changes it in the safe direction.
+      firstCard: -1,
       handedOver: false,
       // `next` presses this mode could not act on yet, as timestamps — see
       // CONFIG.showGrade.maxQueued. Spent one at a time, oldest first, the
@@ -24805,6 +24975,49 @@
       alts: { oid: null, state: 'idle', byKey: null, setting: null },
       altCache: new Map(),   // oid → byKey, for a variation seen twice
       announced: '',
+      // --- the key-move lead-in (section 23c) --------------------------------
+      //
+      // Its own preference, its own pace and its own little state machine, but
+      // NOT its own board: it renders on the one above, which is decision 2.1 of
+      // DESIGN-key-move-leadin.md and the one structural choice that document is
+      // built on. With show-and-grade running the lead-in is a PRELUDE to it —
+      // the same board simply stops replaying and starts asking — and a second
+      // board of ours would put a swap at exactly the moment the feature exists
+      // to make smooth.
+      leadOn: false,        // the preference
+      leadPace: '',         // key into C.leadPaces; '' until the preference is read
+      // The prefix last replayed, as its SAN string. Courses in key-moves mode
+      // share prefixes constantly, and watching the same six plies ten times
+      // running is its own disorientation (decision 2.4). Session-scoped, so it
+      // lives out here rather than on `lead`, which is per variation.
+      leadLastSig: '',
+      lead: {
+        active: false,
+        plies: [],          // the variation, as read (see leadRead)
+        planFen: '',        // …and the trainer's own position, likewise
+        oid: null,
+        reading: false,
+        k: 0,               // the first card, i.e. how many plies the trainer played
+        idx: 0,             // how many plies our board has replayed
+        target: 0,          // …and where the trainer is now, which is the ceiling
+        manual: false,      // the user has stepped, so it no longer runs itself
+        // THE REPLAY'S OWN CLOCK, deliberately not the 500 ms poll: a 520 ms
+        // preset asked for on a 500 ms tick lands on the second one, so every
+        // pace would silently round up to a whole multiple of the poll.
+        timer: 0,
+        // The mutation-driven read (see CONFIG.showGrade.leadArmTailMs): when
+        // page changes may mean a new variation, when one was last acted on, and
+        // what is currently being watched.
+        armed: 0,
+        nudgeAt: 0,
+        obs: null,
+        obsHost: null,
+        obsBoard: null,
+        obsRow: null,
+        startedAt: 0,       // the fail-open watchdog's clock
+        doneAt: 0,          // …and when the wait for the trainer started
+        fenAt: 0,           // when the trainer's own position last changed
+      },
     };
 
     // --- the blindfold seam --------------------------------------------------
@@ -25260,6 +25473,7 @@
         sg.prefixEnd = 0;
         sg.prefixAt = -1;
         sg.prefixLogged = false;
+        sg.firstCard = -1;   // …and this line has been asked nothing yet
         sg.actedOnce = false;   // the next first press races the trainer again
         // A proof still owed here was never confirmed by the trainer (the browse
         // branch commits the last card of a normal variation), so it is dropped:
@@ -25281,6 +25495,11 @@
       // any card this answer does not reach, because the record can still gain
       // the previous variation's final answer after this read (v0.81.0).
       if (sg.plies.length && !sg.prefixDone) { sg.prefixDone = true; computePrefix(); }
+      // THE LEAD-IN (23c) OFF THIS SAME READ, and before the anchor below: it
+      // has to be up before Chessable's own prefix animation is over, and a
+      // second reader would double a whole-variation round trip through the
+      // MAIN world. With the mode NOT running, `leadRead` is what feeds it.
+      applyLeadPlan(sg.plies, plan.fen, plan.oid);
       if (newVariation) loadAlternatives(sg.oid, plan.bid || readQuickEditBid(), plan.altSetting);
       if (plan.fen !== sg.planFen) {
         sg.planFen = plan.fen;
@@ -25426,12 +25645,40 @@
      * a card from a position we cannot find.
      */
     function anchor() {
+      // THE LEAD-IN OWNS THE BOARD WHILE IT RUNS (section 23c). It walks
+      // `sg.pos` itself, at the user's pace, from a position several plies
+      // behind the trainer's — and this would drag it straight onto the card,
+      // which is the one thing the replay exists to postpone. `endLead` clears
+      // `cardIdx` and calls this again, so nothing is lost by waiting.
+      if (leadActive()) return;
       const idx = sg.plies.findIndex((p) => p.sourceFen === sg.planFen);
       if (idx < 0) return;
       const ply = sg.plies[idx];
       if (!ply || !ply.isUserMove || !ply.from || !ply.to) return;
       if (idx === sg.cardIdx && sg.pos) return; // already here
       sg.cardIdx = idx;
+      // The FIRST card of this variation, which is what the prefix walk starts
+      // from — see `sg.firstCard`. Set here because this is the one place that
+      // knows what the trainer is really asking, and only once: a mistake
+      // repetition later in the variation goes BACKWARDS, and the walk must not
+      // follow it.
+      if (sg.firstCard < 0) {
+        sg.firstCard = idx;
+        // The trainer opened this variation somewhere OTHER than its first card.
+        // Said once, without a diagnosis attached: the obvious explanation is not
+        // the right one, and a log line that guesses is worse than one that
+        // reports. It is NOT key moves — Chessable clears `isUserMove` on the
+        // whole non-key prefix itself, so `skipped` is 0 in that mode too
+        // (DESIGN-key-move-leadin.md §2, live). What it really catches is a
+        // variation entered at a mistake repetition, where the earlier cards are
+        // real ones the trainer has skipped past — which is exactly the case
+        // `cardIsProven`'s `cardIdx < firstCard` guard exists for.
+        const skipped = sg.plies.slice(0, idx).filter((p) => p && p.isUserMove).length;
+        if (skipped) {
+          log('show-and-grade: opened on card', idx, '—', skipped,
+            'of your moves in this line come before it');
+        }
+      }
       sg.cursor = idx;
       sg.markedUnknown = false; // a verdict belongs to the card it was given on
       sg.autoGrading = false;   // …and so does an auto-play grade in flight
@@ -25563,12 +25810,43 @@
       prompt.className = 'clo-cr-prompt clo-sg-prompt';
       const keys = document.createElement('div');
       keys.className = 'clo-sg-keys';
-      panel.append(title, prompt, keys);
+      // The key-move lead-in's own controls (23c, §5). On OUR panel and not on
+      // the trainer row: they belong to the thing on screen and last for
+      // seconds, and under DESIGN-ui-inventory §3 this feature has no control
+      // that acts on the session. Hidden except while a replay is running.
+      const lead = document.createElement('div');
+      lead.className = 'clo-sg-lead';
+      lead.hidden = true;
+      const mk = (label, title2, fn) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'clo-sg-lead-btn';
+        b.textContent = label;
+        b.title = title2;
+        b.addEventListener('click', (e) => { fn(); blurButton(e); });
+        lead.appendChild(b);
+        return b;
+      };
+      const back = mk('‹', 'Back one move', () => {
+        sg.lead.manual = true;   // a press means the user is driving from here
+        leadDisarm();
+        leadGoto(sg.lead.idx - 1);
+        syncLeadPanel();
+      });
+      const fwd = mk('›', 'Next move', () => {
+        sg.lead.manual = true;
+        leadDisarm();
+        leadGoto(sg.lead.idx + 1);
+        syncLeadPanel();
+      });
+      const skip = mk('Skip', 'Stop showing the run-up and get on with the card',
+        () => endLead('skipped'));
+      panel.append(title, prompt, lead, keys);
       panel.hidden = true; // …and so is the panel, for the same reason
       document.body.appendChild(panel);
 
       sg.board = { el, grid, layer, shapes };
-      sg.panel = { el: panel, title, prompt, keys };
+      sg.panel = { el: panel, title, prompt, keys, lead: { row: lead, back, fwd, skip } };
       // A fresh panel says nothing yet, so nothing may be suppressed as
       // "already said" — otherwise two variations opening on the same sentence
       // would leave the second one blank.
@@ -25638,7 +25916,13 @@
       sg.pos = CloSan.makeMove(sg.pos, mv);
       sg.lastMove = { from: mv.from, to: mv.to };
       // Let the glide finish, then make the DOM authoritative.
-      setTimeout(() => { if (sg.active) { reconcile(); paintSquares(); } }, animMs());
+      // `|| leadActive()`: the lead-in plays plies on this board with the mode
+      // switched off, and without this the DOM is never made authoritative — so
+      // a castling rook, an en passant capture or a promotion would stay as the
+      // glide left it for the rest of the replay.
+      setTimeout(() => {
+        if (sg.active || leadActive()) { reconcile(); paintSquares(); }
+      }, animMs());
       paintSquares();
       paintArrow();
       return true;
@@ -25986,6 +26270,8 @@
 
     function syncPanel() {
       if (!sg.panel) return;
+      if (leadActive()) { syncLeadPanel(); return; }
+      if (sg.panel.lead) sg.panel.lead.row.hidden = true;
       sg.panel.title.textContent = 'Show and grade';
       const next = keyName(C.keys.next), wrong = keyName(C.keys.wrong);
       let keys = '';
@@ -26431,6 +26717,17 @@
       // extend the answer: `handedOver` — not this — is what enforces section
       // 13's opening-run rule, so a later proof cannot restart a replay the user
       // has taken over.
+      //
+      // BEFORE THE FIRST CARD THIS VARIATION ASKED, auto-play has no opinion:
+      // the walk starts at `firstCard`, so everything before it is outside the
+      // answer rather than inside it, and reading "not in the prefix" as
+      // "proven" is the one direction this must never err in. It takes a
+      // trainer going backwards past its own first card to get here, which is
+      // not known to happen — the guard is what makes that harmless if it does.
+      //
+      // THE ONE LINE OF v0.112.0 THAT CHANGES AN ANSWER (see `sg.firstCard`),
+      // and the only one its check's control run fails on.
+      if (sg.firstCard >= 0 && sg.cardIdx < sg.firstCard) return false;
       if (sg.cardIdx >= sg.prefixEnd && sg.prefixAt !== sg.cardIdx) {
         sg.prefixAt = sg.cardIdx;
         computePrefix();
@@ -26477,15 +26774,30 @@
      */
     function computePrefix() {
       const was = sg.prefixEnd;
+      // FROM THE FIRST CARD THE TRAINER ASKED, not from ply 0. KNOWN TO BE A
+      // NO-OP — the loop's own `!ply.isUserMove` skip already makes the first
+      // ply it considers the first card, in BOTH study modes (see
+      // `sg.firstCard`) — and kept because it says out loud which index this
+      // walk is about. Before the first anchor there is no answer yet and 0 is
+      // the honest guess; the re-walk `cardIsProven` already does at any card
+      // the answer does not reach is what would correct it.
+      const start = Math.max(0, sg.firstCard);
       sg.prefixEnd = sg.plies.length;
-      const cards = sg.plies.filter((p) => p && p.isUserMove).length;
+      let cards = 0;
       let proven = 0;
-      for (let i = 0; i < sg.plies.length; i++) {
+      for (let i = start; i < sg.plies.length; i++) {
         const ply = sg.plies[i];
         if (!ply || !ply.isUserMove) continue;
+        cards++;
         if (plyIsProven(ply)) { proven++; continue; }
         sg.prefixEnd = i;
         break;
+      }
+      // …and the rest of the line, for the count alone: the walk stops at the
+      // first unproven card, so `cards` would otherwise say "1 of 1" about a
+      // variation with nine cards in it.
+      for (let i = sg.prefixEnd + 1; i < sg.plies.length; i++) {
+        if (sg.plies[i] && sg.plies[i].isUserMove) cards++;
       }
       if (!cards) return;
       // Quiet when the re-walk found nothing new: cardIsProven asks again at
@@ -26837,6 +27149,10 @@
       if (e.altKey || e.ctrlKey || e.metaKey) return;
       const tag = e.target && e.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+      // THE LEAD-IN TAKES THE KEYS WHILE IT IS UP (23c), including with the mode
+      // off — where `next` would otherwise START the mode over a board the user
+      // is still being shown the run-up on.
+      if (leadActive()) { leadOnKey(e); return; }
       if (!sg.active) { maybeStartFromKey(e); return; }
       const isNext = C.keys.next.includes(e.key);
       const isWrong = C.keys.wrong.includes(e.key);
@@ -27220,7 +27536,36 @@
       board.addEventListener('change', () => setBlindfold(board.value === 'off'));
       boardRow.appendChild(board);
 
-      menu.append(paceRow, animRow, audioRow, rateRow, boardRow);
+      // --- the key-move lead-in (23c) ---
+      //
+      // §5 of its design put these in AUTO-PLAY's cog. They are here instead:
+      // the feature renders on this board, in this panel, and `leadWatching()`
+      // requires this mode's own preference — so a setting for it sitting behind
+      // section 13's cog would be reachable in states where it does nothing.
+      const leadRow = document.createElement('label');
+      leadRow.className = 'clo-sg-menu-row';
+      leadRow.textContent = 'Key-move lead-in';
+      const leadOn = document.createElement('input');
+      leadOn.type = 'checkbox';
+      leadOn.className = 'clo-sg-lead-on';
+      leadOn.addEventListener('change', () => setLeadOn(leadOn.checked));
+      leadRow.appendChild(leadOn);
+
+      const leadPaceRow = document.createElement('label');
+      leadPaceRow.className = 'clo-sg-menu-row';
+      leadPaceRow.textContent = 'Lead-in speed';
+      const leadPace = document.createElement('select');
+      leadPace.className = 'clo-sg-lead-pace';
+      for (const [key, ms] of Object.entries(C.leadPaces)) {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = key[0].toUpperCase() + key.slice(1) + ' (' + ms + 'ms a move)';
+        leadPace.appendChild(opt);
+      }
+      leadPace.addEventListener('change', () => setLeadPace(leadPace.value));
+      leadPaceRow.appendChild(leadPace);
+
+      menu.append(paceRow, animRow, audioRow, rateRow, boardRow, leadRow, leadPaceRow);
       // MoveTrainer2 binds single-key shortcuts on `document` and does not skip
       // them while a control has focus — so with a select focused, "n" would
       // jump to the next variation. Same swallow as every other popup here.
@@ -27358,6 +27703,28 @@
       sg.board.el.style.setProperty('--clo-sg-anim', animMs() + 'ms');
     }
 
+    /**
+     * The lead-in's own preference (23c). Turning it OFF while a replay is up
+     * takes it down on the next tick through `leadWatching`, which is the
+     * behaviour every other preference here has.
+     */
+    function setLeadOn(on) {
+      sg.leadOn = Boolean(on);
+      syncAutoUi();
+      try {
+        chrome.storage.local.set({ [C.leadKey]: sg.leadOn });
+      } catch (err) { /* orphaned context — the in-memory flag still applies */ }
+    }
+
+    function setLeadPace(key) {
+      if (!C.leadPaces[key]) return;
+      sg.leadPace = key;
+      syncAutoUi();
+      try {
+        chrome.storage.local.set({ [C.leadSpeedKey]: key });
+      } catch (err) { /* orphaned context — the in-memory value still applies */ }
+    }
+
     function setAutoPlay(on) {
       sg.autoPlay = Boolean(on);
       if (!sg.autoPlay) clearAutoTimer();
@@ -27382,6 +27749,8 @@
       sg.ui.menu.querySelector('.clo-sg-audio').checked = sg.audio;
       sg.ui.menu.querySelector('.clo-sg-rate').value = sg.rate || C.defaultRate;
       sg.ui.menu.querySelector('.clo-sg-board-sel').value = sg.blindfold ? 'off' : 'on';
+      sg.ui.menu.querySelector('.clo-sg-lead-on').checked = sg.leadOn;
+      sg.ui.menu.querySelector('.clo-sg-lead-pace').value = sg.leadPace || C.defaultLeadPace;
       // The cog says what it is set to: hiding a setting is precisely what
       // costs you the ability to read it off the row.
       sg.ui.cog.title = 'Replay speed — pace ' + (sg.pace || C.defaultPace) +
@@ -27394,7 +27763,12 @@
           : 'The moves are not read out loud.') + '\n' +
         (sg.blindfold
           ? 'Blindfold: the board is empty — the moves are all you get.'
-          : 'The pieces are shown.');
+          : 'The pieces are shown.') + '\n' +
+        (sg.leadOn
+          ? 'Key-move lead-in ON (' + (sg.leadPace || C.defaultLeadPace) + '): in a ' +
+            'Key Moves session the moves the trainer plays for you are replayed ' +
+            'here first, on this board, before the first card.'
+          : 'Key-move lead-in OFF.');
     }
 
     function syncUi() {
@@ -27450,6 +27824,12 @@
       // which reads as "the button does nothing" with a misleading reason in the
       // log. Refuse it here, where the answer is unambiguous.
       if (sg.active || !sg.enabled || !inSession()) return;
+      // A replay is running and the user has just asked for the mode: end it
+      // rather than let two things drive one board. Deliberately the simple
+      // answer — the seamless case (decision 2.1) is the mode ALREADY running
+      // when the variation loads, where `endLead` hands the board straight over
+      // and nothing is rebuilt.
+      if (sg.lead.active) endLead('the mode started');
       sg.active = true;
       sg.phase = 'think';
       sg.planFen = '';
@@ -27464,6 +27844,7 @@
       sg.prefixEnd = 0;
       sg.prefixAt = -1;
       sg.prefixLogged = false;
+      sg.firstCard = -1;
       sg.handedOver = false;
       sg.handoverLogged = false;
       sg.announced = '';
@@ -27499,6 +27880,10 @@
      * leave behind, and every other step is cosmetic beside it.
      */
     function stop(why) {
+      // FIRST, and above the early return: with the mode off the lead-in owns
+      // this board and the pause, and `endLead` is the only thing that gives
+      // either back.
+      if (sg.lead.active) endLead('show and grade stopped');
       if (!sg.active) {
         if (sg.board) hideBoard();
         return;
@@ -27615,6 +28000,459 @@
       maybeAutoPlay();
     }
 
+    // ======================================================================
+    // 23c. THE KEY-MOVE LEAD-IN
+    //
+    // Under Study: Key Moves the trainer plays the whole non-key prefix ITSELF
+    // at variation load and quizzes only from the first key move on. That is the
+    // mode's value and also its cost: you arrive at a position with no memory of
+    // how you got there, and the first thing asked of you is a move in a
+    // position you have not oriented yourself in.
+    //
+    // So: replay those plies on OUR board, at a pace a human can follow, with
+    // Chessable's own board covered, and hand over standing on the card the
+    // trainer is asking. READ DESIGN-key-move-leadin.md; §2 is the gate and the
+    // live ground truth this is built on. Four things an edit elsewhere can break:
+    //
+    //  * THE GATE IS ONE COMPARISON ON THE LESSON PLAN (§2, live). Chessable
+    //    itself clears `isUserMove` on every ply before the first key move,
+    //    INCLUDING plies of the user's own colour — so "a ply of the study
+    //    colour sitting before the first user ply" IS "this session is in Key
+    //    Moves", known before anything animates, and false on every variation of
+    //    an All Moves session for ever. There is no settings key (§2 looked, and
+    //    `simpleSettingsApiData` is byte-identical between the two modes), and
+    //    `isKey` can never be the test — it is a course-level designation,
+    //    identical in both.
+    //  * IT IS A DISPLAY. Nothing is played on Chessable's board, nothing is
+    //    graded, nothing is recorded, no proof is written. Its one side effect is
+    //    stopping the clock, and only once the trainer has been standing still.
+    //  * IT NEVER RUNS AHEAD OF THE TRAINER. Every ply it replays is one the
+    //    trainer has already played — either part of the non-key prefix (never a
+    //    card) or a card section 13 has already answered underneath. That is
+    //    what makes it impossible for this to show the user the answer to a card
+    //    they are about to be asked for; see `leadCeiling()`.
+    //  * SECTION 13 IS DELIBERATELY NOT HELD (§7). It is answering the cards
+    //    underneath us, which is the whole of the parallel loop — `autoPlayHold`
+    //    means "nothing is really being played on that board", and here
+    //    something really is.
+    // ======================================================================
+
+    const leadActive = () => sg.lead.active;
+
+    /** The replay pace, ms per ply — its own setting (§5), not `sg.pace`. */
+    const leadPaceMs = () =>
+      C.leadPaces[sg.leadPace] || C.leadPaces[C.defaultLeadPace];
+
+    /**
+     * Is the lead-in allowed to be up at all?
+     *
+     * `sg.enabled` as well as its own preference, and that is a real constraint
+     * rather than an accident: this renders on section 23's board, in section
+     * 23's panel, behind section 23's cog — so turning show-and-grade off in the
+     * options turns the lead-in off with it. The alternative was a second home
+     * for the two settings, on a row group that is hidden in exactly that case.
+     *
+     * BLINDFOLD SUPPRESSES IT ENTIRELY (§5): a blindfold session that
+     * opens by showing you the position it starts from defeats itself.
+     *
+     * NOT gated on `document.hidden`, for section 18b's reason — this only reads
+     * and renders, and the guard would cost the ability to verify the feature at
+     * all under automation, where a driven tab reports itself hidden. The one
+     * side effect that would matter in a background tab, stopping the clock, is
+     * gated on it separately in `leadTick`.
+     */
+    function leadWatching() {
+      return Boolean(sg.leadOn && sg.enabled && inSession() && drawing() &&
+        !sg.blindfold && !(continuationActive && continuationActive()));
+    }
+
+    /**
+     * THE GATE, and `k` with it: the number of plies the trainer played for the
+     * user before its first card. 0 means "not a key-moves variation", which in
+     * an All Moves session is every variation.
+     *
+     * Reads the plan and nothing else — no settings key, no latch, no
+     * observation window. See §2: under Key Moves Chessable clears
+     * `isUserMove` on the pre-key plies, so a ply of the user's own colour
+     * sitting before the first user ply is the whole test. Under All Moves the
+     * first ply of their colour IS the first user ply, so this can only ever
+     * answer 0 there.
+     */
+    function leadPrefixOf(plies) {
+      if (!Array.isArray(plies) || !plies.length) return 0;
+      const firstUser = plies.findIndex((p) => p && p.isUserMove);
+      if (firstUser <= 0) return 0;   // no card at all, or nothing before it
+      const colour = plies[firstUser].color;
+      for (let i = 0; i < firstUser; i++) {
+        if (plies[i] && plies[i].color === colour) return firstUser;
+      }
+      return 0;
+    }
+
+    /** Where the trainer itself is standing, as an index into the plan. */
+    function leadTrainerIdx() {
+      const ld = sg.lead;
+      if (!ld.planFen || !ld.plies.length) return -1;
+      return ld.plies.findIndex((p) => p && p.sourceFen === ld.planFen);
+    }
+
+    /**
+     * HOW FAR THIS REPLAY MAY GO, and the reason it can never spoil a card.
+     *
+     * `k` is the floor: those plies are the non-key prefix, which the trainer
+     * plays itself and never asks for. `target` is the ceiling and it is an
+     * OBSERVATION — the furthest the trainer has been seen to reach, never
+     * lowered — so every ply between the two is one section 13 has already
+     * answered underneath us.
+     *
+     * The design first had this as a PREDICTION instead (§3.1): replay to `k'`, the
+     * first card auto-play may not take, computed from the proof record. That is
+     * the same number when everything goes right and a spoiler when it does not
+     * — if section 13 then declines those cards (its toggle off, `handedOver`, a
+     * retry-pass hold), the uncover leaves the user looking at cards whose moves
+     * we have just shown them, which they would then "answer" from a display.
+     * §7.4 forbids this feature affecting a card, and a shown answer is exactly
+     * that at one remove. Observing costs nothing and cannot be wrong.
+     */
+    const leadCeiling = () => Math.max(sg.lead.k || 0, sg.lead.target || 0);
+
+    /**
+     * One place both plan sources land: the mode's own read when it is running,
+     * and `leadRead`'s when it is not.
+     */
+    function applyLeadPlan(plies, planFen, oid) {
+      const ld = sg.lead;
+      ld.plies = Array.isArray(plies) ? plies : [];
+      if (planFen && planFen !== ld.planFen) { ld.planFen = planFen; ld.fenAt = Date.now(); }
+      if (!oid || oid === ld.oid) return;
+      if (ld.active) endLead('the variation changed');
+      ld.oid = oid;
+      maybeStartLead();
+    }
+
+    /**
+     * The plan, when the mode is NOT running — it is the only reader then.
+     * With the mode up, `refreshPlan` is already reading it and a second reader
+     * would double a whole-variation JSON round trip through the MAIN world.
+     */
+    function leadRead() {
+      const ld = sg.lead;
+      if (ld.reading) return;
+      ld.reading = true;
+      readLessonLine().then((plan) => {
+        ld.reading = false;
+        if (!plan || plan.error || typeof plan.fen !== 'string' || !plan.fen) return;
+        if (!leadWatching()) return;
+        applyLeadPlan(plan.plies, plan.fen, plan.oid);
+      }).catch(() => { ld.reading = false; });
+    }
+
+    /**
+     * "Something on the page changed and a variation change is plausible — read
+     * the plan now." The whole of the cover's timing; see
+     * CONFIG.showGrade.leadArmTailMs for why the poll cannot do this.
+     *
+     * Rate-limited and armed, so an animation run costs one read; and routed to
+     * whichever reader is live, since with the mode running `refreshPlan` is the
+     * only one (leadTick mirrors its answer rather than reading twice).
+     */
+    function leadNudge() {
+      const ld = sg.lead;
+      if (ld.active || Date.now() > ld.armed) return;
+      if (Date.now() - ld.nudgeAt < C.leadNudgeMs) return;
+      ld.nudgeAt = Date.now();
+      if (sg.active) refreshPlan(); else leadRead();
+    }
+
+    /**
+     * Watch the two things that move when the trainer changes variation: its
+     * board, and the drawer row holding the "you are here" marker. Re-pointed
+     * whenever either element is replaced — a React re-render swaps them, and an
+     * observer left on a detached node is silent rather than wrong, which is the
+     * failure that would put the flash straight back.
+     */
+    function leadObserve(on) {
+      const ld = sg.lead;
+      if (!on) {
+        if (ld.obs) ld.obs.disconnect();
+        ld.obsBoard = null;
+        ld.obsRow = null;
+        ld.obsHost = null;
+        return;
+      }
+      // THREE TARGETS, and the first is the one that has to work. A variation
+      // change may REPLACE the board element outright, and an observer left on
+      // the old one is silent rather than wrong — the flash would come straight
+      // back, and only sometimes, which is the worst way for it to come back. So
+      // the trainer ROW is watched as well: it survives the change, and its
+      // subtree covers the board being rebuilt AND the completed variation's
+      // comment column being torn down, either of which is the change we are
+      // waiting for. The board and the drawer row are kept for being narrower
+      // and possibly earlier.
+      const host = document.querySelector(SELECTORS.trainerRow);
+      const board = getReviewBoard();
+      const marker = document.querySelector(SELECTORS.reviewCurrentMarker);
+      const row = marker ? marker.parentElement : null;
+      if (host === ld.obsHost && board === ld.obsBoard && row === ld.obsRow) return;
+      if (!ld.obs) ld.obs = new MutationObserver(leadNudge);
+      ld.obs.disconnect();
+      ld.obsHost = host;
+      ld.obsBoard = board;
+      ld.obsRow = row;
+      if (host) ld.obs.observe(host, { childList: true, subtree: true });
+      // The board's own pieces move by STYLE, so attributes are wanted here and
+      // nowhere else; the drawer row only has to say that the marker left it.
+      if (board) ld.obs.observe(board, { childList: true, subtree: true, attributes: true });
+      if (row) ld.obs.observe(row, { childList: true });
+    }
+
+    function maybeStartLead() {
+      const ld = sg.lead;
+      if (ld.active || !leadWatching()) return;
+      const k = leadPrefixOf(ld.plies);
+      if (!k) return;
+      // THE IDENTICAL-PREFIX RULE (§5). Courses in key-moves mode
+      // share prefixes constantly, and watching the same six plies ten times
+      // running is its own disorientation. A CHANGED prefix is replayed,
+      // however small the change.
+      const sig = ld.plies.slice(0, k).map((p) => p.san).join(' ');
+      if (sig && sig === sg.leadLastSig) {
+        log('key-move lead-in: the same run-up as last time (' + sig + ') — not replaying it');
+        return;
+      }
+      const start = CloSan.parseFen(ld.plies[0].sourceFen);
+      if (!start) { warn('key-move lead-in: unreadable start position'); return; }
+      sg.leadLastSig = sig;
+      ld.active = true;
+      ld.k = k;
+      ld.idx = 0;
+      ld.target = 0;
+      ld.manual = false;
+      ld.doneAt = 0;
+      ld.startedAt = Date.now();
+      leadDisarm();
+      sg.pos = start;
+      sg.lastMove = null;
+      sg.announced = '';
+      if (!sg.board || !sg.board.el.isConnected) buildBoard();
+      render();
+      positionBoard();
+      setBoardVisible(true);
+      leadArm();
+      syncPanel();
+      log('key-move lead-in: replaying', k, 'ply/plies the trainer played for you —', sig);
+    }
+
+    /**
+     * Arm the next move of the replay. Idempotent, so the poll can call it as a
+     * safety net without ever stacking two timers.
+     */
+    function leadArm() {
+      const ld = sg.lead;
+      if (ld.timer || ld.manual || !ld.active) return;
+      ld.timer = setTimeout(() => {
+        ld.timer = 0;
+        if (!ld.active || ld.manual) return;
+        if (ld.idx >= leadCeiling()) return;   // the tick owns the hand-over
+        leadStep();
+        leadArm();
+      }, leadPaceMs());
+    }
+
+    function leadDisarm() {
+      if (!sg.lead.timer) return;
+      clearTimeout(sg.lead.timer);
+      sg.lead.timer = 0;
+    }
+
+    function leadTick() {
+      const ld = sg.lead;
+      if (!leadWatching()) {
+        if (ld.active) endLead('stood down');
+        leadObserve(false);
+        return;
+      }
+      // A variation change is coming while the completed one is on screen, and
+      // that is the only moment the observer needs to be listening.
+      if (reviewBrowseReady()) ld.armed = Date.now() + C.leadArmTailMs;
+      leadObserve(true);
+      if (sg.active) applyLeadPlan(sg.plies, sg.planFen, sg.oid);
+      else leadRead();
+      if (!ld.active) return;
+      // FAILS OPEN, on a watchdog (§3.4): covered is the worse state — the user
+      // is looking at a board that is no longer about anything, over a card they
+      // cannot see. Never correct the trainer, never inject; get out of the way.
+      if (Date.now() - ld.startedAt > C.leadMaxMs) { endLead('it took too long'); return; }
+      if (!sg.board || !sg.board.el.isConnected) { buildBoard(); render(); }
+      positionBoard();
+      setBoardVisible(true);
+      const t = leadTrainerIdx();
+      if (t > ld.target) ld.target = t;   // monotone: a repetition must not lower it
+      // CAUGHT UP — but the hand-over waits for the trainer to be there too
+      // (§3.2's last step). Uncovering while it is still animating its own
+      // prefix shows the user the tail of the thing this exists to cover.
+      if (ld.idx >= leadCeiling()) {
+        if (!ld.doneAt) ld.doneAt = Date.now();
+        if (ld.target >= ld.k) { endLead('the run-up is done'); return; }
+        if (Date.now() - ld.doneAt > C.leadWaitMs) {
+          // §3.4, and it is the whole of that section: never correct the
+          // trainer, never inject, never re-derive. Say where both of us are
+          // and get out of the way.
+          warn('key-move lead-in: our board is on ply', ld.idx,
+            'and the trainer has not reached ply', ld.k,
+            '(it is on', ld.planFen || '?', ') — uncovering anyway');
+          endLead('the trainer did not arrive');
+          return;
+        }
+        syncLeadPanel();
+        return;
+      }
+      ld.doneAt = 0;
+      // THE CLOCK (§3.3), and it is OBSERVED rather than assumed. A blanket
+      // pause for the whole lead-in would be simpler and is wrong: a paused
+      // board takes no input, so section 13 could not inject the cards it is
+      // answering underneath, and the parallel loop would quietly collapse into
+      // a sequential one — the same moves twice, with nothing to say why. So
+      // while the trainer is still moving it is being answered; when it has sat
+      // on one position this long it is waiting for a user who cannot see it.
+      //
+      // Never in a hidden tab: that is the one side effect of this feature, and
+      // a background overstudy tab is paused by section 9 already.
+      if (!document.hidden && !sg.timerPaused && ld.fenAt &&
+          Date.now() - ld.fenAt > C.leadPauseAfterMs) {
+        sg.timerPaused = pauseTrainerTimer();
+      }
+      leadArm();   // a safety net under the chain, never a second timer
+      syncLeadPanel();
+    }
+
+    function leadStep() {
+      const ld = sg.lead;
+      const ply = ld.plies[ld.idx];
+      if (!ply) { endLead('the plan ran out'); return; }
+      if (!playPlyOnBoard(ply)) { endLead('could not replay ' + ply.san); return; }
+      ld.idx++;
+      // SPOKEN, NOT PRINTED (v0.114.0). The panel used to grow a move list as the
+      // replay went — reported as distracting, and rightly: the moves are on the
+      // board, which is the whole feature, so the line was the same fact a second
+      // time, reflowing every few hundred ms right beside the thing being watched.
+      // The VOICE still says each move (section 23b's setting decides whether
+      // anything is heard at all), so `speak` is called directly rather than
+      // through `announce`, which is the seam that also writes the panel.
+      const said = sanSpeech(ply.san);
+      if (said) { speak(said, true); sg.lastMoveSpeech = said; }
+    }
+
+    /**
+     * Step to an arbitrary point — which is what BACK costs, since the board is
+     * walked forward from the start position rather than unwound. One ply
+     * forward keeps `leadStep`'s glide; anything else is a silent rebuild, which
+     * is right: a jump is not a move being shown.
+     */
+    function leadGoto(n) {
+      const ld = sg.lead;
+      const want = Math.max(0, Math.min(n, leadCeiling()));
+      if (want === ld.idx) return;
+      if (want === ld.idx + 1) { leadStep(); return; }
+      const pos0 = CloSan.parseFen(ld.plies[0].sourceFen);
+      if (!pos0) { endLead('unreadable start position'); return; }
+      sg.pos = pos0;
+      let last = null;
+      for (let i = 0; i < want; i++) {
+        const ply = ld.plies[i];
+        const uci = sanToUci(sg.pos, ply.san);
+        const mv = uci && CloSan.uciToMove(sg.pos, uci);
+        if (!mv) { endLead('could not replay ' + ply.san); return; }
+        sg.pos = CloSan.makeMove(sg.pos, mv);
+        last = mv;
+      }
+      ld.idx = want;
+      sg.lastMove = last ? { from: last.from, to: last.to } : null;
+      reconcile();
+      paintSquares();
+    }
+
+    /**
+     * Hand back. Fails OPEN in every direction and the TIMER GOES FIRST (§7.2),
+     * because a session left paused with our board down is the worst thing this
+     * can leave behind.
+     *
+     * TWO ENDINGS, which is §3.2. With the mode running there is no
+     * uncover at all — the same board stops replaying and starts asking, so it
+     * is HANDED OVER and `anchor()` re-derives the card from the trainer's own
+     * position. With the mode off the board comes down, and the one underneath
+     * is showing the same position, which is what makes the swap read as one
+     * continuous board.
+     */
+    function endLead(why) {
+      const ld = sg.lead;
+      if (!ld.active) return;
+      ld.active = false;
+      ld.manual = false;
+      leadDisarm();
+      ld.armed = 0;   // whatever comes next is not this variation changing
+      if (sg.timerPaused && !sg.active) { resumeTrainerTimer(); sg.timerPaused = false; }
+      if (sg.active) {
+        sg.cardIdx = -1;    // …or anchor() short-circuits on the card it already had
+        sg.announced = '';
+        anchor();
+      } else {
+        setBoardVisible(false);
+        hideBoard();
+      }
+      log('key-move lead-in: ' + why);
+      syncPanel();
+    }
+
+    /**
+     * The keys, and they are SHOW-AND-GRADE'S OWN (§5) rather than a
+     * second vocabulary: this mode is driven from a four-button ring, and a
+     * lead-in with keys of its own would be a fifth thing to remember for the
+     * few seconds it is up. `next` steps forward (and at the end hands over,
+     * which is what the press means there anyway), `alts` steps back, `wrong` is
+     * "I don't need this".
+     *
+     * A press also stops the replay running ITSELF: someone who has reached for
+     * a key is driving, and a board that keeps moving under them is the thing
+     * they reached for the key to stop.
+     */
+    function leadOnKey(e) {
+      const isNext = C.keys.next.includes(e.key);
+      const isWrong = C.keys.wrong.includes(e.key);
+      const isBack = (C.keys.alts || []).includes(e.key);
+      if (!isNext && !isWrong && !isBack) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.type !== 'keydown' || e.repeat) return;
+      const ld = sg.lead;
+      ld.manual = true;      // …and from here the replay does not run itself
+      leadDisarm();
+      if (isWrong) { endLead('skipped'); return; }
+      if (isBack) { leadGoto(ld.idx - 1); syncLeadPanel(); return; }
+      if (ld.idx >= leadCeiling()) { endLead('stepped to the end'); return; }
+      leadGoto(ld.idx + 1);
+      syncLeadPanel();
+    }
+
+    function syncLeadPanel() {
+      if (!sg.panel) return;
+      const ld = sg.lead;
+      sg.panel.title.textContent = 'The moves that led here';
+      // NOTHING IN THE PROMPT. It is the panel's one loud line, and the board
+      // beside it is already saying this — a move list growing there was reported
+      // as distracting. The counter below is what says where in the run-up you
+      // are, and it changes by one character.
+      setPrompt('');
+      sg.panel.keys.textContent =
+        keyName(C.keys.next) + ' — next move   ·   ' +
+        keyName(C.keys.alts) + ' — back   ·   ' +
+        keyName(C.keys.wrong) + ' — skip   (' + ld.idx + ' of ' + leadCeiling() + ')';
+      if (!sg.panel.lead) return;
+      sg.panel.lead.row.hidden = false;
+      sg.panel.lead.back.disabled = ld.idx <= 0;
+      sg.panel.lead.fwd.disabled = ld.idx >= leadCeiling();
+    }
+
     function tick() {
       if (!sg.enabled || !inSession() || (continuationActive && continuationActive())) {
         // Name the ACTUAL reason. These three used to collapse into one message
@@ -27626,13 +28464,26 @@
             : !inSession() ? 'left the trainer session'
             : 'another board opened');
         }
+        if (sg.lead.active) endLead('the session left');
         ensureUi();
         syncUi();
         return;
       }
       ensureUi();
       syncUi();
+      // THE LEAD-IN RUNS ON THIS SAME POLL, on BOTH sides of `sg.active` — it is
+      // §4's "a leadTick() where tick() returns on !sg.active", and the whole
+      // of what the feature cost the lifecycle. With the mode off it is the only
+      // thing reading the plan; with it on it owns the board until it hands over.
+      leadTick();
       if (!sg.active) return;
+      if (leadActive()) {
+        // The mode's own loop stands down until the replay hands over. The plan
+        // read stays, since that is what tells the lead-in where the trainer is.
+        applyTimerBar(true);
+        refreshPlan();
+        return;
+      }
       applyTimerBar(true);
 
       // The watchdog. An act that changes nothing must never strand the mode
@@ -27759,7 +28610,7 @@
     (async () => {
       try {
         const stored = await chrome.storage.local.get([C.key, C.autoKey, C.paceKey,
-          C.animKey, C.audioKey, C.blindfoldKey, C.rateKey]);
+          C.animKey, C.audioKey, C.blindfoldKey, C.rateKey, C.leadKey, C.leadSpeedKey]);
         sg.enabled = stored[C.key] !== false;
         sg.autoPlay = stored[C.autoKey] === true;
         sg.pace = C.paces[stored[C.paceKey]] ? stored[C.paceKey] : C.defaultPace;
@@ -27769,6 +28620,9 @@
         sg.blindfold = stored[C.blindfoldKey] === true;
         sg.rate = typeof C.rates[stored[C.rateKey]] === 'number'
           ? stored[C.rateKey] : C.defaultRate;
+        sg.leadOn = stored[C.leadKey] === true;   // opt-IN, unlike the mode itself
+        sg.leadPace = C.leadPaces[stored[C.leadSpeedKey]]
+          ? stored[C.leadSpeedKey] : C.defaultLeadPace;
         applyAnimSetting();
         syncAutoUi();
       } catch (err) {
@@ -27804,6 +28658,14 @@
           sg.rate = changes[C.rateKey].newValue;
           syncAutoUi();
         }
+        if (changes[C.leadKey]) {
+          sg.leadOn = changes[C.leadKey].newValue === true;
+          syncAutoUi();
+        }
+        if (changes[C.leadSpeedKey] && C.leadPaces[changes[C.leadSpeedKey].newValue]) {
+          sg.leadPace = changes[C.leadSpeedKey].newValue;
+          syncAutoUi();
+        }
         if (changes[C.blindfoldKey]) applyBlindfold(changes[C.blindfoldKey].newValue === true);
         if (!changes[C.key]) return;
         sg.enabled = changes[C.key].newValue !== false;
@@ -27817,7 +28679,7 @@
     document.addEventListener('keyup', onKey, true);
     window.addEventListener('resize', () => {
       if (sg.menuOpen) closeMenu(); // dismissed rather than chased, like the others
-      if (sg.active && drawing()) positionBoard();
+      if ((sg.active || leadActive()) && drawing()) positionBoard();
     });
     // Dismissal for the popover: capture phase, by containment rather than
     // stopPropagation — the trainer underneath is entitled to the event.
@@ -27829,6 +28691,7 @@
 
     showGradeActive = () => sg.active;
     showGradeEnabled = () => sg.enabled;
+    keyLeadInActive = () => sg.lead.active;
 
     let lastTickError = '';
     const pollTimer = setInterval(() => {
@@ -27839,7 +28702,11 @@
         if (msg !== lastTickError) { lastTickError = msg; warn('show-and-grade tick failed:', err); }
       }
     }, C.pollMs);
-    window.addEventListener('pagehide', () => { clearInterval(pollTimer); stop('page left'); });
+    window.addEventListener('pagehide', () => {
+      clearInterval(pollTimer);
+      endLead('page left');   // …and with the mode off, this is what un-pauses
+      stop('page left');
+    });
     tick();
     log('show-and-grade watcher active (top document)');
   }
@@ -27988,6 +28855,799 @@
   }
 
   // ==========================================================================
+  // 24) Course tree (top document, /course/<bid>/)
+  //
+  // "Show me this course as a tree." A Chessable course is a FLAT LIST of
+  // linear variations grouped into chapters; the branch structure exists only
+  // as shared prefixes across sibling cards, and nothing in Chessable's own UI
+  // reconstructs it. This walks the whole course into a POSITION-KEYED graph
+  // and browses it as Miller columns — column n is the moves the course plays
+  // at the current position, clicking a row opens column n+1.
+  //
+  // READ DESIGN-course-tree.md BEFORE CHANGING ANYTHING HERE. §12 is the live
+  // ground truth (2026-08-19, measured by dev/probe-course-tree.js over all
+  // three courses on the account) and it OVERRIDES §3.5, §5.1 and §8. What
+  // follows is only what an edit ELSEWHERE can break.
+  //
+  // * IT NEVER WRITES. Read-only, top to bottom — editing from a tree row
+  //   belongs to sections 12 / 19c / 19d, which already do it safely. It also
+  //   never fetches per column: the whole course is ONE getList, shared with
+  //   section 21 through `fetchCourse` and its 12 h session cache, so opening
+  //   the tree after a coverage run costs nothing.
+  //
+  // * KEYED ON `cacheKey`, NOT `repKey` — placement + side + castling + en
+  //   passant. Both sides of every comparison here come out of `walkVariation`
+  //   and are therefore EXACT, so there is no reason to accept 6c's lossy key;
+  //   two positions differing only in castling rights are two positions, and a
+  //   column merging them would offer moves that cannot all be played. Measured
+  //   §12.3: zero positions actually collapse under repKey but not cacheKey on
+  //   any of the three courses, so this costs nothing and risks nothing — it is
+  //   a free choice rather than a bet. (Section 6c's key is right for 6c, whose
+  //   review-mode FEN is DOM-derived and cannot be trusted about either field.
+  //   The two neighbouring features really do use two different position keys,
+  //   on purpose, and this comment is the reason neither should be "fixed".)
+  //
+  // * THE FOLD IS ON BRANCHING FACTOR 1 AND NOTHING ELSE. 93-98% of a course's
+  //   positions are forced (§12.1), which is where all the legibility comes
+  //   from: a 20-ply variation becomes two or three rows. It must stay LOSSLESS
+  //   — never fold because "the other moves look unimportant" — so the display
+  //   cap (`foldShow` plies, then "+N more") is a rendering of the run, not a
+  //   discarding of it, and every ply inside a run stays clickable. §12.2 is
+  //   why the cap exists at all: a model game is one unbranched line, so
+  //   folding it produces a single row carrying eighty plies.
+  //   It also stops where a VARIATION ENDS, or the row would swallow the fact
+  //   that lines finish there and its "line ends" tag would be a lie.
+  //
+  // * THE GRAPH CYCLES, and this is not theoretical: §12.5 found a back-edge in
+  //   a bought course (291847). A repetition or a knight going out and back
+  //   closes a loop, and a column browser following one recurses for ever.
+  //   Hence the visited set carried down the path, `maxDepth`, and a row that
+  //   closes a loop being marked as the repetition it is rather than expanded.
+  //
+  // * A COURSE HAS NO ROOT (§12.6). 291847 has 39 distinct start positions: the
+  //   standard one covering 34 lines, and 38 tactics covering exactly one each.
+  //   So the browser opens on the commonest and LISTS the rest separately —
+  //   38 one-line tactics are not a tree and must not be drawn as one.
+  //
+  // * `isKey` IS NOT USED and must not be added back (§12.4): it is flagged on
+  //   79-99% of plies, so it highlights nothing. That is also why this feature
+  //   needs no change to `reduceCourse`'s reduced shape, and so no bump of
+  //   `CONFIG.coverage.cacheKey` and no cache-wide invalidation shared with
+  //   section 21.
+  //
+  // * A LINE THAT WILL NOT REPLAY IS DROPPED AND COUNTED, never guessed at, and
+  //   a course where MOST lines fail to replay REFUSES rather than answering —
+  //   section 21's lesson (a parse detail taken at face value once produced a
+  //   confident "0 of 77 present · 0 missing").
+  //
+  // The panel is body-mounted and fixed — nothing of ours goes into Chessable's
+  // React tree — and the module gates itself on the CURRENT url from its own
+  // 500 ms poll, since a course page is reached by pushState.
+  // ==========================================================================
+  function initCourseTree() {
+    const C = CONFIG.courseTree;
+    // Same host as section 21, and the same two path rules: any /course/<bid>/
+    // view, but never the chapter's own "Edit Variations" page, which is the
+    // chapter sort's (section 14).
+    const COURSE_PATH_RE = /^\/course\/(\d+)(?:\/|$)/;
+    const CHAPTER_EDIT_RE = /^\/course\/\d+\/\d+\/e\/?$/;
+
+    const ct = {
+      bid: null,
+      panel: null, launcher: null, runBtn: null,
+      statusEl: null, crumbEl: null, colsEl: null, rootsEl: null, summaryEl: null,
+      boardEl: null, boardGrid: null, boardLayer: null,
+      open: false,
+      busy: false,
+      job: null,          // in-flight walk, so the button can cancel it
+      tree: null,         // built index for ct.bid
+      rootKey: null,      // the start position the browser is standing in
+      path: [],           // [{ uci, san, before, after }] — plies, not rows
+      expanded: new Set(),// "<ck>|<uci>" of folded runs shown in full
+      showRoots: false,
+      repWanted: false,   // the badges were asked for; the index may still be loading
+    };
+
+    // --- the walk ------------------------------------------------------------
+
+    /**
+     * The whole course as positions with candidate moves. This is the data
+     * model the design argues for (§2.2): a tree cannot say "this node and that
+     * node are the same position", and a DAG can — which is what makes a
+     * transposition between two chapters one column rather than two unrelated
+     * rows in two unrelated lists.
+     *
+     * Deliberately NOT an extension of `buildRepertoireIndex` (§4.1): that one
+     * is cached under CONFIG.repertoire.indexVersion and read by the badges in
+     * EVERY document including the mt1 iframe, so a shape change there costs 6c
+     * a version bump and a cache-wide invalidation for a feature it does not
+     * use. Same `fetchCourse`, same `walkVariation`, separate index.
+     *
+     * Yields every `chunkVars` variations. Unlike 6c's index this one runs
+     * while the user is watching (measured §12: 1.2 s for 80 variations), so it
+     * reports progress rather than merely eventually answering.
+     */
+    async function buildCourseTree(course, bid, job, onProgress) {
+      const answers = new Map();  // ck → Map(uci → { san, n, afterCk, lines[] })
+      const fens = new Map();     // ck → one full FEN for that position
+      const ends = new Map();     // ck → [{ oid, name }] variations FINISHING here
+      const startMap = new Map(); // ck → { ck, fen, n, lines[] }
+      const unplayable = [];
+      let informational = 0, i = 0;
+
+      for (const v of course.vars) {
+        if (++i % C.chunkVars === 0) {
+          await sleepMs(0);
+          if (job && job.cancelled) throw new Error('cancelled');
+          if (onProgress) onProgress(i, course.vars.length);
+        }
+        if (!v.sans || !v.sans.length) { informational++; continue; }
+        const w = walkVariation(v);
+        if (!w) { unplayable.push(v); continue; }
+        const line = { oid: v.oid, name: (v.name || '').slice(0, C.maxNameLen) };
+
+        const startKey = cacheKey(w.start);
+        if (!fens.has(startKey)) fens.set(startKey, w.start);
+        let st = startMap.get(startKey);
+        if (!st) startMap.set(startKey, st = { ck: startKey, fen: w.start, n: 0, lines: [] });
+        st.n++;
+        if (st.lines.length < C.maxNames) st.lines.push(line);
+
+        for (const p of w.plies) {
+          const ck = cacheKey(p.before);
+          const afterCk = cacheKey(p.after);
+          if (!fens.has(ck)) fens.set(ck, p.before);
+          if (!fens.has(afterCk)) fens.set(afterCk, p.after);
+          let m = answers.get(ck);
+          if (!m) answers.set(ck, m = new Map());
+          let e = m.get(p.uci);
+          if (!e) m.set(p.uci, e = { san: p.san, n: 0, afterCk, lines: [] });
+          e.n++;
+          if (e.lines.length < C.maxNames) e.lines.push(line);
+        }
+        const endKey = cacheKey(w.end);
+        let endLines = ends.get(endKey);
+        if (!endLines) ends.set(endKey, endLines = []);
+        if (endLines.length < C.maxNames) endLines.push(line);
+      }
+
+      const indexed = course.vars.length - informational - unplayable.length;
+      // §7: a systematic parse failure must never come back looking like an
+      // answer. One bad line in a course is a bad line; most of them is a
+      // convention we have not understood, and the honest response is to refuse
+      // with the offending lines named.
+      if (unplayable.length && unplayable.length > indexed) {
+        warn('course tree: lines that would not replay:',
+          unplayable.slice(0, 10).map((v) => v.name || v.oid).join(' | '));
+        throw new Error(`${unplayable.length} of ${unplayable.length + indexed} line(s) could ` +
+          'not be replayed — this course is not being read correctly, so no tree is shown ' +
+          '(the lines are named in the console)');
+      }
+      if (unplayable.length) {
+        warn('course tree: ' + unplayable.length + ' line(s) would not replay:',
+          unplayable.slice(0, 10).map((v) => v.name || v.oid).join(' | '));
+      }
+
+      return {
+        bid: String(bid),
+        name: course.name,
+        side: courseSide(course.vars),
+        answers, fens, ends,
+        starts: [...startMap.values()].sort((a, b) => b.n - a.n || a.ck.localeCompare(b.ck)),
+        vars: course.vars.length,
+        indexed,
+        informational,
+        unplayable: unplayable.length,
+      };
+    }
+
+    // --- the fold and the columns -------------------------------------------
+
+    const rowKey = (ck, uci) => ck + '|' + uci;
+
+    /** True when a variation of the course finishes at this position. */
+    const isLineEnd = (ck) => ct.tree.ends.has(ck);
+
+    /**
+     * Follows single-continuation positions from `ck`, collecting the plies.
+     * Stops at a branch, at a position where a variation ENDS (or the row would
+     * hide that), at a position already on the path (§12.5's cycle), and at
+     * `foldMax` as a pure runaway guard.
+     */
+    function foldFrom(ck, visited) {
+      const run = [];
+      let at = ck, loop = false;
+      while (run.length < C.foldMax) {
+        if (isLineEnd(at)) break;
+        const m = ct.tree.answers.get(at);
+        if (!m || m.size !== 1) break;
+        const [uci, e] = [...m][0];
+        if (visited.has(e.afterCk)) { loop = true; break; }
+        run.push({ uci, san: e.san, before: at, after: e.afterCk });
+        visited.add(e.afterCk);
+        at = e.afterCk;
+      }
+      return { run, end: at, loop };
+    }
+
+    /** The folded rows at one position, commonest first. */
+    function rowsAt(ck, pathKeys) {
+      const m = ct.tree.answers.get(ck);
+      if (!m) return [];
+      const rows = [];
+      for (const [uci, e] of m) {
+        const visited = new Set(pathKeys);
+        visited.add(ck);
+        const loopHere = visited.has(e.afterCk);
+        visited.add(e.afterCk);
+        const folded = loopHere
+          ? { run: [], end: e.afterCk, loop: true }
+          : foldFrom(e.afterCk, visited);
+        rows.push({
+          key: rowKey(ck, uci),
+          uci, n: e.n, lines: e.lines,
+          plies: [{ uci, san: e.san, before: ck, after: e.afterCk }].concat(folded.run),
+          end: folded.end,
+          loop: folded.loop || loopHere,
+        });
+        if (rows.length >= C.maxRows) break;
+      }
+      rows.sort((a, b) => b.n - a.n || a.plies[0].san.localeCompare(b.plies[0].san));
+      return rows;
+    }
+
+    /**
+     * The columns the current path implies. Each is a position plus its folded
+     * rows plus which row the path took; the walk stops where the path stops,
+     * which is how the board can stand INSIDE a folded run (§3.3) without the
+     * columns pretending a later decision has been made.
+     */
+    function columnsFor() {
+      const cols = [];
+      if (!ct.tree || !ct.rootKey) return cols;
+      const pathKeys = new Set([ct.rootKey]);
+      let ck = ct.rootKey, i = 0;
+      while (cols.length < C.maxDepth) {
+        const rows = rowsAt(ck, pathKeys);
+        if (!rows.length) break;
+        let chosen = -1;
+        if (i < ct.path.length) {
+          chosen = rows.findIndex((r) => r.plies[0].uci === ct.path[i].uci);
+        }
+        cols.push({ ck, rows, chosen, at: i });
+        if (chosen < 0) break;
+        const row = rows[chosen];
+        // How much of this row's run the path actually holds. Less than all of
+        // it means the user is standing mid-run and there is no next column.
+        let took = 0;
+        while (took < row.plies.length && i + took < ct.path.length
+               && ct.path[i + took].uci === row.plies[took].uci) took++;
+        if (took < row.plies.length) break;
+        i += took;
+        for (const p of row.plies) pathKeys.add(p.after);
+        if (row.loop) break;
+        ck = row.end;
+      }
+      return cols;
+    }
+
+    /** The position the board is showing: the end of the path, or the root. */
+    const currentKey = () => (ct.path.length ? ct.path[ct.path.length - 1].after : ct.rootKey);
+    const currentFen = () => {
+      const ck = currentKey();
+      return (ck && ct.tree && ct.tree.fens.get(ck)) || '';
+    };
+
+    // --- the board -----------------------------------------------------------
+
+    /**
+     * A static preview board, reusing section 11c's grid and pieces wholesale
+     * (`.clo-cr-mini`, as the heads-up does). Nothing on it is clickable and
+     * nothing animates. The piece art comes from the PERSISTED harvest — a
+     * course page has no board of Chessable's to clone from, which is the same
+     * reason section 20's standalone drill needed it.
+     */
+    function renderBoard() {
+      if (!ct.boardGrid) return;
+      const fen = currentFen();
+      const pos = fen ? CloSan.parseFen(fen) : null;
+      const view = (ct.tree && ct.tree.side === 'b') ? 'b' : 'w';
+      const squares = new Map();
+      fillBoardGrid(ct.boardGrid, view, (sq, idx) => squares.set(idx, sq));
+      const layer = ct.boardLayer;
+      while (layer.firstChild) layer.removeChild(layer.firstChild);
+      if (!pos) return;
+      for (let idx = 0; idx < 64; idx++) {
+        const letter = pos.board[idx];
+        if (!letter) continue;
+        const piece = makeBoardPiece(letter);
+        placeBoardPiece(piece, idx, view);
+        layer.appendChild(piece);
+      }
+      // The last move played, TINTED rather than drawn: an arrow at this size
+      // is thin and a one-square move barely registers (section 18b's finding).
+      const last = ct.path.length ? ct.path[ct.path.length - 1] : null;
+      const before = last && ct.tree.fens.get(last.before);
+      const bpos = before ? CloSan.parseFen(before) : null;
+      const mv = bpos && CloSan.uciToMove(bpos, last.uci);
+      if (mv) {
+        for (const idx of [mv.from, mv.to]) {
+          const sq = squares.get(idx);
+          if (sq) sq.classList.add('clo-cr-sq--last');
+        }
+      }
+    }
+
+    // --- rendering -----------------------------------------------------------
+
+    const el = (tag, cls, text) => {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+
+    function setStatus(text, kind) {
+      if (!ct.statusEl) return;
+      ct.statusEl.textContent = text || '';
+      ct.statusEl.hidden = !text;
+      ct.statusEl.className = 'clo-ct-status' + (kind ? ' clo-ct-status--' + kind : '');
+    }
+
+    /** "12." / "12…" before a ply, from its own pre-move FEN. */
+    function moveNumberOf(ply) {
+      const fen = ct.tree.fens.get(ply.before);
+      if (!fen) return '';
+      const parts = fen.split(' ');
+      const num = Number(parts[5]) || 1;
+      return parts[1] === 'w' ? num + '.' : num + '…';
+    }
+
+    /**
+     * One folded run as clickable plies. `showAll` prints the whole thing;
+     * otherwise the first `foldShow` and a "+N more" that expands it in place —
+     * §12.2's cap. Every ply is clickable either way, which is what lets the
+     * board stand inside a run.
+     */
+    function runNodes(row, colAt, showAll) {
+      const frag = document.createDocumentFragment();
+      const shown = showAll ? row.plies.length : Math.min(row.plies.length, C.foldShow);
+      for (let i = 0; i < shown; i++) {
+        const ply = row.plies[i];
+        const numText = moveNumberOf(ply);
+        // A black ply mid-run needs no "12…" — only the first one does, where
+        // there is nothing before it to read the numbering from.
+        if (numText && (numText.endsWith('.') || i === 0)) {
+          frag.append(el('span', 'clo-ct-num', numText));
+        }
+        const san = el('button', 'clo-ct-san', ply.san);
+        san.type = 'button';
+        san.title = 'Stand here';
+        san.addEventListener('click', (e) => {
+          e.stopPropagation();
+          goTo(colAt, row, i + 1);
+        });
+        frag.append(san, document.createTextNode(' '));
+      }
+      if (shown < row.plies.length) {
+        const more = el('button', 'clo-ct-more', '+' + (row.plies.length - shown) + ' more');
+        more.type = 'button';
+        more.title = 'This run has no branches in it — show all of it';
+        more.addEventListener('click', (e) => {
+          e.stopPropagation();
+          ct.expanded.add(row.key);
+          renderTree();
+        });
+        frag.append(more);
+      }
+      return frag;
+    }
+
+    /**
+     * The repertoire's verdict on a row's FIRST move — section 6c's read, and
+     * its two positive answers. Entirely optional: with no repertoire nominated,
+     * or the index not in yet, a row simply carries no mark. The unprepared-
+     * reply WARNING is deliberately absent: it is comparative on Lichess
+     * popularity, and §7 forbids fetching that per column.
+     */
+    function badgeFor(pos, answers, uci) {
+      if (!pos) return null;
+      const state = repertoireMoveState(pos, answers, uci);
+      if (!state) return null;
+      const mark = el('span', 'clo-ct-badge clo-ct-badge--' +
+        (state.kind === 'in' ? 'in' : 'trans'));
+      mark.title = state.kind === 'in'
+        ? 'Your repertoire plays this move here.'
+        : 'Your repertoire does not play this move here, but it does reach the position ' +
+          'after it by another move order.';
+      return mark;
+    }
+
+    function renderRow(col, row, maxN) {
+      const isOn = col.chosen >= 0 && col.rows[col.chosen] === row;
+      const node = el('div', 'clo-ct-row' + (isOn ? ' clo-ct-row--on' : ''));
+
+      // The weight bar — §3.4's Sankey insight without needing game data: at a
+      // glance the main line is fat and the sideline is thin.
+      const bar = el('div', 'clo-ct-bar');
+      const fill = el('div', 'clo-ct-bar-fill');
+      fill.style.height = Math.max(6, Math.round(100 * row.n / Math.max(1, maxN))) + '%';
+      bar.append(fill);
+
+      const main = el('div', 'clo-ct-row-main');
+      const line = el('div', 'clo-ct-line');
+      line.append(runNodes(row, col.at, ct.expanded.has(row.key)));
+      main.append(line);
+
+      const meta = el('div', 'clo-ct-meta');
+      const count = el('span', 'clo-ct-count', String(row.n));
+      count.title = row.n + ' of this course’s variation(s) play this move here.';
+      meta.append(count);
+
+      const badge = badgeFor(col.pos, col.repAnswers, row.uci);
+      if (badge) meta.append(badge);
+
+      const endLines = ct.tree.ends.get(row.end);
+      if (endLines && !ct.tree.answers.has(row.end)) {
+        const tag = el('span', 'clo-ct-tag', 'line ends');
+        tag.title = 'The course stops here: ' +
+          endLines.map((l) => l.name || ('#' + l.oid)).join(', ');
+        meta.append(tag);
+      }
+      if (row.loop) {
+        const tag = el('span', 'clo-ct-tag clo-ct-tag--loop', 'repeats');
+        tag.title = 'This run comes back to a position already on the path — a repetition, ' +
+          'or pieces going out and back. The tree stops rather than following the loop.';
+        meta.append(tag);
+      }
+      // The variations this move belongs to. Capped at CONFIG.courseTree.maxNames
+      // when the index was built, so this can never be a wall of links.
+      for (const l of row.lines) {
+        const link = document.createElement('a');
+        link.className = 'clo-ct-link';
+        link.href = '/variation/' + l.oid + '/';
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = l.name || ('#' + l.oid);
+        link.addEventListener('click', (e) => e.stopPropagation());
+        meta.append(link);
+      }
+      main.append(meta);
+
+      node.append(bar, main);
+      node.addEventListener('click', () => goTo(col.at, row, row.plies.length));
+      return node;
+    }
+
+    function renderColumns() {
+      const host = ct.colsEl;
+      host.textContent = '';
+      if (!ct.tree) return;
+      const cols = columnsFor();
+      if (!cols.length) {
+        host.append(el('div', 'clo-ct-empty', 'The course plays nothing from this position.'));
+        return;
+      }
+      // Only the last few are on screen; the breadcrumb carries everything
+      // before them. §3.1: fixed screen cost regardless of depth.
+      const shown = cols.slice(Math.max(0, cols.length - C.maxColumns));
+      for (const col of shown) {
+        const fen = ct.tree.fens.get(col.ck) || '';
+        col.pos = fen ? CloSan.parseFen(fen) : null;
+        col.repAnswers = repertoireMovesAt(fen);
+        const box = el('div', 'clo-ct-col');
+        const head = el('div', 'clo-ct-col-head');
+        head.append(el('span', 'clo-ct-col-stm',
+          (fen.split(' ')[1] === 'b' ? 'Black' : 'White') + ' to move'));
+        head.append(el('span', 'clo-ct-col-n',
+          col.rows.length + (col.rows.length === 1 ? ' move' : ' moves')));
+        box.append(head);
+        const maxN = col.rows.reduce((n, r) => Math.max(n, r.n), 1);
+        for (const row of col.rows) box.append(renderRow(col, row, maxN));
+        host.append(box);
+      }
+    }
+
+    function renderCrumb() {
+      const host = ct.crumbEl;
+      host.textContent = '';
+      const root = el('button', 'clo-ct-crumb', 'start');
+      root.type = 'button';
+      root.title = 'Back to the start of this line';
+      root.addEventListener('click', () => { ct.path = []; renderTree(); });
+      host.append(root);
+      for (let i = 0; i < ct.path.length; i++) {
+        const ply = ct.path[i];
+        const numText = moveNumberOf(ply);
+        if (numText && (numText.endsWith('.') || i === 0)) {
+          host.append(el('span', 'clo-ct-num', numText));
+        }
+        const b = el('button', 'clo-ct-crumb', ply.san);
+        b.type = 'button';
+        b.title = 'Back to here';
+        b.addEventListener('click', () => { ct.path = ct.path.slice(0, i + 1); renderTree(); });
+        host.append(b);
+      }
+    }
+
+    /**
+     * The other starting positions (§12.6). A course does not have a root: the
+     * bought course measured had 39, one covering 34 lines and 38 covering one
+     * each. Those 38 are tactics, and they are LISTED rather than drawn as a
+     * tree, because a one-line tree is not a tree.
+     */
+    function renderRoots() {
+      const host = ct.rootsEl;
+      host.textContent = '';
+      host.hidden = true;
+      if (!ct.tree || ct.tree.starts.length < 2) return;
+      host.hidden = false;
+      const others = ct.tree.starts.filter((s) => s.ck !== ct.rootKey);
+      const toggle = el('button', 'clo-ct-roots-toggle',
+        (ct.showRoots ? '▾ ' : '▸ ') + others.length +
+        ' other starting position(s) — lines that begin mid-game');
+      toggle.type = 'button';
+      toggle.addEventListener('click', () => { ct.showRoots = !ct.showRoots; renderTree(); });
+      host.append(toggle);
+      if (!ct.showRoots) return;
+      const list = el('div', 'clo-ct-roots-list');
+      for (const s of others.slice(0, 200)) {
+        const row = el('div', 'clo-ct-root');
+        const pick = el('button', 'clo-ct-root-pick', s.n + (s.n === 1 ? ' line' : ' lines'));
+        pick.type = 'button';
+        pick.title = 'Browse from this position instead';
+        pick.addEventListener('click', () => {
+          ct.rootKey = s.ck;
+          ct.path = [];
+          ct.expanded.clear();
+          renderTree();
+        });
+        row.append(pick);
+        for (const l of s.lines) {
+          const link = document.createElement('a');
+          link.className = 'clo-ct-link';
+          link.href = '/variation/' + l.oid + '/';
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.textContent = l.name || ('#' + l.oid);
+          row.append(link);
+        }
+        list.append(row);
+      }
+      host.append(list);
+    }
+
+    function renderSummary() {
+      const host = ct.summaryEl;
+      host.textContent = '';
+      host.hidden = !ct.tree;
+      if (!ct.tree) return;
+      const t = ct.tree;
+      const parts = [`${t.indexed} line(s)`, `${t.answers.size} positions`];
+      const start = t.starts.find((s) => s.ck === ct.rootKey);
+      if (start) parts.push(`${start.n} from this start`);
+      host.append(el('div', 'clo-ct-summary-line', parts.join(' · ')));
+      const notes = [];
+      if (t.informational) notes.push(`${t.informational} informational card(s) ignored`);
+      if (t.unplayable) {
+        notes.push(`${t.unplayable} line(s) could not be replayed (named in the console)`);
+      }
+      if (!rep.bid) {
+        notes.push('nominate a repertoire in the Lichess panel’s cogwheel menu to badge ' +
+          'the moves you already play');
+      } else if (ct.repWanted && !rep.index) {
+        notes.push('repertoire badges are still loading');
+      }
+      if (notes.length) host.append(el('div', 'clo-ct-note', notes.join('. ') + '.'));
+    }
+
+    /** A full redraw. Only ever called from an interaction or a finished walk —
+     *  never from the poll, which would fight the user's scroll position. */
+    function renderTree() {
+      if (!ct.panel) return;
+      renderCrumb();
+      renderColumns();
+      renderRoots();
+      renderSummary();
+      renderBoard();
+      render();
+    }
+
+    /** Visibility and button state only — this runs on EVERY tick. */
+    function render() {
+      if (!ct.panel) return;
+      ct.panel.hidden = !ct.open;
+      ct.launcher.hidden = ct.open;
+      if (!ct.open) return;
+      const cancellable = ct.busy && Boolean(ct.job);
+      ct.runBtn.textContent = cancellable ? 'Cancel' : (ct.tree ? 'Re-read' : 'Read this course');
+      ct.runBtn.classList.toggle('clo-ct-btn--cancel', cancellable);
+      ct.runBtn.disabled = ct.busy && !cancellable;
+    }
+
+    // --- navigation ----------------------------------------------------------
+
+    /**
+     * Stand `take` plies into `row`, from a column that begins at path index
+     * `at`. Truncating and re-appending is the whole of it: there is no
+     * variation tree to keep here, the same decision section 19's analysis
+     * board made.
+     */
+    function goTo(at, row, take) {
+      const next = ct.path.slice(0, at).concat(row.plies.slice(0, take));
+      if (next.length > C.maxDepth) return;
+      ct.path = next;
+      renderTree();
+    }
+
+    // --- loading -------------------------------------------------------------
+
+    async function runWalk() {
+      if (ct.busy) return;
+      const bid = ct.bid;
+      if (!bid) return;
+      const cr = chessableCreds();
+      if (!cr) { setStatus('no Chessable session found — reload the page', 'warn'); return; }
+      const job = { cancelled: false };
+      ct.busy = true;
+      ct.job = job;
+      setStatus('Reading the course…');
+      render();
+      try {
+        const course = await fetchCourse(bid, cr, true);
+        if (job.cancelled || ct.bid !== bid) return;
+        setStatus(`Walking ${course.vars.length} variation(s)…`);
+        const tree = await buildCourseTree(course, bid, job, (i, n) => {
+          setStatus(`Walking ${i} of ${n} variation(s)…`);
+        });
+        if (job.cancelled || ct.bid !== bid) return;
+        ct.tree = tree;
+        ct.rootKey = tree.starts.length ? tree.starts[0].ck : null;
+        ct.path = [];
+        ct.expanded.clear();
+        ct.showRoots = false;
+        ct.repWanted = true;
+        setStatus('', '');
+        log('course tree:', tree.name, '—', tree.indexed, 'line(s),', tree.answers.size,
+          'positions,', tree.starts.length, 'start position(s)');
+        // Optional and additive: with no repertoire nominated this does nothing
+        // and the rows simply carry no badge. It is also the ONE thing here that
+        // can arrive after the first draw, hence the redraw behind it.
+        if (rep.bid && !rep.index) {
+          Promise.resolve(ensureRepertoireIndex())
+            .then(() => { if (ct.tree === tree) renderTree(); })
+            .catch(() => {});
+        }
+        renderTree();
+      } catch (err) {
+        if (job.cancelled) { setStatus('Cancelled.', 'warn'); return; }
+        warn('course tree: could not read the course:', err);
+        setStatus(String((err && err.message) || err), 'warn');
+      } finally {
+        if (ct.job === job) { ct.job = null; ct.busy = false; }
+        render();
+      }
+    }
+
+    // --- UI ------------------------------------------------------------------
+
+    function buildPanel() {
+      const panel = el('div', 'clo-ct');
+      panel.id = CT_PANEL_ID;
+
+      const head = el('div', 'clo-ct-head');
+      head.append(el('span', 'clo-ct-title', 'Course tree'));
+      const runBtn = el('button', 'clo-ct-btn', 'Read this course');
+      runBtn.type = 'button';
+      runBtn.addEventListener('click', () => {
+        if (ct.busy && ct.job) { ct.job.cancelled = true; setStatus('Cancelling…', 'warn'); return; }
+        runWalk();
+      });
+      const close = el('button', 'clo-ct-x', '×');
+      close.type = 'button';
+      close.title = 'Close';
+      close.addEventListener('click', () => { ct.open = false; render(); });
+      head.append(runBtn, close);
+
+      const body = el('div', 'clo-ct-body');
+
+      const statusEl = el('div', 'clo-ct-status');
+      statusEl.hidden = true;
+      const summaryEl = el('div', 'clo-ct-summary');
+      summaryEl.hidden = true;
+      const crumbEl = el('div', 'clo-ct-crumbs');
+
+      const stage = el('div', 'clo-ct-stage');
+      const boardEl = el('div', 'clo-cr-mini clo-ct-board');
+      boardEl.style.width = C.boardPx + 'px';
+      boardEl.style.height = C.boardPx + 'px';
+      const boardGrid = el('div', 'clo-cr-grid');
+      const boardLayer = el('div', 'clo-cr-layer');
+      boardEl.append(boardGrid, boardLayer);
+      const colsEl = el('div', 'clo-ct-cols');
+      stage.append(boardEl, colsEl);
+
+      const rootsEl = el('div', 'clo-ct-roots');
+      rootsEl.hidden = true;
+
+      body.append(statusEl, summaryEl, crumbEl, stage, rootsEl);
+      panel.append(head, body);
+      document.body.appendChild(panel);
+
+      Object.assign(ct, {
+        panel, statusEl, summaryEl, crumbEl, colsEl, rootsEl,
+        boardEl, boardGrid, boardLayer, runBtn,
+      });
+    }
+
+    function buildLauncher() {
+      const btn = el('button', 'clo-ct-launch', 'Course tree');
+      btn.id = CT_BTN_ID;
+      btn.type = 'button';
+      btn.title = 'Walk this course as a tree of positions: what the author covers from each ' +
+        'position, how many lines take each move, and where two chapters transpose into one.';
+      btn.addEventListener('click', () => {
+        ct.open = true;
+        render();
+        if (!ct.tree && !ct.busy) runWalk();
+      });
+      document.body.appendChild(btn);
+      ct.launcher = btn;
+    }
+
+    function mount() {
+      for (const id of [CT_PANEL_ID, CT_BTN_ID]) {
+        const stale = document.getElementById(id);
+        if (stale) stale.remove(); // defensive: no duplicates across re-inits
+      }
+      buildLauncher();
+      buildPanel();
+      if (ct.tree) renderTree(); else render();
+    }
+
+    function tick() {
+      const m = CHAPTER_EDIT_RE.test(location.pathname)
+        ? null : COURSE_PATH_RE.exec(location.pathname);
+      if (!m) {
+        if (ct.panel) { ct.panel.hidden = true; ct.launcher.hidden = true; }
+        return;
+      }
+      const fresh = !ct.panel || !ct.panel.isConnected || !ct.launcher.isConnected;
+      if (ct.bid !== m[1]) {
+        // SPA-switched to another course: everything built for the old one is
+        // meaningless here. A walk in flight is left to finish and is discarded
+        // by its own bid check.
+        ct.bid = m[1];
+        ct.tree = null;
+        ct.rootKey = null;
+        ct.path = [];
+        ct.expanded.clear();
+        ct.showRoots = false;
+        if (ct.job) ct.job.cancelled = true;
+        if (!fresh) { setStatus('', ''); renderTree(); return; }
+      }
+      if (fresh) { mount(); return; } // idempotent self-heal; mount renders
+      render();
+    }
+
+    // One try/catch around the whole tick, section 21's discipline: the
+    // interval must survive a throw, or the panel silently freezes on whatever
+    // it last drew — the one failure mode of a watchdog poll that is invisible
+    // from the outside.
+    let lastTickError = '';
+    const pollTimer = setInterval(() => {
+      try {
+        tick();
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        if (msg !== lastTickError) { lastTickError = msg; warn('course tree tick failed:', err); }
+      }
+    }, C.pollMs);
+    window.addEventListener('pagehide', () => clearInterval(pollTimer));
+    tick();
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -28069,6 +29729,9 @@
     initShowGrade();
     initChapterSort();
     initCoverage();
+    // After initCoverage only by convention: the two share fetchCourse and its
+    // session cache, so opening the tree after a coverage run costs no fetch.
+    initCourseTree();
     initDifficultLauncher();
   }
 

@@ -9,3 +9,9 @@ engine/vendor/
 # Local Lichess API token, seeded into chrome.storage on load (background.js,
 # seedTokenFromLocalFile). Never commit a token — see CLAUDE.md "Never".
 local-token.json
+
+# Live getList dumps used by dev/check-course-tree.js and
+# dev/probe-course-tree.js (DESIGN-course-tree.md §12). Course content is not
+# ours to redistribute, and the file is re-made from a live session in one
+# javascript_tool call — see the header of dev/probe-course-tree.js.
+dev/tmp-courses.json

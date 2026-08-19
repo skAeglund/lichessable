@@ -159,7 +159,9 @@ Currently working (v0.18.x).
     and 20's launcher
   * `DESIGN-quick-edit.md` — section 12, incl. §6 refreshing the host after a save
   * `DESIGN-quick-edit-arrows.md` — section 12b only
-  * `DESIGN-show-and-grade.md` — sections 23 and 23b
+  * `DESIGN-show-and-grade.md` — sections 23 and 23b (§4 = auto-play, §14 = the
+    live ground truth, §15 = what must never happen, §18 = what is still open)
+  * `DESIGN-key-move-leadin.md` — section 23c (§2 = the gate, live; §3 = the loop)
   * `DESIGN-repertoire-coverage.md` — section 21
   * `DESIGN-add-as-variation.md` — section 19c (§2 = the wire, and the ten live facts)
   * `DESIGN-add-as-puzzle.md` — sections 19d and 19e (§2 = the wire, incl. the
@@ -2002,9 +2004,8 @@ Currently working (v0.18.x).
   offered.
   **READ `DESIGN-show-and-grade.md` BEFORE CHANGING ANYTHING INSIDE THIS MODE.**
   The loop, the pacing and its measurements, the auto-play prefix, the
-  alternatives fetch, the audio, §9 "what must never happen" and §12 "still to
-  verify live" are all there. What follows is only what an edit ELSEWHERE can
-  break.
+  alternatives fetch, the audio, §15 "what must never happen" and §18 "still
+  open" are all there. What follows is only what an edit ELSEWHERE can break.
   * NO WRONG-MOVE INJECTION, EVER — do not reintroduce it. A legal wrong move
     Chessable happens to ACCEPT would grade a failure as a PASS. Failure goes
     through Chessable's OWN "I don't know" (one footer button that MUTATES after
@@ -2081,6 +2082,91 @@ Currently working (v0.18.x).
     rules above; green outline idle, `.clo-rowprimary` while running, and a
     fourth collapsed-mid-quiz exception at (0,4,0)).
 
+- The key-move lead-in (section 23c, v0.113.0): under Study **Key Moves** the
+  trainer plays the whole non-key prefix ITSELF at variation load and quizzes
+  only from the first key move on — so you arrive at a position with no memory of
+  how you got there. This replays those plies on OUR board, at a pace a human can
+  follow, with Chessable's covered, and hands over standing on the card the
+  trainer is asking. Opt-IN (`cloKeyLeadIn`), its own speed (`cloKeyLeadInSpeed`),
+  both in section 23's cog.
+  **READ `DESIGN-key-move-leadin.md` BEFORE CHANGING ANYTHING HERE** — §2 is the
+  gate and the live ground truth it rests on. What follows is only what an edit
+  ELSEWHERE can break.
+  * IT LIVES ON SECTION 23'S BOARD AND NOWHERE ELSE (§4). With
+    show-and-grade running there is nothing to hand back to — the same board
+    stops replaying and starts asking — and a board of our own (a fourth
+    `cr.mode` on section 18's overlays) would put a swap at exactly the moment
+    the feature exists to make smooth. If the coupling ever gets worse than
+    §4's measurement, HOIST THE BOARD LAYER OUT; do not move the lead-in.
+  * THE GATE IS ONE COMPARISON ON THE LESSON PLAN, and it is none of the three
+    candidates the design argues from. Ground-truthed live 2026-08-19: under Key
+    Moves **Chessable itself clears `isUserMove` on every ply before the first
+    key move**, including plies of the user's own colour. So "a ply of the study
+    colour sitting before the first `isUserMove` ply" IS the mode, known at
+    plan-read time, with no settings key, no latch and no observation window —
+    and false on every variation of an All Moves session for ever, which closes
+    §7.1's dangerous direction by construction. THERE IS NO SETTINGS KEY
+    (`simpleSettingsApiData` is byte-identical between the modes; `eq_<bid>_key`
+    means the course HAS key moves BUILT), and `isKey` is a course-level
+    designation identical in both — it can never be the test.
+  * THE COVER IS RAISED OFF A MUTATION, NOT OFF THE POLL (v0.114.0). Their board
+    first moves 81 ms after the plan swaps, and a 500 ms tick plus an async
+    MAIN-world read is nowhere near that — so the next variation's first card
+    flashed on screen before our board covered it. A MutationObserver on the
+    trainer board AND on the drawer row holding `reviewCurrentMarker` asks for the
+    read at once (`leadNudge`/`leadObserve`) — and on `SELECTORS.trainerRow`,
+    which is the one that has to work: a variation change may REPLACE the board
+    element, and an observer left on the old one is silent rather than wrong.
+    ARMED ONLY around the transition —
+    while `reviewBrowseReady()` and for `leadArmTailMs` after — so a mid-quiz board,
+    which mutates on every move and can never be a variation change, asks for
+    nothing. Rate-limited to `leadNudgeMs`: one animation run is one read.
+  * ITS PANEL PRINTS NO MOVES (v0.114.0). The prompt line is deliberately empty —
+    a move list growing there was reported as distracting, and the board beside
+    it is already the whole feature. The VOICE still says each move, so the step
+    calls `speak` directly rather than `announce`, which is the seam that also
+    writes the panel.
+  * IT NEVER RUNS AHEAD OF THE TRAINER, which is what makes it impossible for it
+    to show the user the answer to a card. `leadCeiling()` is `max(k, target)`
+    where `target` is the furthest the trainer has been OBSERVED to reach, never
+    lowered. The design first had a PREDICTION there instead (`k'` from the
+    proof record); that is the same number when everything goes right and a
+    spoiler when section 13 then declines those cards. Never reinstate it.
+  * IT IS A DISPLAY. Nothing is played on Chessable's board, nothing is graded,
+    recorded or rescheduled. Its ONE side effect is stopping the clock, and only
+    after the trainer has stood still for `leadPauseAfterMs` — a blanket pause
+    would be simpler and is wrong: a paused board takes no input, so section 13
+    could not inject the cards it is answering underneath and §3.1's parallel
+    loop would collapse into a sequential one. Never paused in a hidden tab.
+  * SECTION 13 IS DELIBERATELY NOT HELD. `autoPlayHold` means "an outside feature
+    owns the board and nothing is really being played on it", and here something
+    really is — that is the whole loop. Do not reach for it.
+  * IT OWNS ONE BRIDGE, `keyLeadInActive`, null-safe, and FOUR modules stand down
+    on it: section 22 (a move typed into a board the user cannot see), 18b's
+    heads-up and 16c's pin prompt (both would draw over the replay; both HIDE
+    rather than dismiss), and the continuation module's own space listener —
+    which stands down for `showGradeActive()` already, for the same reason and
+    with the same registration-order argument, space being this feature's BACK
+    key.
+  * `anchor()` RETURNS EARLY WHILE IT RUNS. It walks `sg.pos` itself, from a
+    position several plies behind the trainer's, and anchoring would drag the
+    board straight onto the card — the one thing the replay exists to postpone.
+    `endLead` clears `sg.cardIdx` and calls `anchor()` again, so the hand-over is
+    where the mode picks the card back up.
+  * IT NEEDS `sg.enabled` AS WELL AS ITS OWN PREFERENCE, and that is a decision:
+    it renders on this board, in this panel, behind this cog, and `syncUi` hides
+    the whole `.clo-sg` group when show-and-grade is switched off. So turning
+    that off turns the lead-in off with it. (§5 of the design put the two
+    settings in AUTO-PLAY's cog; that would be reachable in states where they do
+    nothing.)
+  * `playPlyOnBoard`'s post-glide reconcile reads `sg.active || leadActive()` —
+    without the second half a castling rook, an en passant capture or a promotion
+    stays as the glide left it for the whole replay, since the mode is off.
+  * `stop()` and `startMode()` both END a lead-in before doing anything else, and
+    `stop()` does it ABOVE its `!sg.active` early return — with the mode off the
+    lead-in owns the board AND the pause, and `endLead` is the only thing that
+    gives either back. `pagehide` calls it for the same reason.
+
 ## Verification (no automated tests)
 
 ```
@@ -2146,6 +2232,23 @@ devices sharing one sync area — migration off the pre-v0.105.0 blob, the write
 diff, deletion-by-absent-key, the global cap, retirement, and that a device
 still hears about the other one after saving itself. Run a control (`CLO_SRC`
 pointed at a copy with the change reverted) and confirm it FAILS.
+
+After touching section 23's auto-play walk — `computePrefix`, `cardIsProven`, or
+`sg.firstCard` where `anchor` sets it:
+
+```
+node dev/check-prefix-walk.js
+```
+
+Same discipline again, and it pins a property rather than a bug. Under Study:
+Key Moves the trainer plays every user ply before the first key move itself —
+but Chessable ALSO clears `isUserMove` on those plies, so the walk never sees
+them and its first considered ply is the first card in BOTH study modes. That is
+what this file asserts, in the plan shape Chessable actually serves; the
+v0.112.0 change it was written for turned out to be a no-op
+(DESIGN-show-and-grade.md §4.6). What DOES change an answer is `cardIsProven`'s
+`cardIdx < firstCard` guard, and a control run against the pre-v0.112.0 source
+fails on exactly those two cases and passes every walk case.
 
 It discovers every module-level bridge in `content/lichessable.js` (the
 `let x = null;` idiom, assigned a function or object by the owning section's
