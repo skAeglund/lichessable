@@ -65,7 +65,12 @@ position — a FromPosition card — into any chapter of any course you can impo
 into, chosen from a picker in the panel. That same puzzle write is offered on the
 CLICKABLE LINES a comment prints (section 19e), from the right-click/long-press
 Chessable answers with its own "Add to Repertoire". A COURSE page
-(`https://www.chessable.com/course/<bid>/`) gets a "Repertoire coverage" panel
+(`https://www.chessable.com/course/<bid>/`) gets TWO whole-course panels. The
+COURSE TREE (section 24) walks the course into a position-keyed graph and
+browses it as Miller columns — standing anywhere, what did the author cover,
+how many of their lines take each move, and where do two chapters transpose
+into one; forced runs are folded into a row, so a 20-ply variation is two or
+three of them. Read-only. And "Repertoire coverage"
 (section 21): it walks the course's move tree against one of the user's own
 courses, lists the variations that are missing ranked by how likely the user is
 to face them, flags the lines their repertoire holds twice, and writes both
@@ -144,6 +149,11 @@ Currently working (v0.18.x).
   from the builder functions and do NOT update themselves: change markup in
   `lichessable.js`, change it here too. Not referenced by the manifest; it does
   ride along in a `pack-and-push` .crx (inert, a few tens of KB).
+  NEITHER browser-automation surface here will navigate to a `file://` URL, so
+  measuring it from a session needs `node dev/serve.js`
+  (http://127.0.0.1:8731/dev/harness.html, `Cache-Control: no-store`, which also
+  spares you the stylesheet cache-bust below). Opening the file directly still
+  works by hand.
 - `dev/check-contracts.py` — asserts every cross-module bridge in
   `content/lichessable.js` is named in CLAUDE.md. Run it after ANY edit to this
   file (see Verification).
@@ -163,6 +173,8 @@ Currently working (v0.18.x).
     live ground truth, §15 = what must never happen, §18 = what is still open)
   * `DESIGN-key-move-leadin.md` — section 23c (§2 = the gate, live; §3 = the loop)
   * `DESIGN-repertoire-coverage.md` — section 21
+  * `DESIGN-course-tree.md` — section 24 (§12 = the LIVE ground truth, which
+    overrides §3.5, §5.1 and §8; §12.7 is why `sanToUci` has a second pass)
   * `DESIGN-add-as-variation.md` — section 19c (§2 = the wire, and the ten live facts)
   * `DESIGN-add-as-puzzle.md` — sections 19d and 19e (§2 = the wire, incl. the
     move-PAIR fold; §6 = the clickable-line menu and why data-fen cannot be trusted)
@@ -361,6 +373,20 @@ Currently working (v0.18.x).
   which now says "Nf3●".
   Everything fails soft: no session, an HTTP error, an unreadable course — the
   badges simply do not appear and the menu says why.
+- `sanToUci` HAS A SECOND PASS (`sanToUciRelaxed`, v0.115.0), and it is shared
+  by everything here that turns a written SAN into a move — sections 13, 18,
+  19, 20, 21, 22, 23 and 24. CHESSABLE OVER-DISAMBIGUATES: course 291847 writes
+  `Ndb5` in a position where only the d4 knight can LEGALLY reach b5 (the c3
+  knight is pinned), so the strict spelling — and what `CloSan.moveToSan`
+  produces — is `Nb5`, and an exact string compare dropped the whole line. That
+  was a false "could not be replayed" in the coverage report for as long as it
+  has existed; ground-truthed 2026-08-19. The pass is reached ONLY after the
+  exact compare has failed, which is what makes it safe: it can turn a refusal
+  into a resolution and can never change a move that already resolved. It
+  resolves only when EXACTLY ONE legal move survives the written SAN's hints
+  (piece, from-file, from-rank, target, promotion) and refuses otherwise —
+  "never guessed at" is the one rule it must not bend. `node
+  dev/check-san-relaxed.js` is the control set.
 - The Lichess opening explorer requires a Bearer token since early 2026 and
   lives at `explorer.lichess.org` (`explorer.lichess.ovh` now 401s). Token:
   `chrome.storage.local` key `lichessToken` — the string is duplicated in
@@ -2167,6 +2193,100 @@ Currently working (v0.18.x).
     lead-in owns the board AND the pause, and `endLead` is the only thing that
     gives either back. `pagehide` calls it for the same reason.
 
+- Course tree (section 24, v0.115.0): the whole course as a POSITION-KEYED
+  graph, browsed as Miller columns on `/course/<bid>/`, beside section 21's
+  panel and sharing its `fetchCourse` session cache — so opening the tree after
+  a coverage run costs no fetch.
+  **READ `DESIGN-course-tree.md` BEFORE CHANGING ANYTHING HERE** — §12 is the
+  live ground truth (measured by `dev/probe-course-tree.js` over all three
+  courses on the account) and it OVERRIDES §3.5, §5.1 and §8. What follows is
+  only what an edit ELSEWHERE can break.
+  * IT NEVER WRITES, and it never fetches per column. Editing from a tree row
+    belongs to sections 12 / 19c / 19d, which already do it safely; a browser
+    that fetched as you clicked would rate-limit the user out of their own
+    course.
+  * KEYED ON `cacheKey`, NOT `repKey`, AND THAT IS DELIBERATE — the two
+    neighbouring features really do use two different position keys. Both sides
+    of every comparison here come out of `walkVariation` and are EXACT, so
+    there is no reason to accept 6c's lossy key, and a column merging two
+    positions that differ in castling rights would offer moves that cannot all
+    be played. Measured §12.3: ZERO positions actually collapse under `repKey`
+    but not `cacheKey` on any real course, so this costs nothing — it is a free
+    choice, not a bet. 6c's key is right for 6c, whose review-mode FEN is
+    DOM-derived and cannot be trusted about either field.
+  * `isKey` IS NOT USED AND MUST NOT BE ADDED BACK. §3.5 hoped it was the
+    author's own "this is the move that matters"; §12.4 measured it at 79-99%
+    of plies, so it highlights nothing. It is also the ONE field that would
+    need adding to `reduceCourse`'s reduced shape — i.e. a bump of
+    `CONFIG.coverage.cacheKey` and a cache-wide invalidation SHARED WITH
+    SECTION 21, for a signal that is noise.
+  * THE FOLD IS ON BRANCHING FACTOR 1 AND NOTHING ELSE, and it is LOSSLESS.
+    93-98% of a course's positions are forced (§12.1), which is where all the
+    legibility comes from. `foldShow` is a DISPLAY cap, not a fold cap — §12.2:
+    a model game is one unbranched line, so folding it really does produce a
+    row carrying eighty plies, and every ply of a run stays clickable so the
+    board can stand inside one. The fold also stops where a VARIATION ENDS, or
+    the row's "line ends" tag would name the wrong position.
+  * THE GRAPH CYCLES — not theoretically: §12.5 found a back-edge in a bought
+    course. Hence the visited set carried down the path, `maxDepth`, and a row
+    that closes a loop being MARKED rather than expanded.
+  * A COURSE HAS NO ROOT (§12.6): 291847 has 39 start positions, one covering
+    34 lines and 38 covering one each. The browser opens on the commonest and
+    LISTS the rest — 38 one-line tactics are not a tree.
+  * A COURSE WHOSE LINES MOSTLY WILL NOT REPLAY REFUSES, with them named in the
+    console. Section 21's lesson: a parse detail taken at face value once
+    produced a confident "0 of 77 present · 0 missing".
+  * IT FILLS THE WINDOW (v0.116.0, `inset: 16px`), unlike section 21's panel
+    beside it — this is not a report read while doing something else on the
+    page underneath, it is a browser you are inside of. Two consequences no
+    declared number survives: HOW MANY COLUMNS and HOW BIG THE BOARD are both
+    MEASURED (`columnsThatFit` off `colMinPx`, `sizeBoard` off the stage's
+    height), and `window.resize` redraws rather than reflows, since a resize
+    changes which columns are on screen and not just their width. A column is
+    capped at 360px: with the panel maximised a lone one would otherwise be
+    1500px of mostly nothing, a worse read than the 197px it replaced.
+  * A COLUMN WITH ONE ROW IS TAKEN AUTOMATICALLY AND NEVER DRAWN (v0.116.0,
+    `columnsFor`'s `auto`) — it is the same non-decision the fold collapses
+    inside a row, one level up, and a White repertoire opens with a whole
+    column containing nothing but "1.e4". Standing MID-RUN is untouched: that
+    case breaks out of the walk before the auto-take is reached. It is why a
+    column carries `prefix` (the plies leading to it) and why `goTo` navigates
+    through that rather than by index into `ct.path` — the path no longer
+    holds every ply the columns have walked through. `standingPlies` is what
+    keeps the board and the breadcrumb on the position the leftmost DRAWN
+    column is about, instead of two forced moves behind it.
+  * HOVER REDRAWS THE BOARD AND NOTHING ELSE (`setPreview`): the row's own
+    position with its branching move as an arrow. Never the columns —
+    rebuilding those under the pointer drops the very row being hovered, so
+    the `mouseleave` never arrives and the board stays stuck on the preview.
+    `mouseenter`/`mouseleave`, not pointer events: a finger has no hover, and
+    a tap that both previewed and navigated would flash the board through a
+    position it is about to leave.
+  * ONLY THE SELECTED ROW NAMES ITS VARIATIONS. A column is a few hundred px
+    wide, so every link wraps onto a line of its own; a name on every row is a
+    wall of prose over the moves. `maxNames` is what the INDEX remembers (all
+    of them, in the count's tooltip) and `linksShown` is what a row draws.
+  * IT OWNS NO BRIDGES and is called by nothing. It READS three of section 6c's
+    top-level helpers for the badges — `ensureRepertoireIndex`,
+    `repertoireMovesAt`, `repertoireMoveState` — all optional and additive: with
+    no repertoire nominated the rows simply carry no mark. The unprepared-reply
+    WARNING is deliberately absent, being comparative on Lichess popularity,
+    which the no-fetch-per-column rule forbids.
+  * THE BOTTOM-RIGHT CORNER OF A COURSE PAGE NOW HAS THREE OCCUPANTS: this
+    launcher (stacked at `bottom: 54px`), section 21's (16px) and section 16d's
+    pin dock, which shows on every page and takes 16px too. 21 and 16d already
+    overlapped before this existed; the stack is why this one did not make it a
+    three-way. Anything else put in that corner has to solve the whole cluster.
+  * ITS NARROW SHAPE IS A `@container` QUERY, NOT `@media`, and that is what
+    makes it checkable: `dev/harness.html` sizes a CARD, never the viewport, so
+    a media query could never fire there. The panel's width is 880px clamped by
+    `100vw`, so the two rules answer identically and only one can be measured.
+    Measured live 2026-08-19 at 1920x863: the panel 1873x831, a 560px board
+    beside four 314px columns; under 780px of PANEL width the board goes above
+    and every column but the last is hidden (§3.1's "one column plus a
+    breadcrumb"), 340x411 with no horizontal overflow; `html.clo-touch` takes
+    a row from 41px to 55px.
+
 ## Verification (no automated tests)
 
 ```
@@ -2184,6 +2304,39 @@ After ANY edit to CLAUDE.md, and after adding or removing a cross-module bridge:
 ```
 py dev/check-contracts.py
 ```
+
+After touching `sanToUci` — or `sanToUciRelaxed`, the second pass beside it:
+
+```
+node dev/check-san-relaxed.js
+```
+
+CHESSABLE OVER-DISAMBIGUATES, and an exact SAN compare drops the line SILENTLY.
+Ground-truthed 2026-08-19 (course 291847, "Scotch 4...Qh4?!"): it writes `Ndb5`
+where only the d4 knight can LEGALLY reach b5 — the c3 knight is pinned — so
+the strict spelling, and what `CloSan.moveToSan` produces, is `Nb5`. That was a
+false "could not be replayed" in the coverage report (21) for as long as it has
+existed. The relaxed pass runs ONLY after the exact compare has failed, so it
+can turn a refusal into a resolution and can never change a move that already
+resolved; it resolves only when exactly one legal move survives the written
+SAN's hints, and refuses otherwise. The controls are the point of the file.
+
+After touching section 24's walk, fold or columns — `buildCourseTree`,
+`foldFrom`, `rowsAt`, `columnsFor`:
+
+```
+node dev/check-course-tree.js
+```
+
+Same discipline: it EXECUTES them, sliced out by `dev/slice-source.js`, over a
+live `getList` dump of the account's courses. The dump (`dev/tmp-courses.json`)
+is GITIGNORED — course content is not ours to redistribute — and the recipe for
+remaking it in one console call is in the header of `dev/probe-course-tree.js`;
+without it the check exits 2 and says so. It has to be a real course: the fold's
+eighty-ply run and the position graph's back-edge both occur only on the bought
+one. Run a control (`CLO_SRC` at a copy with the change reverted) and confirm it
+FAILS — removing the fold's line-end stop and the cycle guard is caught by
+exactly the three assertions that cover them.
 
 After touching section 18's line reading — `walkLine`, `branchLines`,
 `quizzableLines`, `dropAmbiguous`, `mergeUserAlternatives`, or `tryMove`'s

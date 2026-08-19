@@ -1330,13 +1330,34 @@
       // §12.1 again: the worst column measured anywhere was nine rows, so a
       // column needs no scroll design. This is a guard, not a layout decision.
       maxRows:    40,
-      maxColumns: 3,      // columns kept on screen; the breadcrumb carries the rest
+      // How many columns are on screen is MEASURED, not declared: the panel
+      // fills the window, so the answer is different on a laptop and on a
+      // 1920px monitor. `colMinPx` is the width below which a column stops
+      // being readable (a folded run wraps to four lines); `maxColumns` is the
+      // ceiling on top of it, so a very wide window does not spend itself on
+      // columns nobody is looking at. The breadcrumb carries the rest.
+      colMinPx:   210,
+      maxColumns: 8,
       maxDepth:   240,    // path depth cap — with §12.5's cycle, a hard stop is required
 
-      maxNames:   6,      // variation names remembered per move, for the row's links
+      // What the INDEX remembers per move (all of them reachable from a row's
+      // count tooltip) and what a ROW draws. A column is ~200px wide, so every
+      // link wraps onto a line of its own — six of them buried the moves the row
+      // exists to show, seen live 2026-08-19 on the first build.
+      maxNames:   6,
+      linksShown: 1,
       maxNameLen: 60,
       chunkVars:  20,     // yield to the event loop every N variations (a 500-line course is ~8 s)
-      boardPx:    240,    // the preview board's resting edge
+      // The preview board. Written INLINE as a WIDTH only — the CSS gives it
+      // `aspect-ratio: 1/1` and `max-width: 100%`, so a narrow panel shrinks it
+      // instead of overflowing. The width itself is MEASURED off the stage
+      // (sizeBoard), for the same reason the column count is: the panel fills
+      // the window, so a declared edge is wrong on half the screens it meets.
+      // `boardPx` is only what the first draw uses, before there is a stage to
+      // measure.
+      boardPx:    320,
+      boardMinPx: 220,
+      boardMaxPx: 560,
     },
   };
 
@@ -28936,7 +28957,7 @@
       bid: null,
       panel: null, launcher: null, runBtn: null,
       statusEl: null, crumbEl: null, colsEl: null, rootsEl: null, summaryEl: null,
-      boardEl: null, boardGrid: null, boardLayer: null,
+      boardEl: null, boardGrid: null, boardLayer: null, boardShapes: null, stageEl: null,
       open: false,
       busy: false,
       job: null,          // in-flight walk, so the button can cancel it
@@ -28944,6 +28965,7 @@
       rootKey: null,      // the start position the browser is standing in
       path: [],           // [{ uci, san, before, after }] — plies, not rows
       expanded: new Set(),// "<ck>|<uci>" of folded runs shown in full
+      preview: null,      // { ck, uci } while a row is hovered — board only, never the columns
       showRoots: false,
       repWanted: false,   // the badges were asked for; the index may still be loading
     };
@@ -29006,9 +29028,10 @@
           if (e.lines.length < C.maxNames) e.lines.push(line);
         }
         const endKey = cacheKey(w.end);
-        let endLines = ends.get(endKey);
-        if (!endLines) ends.set(endKey, endLines = []);
-        if (endLines.length < C.maxNames) endLines.push(line);
+        let end = ends.get(endKey);
+        if (!end) ends.set(endKey, end = { n: 0, lines: [] });
+        end.n++;
+        if (end.lines.length < C.maxNames) end.lines.push(line);
       }
 
       const indexed = course.vars.length - informational - unplayable.length;
@@ -29097,16 +29120,29 @@
     }
 
     /**
-     * The columns the current path implies. Each is a position plus its folded
-     * rows plus which row the path took; the walk stops where the path stops,
-     * which is how the board can stand INSIDE a folded run (§3.3) without the
-     * columns pretending a later decision has been made.
+     * The columns the current path implies. Each is a position, its folded
+     * rows, which row the path took, and `prefix` — the plies leading to it.
+     * The walk stops where the path stops, which is how the board can stand
+     * INSIDE a folded run (§3.3) without the columns pretending a later
+     * decision has been made.
+     *
+     * A COLUMN WITH EXACTLY ONE ROW IS TAKEN AUTOMATICALLY and marked `auto`
+     * (v0.116.0). It is not a decision — it is the same non-decision the fold
+     * already collapses inside a row, one level up — and a White repertoire
+     * opens with a whole column containing nothing but "1.e4". Standing MID-RUN
+     * is unaffected: that case breaks out of the walk above, before this is
+     * reached, so a ply picked out of a run is still a place you can stand.
+     *
+     * `prefix` exists BECAUSE of the auto-take: a later column's plies are no
+     * longer an index into `ct.path` once forced columns have been walked
+     * through without the path holding them, so navigation goes through the
+     * prefix rather than through arithmetic on that index.
      */
     function columnsFor() {
       const cols = [];
       if (!ct.tree || !ct.rootKey) return cols;
       const pathKeys = new Set([ct.rootKey]);
-      let ck = ct.rootKey, i = 0;
+      let ck = ct.rootKey, i = 0, prefix = [];
       while (cols.length < C.maxDepth) {
         const rows = rowsAt(ck, pathKeys);
         if (!rows.length) break;
@@ -29114,16 +29150,22 @@
         if (i < ct.path.length) {
           chosen = rows.findIndex((r) => r.plies[0].uci === ct.path[i].uci);
         }
-        cols.push({ ck, rows, chosen, at: i });
+        const auto = chosen < 0 && rows.length === 1;
+        if (auto) chosen = 0;
+        cols.push({ ck, rows, chosen, prefix, auto });
         if (chosen < 0) break;
         const row = rows[chosen];
         // How much of this row's run the path actually holds. Less than all of
         // it means the user is standing mid-run and there is no next column.
+        // An auto-taken column holds none of it and is walked through whole.
         let took = 0;
-        while (took < row.plies.length && i + took < ct.path.length
-               && ct.path[i + took].uci === row.plies[took].uci) took++;
-        if (took < row.plies.length) break;
-        i += took;
+        if (!auto) {
+          while (took < row.plies.length && i + took < ct.path.length
+                 && ct.path[i + took].uci === row.plies[took].uci) took++;
+          if (took < row.plies.length) break;
+          i += took;
+        }
+        prefix = prefix.concat(row.plies);
         for (const p of row.plies) pathKeys.add(p.after);
         if (row.loop) break;
         ck = row.end;
@@ -29131,12 +29173,19 @@
       return cols;
     }
 
-    /** The position the board is showing: the end of the path, or the root. */
-    const currentKey = () => (ct.path.length ? ct.path[ct.path.length - 1].after : ct.rootKey);
-    const currentFen = () => {
-      const ck = currentKey();
-      return (ck && ct.tree && ct.tree.fens.get(ck)) || '';
-    };
+    /**
+     * The plies the board and the breadcrumb are standing on. The path when the
+     * user has chosen one; otherwise whatever the auto-take walked through, so
+     * the board agrees with the leftmost column actually on screen rather than
+     * showing a position two forced moves behind it.
+     */
+    function standingPlies(cols) {
+      if (ct.path.length) return ct.path;
+      const last = cols && cols.length ? cols[cols.length - 1] : null;
+      return (last && last.prefix.length) ? last.prefix : [];
+    }
+
+    const keyOfPlies = (plies) => (plies.length ? plies[plies.length - 1].after : ct.rootKey);
 
     // --- the board -----------------------------------------------------------
 
@@ -29147,15 +29196,25 @@
      * course page has no board of Chessable's to clone from, which is the same
      * reason section 20's standalone drill needed it.
      */
-    function renderBoard() {
+    function renderBoard(cols) {
       if (!ct.boardGrid) return;
-      const fen = currentFen();
+      // HOVERING A ROW TAKES THE BOARD OVER (v0.116.0): its own position, with
+      // the branching move DRAWN as an arrow. The position is the one BEFORE
+      // the move on purpose — an arrow is a claim about a move being available
+      // here, and holding the position still is what lets two candidates in the
+      // same column be compared by moving the pointer between them.
+      const plies = standingPlies(cols);
+      const hover = ct.preview;
+      const fen = (hover && ct.tree.fens.get(hover.ck))
+        || (ct.tree && ct.tree.fens.get(keyOfPlies(plies))) || '';
       const pos = fen ? CloSan.parseFen(fen) : null;
       const view = (ct.tree && ct.tree.side === 'b') ? 'b' : 'w';
       const squares = new Map();
       fillBoardGrid(ct.boardGrid, view, (sq, idx) => squares.set(idx, sq));
       const layer = ct.boardLayer;
+      const shapes = ct.boardShapes;
       while (layer.firstChild) layer.removeChild(layer.firstChild);
+      while (shapes.firstChild) shapes.removeChild(shapes.firstChild);
       if (!pos) return;
       for (let idx = 0; idx < 64; idx++) {
         const letter = pos.board[idx];
@@ -29164,9 +29223,16 @@
         placeBoardPiece(piece, idx, view);
         layer.appendChild(piece);
       }
+      if (hover) {
+        const mv = CloSan.uciToMove(pos, hover.uci);
+        if (mv) shapes.appendChild(boardShapeArrow(mv.from, mv.to, view));
+        return;
+      }
       // The last move played, TINTED rather than drawn: an arrow at this size
       // is thin and a one-square move barely registers (section 18b's finding).
-      const last = ct.path.length ? ct.path[ct.path.length - 1] : null;
+      // The hover arrow above is a different claim — a move NOT yet made — which
+      // is why the two are drawn differently rather than sharing a treatment.
+      const last = plies.length ? plies[plies.length - 1] : null;
       const before = last && ct.tree.fens.get(last.before);
       const bpos = before ? CloSan.parseFen(before) : null;
       const mv = bpos && CloSan.uciToMove(bpos, last.uci);
@@ -29176,6 +29242,21 @@
           if (sq) sq.classList.add('clo-cr-sq--last');
         }
       }
+    }
+
+    /**
+     * Hover preview. Only the BOARD is redrawn — 64 squares and a handful of
+     * cloned pieces — never the columns: rebuilding those under the pointer
+     * would drop the very row being hovered and the mouseleave would never
+     * arrive. `cols` is re-derived rather than cached because the walk is cheap
+     * and a stale one after a click is a board on the wrong position.
+     */
+    function setPreview(ck, uci) {
+      const same = ct.preview && ct.preview.ck === ck && ct.preview.uci === uci;
+      const none = !ct.preview && !ck;
+      if (same || none) return;
+      ct.preview = ck ? { ck, uci } : null;
+      renderBoard(columnsFor());
     }
 
     // --- rendering -----------------------------------------------------------
@@ -29209,7 +29290,7 @@
      * §12.2's cap. Every ply is clickable either way, which is what lets the
      * board stand inside a run.
      */
-    function runNodes(row, colAt, showAll) {
+    function runNodes(col, row, showAll) {
       const frag = document.createDocumentFragment();
       const shown = showAll ? row.plies.length : Math.min(row.plies.length, C.foldShow);
       for (let i = 0; i < shown; i++) {
@@ -29225,7 +29306,7 @@
         san.title = 'Stand here';
         san.addEventListener('click', (e) => {
           e.stopPropagation();
-          goTo(colAt, row, i + 1);
+          goTo(col, row, i + 1);
         });
         frag.append(san, document.createTextNode(' '));
       }
@@ -29276,22 +29357,36 @@
 
       const main = el('div', 'clo-ct-row-main');
       const line = el('div', 'clo-ct-line');
-      line.append(runNodes(row, col.at, ct.expanded.has(row.key)));
+      line.append(runNodes(col, row, ct.expanded.has(row.key)));
       main.append(line);
 
       const meta = el('div', 'clo-ct-meta');
       const count = el('span', 'clo-ct-count', String(row.n));
-      count.title = row.n + ' of this course’s variation(s) play this move here.';
+      // Every remembered name goes in the TITLE, not on the row: a column is
+      // ~200px wide, so each link takes a line of its own and six of them buried
+      // the moves the row exists to show (seen live 2026-08-19, first build).
+      count.title = row.n + ' of this course’s variation(s) play this move here' +
+        (row.lines.length ? ':\n' + row.lines.map((l) => l.name || ('#' + l.oid)).join('\n') : '.') +
+        (row.n > row.lines.length ? '\n…and ' + (row.n - row.lines.length) + ' more' : '');
       meta.append(count);
 
       const badge = badgeFor(col.pos, col.repAnswers, row.uci);
       if (badge) meta.append(badge);
 
-      const endLines = ct.tree.ends.get(row.end);
-      if (endLines && !ct.tree.answers.has(row.end)) {
-        const tag = el('span', 'clo-ct-tag', 'line ends');
-        tag.title = 'The course stops here: ' +
-          endLines.map((l) => l.name || ('#' + l.oid)).join(', ');
+      // ALWAYS tagged when a variation finishes here, even where the course
+      // also plays on — because that is exactly what STOPPED the fold, and a
+      // one-ply row with no explanation reads as a bug (seen live 2026-08-19:
+      // a tactic's "24.Rc4" stood alone because one line ends after it while
+      // two others continue with 24…Nd7).
+      const end = ct.tree.ends.get(row.end);
+      if (end) {
+        const goesOn = ct.tree.answers.has(row.end);
+        const tag = el('span', 'clo-ct-tag',
+          end.n === 1 ? 'line ends' : end.n + ' lines end');
+        tag.title = (end.n === 1 ? 'A variation finishes here' : end.n + ' variations finish here') +
+          (goesOn ? ', though others play on' : '') + ':\n' +
+          end.lines.map((l) => l.name || ('#' + l.oid)).join('\n') +
+          (end.n > end.lines.length ? '\n…and ' + (end.n - end.lines.length) + ' more' : '');
         meta.append(tag);
       }
       if (row.loop) {
@@ -29300,37 +29395,75 @@
           'or pieces going out and back. The tree stops rather than following the loop.';
         meta.append(tag);
       }
-      // The variations this move belongs to. Capped at CONFIG.courseTree.maxNames
-      // when the index was built, so this can never be a wall of links.
-      for (const l of row.lines) {
+      // ONLY THE SELECTED ROW NAMES ITS VARIATIONS (v0.116.0). A column is
+      // ~200px wide, so every link wraps onto a line of its own — a name on
+      // every row is a wall of prose over the moves the rows exist to show, and
+      // the name only becomes the question once a branch has been chosen. Every
+      // row's names are still one hover away, in the count's tooltip above.
+      // `maxNames` is what the INDEX remembers; `linksShown` is what a row draws.
+      for (const l of (isOn ? row.lines.slice(0, C.linksShown) : [])) {
         const link = document.createElement('a');
         link.className = 'clo-ct-link';
         link.href = '/variation/' + l.oid + '/';
         link.target = '_blank';
         link.rel = 'noopener';
         link.textContent = l.name || ('#' + l.oid);
+        link.title = 'Open "' + (l.name || ('#' + l.oid)) + '" in a new tab';
         link.addEventListener('click', (e) => e.stopPropagation());
         meta.append(link);
       }
       main.append(meta);
 
       node.append(bar, main);
-      node.addEventListener('click', () => goTo(col.at, row, row.plies.length));
+      node.addEventListener('click', () => goTo(col, row, row.plies.length));
+      // Hover puts this branch on the board (see setPreview). `mouseenter` /
+      // `mouseleave` rather than pointer events: a finger has no hover, and a
+      // tap that both previewed and navigated would flash the board through a
+      // position it is about to leave.
+      node.addEventListener('mouseenter', () => setPreview(col.ck, row.uci));
+      node.addEventListener('mouseleave', () => setPreview(null, null));
       return node;
     }
 
-    function renderColumns() {
+    /** How many columns fit — measured, not declared. See CONFIG.courseTree. */
+    function columnsThatFit() {
+      const width = ct.colsEl ? ct.colsEl.getBoundingClientRect().width : 0;
+      if (!width) return C.maxColumns; // first draw, before layout: the ceiling
+      return Math.max(1, Math.min(C.maxColumns, Math.floor(width / C.colMinPx)));
+    }
+
+    /**
+     * The board's edge, measured off the STAGE's height. It is square, so the
+     * stage is what limits it; a declared edge would be a postage stamp on a
+     * maximised window and would overflow a short one. Runs after the columns
+     * are in, since they are what give the stage its height.
+     */
+    function sizeBoard() {
+      if (!ct.boardEl || !ct.stageEl) return;
+      const h = ct.stageEl.getBoundingClientRect().height;
+      if (!h) return; // first draw, before layout: the inline CONFIG width stands
+      const edge = Math.max(C.boardMinPx, Math.min(C.boardMaxPx, Math.floor(h)));
+      setInlinePx(ct.boardEl, { width: edge });
+    }
+
+    function renderColumns(cols) {
       const host = ct.colsEl;
       host.textContent = '';
       if (!ct.tree) return;
-      const cols = columnsFor();
       if (!cols.length) {
         host.append(el('div', 'clo-ct-empty', 'The course plays nothing from this position.'));
         return;
       }
-      // Only the last few are on screen; the breadcrumb carries everything
-      // before them. §3.1: fixed screen cost regardless of depth.
-      const shown = cols.slice(Math.max(0, cols.length - C.maxColumns));
+      // A column with one row is not a decision and is never drawn (see
+      // columnsFor's `auto`); the breadcrumb carries its moves instead. Of what
+      // is left, only the last few fit — §3.1's fixed screen cost regardless of
+      // depth, with the count measured off the panel rather than declared.
+      const real = cols.filter((c) => !c.auto);
+      if (!real.length) {
+        host.append(el('div', 'clo-ct-empty', 'The course plays nothing from this position.'));
+        return;
+      }
+      const shown = real.slice(Math.max(0, real.length - columnsThatFit()));
       for (const col of shown) {
         const fen = ct.tree.fens.get(col.ck) || '';
         col.pos = fen ? CloSan.parseFen(fen) : null;
@@ -29348,16 +29481,24 @@
       }
     }
 
-    function renderCrumb() {
+    /**
+     * The moves before the leftmost column on screen. Built from
+     * `standingPlies`, NOT from `ct.path`: with forced columns taken
+     * automatically the path can be empty while the columns already stand
+     * several moves in, and a breadcrumb reading only "start" there would be a
+     * lie about the position on the board beside it.
+     */
+    function renderCrumb(cols) {
       const host = ct.crumbEl;
       host.textContent = '';
+      const plies = standingPlies(cols);
       const root = el('button', 'clo-ct-crumb', 'start');
       root.type = 'button';
       root.title = 'Back to the start of this line';
-      root.addEventListener('click', () => { ct.path = []; renderTree(); });
+      root.addEventListener('click', () => { ct.path = []; ct.preview = null; renderTree(); });
       host.append(root);
-      for (let i = 0; i < ct.path.length; i++) {
-        const ply = ct.path[i];
+      for (let i = 0; i < plies.length; i++) {
+        const ply = plies[i];
         const numText = moveNumberOf(ply);
         if (numText && (numText.endsWith('.') || i === 0)) {
           host.append(el('span', 'clo-ct-num', numText));
@@ -29365,7 +29506,11 @@
         const b = el('button', 'clo-ct-crumb', ply.san);
         b.type = 'button';
         b.title = 'Back to here';
-        b.addEventListener('click', () => { ct.path = ct.path.slice(0, i + 1); renderTree(); });
+        b.addEventListener('click', () => {
+          ct.path = plies.slice(0, i + 1);
+          ct.preview = null;
+          renderTree();
+        });
         host.append(b);
       }
     }
@@ -29445,11 +29590,18 @@
      *  never from the poll, which would fight the user's scroll position. */
     function renderTree() {
       if (!ct.panel) return;
-      renderCrumb();
-      renderColumns();
+      // ONE walk per redraw, shared by all three: the crumb, the columns and
+      // the board must agree about where the auto-take (columnsFor) has walked
+      // to, and re-deriving it three times is how they would drift apart.
+      const cols = columnsFor();
+      renderCrumb(cols);
+      renderColumns(cols);
       renderRoots();
       renderSummary();
-      renderBoard();
+      // After the columns: they are what give the stage its height, which is
+      // the one thing the board's edge is measured from.
+      sizeBoard();
+      renderBoard(cols);
       render();
     }
 
@@ -29468,15 +29620,18 @@
     // --- navigation ----------------------------------------------------------
 
     /**
-     * Stand `take` plies into `row`, from a column that begins at path index
-     * `at`. Truncating and re-appending is the whole of it: there is no
-     * variation tree to keep here, the same decision section 19's analysis
-     * board made.
+     * Stand `take` plies into `row`, from `col`. The new path is the column's
+     * own prefix plus those plies — NOT a splice of the old path, which stopped
+     * being a valid index into the columns once forced ones are walked through
+     * automatically (see columnsFor). Truncating and re-appending is the whole
+     * of it: there is no variation tree to keep here, the same decision section
+     * 19's analysis board made.
      */
-    function goTo(at, row, take) {
-      const next = ct.path.slice(0, at).concat(row.plies.slice(0, take));
+    function goTo(col, row, take) {
+      const next = col.prefix.concat(row.plies.slice(0, take));
       if (next.length > C.maxDepth) return;
       ct.path = next;
+      ct.preview = null; // the click has moved the board; a stale hover would fight it
       renderTree();
     }
 
@@ -29557,26 +29712,31 @@
       summaryEl.hidden = true;
       const crumbEl = el('div', 'clo-ct-crumbs');
 
-      const stage = el('div', 'clo-ct-stage');
+      const stageEl = el('div', 'clo-ct-stage');
       const boardEl = el('div', 'clo-cr-mini clo-ct-board');
+      // WIDTH ONLY: the stylesheet gives it aspect-ratio 1/1 and max-width
+      // 100%, so a narrow panel shrinks the board instead of overflowing.
       boardEl.style.width = C.boardPx + 'px';
-      boardEl.style.height = C.boardPx + 'px';
       const boardGrid = el('div', 'clo-cr-grid');
       const boardLayer = el('div', 'clo-cr-layer');
-      boardEl.append(boardGrid, boardLayer);
+      const boardShapes = document.createElementNS(SVG_NS, 'svg');
+      boardShapes.setAttribute('class', 'clo-cr-shapes');
+      boardShapes.setAttribute('viewBox', '0 0 8 8');
+      boardShapes.setAttribute('preserveAspectRatio', 'none');
+      boardEl.append(boardGrid, boardLayer, boardShapes);
       const colsEl = el('div', 'clo-ct-cols');
-      stage.append(boardEl, colsEl);
+      stageEl.append(boardEl, colsEl);
 
       const rootsEl = el('div', 'clo-ct-roots');
       rootsEl.hidden = true;
 
-      body.append(statusEl, summaryEl, crumbEl, stage, rootsEl);
+      body.append(statusEl, summaryEl, crumbEl, stageEl, rootsEl);
       panel.append(head, body);
       document.body.appendChild(panel);
 
       Object.assign(ct, {
         panel, statusEl, summaryEl, crumbEl, colsEl, rootsEl,
-        boardEl, boardGrid, boardLayer, runBtn,
+        boardEl, boardGrid, boardLayer, boardShapes, stageEl, runBtn,
       });
     }
 
@@ -29644,6 +29804,13 @@
       }
     }, C.pollMs);
     window.addEventListener('pagehide', () => clearInterval(pollTimer));
+    // How many columns fit is MEASURED off the panel, and the panel fills the
+    // window — so a resize really can change the answer. Redraw rather than
+    // reflow: the columns shown are a different SET, not the same set relaid.
+    window.addEventListener('resize', () => {
+      if (!ct.open || !ct.tree || !ct.panel) return;
+      try { renderTree(); } catch (err) { warn('course tree resize failed:', err); }
+    });
     tick();
   }
 

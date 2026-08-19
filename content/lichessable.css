@@ -4475,19 +4475,19 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 .clo-ct-launch:hover { border-color: var(--clo-line-hover); }
 .clo-ct-launch[hidden] { display: none; }
 
+/* IT FILLS THE WINDOW (v0.116.0), unlike section 21's panel beside it. This is
+   not a report you read while doing something else on the page underneath —
+   it is a browser you are inside of, and the whole surface is spent on columns
+   and a board, both of which are better the more room they get. Inset rather
+   than a width, so the space is taken rather than requested; the JS then
+   measures how many columns fit (CONFIG.courseTree.colMinPx) rather than
+   declaring a number that would be wrong on half the screens it meets. */
 .clo-ct {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  inset: 16px;
   z-index: 99999;
   display: flex;
   flex-direction: column;
-  /* Wider than the coverage panel: three columns beside a board is what this
-     surface IS, and §12.1 says a column is two to five rows, so the width goes
-     on the columns rather than on their height. */
-  width: 880px;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 90px);
   box-sizing: border-box;
   border: 1px solid var(--clo-bg-sunken);
   border-radius: 4px;
@@ -4545,10 +4545,16 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 
 .clo-ct-x:hover { color: #fff; }
 
+/* A flex COLUMN that does not scroll: with the panel filling the window the
+   stage takes the leftover height and each column scrolls inside itself, which
+   is what a column browser does. A scrolling body would instead push the board
+   off screen as the first column grew. */
 .clo-ct-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 8px 10px 10px;
 }
 
@@ -4603,34 +4609,55 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 /* --- the stage: board on the left, columns to the right -------------------- */
 
 .clo-ct-stage {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 10px;
 }
 
-/* Reuses .clo-cr-mini wholesale (section 11c). The edge is written inline from
+/* Reuses .clo-cr-mini wholesale (section 11c). Its WIDTH is written inline from
    CONFIG.courseTree.boardPx so there is one source of truth, as the heads-up
-   board does. */
-.clo-ct-board { flex: none; }
+   board does; the square comes from aspect-ratio HERE rather than a second
+   inline value, which is what lets max-width shrink the board on a narrow panel
+   instead of overflowing the stage. */
+.clo-ct-board {
+  flex: none;
+  align-self: flex-start;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  max-width: 100%;
+}
 .clo-ct-board .clo-cr-piece--glyph { font-size: inherit; }
 
+/* Columns HUG their content and scroll only when they outgrow the stage. A
+   Finder column browser stretches them full height, and that is wrong here:
+   §12.1 says a column is two to five rows, so stretching leaves most of a
+   maximised panel as empty column. */
 .clo-ct-cols {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
+  justify-content: flex-start;
   gap: 8px;
 }
 
+/* Grows to share the row, but only up to a point: with the panel filling the
+   window a single column would otherwise be 1500px of mostly nothing, which is
+   a worse read than the 197px one it replaced. Columns keep to a comfortable
+   measure and the leftover space is simply left over — the board beside them is
+   what actually wants it, and sizeBoard() takes it. */
 .clo-ct-col {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
+  max-width: 360px;
   border: 1px solid var(--clo-line);
   border-radius: 3px;
   background: var(--clo-bg-sunken);
-  /* §12.1: the worst column measured anywhere was nine rows, so this is a
-     safety valve rather than a layout decision. */
-  max-height: 420px;
+  /* §12.1 says the worst column measured anywhere was nine rows, so this
+     almost never scrolls — it is a safety valve, not a layout decision. */
+  max-height: 100%;
   overflow-y: auto;
 }
 
@@ -4664,11 +4691,14 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 .clo-ct-row:last-child { border-bottom: none; }
 .clo-ct-row:hover { background: var(--clo-bg-raised); }
 
-/* The row the current path took. A left rule rather than a fill: a fill would
-   compete with the hover state, and this is "where you are", not "press this". */
+/* The row the current path took. A rule rather than a fill: a fill would
+   compete with the hover state, and this is "where you are", not "press this".
+   On the RIGHT edge, and that is not arbitrary — it is the edge the column this
+   row opened is on, so the mark points at its own consequence. It cannot go on
+   the LEFT: .clo-ct-bar is there, opaque, and would cover it. */
 .clo-ct-row--on {
   background: var(--clo-bg);
-  box-shadow: inset 2px 0 0 var(--clo-accent);
+  box-shadow: inset -3px 0 0 var(--clo-accent);
 }
 
 /* §3.4's weight, without needing game data: at a glance the main line is fat
@@ -4786,6 +4816,7 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 /* --- the other starting positions (§12.6) ---------------------------------- */
 
 .clo-ct-roots {
+  flex: none;
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid var(--clo-line);
@@ -5418,8 +5449,18 @@ html.clo-touch .clo-sg-lead-btn {
    Keyed on WIDTH, not on html.clo-touch, and deliberately: a narrow desktop
    window wants the same answer a phone does, and a phone in Chrome's "Desktop
    site" lays out at ~980 CSS px, where three columns still fit and are still
-   what the user wants (section 20's standaloneMaxPx reasoning, same trap). */
-@media (max-width: 780px) {
+   what the user wants (section 20’s standaloneMaxPx reasoning, same trap).
+
+   A CONTAINER query, not a media query, and that is what makes it CHECKABLE:
+   dev/harness.html sizes a CARD, never the viewport, so a media query would
+   never fire there and this shape could only ever be eyeballed on a phone. The
+   panel's own width is 880px clamped by 100vw, so its inline size already IS
+   the viewport constraint — the two rules answer identically, and only one of
+   them can be measured. `container-type: inline-size` is safe here for the
+   same reason: nothing about this panel's width depends on its contents. */
+.clo-ct { container-type: inline-size; }
+
+@container (max-width: 780px) {
   .clo-ct-stage { flex-direction: column; }
   .clo-ct-board { align-self: center; }
   .clo-ct-cols { width: 100%; }

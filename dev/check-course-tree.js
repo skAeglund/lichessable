@@ -50,7 +50,9 @@ const shared = [
   sliceDecl('foldFrom'),
   sliceDecl('rowsAt'),
   sliceDecl('columnsFor'),
-  'return { buildCourseTree, foldFrom, rowsAt, columnsFor };',
+  sliceDecl('standingPlies'),
+  sliceDecl('keyOfPlies'),
+  'return { buildCourseTree, foldFrom, rowsAt, columnsFor, standingPlies, keyOfPlies };',
 ].join('\n');
 
 // CONFIG.courseTree, read out of the shipped file so the numbers cannot drift.
@@ -211,6 +213,53 @@ function check(name, cond, detail) {
     cols = api.columnsFor();
     check('an unmatched path chooses nothing', cols.length === 1 && cols[0].chosen === -1,
       cols.length + '/' + cols[0].chosen);
+  }
+
+  console.log('\nforced columns are taken automatically (v0.116.0)');
+  {
+    // 455941 opens "1.e4 c5" and nothing else — a column with one row, which is
+    // not a decision. It must never be drawn, the walk must go through it, and
+    // the board and breadcrumb must stand where it left them rather than two
+    // moves behind the leftmost column on screen.
+    ct.tree = trees['455941'];
+    ct.rootKey = ct.tree.starts[0].ck;
+    ct.path = [];
+    let cols = api.columnsFor();
+    check('the single-move root column is marked auto', cols[0] && cols[0].auto === true,
+      String(cols[0] && cols[0].auto));
+    check('…and the walk carries on past it', cols.length > 1, String(cols.length));
+    check('…so something real is left to draw', cols.filter((c) => !c.auto).length > 0,
+      String(cols.filter((c) => !c.auto).length));
+    const first = cols.find((c) => !c.auto);
+    check('the first drawn column really branches', first && first.rows.length > 1,
+      String(first && first.rows.length));
+    check('its prefix is the forced moves', first && first.prefix.map((p) => p.san).join(' ') === 'e4 c5',
+      first && first.prefix.map((p) => p.san).join(' '));
+    check('standingPlies follows the auto-take with an empty path',
+      api.standingPlies(cols).length > 0, String(api.standingPlies(cols).length));
+    check('…and lands on the position the drawn column is about',
+      api.keyOfPlies(api.standingPlies(cols)) === cols[cols.length - 1].ck,
+      api.keyOfPlies(api.standingPlies(cols)) + ' vs ' + cols[cols.length - 1].ck);
+
+    // Navigation goes through the column's own prefix, so a click in a column
+    // reached only by auto-take still produces a path that leads to it.
+    const row = first.rows[1] || first.rows[0];
+    ct.path = first.prefix.concat(row.plies);
+    cols = api.columnsFor();
+    const again = cols.find((c) => c.ck === first.ck);
+    check('after clicking, that column reads the click back',
+      again && again.chosen >= 0 && again.rows[again.chosen].uci === row.uci,
+      String(again && again.chosen));
+    check('…and it is no longer auto', again && again.auto === false, String(again && again.auto));
+
+    // A course whose root really branches must be untouched by any of this.
+    ct.tree = trees['291847'];
+    ct.rootKey = ct.tree.starts[0].ck;
+    ct.path = [];
+    cols = api.columnsFor();
+    check('a branching root is NOT auto-taken', cols[0].auto === false, String(cols[0].auto));
+    check('…and stands on the root itself',
+      api.standingPlies(cols).length === 0, String(api.standingPlies(cols).length));
   }
 
   console.log('\nthe refusal (§7)');

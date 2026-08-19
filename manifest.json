@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LiChessable",
-  "version": "0.114.0",
+  "version": "0.116.0",
   "description": "Shows Lichess opening-database statistics alongside Chessable's move table on Explore and Analysis pages, follows the board when browsing a completed variation in review or a standalone variation page, adds Overstudy shortcuts to review sessions, can auto-play moves you already answered correctly this session, logs every move you fail in a session and can either drill just those moves on its own board or walk you through their variations again as overstudy, lets you append a comment or an alternative move to a mainline move from the review browse panel or a variation page, offers to engine-check a wrong quiz answer and add it as an accepted alternative, can answer a quiz from a typed move instead of the mouse, lists which of a course's variations are still missing from one of your own repertoires (ranked by how likely you are to face them) and adds them in one press, sorts a chapter's variations into move-tree order with each branching point ranked by how often the move is played on Lichess, and offers optional local Stockfish analysis.",
   "permissions": ["storage", "offscreen"],
   "host_permissions": ["https://explorer.lichess.org/*"],

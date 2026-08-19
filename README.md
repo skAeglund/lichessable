@@ -48,6 +48,7 @@ it.
 | Repertoire coverage | 21 | `DESIGN-repertoire-coverage.md` |
 | Type a move | 22 | `CLAUDE.md` |
 | Show and grade, audio and blindfold | 23, 23b | `DESIGN-show-and-grade.md` |
+| Course tree (a course as positions, browsed as columns) | 24 | `DESIGN-course-tree.md` |
 | Every control by host and state, and the colour rules | — | `DESIGN-ui-inventory.md` |
 
 ## Folder structure

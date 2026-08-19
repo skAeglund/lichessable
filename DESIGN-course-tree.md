@@ -1,17 +1,18 @@
 # DESIGN — Reading a course as a tree (section 24)
 
-Status: **DESIGNED, NOT IMPLEMENTED.** §2 is a research pass over what other
-tools do (2026-08-19, desk research — no live Chessable session involved); §4's
-facts about `getList` and the walk are already ground-truthed, but they were
-established for section 21 and are cited here, not re-verified. **§8 is what has
-to be checked against a real course before any of this is trusted**, and §5 is
-the pair of hazards most likely to make a first build quietly wrong.
+Status: **BUILT AND VERIFIED LIVE (v0.116.0, 2026-08-19).** §1-§11 are the
+original design pass; **§12 is the live ground truth and OVERRIDES §3.5, §5.1
+and §8**, §13 is what shipped first and what was left out, and **§14 is the
+second pass, which overrides §3.1 about the panel’s shape and §3.3 about a
+forced COLUMN**. Read §12
+before trusting anything above it: four of §8’s seven questions came back with
+an answer the design did not expect.
 
 Section number: **24**, its own module (`initCourseTree`), hosted on
 `/course/<bid>/` beside section 21. §6 is the argument for that home.
 
-Nothing here is in CLAUDE.md's section list yet, and should not be until it
-exists — same as `DESIGN-key-move-leadin.md`.
+CLAUDE.md carries section 24's contract surface — the keys, the fold rule, the
+cycle guard and the corner it shares; everything else lives here.
 
 ---
 
@@ -548,3 +549,174 @@ whichever hints are present, and **resolves only when exactly one survives**.
 * §8.7 `html.clo-touch` in the harness — done at the end of the build, not here;
 * walk cost on a 500-variation course. 1.2 s for 80 variations in node says a
   500-line course is ~8 s, which is why the walk yields and reports progress.
+
+---
+
+## 13) What shipped (v0.115.0)
+
+`initCourseTree` in `content/lichessable.js`, ~700 lines including its comment
+block; the styles are one block in `content/lichessable.css`; the harness
+replica is `#s-ct` in `dev/harness.html`; the checks are
+`dev/check-course-tree.js` (walk/fold/columns) and `dev/check-san-relaxed.js`
+(§12.7's fix). `dev/probe-course-tree.js` is the measurement pass §12 is written
+from and stays runnable.
+
+### 13.1 As designed
+
+* the position-keyed walk (§3, §4), on `cacheKey` (§5.1 as amended by §12.3),
+  built by `buildCourseTree` beside `buildRepertoireIndex` rather than in it;
+* Miller columns with a breadcrumb, the board on the left following the
+  selection, three columns on screen and the rest carried by the crumb (§3.1);
+* the fold on branching factor 1, lossless, every ply clickable, with a display
+  cap and "+N more" (§3.3 as amended by §12.2);
+* the weight bar and count (§3.4);
+* the cycle guard, a visited set per path plus `maxDepth`, and a row that closes
+  a loop marked "repeats" (§5.2, confirmed real by §12.5);
+* the many-roots list (§12.6);
+* the refusal on a course that will not replay (§7);
+* repertoire badges from section 6c (§3.5), read-only and optional;
+* the phone shape, one column plus the breadcrumb (§3.1) — as a `@container`
+  query, so `dev/harness.html` can actually measure it.
+
+### 13.2 Deliberately not built
+
+* **`isKey` on a row.** §12.4 measured it at 79-99% of plies. Dropping it is
+  what keeps `reduceCourse`'s shape — and so section 21's cache — untouched.
+* **The unprepared-reply WARNING** (6c's third badge). It is comparative on
+  Lichess popularity, and §7 forbids fetching that per column. The two positive
+  badges cost nothing, being pure lookups in an index already in memory.
+* **This session's failures (16) and pinned mistakes (16b) on a row**, from
+  §3.5. Both are keyed by `(oid, mkey)` inside a trainer session and the tree is
+  a course page; the join is real but it is a second feature, not a field.
+* **Coverage severity (21) on a row**, same reason — it needs a report to have
+  been run, and the two panels do not talk.
+* **The indented outline** (§3.2). Still cheap now the DAG exists, still not v1.
+* **Chapter grouping** (§8.6). The column browser never needed it; the outline
+  will.
+
+### 13.3 Measured on the finished thing (2026-08-19, live)
+
+Desktop 880x474, three 197px columns beside a 240px board; under 780px of panel
+width the board goes above and one column remains, 340x411 with no horizontal
+overflow; `html.clo-touch` takes a row from 41px to 55px and the launcher from
+98x31 to 112x37. On course 291847: 72 lines, 1118 positions, 39 starts, four
+rows in the root column, board drawn from the PERSISTED piece harvest with no
+glyph fallback (the page has no board of Chessable's to clone from). On 453453
+with "Testing Repertoire" nominated, the badges mark exactly 1.e4 c5, 2.Nf3,
+2.Nc3 and 2.Bc4 and nothing else, which is that repertoire's whole content.
+
+### 13.4 The two things the first build got wrong
+
+Every row printed up to six variation names, and at ~200px a name takes a line
+of its own — so six of them buried the moves the row exists to show. Fixed by
+splitting the cap in two: `maxNames` is what the INDEX remembers (all of them,
+in the count's tooltip) and `linksShown` is what a ROW draws. Only visible on a
+real course; the harness replica would have shown it too, had it been written
+with six.
+
+
+Second: a tactic’s row read **`24.Rc4`** and stopped, with nothing saying why.
+The fold was RIGHT — one of the three lines playing Rc4 finishes immediately
+after it, and stopping there is the rule that keeps the “line ends” tag attached
+to the correct position — but the tag was only drawn where NOTHING continues, so
+in the one case where the stop needs explaining it was silent. The tag is now
+drawn whenever a variation finishes at a position, counts them (`ends` carries
+`n` as well as its capped name list) and says “though others play on” in the
+tooltip when the course does. A one-ply row with no explanation reads as a bug.
+
+---
+
+## 14) Second pass (v0.116.0) — four changes from using it
+
+All four came out of looking at the thing on a real course, which is why none of
+them is in §1-§11. Each is small; together they change what the panel is.
+
+### 14.1 It fills the window
+
+`inset: 16px` rather than 880px in a corner. §6 put it beside section 21's panel
+and inherited that panel's shape, which was wrong: coverage is a report you read
+while the course page is still doing something behind it, and this is a browser
+you are *inside of*. Nothing on the page underneath is relevant while it is open.
+
+Two numbers stop being declarable the moment the panel is the window:
+
+* **how many columns** — `columnsThatFit()` divides the measured stage width by
+  `colMinPx` (210), capped at `maxColumns` (8, a ceiling rather than a layout);
+* **how big the board** — `sizeBoard()` clamps the stage's measured HEIGHT into
+  `[boardMinPx, boardMaxPx]` (220-560). The board is square, so the stage's
+  height is what limits it. Live at 1920x863: a 560px board beside four 314px
+  columns.
+
+`window.resize` therefore REDRAWS rather than reflows — a resize changes which
+columns are on screen, not just how wide they are.
+
+And a column is capped at **360px**. With the panel maximised, `flex: 1` gave a
+lone column 1521px of mostly nothing, which is a worse read than the 197px it
+replaced. The leftover space belongs to the board.
+
+### 14.2 A column with one row is never drawn
+
+A column offering one move is not a decision — it is the same non-decision §3.3
+already collapses inside a row, one level up — and a White repertoire opens with
+a whole column containing nothing but "1.e4". `columnsFor` now takes such a
+column automatically, marks it `auto`, and `renderColumns` skips it; the
+breadcrumb carries its moves.
+
+This is the change with the most consequences, all of them in navigation:
+
+* a column carries **`prefix`**, the plies leading to it, because a later
+  column's plies stopped being an index into `ct.path` the moment forced columns
+  are walked through without the path holding them. `goTo(col, row, take)` is
+  `col.prefix.concat(...)` — no arithmetic on an index that can lie;
+* **`standingPlies(cols)`** is what the board and the breadcrumb read: the path
+  when the user has chosen one, otherwise whatever the auto-take walked through.
+  Without it the board would sit two forced moves behind the leftmost column
+  actually on screen, and the breadcrumb would say "start" over a position three
+  plies in;
+* **standing mid-run is untouched.** That case breaks out of the walk *above*
+  the auto-take, so a ply picked out of a folded run is still a place you can
+  stand. `dev/check-course-tree.js` asserts both halves, and a control with the
+  auto-take disabled fails on exactly the five assertions that cover it.
+
+Course 455941 is the live case: it opens "1.e4 c5" and nothing else.
+
+### 14.3 Hovering a row previews it
+
+The row's own position on the board, with its branching move drawn as an arrow.
+The position **before** the move on purpose: an arrow is a claim about a move
+being available *here*, and holding the position still is what lets two
+candidates in one column be compared by moving the pointer between them.
+
+**Only the board redraws** (`setPreview`). Rebuilding the columns under the
+pointer would drop the very row being hovered, so its `mouseleave` would never
+arrive and the board would stay stuck on the preview. `mouseenter`/`mouseleave`
+rather than pointer events: a finger has no hover, and a tap that both previewed
+and navigated would flash the board through a position it is about to leave.
+
+The hover arrow and the last-move tint are deliberately different treatments —
+one is a move not yet made, the other a move already played.
+
+### 14.4 Only the selected row names its variations
+
+§13.4 had already cut six names to one. One per row was still a name on every
+row, and at a few hundred px each takes a line of its own — a column of prose
+over the moves the rows exist to show. The name only becomes the question once a
+branch has been chosen, so it is drawn only on the row the path took. Every
+row's names are still one hover away, in the count's tooltip.
+
+### 14.5 Measured on the second pass (live, 1920x863)
+
+| | |
+| --- | --- |
+| panel | 1873x831 (`inset: 16px`) |
+| board | 560x560 (`boardMaxPx`), 338 on a 360px panel (`max-width: 100%`) |
+| columns | four at 314px on 291847; one at 360px (the cap) on 455941 |
+| a column's height | its content — 181px for three rows, not the stage's 701px |
+| forced opening | 455941's "1.e4 c5" column gone, carried by the breadcrumb |
+| links | one, on the selected row only |
+| horizontal overflow | none, wide or narrow |
+
+Columns HUG their content rather than stretching. A Finder column browser
+stretches them; §12.1 says a column here is two to five rows, so stretching
+leaves most of a maximised panel as empty column. `max-height: 100%` is the
+safety valve for the nine-row worst case.
