@@ -2116,7 +2116,9 @@ Currently working (v0.18.x).
   trainer is asking. Opt-IN (`cloKeyLeadIn`), its own speed (`cloKeyLeadInSpeed`),
   both in section 23's cog.
   **READ `DESIGN-key-move-leadin.md` BEFORE CHANGING ANYTHING HERE** — §2 is the
-  gate and the live ground truth it rests on. What follows is only what an edit
+  gate and the live ground truth it rests on; §5.1 is which plies get replayed
+  (a run-up shared with the one just watched is not shown twice, and only a
+  SHALLOWER branch point restarts from the beginning). What follows is only what an edit
   ELSEWHERE can break.
   * IT LIVES ON SECTION 23'S BOARD AND NOWHERE ELSE (§4). With
     show-and-grade running there is nothing to hand back to — the same board
@@ -2402,6 +2404,21 @@ v0.112.0 change it was written for turned out to be a no-op
 (DESIGN-show-and-grade.md §4.6). What DOES change an answer is `cardIsProven`'s
 `cardIdx < firstCard` guard, and a control run against the pre-v0.112.0 source
 fails on exactly those two cases and passes every walk case.
+
+After touching section 23c's shared-run-up rule — `maybeStartLead`,
+`leadCommonPlies`, `noteLeadShown`, `leadGoto`:
+
+```
+node dev/check-lead-runup.js
+```
+
+Same discipline: it EXECUTES them, sliced out by `dev/slice-source.js`, over a
+seven-variation chapter — the replay opening at the first ply that differs from
+the one just watched, a shallower branch point sending it back to the start
+ONCE, a skipped run-up leaving the branch point alone, and a replay cut short
+counting only what was shown. Every interesting case is the third or fourth
+variation in a sequence, which is why a live session is a poor way to check it.
+Run a control (`CLO_SRC` at a copy with the rule reverted) and confirm it FAILS.
 
 It discovers every module-level bridge in `content/lichessable.js` (the
 `let x = null;` idiom, assigned a function or object by the owning section's

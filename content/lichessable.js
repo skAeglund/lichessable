@@ -25007,11 +25007,19 @@
       // to make smooth.
       leadOn: false,        // the preference
       leadPace: '',         // key into C.leadPaces; '' until the preference is read
-      // The prefix last replayed, as its SAN string. Courses in key-moves mode
-      // share prefixes constantly, and watching the same six plies ten times
-      // running is its own disorientation (decision 2.4). Session-scoped, so it
-      // lives out here rather than on `lead`, which is per variation.
-      leadLastSig: '',
+      // WHAT HAS ALREADY BEEN WATCHED, and where the branch point was. Courses
+      // in key-moves mode share run-ups constantly, and watching the same six
+      // plies ten times running is its own disorientation (§5.1) — so
+      // the next variation's replay opens at the first ply that differs from
+      // these, and only a SHALLOWER branch point than `leadDiv` sends it back to
+      // the start. Both session-scoped, so they live out here rather than on
+      // `lead`, which is per variation.
+      //
+      // `leadSeen` is what was SHOWN, never what was planned: a run-up cut short
+      // by the watchdog or by the skip key must not leave the next variation
+      // opening on a position nobody has seen.
+      leadSeen: '',
+      leadDiv: 0,
       lead: {
         active: false,
         plies: [],          // the variation, as read (see leadRead)
@@ -25020,6 +25028,7 @@
         reading: false,
         k: 0,               // the first card, i.e. how many plies the trainer played
         idx: 0,             // how many plies our board has replayed
+        shown: 0,           // …and the high-water mark of it, which BACK does not lower
         target: 0,          // …and where the trainer is now, which is the ceiling
         manual: false,      // the user has stepped, so it no longer runs itself
         // THE REPLAY'S OWN CLOCK, deliberately not the 500 ms poll: a 520 ms
@@ -28227,26 +28236,65 @@
       if (row) ld.obs.observe(row, { childList: true });
     }
 
+    /** How many opening plies two run-ups share. */
+    function leadCommonPlies(sans, seen) {
+      const prev = seen ? seen.split(' ') : [];
+      let n = 0;
+      while (n < sans.length && n < prev.length && sans[n] === prev[n]) n++;
+      return n;
+    }
+
+    /**
+     * Record what the user has actually WATCHED — a high-water mark on `idx`, so
+     * stepping BACK does not un-see a position, and taken from what was shown
+     * rather than from what was planned: a replay cut short by the watchdog or
+     * by the skip key must not leave the next variation opening mid-air.
+     */
+    function noteLeadShown() {
+      const ld = sg.lead;
+      if (ld.idx > ld.shown) ld.shown = ld.idx;
+      sg.leadSeen = ld.plies.slice(0, ld.shown).map((p) => p.san).join(' ');
+    }
+
     function maybeStartLead() {
       const ld = sg.lead;
       if (ld.active || !leadWatching()) return;
       const k = leadPrefixOf(ld.plies);
       if (!k) return;
-      // THE IDENTICAL-PREFIX RULE (§5). Courses in key-moves mode
-      // share prefixes constantly, and watching the same six plies ten times
-      // running is its own disorientation. A CHANGED prefix is replayed,
-      // however small the change.
-      const sig = ld.plies.slice(0, k).map((p) => p.san).join(' ');
-      if (sig && sig === sg.leadLastSig) {
-        log('key-move lead-in: the same run-up as last time (' + sig + ') — not replaying it');
+      // THE SHARED-RUN-UP RULE (§5.1), and it is the whole of what makes a chapter
+      // of siblings watchable. Sibling variations differ in their LAST ply or
+      // two, so the replay OPENS AT THE FIRST PLY THAT DIFFERS from the run-up
+      // just watched and shows only what is new; nothing new at all is not
+      // replayed, which is the identical-prefix case this rule started as.
+      //
+      // …EXCEPT WHEN THE BRANCH POINT MOVED SHALLOWER, which is the one case
+      // that gets the whole run-up again. Walking a chapter in course order with
+      // its branch points grouped, a divergence at or below the last one is
+      // another sibling of the line already established — but a divergence
+      // EARLIER than the last one is the author backing out to a different line
+      // of the chapter, where the run-up is the thing that has to be
+      // re-established. ONCE, though: `leadDiv` then holds the new, shallower
+      // branch point, so the siblings that follow it truncate against it again.
+      //
+      // A run-up that was SKIPPED entirely leaves `leadDiv` alone. It established
+      // no new branch point — the context is still the one before it — and
+      // moving it to k would make the next sibling, which by construction
+      // diverges earlier than that, a full replay for ever.
+      const sans = ld.plies.slice(0, k).map((p) => p.san);
+      const shared = leadCommonPlies(sans, sg.leadSeen);
+      if (shared >= k) {
+        log('key-move lead-in: nothing new in the run-up (' + sans.join(' ') +
+          ') — not replaying it');
         return;
       }
+      const from = shared >= sg.leadDiv ? shared : 0;
       const start = CloSan.parseFen(ld.plies[0].sourceFen);
       if (!start) { warn('key-move lead-in: unreadable start position'); return; }
-      sg.leadLastSig = sig;
+      sg.leadDiv = shared;
       ld.active = true;
       ld.k = k;
       ld.idx = 0;
+      ld.shown = 0;
       ld.target = 0;
       ld.manual = false;
       ld.doneAt = 0;
@@ -28259,9 +28307,24 @@
       render();
       positionBoard();
       setBoardVisible(true);
+      // OPENING MID-RUN-UP is `leadGoto`'s own walk — the same one the BACK key
+      // takes — so the board arrives with the ply before the divergence
+      // highlighted, which is what says where in the line we are standing. It
+      // fails by ending the lead-in, and has already said why.
+      if (from > 0) {
+        leadGoto(from);
+        if (!ld.active) return;
+      }
+      noteLeadShown();
       leadArm();
       syncPanel();
-      log('key-move lead-in: replaying', k, 'ply/plies the trainer played for you —', sig);
+      if (from > 0) {
+        log('key-move lead-in: replaying from ply ' + (from + 1) + ' of ' + k +
+          ' — the first ' + from + ' are the run-up just watched (' + sans.join(' ') + ')');
+      } else {
+        log('key-move lead-in: replaying', k, 'ply/plies the trainer played for you —',
+          sans.join(' '));
+      }
     }
 
     /**
@@ -28353,6 +28416,7 @@
       if (!ply) { endLead('the plan ran out'); return; }
       if (!playPlyOnBoard(ply)) { endLead('could not replay ' + ply.san); return; }
       ld.idx++;
+      noteLeadShown();
       // SPOKEN, NOT PRINTED (v0.114.0). The panel used to grow a move list as the
       // replay went — reported as distracting, and rightly: the moves are on the
       // board, which is the whole feature, so the line was the same fact a second
@@ -28388,6 +28452,7 @@
         last = mv;
       }
       ld.idx = want;
+      noteLeadShown();
       sg.lastMove = last ? { from: last.from, to: last.to } : null;
       reconcile();
       paintSquares();

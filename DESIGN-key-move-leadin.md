@@ -230,11 +230,69 @@ decides whether the moves are read out.
 **Blindfold suppresses it entirely** — a blindfold session that opens by showing
 you the position it starts from defeats itself.
 
-**An identical prefix is not replayed twice running** (`sg.leadLastSig`, the
-prefix's own SAN string). Courses in key-moves mode share prefixes constantly,
-and watching the same six plies ten times running is its own disorientation. A
-*changed* prefix is replayed, however small the change. Per DOCUMENT, so it
-covers a session and not a navigation.
+---
+
+### 5.1 The shared run-up: WHERE the replay opens (v0.117.0)
+
+Courses in key-moves mode share run-ups constantly — that is what a chapter *is*
+— and watching the same six plies ten times running is its own disorientation.
+The first version of this rule was a straight equality test on the run-up's SAN
+string (`sg.leadLastSig`): identical to the last one, don't replay it; anything
+else, replay all of it. That is right about the two ends and wrong about
+everything in between, which is most of a chapter — **sibling variations differ
+in their last ply or two**, so "anything else" was usually seven identical plies
+followed by the one that mattered.
+
+So the replay **opens at the first ply that differs from the run-up just
+watched** and shows only what is new. Two variables, both session-scoped
+(per DOCUMENT, so they cover a session and not a navigation):
+
+| | |
+|---|---|
+| `sg.leadSeen` | the run-up already WATCHED, as its SAN string |
+| `sg.leadDiv` | the ply at which the last replay's variation diverged — where the branch point is |
+
+and, given a new run-up of `k` plies sharing `s` of them with `leadSeen`:
+
+| | |
+|---|---|
+| `s >= k` | nothing new. **Not replayed at all** — this is the old identical-prefix case, now a special case of the general one. |
+| `s >= leadDiv` | another sibling of the line already established. **Replay from ply `s + 1`**, opening the board on that ply's own `sourceFen` with the ply before it highlighted. |
+| `s < leadDiv` | the branch point moved SHALLOWER: the author has backed out to a different line of the chapter, and the run-up is the thing that has to be re-established. **Replay all of it** — once. `leadDiv` then holds the new, shallower branch point, so the siblings that follow it truncate against it again. |
+
+**Why the restart test is relative and not absolute.** The alternative was a
+threshold on how many plies are shared ("fewer than four ⇒ full replay"), which
+is stateless and immune to a chapter whose divergences fluctuate. It was rejected
+because a chapter can branch uniformly deep: if every run-up in it shares six
+plies, backing out from ply ten to ply six is exactly the case this rule exists
+for and an absolute floor never fires. The fluctuation the relative test is weak
+to — shares 7, then 6, then 7 — is what **grouping the branch points in the
+chapter and reviewing in course order** removes, and that is a property of the
+course the author controls. It is also why comparing against the LAST run-up
+only is enough: no session-wide set, no tree, no index.
+
+**A skipped run-up leaves `leadDiv` alone.** It established no new branch point —
+the context is still the one before it — and moving it to `k` would make the next
+sibling, which by construction diverges earlier than that, a full replay for
+ever. This is the one bookkeeping mistake here that is invisible in a two-
+variation test and wrong on every chapter.
+
+**`leadSeen` is what was SHOWN, not what was planned** (`ld.shown`, a high-water
+mark on `idx`, so stepping BACK does not un-see a position). A replay cut short —
+by the fail-open watchdog of §3.4, or by the skip key — must not leave the next
+variation opening on a position nobody has ever seen. This is the half of the
+rule with a safety argument rather than a comfort one, and it is the reason the
+bookkeeping is not simply "remember the prefix we decided to play".
+
+**Opening mid-run-up is `leadGoto`'s own walk**, the one the BACK key already
+takes: the board is rebuilt from ply 0 and left standing on ply `s`, so it
+arrives with the ply before the divergence highlighted — which is what says where
+in the line we are standing. It fails by ending the lead-in, having said why.
+
+Executable: `node dev/check-lead-runup.js` walks a seven-variation chapter
+through the real `maybeStartLead` / `leadGoto` / `leadStep`, plus the cut-short
+and BACK cases. Every interesting case here is the third or fourth variation in a
+sequence, which is not something a live session shows you cheaply.
 
 ---
 
