@@ -2900,6 +2900,271 @@ body {
   </div>
 </section>
 
+<section class="hx-sec" id="s-km" data-title="Key moves (25)">
+  <h2>Key moves &amp; difficult moves (section 25)</h2>
+  <p>Course pages, third in the bottom-right stack. The report answers one question:
+    which moves the user actually gets wrong are sitting OUTSIDE the key range
+    Chessable calculated, i.e. played for them and never asked for under
+    <em>Key Moves Only</em>. Numbers below are the real ones from a live run on
+    course 453453 (<code>DESIGN-key-moves.md</code> §6).</p>
+  <p><strong>Colour, per DESIGN-ui-inventory §3.</strong> The launcher is a NEUTRAL
+    outline, like the course tree's — the coverage panel keeps the corner's one filled
+    green. A difficult move OUTSIDE the range is AMBER ("you have N outstanding
+    items"); one inside is the plain neutral chip, because it is a fact about the
+    course rather than a thing to do. The write is green outline while it offers and
+    FILLED once armed — the second press is the one that changes the course.</p>
+  <p><strong>A DASHED chip has no record in this variation</strong> (25c). Chessable
+    keeps a separate history per card, so the same move in the same position can be
+    difficult in one line and unrecorded in twenty others — and a move in a run-up is
+    never asked there, so it can never be recorded at all. Those chips carry a figure
+    POOLED from elsewhere in the course, and say so in their tooltip; a percentage on a
+    card that has no record would otherwise read as a measurement of it. The amber line
+    above the options is the count before arming: this toggle is the one setting here
+    that can take a press from five variations to seventy.</p>
+  <p><strong>Restoring is a second, separate control</strong> (25b). Lowering only
+    ever adds to what is quizzed and restoring only ever takes away, so one armed
+    press must never mean both: two buttons, two arming states. A restorable row is
+    marked "can go back" in dim text with a rule down its left edge — deliberately
+    NOT amber, which here means "you have an outstanding item", and a range that can
+    go back is the opposite: a piece of work that is finished.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>The report, with four variations to fix</h3>
+      <div class="hx-stage">
+        <div class="clo-km hx-pos" style="width:min(560px,100%)">
+          <div class="clo-km-head-bar">
+            <span class="clo-km-title">Key moves &amp; difficult moves</span>
+            <button type="button" class="clo-km-btn">Scan again</button>
+            <button type="button" class="clo-km-x">×</button>
+          </div>
+          <div class="clo-km-body">
+            <div class="clo-km-summary">80 variation(s) · 16 difficult move(s) below 90% ·
+              3 to lower · 2 to restore</div>
+            <div class="clo-km-spread">Spread by position: 11 position(s) below the bar,
+              adding 152 move(s) across 63 variation(s)</div>
+            <div class="clo-km-opts">
+              <label class="clo-km-opt"><span>Start at </span>
+                <select class="clo-km-sel">
+                  <option>the difficult move</option>
+                  <option>one ply earlier</option>
+                </select>
+              </label>
+              <label class="clo-km-opt"><input type="checkbox" checked><span>treat a move as difficult everywhere it occurs</span></label>
+              <label class="clo-km-opt"><input type="checkbox"><span>also lower where the page order has moved on</span></label>
+              <label class="clo-km-opt"><input type="checkbox"><span>show every variation with a difficult move</span></label>
+            </div>
+            <div class="clo-km-list">
+
+              <div class="clo-km-row">
+                <label class="clo-km-head">
+                  <input type="checkbox" class="clo-km-tick" checked>
+                  <span class="clo-km-name">Sicilian: 2...Nc6 3.d4</span>
+                  <span class="clo-km-count">3 outside</span>
+                </label>
+                <div class="clo-km-detail">
+                  <span class="clo-km-key">key moves start 7.Be3</span>
+                  <span class="clo-km-move clo-km-move--out">2...Nc6 85.7%</span>
+                  <span class="clo-km-move clo-km-move--out">3...cxd4 85.7%</span>
+                  <span class="clo-km-move clo-km-move--out">4...Qb6 85.7%</span>
+                </div>
+                <div class="clo-km-fix">→ start the key moves at 2.Nf3</div>
+              </div>
+
+              <div class="clo-km-row">
+                <label class="clo-km-head">
+                  <input type="checkbox" class="clo-km-tick" checked>
+                  <span class="clo-km-name">Sicilian: 2...Nc6 3.d4</span>
+                  <span class="clo-km-count">1 outside</span>
+                </label>
+                <div class="clo-km-detail">
+                  <span class="clo-km-key">key moves start 5.Nb3</span>
+                  <span class="clo-km-move clo-km-move--out">1...c5 88.9%</span>
+                  <span class="clo-km-move">6...Qb4+ 88.9%</span>
+                  <span class="clo-km-stale">page order says 3.d4</span>
+                </div>
+                <div class="clo-km-fix">→ start the key moves at 1.e4</div>
+              </div>
+
+              <div class="clo-km-row">
+                <label class="clo-km-head">
+                  <input type="checkbox" class="clo-km-tick">
+                  <span class="clo-km-name">repeating same piece test1</span>
+                  <span class="clo-km-count">1 outside</span>
+                </label>
+                <div class="clo-km-detail">
+                  <span class="clo-km-key">key moves start 2.h4</span>
+                  <span class="clo-km-move clo-km-move--out">1...a6 80%</span>
+                </div>
+                <div class="clo-km-fix">→ start the key moves at 1.h3</div>
+              </div>
+
+              <div class="clo-km-row">
+                <label class="clo-km-head">
+                  <input type="checkbox" class="clo-km-tick" checked>
+                  <span class="clo-km-name">gonfreecss vs. 1) 6. Be3 — Mainline with 8. Qd2</span>
+                  <span class="clo-km-count">3 outside</span>
+                </label>
+                <div class="clo-km-detail">
+                  <span class="clo-km-key">key moves start 10.Bd3</span>
+                  <span class="clo-km-move clo-km-move--out clo-km-move--spread"
+                        title="before the first key move — never asked for under Key Moves Only&#10;This variation has no record of this move. 86.7% is pooled over 2 record(s) of the same position elsewhere in the course.">2...Nc6 86.7%</span>
+                  <span class="clo-km-move clo-km-move--out clo-km-move--spread">3...cxd4 89.7%</span>
+                  <span class="clo-km-move clo-km-move--out clo-km-move--spread">6...Qb4+ 88.9%</span>
+                </div>
+                <div class="clo-km-fix">→ start the key moves at 2.Nf3</div>
+              </div>
+
+              <div class="clo-km-row clo-km-row--raise">
+                <label class="clo-km-head">
+                  <input type="checkbox" class="clo-km-tick" checked>
+                  <span class="clo-km-name">test alternative2</span>
+                  <span class="clo-km-count clo-km-count--back">can go back</span>
+                </label>
+                <div class="clo-km-detail">
+                  <span class="clo-km-key">key moves start 1.e4</span>
+                  <span class="clo-km-move">2...Qb6 94.1%</span>
+                </div>
+                <div class="clo-km-fix clo-km-fix--back">→ move the key moves back to 2.Nf3 —
+                  where they were before this lowered them</div>
+              </div>
+
+              <div class="clo-km-row clo-km-row--raise">
+                <label class="clo-km-head">
+                  <input type="checkbox" class="clo-km-tick" checked>
+                  <span class="clo-km-name">Sicilian: Closed</span>
+                  <span class="clo-km-count clo-km-count--back">can go back</span>
+                </label>
+                <div class="clo-km-detail">
+                  <span class="clo-km-key">key moves start 1.e4</span>
+                  <span class="clo-km-move">2...Nc6 91.2%</span>
+                  <span class="clo-km-move clo-km-move--out">3...Nd4 80%</span>
+                </div>
+                <div class="clo-km-fix clo-km-fix--back">→ move the key moves back to 2.Nc3
+                  (part of the way: 4.Bb5 is still held back by a difficult move)</div>
+              </div>
+
+              <div class="clo-km-row clo-km-row--info">
+                <label class="clo-km-head">
+                  <span class="clo-km-tick clo-km-tick--none"></span>
+                  <span class="clo-km-name">Tactics — Puzzle #3</span>
+                  <span class="clo-km-count">after the end</span>
+                </label>
+                <div class="clo-km-detail">
+                  <span class="clo-km-key">key moves start 25.Qc2</span>
+                  <span class="clo-km-move clo-km-move--out">31...Rxa7 71.4%</span>
+                </div>
+                <div class="clo-km-fix clo-km-fix--no">this variation also marks a LAST key move —
+                  change it on Chessable's edit page</div>
+              </div>
+
+            </div>
+            <div class="clo-km-foot">
+              <button type="button" class="clo-km-btn clo-km-btn--go">Lower key moves (2)</button>
+              <button type="button" class="clo-km-btn clo-km-btn--back">Restore key moves (2)</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Armed · working · nothing to do</h3>
+      <p>Two presses, section 19c's rule: the ARMING press is what names the number,
+        so nothing can change between the sentence and the write.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px;align-items:flex-start">
+        <div class="clo-km hx-pos" style="width:420px">
+          <div class="clo-km-head-bar">
+            <span class="clo-km-title">Key moves &amp; difficult moves</span>
+            <button type="button" class="clo-km-btn">Scan again</button>
+            <button type="button" class="clo-km-x">×</button>
+          </div>
+          <div class="clo-km-body">
+            <div class="clo-km-foot">
+              <button type="button" class="clo-km-btn clo-km-btn--go clo-km-btn--armed">Press again to change 4 variation(s)</button>
+              <button type="button" class="clo-km-btn clo-km-btn--back" disabled>Restore key moves (2)</button>
+            </div>
+            <div class="clo-km-foot">
+              <button type="button" class="clo-km-btn clo-km-btn--go" disabled>Lower key moves (3)</button>
+              <button type="button" class="clo-km-btn clo-km-btn--back clo-km-btn--armed">Press again to change 2 variation(s)</button>
+            </div>
+          </div>
+        </div>
+        <div class="clo-km hx-pos" style="width:420px">
+          <div class="clo-km-head-bar">
+            <span class="clo-km-title">Key moves &amp; difficult moves</span>
+            <button type="button" class="clo-km-btn" disabled>Scan again</button>
+            <button type="button" class="clo-km-x">×</button>
+          </div>
+          <div class="clo-km-body">
+            <div class="clo-km-status">Lowering 2 of 4: Sicilian: 2...Nc6 3.d4 → 2.Nf3…</div>
+            <div class="clo-km-foot">
+              <button type="button" class="clo-km-btn clo-km-btn--go" disabled>Working…</button>
+              <button type="button" class="clo-km-btn clo-km-btn--stop">Stop</button>
+            </div>
+          </div>
+        </div>
+        <div class="clo-km hx-pos" style="width:420px">
+          <div class="clo-km-head-bar">
+            <span class="clo-km-title">Key moves &amp; difficult moves</span>
+            <button type="button" class="clo-km-btn">Scan again</button>
+            <button type="button" class="clo-km-x">×</button>
+          </div>
+          <div class="clo-km-body">
+            <div class="clo-km-status">4 lowered</div>
+            <div class="clo-km-summary">80 variation(s) · 16 difficult move(s) below 90% · 0 to fix</div>
+            <div class="clo-km-list">
+              <div class="clo-km-empty">Every difficult move in this course is already inside its key range.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>The corner, all four occupants</h3>
+      <p>A course page stacks three of these; 16d's pin dock shows on EVERY page and
+        also takes 16px, so it already overlapped the coverage launcher before this
+        one existed. A fifth has to solve the cluster rather than add an offset.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:10px;align-items:flex-start">
+        <button type="button" class="clo-km-launch hx-pos">Key moves</button>
+        <button type="button" class="clo-ct-launch hx-pos">Course tree</button>
+        <button type="button" class="clo-cov-launch hx-pos">Repertoire coverage</button>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Refusals</h3>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px;align-items:flex-start">
+        <div class="clo-km hx-pos" style="width:420px">
+          <div class="clo-km-head-bar">
+            <span class="clo-km-title">Key moves &amp; difficult moves</span>
+            <button type="button" class="clo-km-btn">Scan this course</button>
+            <button type="button" class="clo-km-x">×</button>
+          </div>
+          <div class="clo-km-body">
+            <div class="clo-km-status clo-km-status--warn">Chessable's difficult-moves record
+              could not be read — nothing can be judged without it</div>
+          </div>
+        </div>
+        <div class="clo-km hx-pos" style="width:420px">
+          <div class="clo-km-head-bar">
+            <span class="clo-km-title">Key moves &amp; difficult moves</span>
+            <button type="button" class="clo-km-btn">Scan again</button>
+            <button type="button" class="clo-km-x">×</button>
+          </div>
+          <div class="clo-km-body">
+            <div class="clo-km-status clo-km-status--warn">1 failed</div>
+            <div class="clo-km-summary">81 variation(s) · 9 difficult move(s) below 90% · 2 to fix ·
+              NOT your course — it cannot be edited</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
 
 </div><!-- /hx-wrap -->
 

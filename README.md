@@ -49,6 +49,7 @@ it.
 | Type a move | 22 | `CLAUDE.md` |
 | Show and grade, audio and blindfold | 23, 23b | `DESIGN-show-and-grade.md` |
 | Course tree (a course as positions, browsed as columns) | 24 | `DESIGN-course-tree.md` |
+| Key moves vs difficult moves | 25 | `DESIGN-key-moves.md` |
 | Every control by host and state, and the colour rules | — | `DESIGN-ui-inventory.md` |
 
 ## Folder structure

@@ -175,6 +175,10 @@ Currently working (v0.18.x).
   * `DESIGN-repertoire-coverage.md` — section 21
   * `DESIGN-course-tree.md` — section 24 (§12 = the LIVE ground truth, which
     overrides §3.5, §5.1 and §8; §12.7 is why `sanToUci` has a second pass)
+  * `DESIGN-key-moves.md` — sections 25, 25b and 25c (§1 = how Chessable stores a
+    key range and the bug in its own handler; §5 = the write and the two live
+    driver failures it exposed in SHARED code; §7 = putting a range BACK;
+    §8 = why Chessable's record is per CARD and what pooling it by position costs)
   * `DESIGN-add-as-variation.md` — section 19c (§2 = the wire, and the ten live facts)
   * `DESIGN-add-as-puzzle.md` — sections 19d and 19e (§2 = the wire, incl. the
     move-PAIR fold; §6 = the clickable-line menu and why data-fen cannot be trusted)
@@ -2289,6 +2293,130 @@ Currently working (v0.18.x).
     breadcrumb"), 340x411 with no horizontal overflow; `html.clo-touch` takes
     a row from 41px to 55px.
 
+- Key moves vs difficult moves (sections 25, 25b and 25c, v0.120.0): the moves the
+  user actually gets WRONG must not be the moves Chessable's "Key Moves Only"
+  study mode silently plays for them. A course-page panel (`/course/<bid>/`) reads
+  the key range back out of the course, reads the per-move record out of the
+  Difficult Moves feed, lists the difficult moves sitting OUTSIDE the range, and
+  lowers each variation's key range to cover them through the quick-edit driver —
+  and, once a move stops being difficult, puts the range BACK where it came from
+  (25b). Optionally it pools that record by POSITION rather than by card (25c),
+  which is the only way to see a move that is hard in a line where it is never
+  even asked.
+  **READ `DESIGN-key-moves.md` BEFORE CHANGING ANYTHING HERE** — §1 is how a key
+  range is stored and the string-comparison bug in Chessable's own handler, §4 is
+  the reconstructed page-order rule and its measured error, §5 is the write, §7 is
+  the restore, §8 is the spread. What follows is only what an edit ELSEWHERE can
+  break.
+  * A KEY RANGE IS ONLY EVER MOVED TO A PLY THIS FEATURE CAN NAME EXACTLY.
+    Earlier, to a difficult move in the user's own record; later, ONLY back to
+    the ply this feature itself took it from, recorded at the time. Never to an
+    estimate, and never past an end mark. That is why §4's reconstruction of
+    Chessable's rule may LOWER a range and may never raise one: its whole
+    measured error (15%) is "later than Chessable", and later-than-Chessable as a
+    RAISE stops asking for material the user is being tested on.
+  * `propose()` IS THE ONE PLACE THE DIRECTION IS DECIDED, and both callers
+    (`analyse` on a fresh read, `reanalyse` when a setting changes) go through it.
+    It compares `needed` — the earliest difficult move in the WHOLE variation
+    minus the lead — against `ideal`, which is the recorded original for a range
+    this tool has moved and simply `low` for one it has not. `min` of the two,
+    snapped. Reading `needed` off `outside` instead of `hard` is the mistake to
+    avoid: once a range can be raised, the difficult moves INSIDE it are exactly
+    what stops it going all the way back.
+  * THE BASELINE STORE IS `chrome.storage.LOCAL`, not session — the whole point is
+    that it outlives the sitting in which the move was hard. `low` is written ONCE
+    (a second lowering must not overwrite the original, or the range could never
+    get all the way back); `setTo` is where we last put it and is the record's own
+    validity check — a mark that has moved since means somebody else owns this
+    range now (Chessable's own recalculation, the edit page by hand), so the
+    record is DROPPED rather than acted on.
+  * THE DRIVER JOB CARRIES `fromPlyIndex`, the ply the mark is expected to be on,
+    and REFUSES when it is anywhere else. That guard is not optional now that the
+    write moves a range in either direction: "the mark is earlier than the target"
+    used to be a safe surprise to shrug off and is now a legitimate instruction.
+  * TWO BUTTONS, ARMED SEPARATELY (`km.armed` is `'' | 'lower' | 'raise'`).
+    Lowering only ever adds to what is quizzed and restoring only ever takes away,
+    so one armed press must never mean both.
+  * CHESSABLE'S RECORD IS PER CARD, NOT PER POSITION (25c), and that is the fact
+    the whole feature's coverage rests on: the same move in the same position is a
+    separate history in every variation that plays it, and a move in a variation's
+    RUN-UP is never asked there, so it can never be recorded there at all. The
+    variations most in need of a lowering are the least able to produce evidence
+    for it. `poolByPosition` + `spreadByPosition` (opt-in, `cloKeyMoveSpread`) are
+    the answer; measured on course 453453, it takes the panel from 5 variations to
+    lower to 51.
+  * `difficultRowCounts(row)` IS TOP LEVEL AND IS WHY: pooling needs the two
+    numbers, not the ratio — averaging six percentages would weight a 9-attempt
+    card like a 56-attempt one. `difficultRowAccuracy` is now expressed in terms
+    of it, so section 13b's rule is unchanged and still stated once.
+  * THE SPREAD MAY ONLY EVER ADD, and the line that guarantees it is
+    `if (acc >= threshold) continue` in `spreadByPosition` — a pooled figure at or
+    above the bar leaves a variation's own record completely alone. Pooling raises
+    a move above the bar as readily as it drops one below it (a row at 88.9% pools
+    to 93.6% on the test course), and this toggle must never WITHDRAW a lowering
+    the user could already see. The `min(own, pooled)` beside it only picks the
+    figure DISPLAYED when both are under the bar.
+  * `analyse` IS ASYNC AND YIELDS EVERY `chunkVars`, because the spread walks every
+    variation with CloSan: measured 2.0 s for 80 variations synchronously, i.e. a
+    frozen tab. Only the spread path yields — without it the analysis is a few
+    milliseconds and the macrotasks would cost more than the work. `respread()`
+    re-derives from the CACHED course and rows, so a toggle costs no fetch.
+  * THE COUNT IS PRINTED BEFORE ANYTHING CAN BE ARMED (`km.spreadEl`), because the
+    spread is the one setting here that can take a press from five variations to
+    seventy. A chip whose figure came from elsewhere is drawn DASHED and says so in
+    its tooltip: a percentage on a card with no record would otherwise read as a
+    measurement of that card.
+  * `difficultRowAccuracy(row)` AND `difficultPlyIndex(v, row)` ARE TOP LEVEL AND
+    SHARED with section 13b. The first is the accuracy rule — timeouts dropped
+    from BOTH halves of the fraction, `giveU` still counting — and it is shared
+    precisely so the two features cannot disagree about which moves are hard;
+    13b's `reduceDifficultRow` calls it. The threshold is 13b's too
+    (`cloDifficultThreshold`). Nothing about difficulty is re-decided in 25.
+    The second returns -1 rather than a guess when the SAN at the computed ply
+    does not match the row's `correctMove`: that index is what a key range gets
+    lowered to cover, and covering the wrong move is worse than covering none.
+  * `reduceCourse` NOW CARRIES PER-PLY `keys`, and that cost a bump of
+    `CONFIG.coverage.cacheKey` (`cloCourseListCache` → `…2`) SHARED WITH SECTIONS
+    21 AND 24. A listing written by an older build parses fine and is silently
+    missing the field, which reads as "this course has no key moves anywhere" —
+    hence a new KEY rather than a version check, so old entries age out.
+    Section 24's note that `isKey` "must not be added back" was about adding it
+    to the TREE, where it is noise; it is this section's whole subject.
+  * A KEY RANGE OPENS ON A WHOLE MOVE (§1.3, ground-truthed): a mark written onto
+    Black's 1...a6 comes back stored on White's 1.h3. So the proposal is snapped
+    here (`snapToMove`) rather than left for the server — the sentence on screen
+    has to be what will happen, and the driver's "already covered" test compares
+    the stored mark against the ply asked for, which unsnapped would answer "no"
+    for ever on a variation already fixed.
+  * IT OWNS NO BRIDGES and is called by nothing. It reads `fetchCourse`,
+    `dropCourseCache`, `chessableCreds`, `chessableBooksOnce`, `sideOf` and
+    `popupDriverBounds`, all shared and all unchanged.
+  * THE FIX PASS IS SEQUENTIAL AND TWO-PRESS. One variation is one driver visit —
+    a focused popup, a page load, a submit — so it is a watchable, stoppable queue
+    with a local watchdog per variation (section 19's rule: the worker's job timer
+    does not survive an idle restart) and a `maxWrites` cap. Section 19c's arming
+    press, for section 19c's reason.
+  * THE CORNER OF A COURSE PAGE NOW HOLDS FOUR THINGS: this launcher (92px),
+    section 24's tree (54px), section 21's coverage (16px) and 16d's pin dock
+    (16px, every page). A fifth has to solve the cluster rather than add an offset.
+
+- SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
+  apply to the comment, alternative-move and arrows jobs as well
+  (`quickEditSelectMoveEl`, hoisted out of `quickEditSelectMove` — which now just
+  calls it and returns the textarea):
+  * THE MOVE IS SELECTED BY ID AND THE CLICK IS RETRIED. Chessable rebuilds
+    `#interactivePGN` shortly after the page boots, so a click on the node the
+    driver was handed can land on one already DETACHED and do nothing at all.
+    `moveClickTries` / `moveClickRetryMs` bound the retry; a click that keeps not
+    taking is a failure to report, not a thing to keep doing.
+  * THE SIDE-TO-MOVE CHECK CANNOT PROVE A SELECTION, and it was the only check
+    there was. The position a click STARTS from usually already has the side the
+    target move would leave behind, so it passed for a click that never happened —
+    and the driver then read the fields of whatever move was selected before.
+    The proof is Chessable's own `moveActive` class on the target
+    (`SELECTORS.editMoveActiveClass`); the side check stays as a SECOND condition,
+    being what says the BOARD followed rather than merely the list.
+
 ## Verification (no automated tests)
 
 ```
@@ -2306,6 +2434,28 @@ After ANY edit to CLAUDE.md, and after adding or removing a cross-module bridge:
 ```
 py dev/check-contracts.py
 ```
+
+After touching section 25's proposal rule — `propose`, `snapToMove`, `plyBase`,
+`plyColor`, the baseline store, or 25c's `poolByPosition` / `spreadByPosition`:
+
+```
+node dev/check-key-moves.js
+```
+
+Same discipline as the other checks: it EXECUTES the shipped `propose`, sliced
+out by `dev/slice-source.js`, over the five steps of the scenario 25b exists for
+(a range lowered to cover a difficult move, the move recovering, the range going
+back) plus the partial restore, the no-baseline invariant, the lead setting, the
+move-pair snap, and 25c's pooling. Both interesting cases are close to
+unreachable from a live session — one needs a range this extension lowered weeks
+ago, the other needs a move to have stopped being difficult since.
+THREE CONTROLS, each of which must fail on exactly its own assertion: 25b
+reverted (fails the two raise cases), `own.acc = acc` in place of the min (fails
+only the displayed-figure case), and the `acc >= threshold` guard weakened (fails
+only "a comfortable pool leaves an own record below the bar alone"). The second
+of those is why the first version of these checks was rewritten: it asserted the
+min was what made the spread additive, and passed against a source where it was
+not.
 
 After touching `sanToUci` — or `sanToUciRelaxed`, the second pass beside it:
 

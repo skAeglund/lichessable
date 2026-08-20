@@ -170,6 +170,25 @@
     // class + stroke pair is the whole read: an isolated-world driver cannot
     // see allTheMoves, and does not need to.
     editDrawings:       '#board svg [class^="arrow_"], #board svg [class^="circle_"]',
+    // Key moves (quick-edit mode 'key' - section 25). The edit page carries ONE
+    // checkbox per selected move, "Mark <san> as a key move (learners will be
+    // tested on this position)", and Chessable's own handler keeps two module
+    // globals (keyMoveLow / keyMoveHigh) plus an `is_key` flag on each move in
+    // its page-state `allTheMoves`, which `addVariation()` then serialises into
+    // #commentsToSubmit. An isolated-world driver can see none of that - but the
+    // same handler also puts a `keyMove` CLASS on the marked move in
+    // #interactivePGN, and does so on page load as well as on every change. That
+    // class IS the read: it says which move currently starts (and, when there
+    // are two, ends) the key range. Ground-truthed live 2026-08-20.
+    editKeyMoveBox:     '#is_key',
+    editKeyMoveMarks:   '#interactivePGN .keyMove',
+    // The class Chessable's own `pgnMoveClicked` puts on the move currently
+    // SELECTED (`$(lastSelected).addClass("moveActive")`). It is the only
+    // unambiguous proof that a click took: the board's side to move is not one,
+    // since the position a click STARTS from very often already has the side
+    // the target move would leave behind - which is how a key-move job came to
+    // read the checkbox of whatever was selected before it (2026-08-20).
+    editMoveActiveClass: 'moveActive',
 
     // Standalone variation page (/variation/<oid>/ — second quick-edit host,
     // section 12). Wholly different markup from both the trainer and the edit
@@ -890,7 +909,14 @@
       // The edit board is booted when #inputFEN holds a parseable FEN that has
       // stopped changing for this long (the boot navigates to move 1 itself).
       boardStableMs:    450,
-      moveSelectTimeoutMs: 4000, // wait for the board to reach the clicked move
+      moveSelectTimeoutMs: 8000, // wait for the board to reach the clicked move
+      // The click that selects a move is RETRIED: Chessable rebuilds
+      // #interactivePGN shortly after boot and the first click can land on an
+      // element that is already detached (see quickEditSelectMoveEl). Bounded,
+      // because a click that keeps not taking is a failure to report, not a
+      // thing to keep doing.
+      moveClickTries:    4,
+      moveClickRetryMs:  600,
       // Arrows tab: how long the HOST board is given to reach the move it was
       // pressed on, when the lesson plan cannot supply the position outright.
       boardFenTimeoutMs: 2500,
@@ -1300,7 +1326,11 @@
       // Reduced course listings (id/name/SAN/colour/initialFEN only — never the
       // 180 KB payload) live beside cloCourseFenCache with the same 12 h TTL:
       // the analysis is re-run every time the user works through the list.
-      cacheKey:    'cloCourseListCache', // chrome.storage.session: bid → { t, name, ours, vars[] }
+      cacheKey:    'cloCourseListCache2', // chrome.storage.session: bid → { t, name, ours, vars[] }
+      // …2 since v0.118.0: the reduced shape gained per-ply `keys` (section 25).
+      // A listing written by an older build parses fine and simply has none,
+      // which would read as "this course has no key moves" - so the KEY changes
+      // rather than a version field being checked, and the old entries age out.
       cacheTtlMs:  12 * 60 * 60 * 1000,
       cacheMax:    6,                    // courses kept; oldest pruned first
       targetsKey:  'cloCoverageTargets',  // chrome.storage.local: sourceBid → target bid
@@ -1312,6 +1342,66 @@
       depthDefault: 16,   // score = P_cond × exp(−d / D)
       minGames:     50,   // explorer total below which the estimate is truncated, not multiplied
       maxRanked:    120,  // gaps ranked with Lichess data; the rest keep score 0
+    },
+
+    // Key moves vs difficult moves (section 25) — see DESIGN-key-moves.md.
+    // Chessable's own "Auto-calculate key moves" decides which plies a learner
+    // studying Key Moves Only is ever asked for; this reads the answer back and
+    // asks the one question it cannot: is a move the user actually gets WRONG
+    // sitting outside that range, i.e. silently never revised?
+    keyMoves: {
+      pollMs: 500,        // mount/position watchdog, and SPA course switches
+
+      // How far BEFORE the difficult move the key range should start. 0 = at
+      // the move itself (which is all the quiz needs — only the user's own
+      // plies are ever asked for); 1 = one ply earlier, so the opponent's move
+      // is played inside the key section rather than in the silent run-up.
+      leadKey:     'cloKeyMoveLead',   // chrome.storage.local
+      defaultLead: 0,
+      maxLead:     4,
+
+      // Section 25c, "difficult everywhere it occurs". OPT-IN (absent = off):
+      // Chessable's record is per CARD, so the same move in the same position is
+      // a separate history in every variation that plays it - and a move sitting
+      // in a variation's silent run-up can never fail there, so it can never
+      // appear in that variation's record at all. Pooling by POSITION is what
+      // finds those. Measured on course 453453: 11 hard positions, 165
+      // occurrences, 69 of 79 variations - hence the count before the arm.
+      spreadKey: 'cloKeyMoveSpread',
+      // The spread WALKS every variation with CloSan, and that is the one part
+      // of this module expensive enough to be felt: measured 2.0 s for 80
+      // variations, synchronously, i.e. a frozen tab — and a 500-line repertoire
+      // would be six times that. So the analysis yields every `chunkVars`
+      // variations (section 24's number and its reason) and reports progress.
+      chunkVars: 20,
+
+      // The accuracy bar is section 13b's, deliberately: "difficult" must mean
+      // one thing in this extension, and that module already owns the number,
+      // the options-page field and the rule that timeouts do not count
+      // (CONFIG.autoPlay.difficult.thresholdKey / defaultThreshold / ignoreWrongMoves).
+      // Nothing about difficulty is re-decided here.
+
+      fetchTimeoutMs: 20000,  // a course listing is ~180 KB
+      maxNameLen: 70,
+
+      // WHERE A KEY RANGE WAS BEFORE WE LOWERED IT (section 25b). One entry per
+      // variation we have moved, in chrome.storage.LOCAL and deliberately not
+      // session: the whole point is that it outlives the sitting in which the
+      // move was hard. It is the ONLY thing that makes a range raisable again,
+      // and it is exact - the position the user (or Chessable) had it in, never
+      // an estimate.
+      baselineKey: 'cloKeyMoveBaseline',
+      baselineMax: 400,       // oldest `at` pruned first; ~70 bytes an entry
+      baselineSaveMs: 400,    // debounce, so a queue of writes is one save
+
+      // Writing. Each fix is ONE quick-edit driver visit (a focused popup
+      // window, a page load, a submit), so this is deliberately a slow, visible,
+      // one-at-a-time queue with a stop button rather than a batch POST — there
+      // is no JSON API for key moves, exactly as there is none for comments.
+      writeGapMs:  1200,  // pause between two variations, so the queue is watchable
+      writeWaitMs: 40000, // local watchdog per variation (the worker's job timer
+                          // does not survive an idle restart — section 19's rule)
+      maxWrites:   60,    // runaway guard on one armed run
     },
 
     // "Show me this course as a tree" (section 24) — see DESIGN-course-tree.md,
@@ -2386,6 +2476,14 @@
         oid: String(oid),
         name: String((v.name || '')).trim(),
         sans: v.moves.map(sanOfMove).filter(Boolean),
+        // Per-ply "is this move quizzed under Study: Key Moves" (section 25).
+        // getList reports the RANGE already expanded - every ply from the move
+        // carrying the low mark to the one carrying the high mark - so the two
+        // marks the edit page stores are recoverable as indexOf/lastIndexOf.
+        // Adding it cost a bump of CONFIG.coverage.cacheKey, which sections 21
+        // and 24 share: a listing written by the old build parses fine and is
+        // silently missing this, which would read as "no key moves anywhere".
+        keys: v.moves.map((m) => (m && m.isKey ? 1 : 0)),
         color: typeof v.color === 'string' ? v.color : '',
         fen: (typeof v.initialFEN === 'string' && v.initialFEN.trim()) || '',
       });
@@ -2471,6 +2569,81 @@
       fen = after;
     }
     return { start, plies, end: fen };
+  }
+
+  /**
+   * A difficult-moves row's accuracy in percent, EXCLUDING the failures that
+   * were not about the move (CONFIG.autoPlay.difficult.ignoreWrongMoves — i.e. the
+   * clock). Top level because TWO features rest on the same number and they
+   * must not be able to disagree about what "difficult" means: section 13b
+   * decides which moves auto-play may replay, section 25 decides which moves
+   * must not be left outside the key range.
+   *
+   * Both halves of the fraction drop the ignored attempts, which the data
+   * supports exactly (sum(wrongMoves.amount) === totalamount held on all 38
+   * rows of the test account). A move whose every failure was a timeout has
+   * never actually been played wrong, so it scores 100.
+   *
+   * Returns null when the row carries no usable counts — a caller must never
+   * read that as 0 %.
+   */
+  function difficultRowAccuracy(row) {
+    const c = difficultRowCounts(row);
+    if (!c) return null;
+    return c.counted > 0 ? (c.successes / c.counted) * 100 : 100;
+  }
+
+  /**
+   * The same rule, as the two numbers it is a ratio of. Section 25c needs them
+   * separately in order to POOL several rows for one position: averaging the
+   * percentages would weight a 9-attempt card the same as a 56-attempt one, and
+   * the whole point of pooling is that the attempts are exchangeable.
+   *
+   * `successes` can legitimately exceed `counted`'s difficulty content when
+   * every failure was ignored - a move with 9 attempts and 3 timeouts scores 6/6
+   * and 100 %, which is the intended reading (it has never been played wrong).
+   */
+  function difficultRowCounts(row) {
+    if (!row) return null;
+    const attempts = Number(row.attempted);
+    const failures = Number(row.totalamount);
+    if (!Number.isFinite(attempts) || !Number.isFinite(failures) || attempts <= 0) return null;
+    let ignored = 0;
+    if (Array.isArray(row.wrongMoves)) {
+      for (const w of row.wrongMoves) {
+        if (w && CONFIG.autoPlay.difficult.ignoreWrongMoves.includes(w.move)) ignored += Number(w.amount) || 0;
+      }
+    }
+    const successes = attempts - failures;
+    return { successes, counted: successes + Math.max(0, failures - ignored) };
+  }
+
+  /**
+   * Where a difficult-moves row sits in its own variation, as a 0-based PLY
+   * index — or -1 when the row cannot be placed.
+   *
+   * `moveId` is the 0-based index of the MOVE PAIR and `color` is which half of
+   * it, both relative to the variation's own first move number: a variation
+   * written "34...Bxf2 35.Kxf2" numbers its first pair 34, so the row for
+   * 35.Kxf2 carries moveId 34. Ground-truthed 2026-08-20 over all 38 rows on
+   * the test account, every one of which then agreed with the SAN at that ply.
+   *
+   * The SAN is VERIFIED rather than assumed, and a mismatch returns -1: this
+   * index decides which move a key range is lowered to cover, and covering the
+   * wrong move is worse than covering none.
+   */
+  function difficultPlyIndex(v, row) {
+    if (!v || !row || !Array.isArray(v.sans)) return -1;
+    const pair = Number(row.moveId);
+    if (!Number.isFinite(pair)) return -1;
+    const start = CloSan && v.fen ? CloSan.parseFen(v.fen) : null;
+    // The variation's own first move number and whose move it is. A custom
+    // start FEN carries both; the standard position is 1/white.
+    const firstNo = start && Number.isFinite(start.fullmove) ? start.fullmove : 1;
+    const startsBlack = start ? start.side === 'b' : false;
+    const ply = (pair - (firstNo - 1)) * 2 + (row.color === 'b' ? 1 : 0) - (startsBlack ? 1 : 0);
+    if (ply < 0 || ply >= v.sans.length) return -1;
+    return v.sans[ply] === row.correctMove ? ply : -1;
   }
 
   /** 'w' | 'b' | null — the side a variation is written for. */
@@ -6313,6 +6486,17 @@
       }
     } else if (job.mode === 'shapes') {
       await driveQuickEditShapes(job, moveEl);
+    } else if (job.mode === 'key') {
+      // Nothing to change => nothing is submitted. Reported as a success with
+      // `noop`, so a fix pass re-run over a course it has already fixed costs
+      // one page load per variation and changes nothing in the course.
+      if (await driveQuickEditKeyMove(job, moveEl, moveEls) === 'already') {
+        chrome.runtime.sendMessage({
+          type: 'clo-quick-edit-result', oid, mode: 'key', ok: true,
+          plyIndex: job.plyIndex, noop: true,
+        }).catch(() => {});
+        return;
+      }
     } else {
       await driveQuickEditComment(job, moveEl);
     }
@@ -6383,22 +6567,56 @@
    * source game rather than the edit page's numbering.
    */
   async function quickEditSelectMove(job, moveEl) {
+    await quickEditSelectMoveEl(moveEl, job.color);
+    const ta = document.querySelector(SELECTORS.editCommentAfter);
+    if (!ta) throw new Error('comment field not found');
+    return ta;
+  }
+
+  /**
+   * The selection itself, without the comment field - mode 'key' (section 25)
+   * selects two different moves in one visit and wants neither textarea.
+   * Everything the comment path relied on still happens here, the board-ready
+   * gate on every call included (idempotent, and instant once it has booted).
+   */
+  async function quickEditSelectMoveEl(moveEl, color) {
     const fenInput = document.querySelector(SELECTORS.fenInput);
     if (!fenInput) throw new Error('edit-page FEN input not found');
     await quickEditWaitBoardReady(fenInput);
 
-    const afterSide = job.color === 'w' ? 'b' : 'w';
-    moveEl.click(); // selects the move; #moveComment follows
+    const afterSide = color === 'w' ? 'b' : 'w';
+    // BY ID, NEVER BY NODE, and re-clicked until it takes. Chessable rebuilds
+    // #interactivePGN shortly after the page boots, which replaces every move
+    // element: a click on the node we were handed can land on one already
+    // detached, and then nothing happens at all. Both halves of this were live
+    // failures on 2026-08-20 - first the click going nowhere (the side check
+    // below passed anyway, because the position a click starts FROM usually
+    // already has the side the target move leaves behind, so the driver read
+    // the wrong move's fields), then the class check never passing because it
+    // was asked of the stale node.
+    //
+    // The proof of selection is Chessable's own `moveActive` class. The side
+    // check stays as a second condition: it is what says the BOARD followed,
+    // not merely the list.
+    const id = moveEl.id;
+    let clicks = 0, lastClick = 0;
     const reached = await quickEditWaitUntil(() => {
+      const live = document.getElementById(id);
+      if (!live) return null;
+      if (!live.classList.contains(SELECTORS.editMoveActiveClass)) {
+        if (clicks < CONFIG.quickEdit.moveClickTries &&
+            Date.now() - lastClick >= CONFIG.quickEdit.moveClickRetryMs) {
+          clicks++; lastClick = Date.now();
+          live.click();
+        }
+        return null;
+      }
       const pos = CloSan.parseFen(fenInput.value);
       return pos && pos.side === afterSide ? fenInput.value : null;
     }, CONFIG.quickEdit.moveSelectTimeoutMs);
     if (!reached) throw new Error('edit board did not reach the selected move');
     await quickEditDelay(CONFIG.quickEdit.settleMs);
-
-    const ta = document.querySelector(SELECTORS.editCommentAfter);
-    if (!ta) throw new Error('comment field not found');
-    return ta;
+    return reached;
   }
 
   /** The stored comment on the target move, verbatim (mode 'load'). Nothing is
@@ -6437,6 +6655,121 @@
 
     const box = document.querySelector(SELECTORS.editVariationOnly);
     if (box && box.checked !== Boolean(job.forThisVariationOnly)) box.click();
+  }
+
+  // --- key moves on the edit page (mode 'key', section 25) -------------------
+  //
+  // Ground-truthed live 2026-08-20, first on the page's own handler (an inline
+  // `$('#myform :checkbox').on('click', ...)`) and then end to end on a real
+  // variation. What that handler does with a CHECK depends on what is already
+  // marked:
+  //
+  //   nothing marked             -> this move becomes the LOW  (the range start)
+  //   a low, and this is later   -> this move becomes the HIGH (the range end)
+  //   a low, and this is at or
+  //   before it                  -> this move becomes the new LOW
+  //
+  // ...where "later" is decided by comparing the move NUMBERS **as strings**, so
+  // move 9 reads as later than move 10. That is Chessable's own bug and not
+  // ours to fix, but it is why this driver NEVER relies on that branch: it takes
+  // the existing mark OFF first, leaving nothing marked, and only then puts the
+  // new one on - the one path through the handler that compares nothing.
+  //
+  // `addVariation()` serialises the whole of `allTheMoves` (each move's `is_key`
+  // included) into #commentsToSubmit, exactly as it does for comments and
+  // arrows, so there is no new save mechanism here and nothing else in the
+  // variation changes.
+  //
+  // 'already' = the mark is already on the target move, so nothing is submitted
+  // at all - which is what makes re-running a fix pass cost nothing.
+  //
+  // IT MOVES A RANGE IN EITHER DIRECTION (section 25b). Lowering is the ordinary
+  // case; RAISING is offered only for a range this extension itself lowered, and
+  // only back to the exact ply it took it from. The recipe is the same either
+  // way, and it is the same recipe precisely BECAUSE it never uses the "is this
+  // move later than the low" branch - which is the one that would have made the
+  // two directions different, and is the one with the string comparison in it.
+
+  async function driveQuickEditKeyMove(job, moveEl, moveEls) {
+    // RE-QUERIED AFTER EVERY SELECTION, never held. Selecting a move runs
+    // Chessable's `pgnMoveClicked`, which ends in `buildMoveMenu()` — the menu
+    // holding this checkbox is rebuilt, so a reference taken before the click
+    // is detached by the time it is pressed. Clicking a detached input toggles
+    // nothing anyone can see and fires no handler, which is exactly what "the
+    // old key move would not come off" looked like on the first live run.
+    const keyBox = () => document.querySelector(SELECTORS.editKeyMoveBox);
+    if (!keyBox()) throw new Error('this edit page has no key-move checkbox');
+
+    const marks = [...document.querySelectorAll(SELECTORS.editKeyMoveMarks)];
+    const idxOf = (el) => moveEls.indexOf(el);
+
+    // TWO marks = a start AND an end. Lowering the start would mean taking the
+    // end off and putting it back, and putting it back goes through exactly the
+    // string comparison above - which can silently turn the END mark into the
+    // START one, and so SHRINK what is quizzed. Refused with a sentence
+    // instead: this feature may never reduce a key range.
+    if (marks.length > 1) {
+      throw new Error('this variation marks both a first and a last key move - ' +
+        'lower its first key move on Chessable\'s own edit page');
+    }
+    // No mark at all is NOT "the range starts at ply 0": it is a variation whose
+    // key moves were never set, where every move is quizzed already. Marking one
+    // would start the range there and take everything before it out.
+    if (!marks.length) return 'already';
+
+    const lowEl = marks[0];
+    const lowIdx = idxOf(lowEl);
+    if (lowIdx < 0) throw new Error('the marked key move is not in the move list');
+    if (lowIdx === job.plyIndex) return 'already';
+    // THE MARK MUST BE WHERE THE JOB WAS PLANNED AGAINST. The report was
+    // computed minutes and several page loads ago, and this write can move a
+    // range in EITHER direction (section 25b) - so "it is already at or before
+    // the target" is no longer a safe reading of a surprise. A range somebody
+    // else has moved since is not the range this job is about; refuse, and let
+    // the next scan plan against what is actually there.
+    if (job.fromPlyIndex != null && lowIdx !== job.fromPlyIndex) {
+      throw new Error('the key range has moved since this was worked out (it now starts at "' +
+        lowEl.id + '") — scan the course again');
+    }
+
+    const lowId = /^(.+)_([wb])_\d+$/.exec(lowEl.id);
+    if (!lowId) throw new Error('unreadable key-move id "' + lowEl.id + '"');
+
+    // 1) take the existing mark off - the handler clears keyMoveLow with it.
+    await quickEditSelectMoveEl(lowEl, lowId[2]);
+    const offBox = keyBox();
+    if (!offBox) throw new Error('the key-move checkbox disappeared');
+    const wasChecked = offBox.checked;
+    if (offBox.checked) offBox.click();
+    const cleared = await quickEditWaitUntil(
+      () => (document.querySelectorAll(SELECTORS.editKeyMoveMarks).length === 0 ? true : null),
+      CONFIG.quickEdit.moveSelectTimeoutMs);
+    if (!cleared) {
+      // The state it actually saw, in the message. This driver runs in a popup
+      // whose console nobody is looking at, so a failure that says only what it
+      // wanted is a failure nobody can diagnose.
+      const now = keyBox();
+      throw new Error('the old key move would not come off (selected ' + lowEl.id +
+        ', box was ' + (wasChecked ? 'checked' : 'UNchecked') +
+        ', is now ' + (now ? (now.checked ? 'checked' : 'unchecked') : 'gone') +
+        ', marks: ' + ([...document.querySelectorAll(SELECTORS.editKeyMoveMarks)]
+          .map((e) => e.id).join(' ') || 'none') + ')');
+    }
+
+    // 2) ...and put the new one on, with nothing left to compare against.
+    await quickEditSelectMoveEl(moveEl, job.color);
+    const onBox = keyBox();
+    if (!onBox) throw new Error('the key-move checkbox disappeared');
+    if (!onBox.checked) onBox.click();
+    const targetId = moveEl.id;
+    const set = await quickEditWaitUntil(() => {
+      const now = [...document.querySelectorAll(SELECTORS.editKeyMoveMarks)];
+      // By id, for quickEditSelectMoveEl's reason: the node may have been
+      // replaced under us since this job started.
+      return now.length === 1 && now[0].id === targetId ? true : null;
+    }, CONFIG.quickEdit.moveSelectTimeoutMs);
+    if (!set) throw new Error('the new key move would not go on');
+    return 'set';
   }
 
   // --- arrows and circles on the edit board (mode 'shapes', section 12b) -----
@@ -9643,23 +9976,14 @@
      */
     function reduceDifficultRow(row) {
       if (!row || row.openingId == null || row.moveId == null) return null;
-      const attempts = Number(row.attempted);
-      const failures = Number(row.totalamount);
-      if (!Number.isFinite(attempts) || !Number.isFinite(failures) || attempts <= 0) return null;
-      let ignored = 0;
-      if (Array.isArray(row.wrongMoves)) {
-        for (const w of row.wrongMoves) {
-          if (w && C.difficult.ignoreWrongMoves.includes(w.move)) ignored += Number(w.amount) || 0;
-        }
-      }
-      const successes = attempts - failures;
-      const realFailures = Math.max(0, failures - ignored);
-      const counted = successes + realFailures;
+      // The accuracy rule itself is top level (difficultRowAccuracy) and shared
+      // with section 25 — two features that must never disagree about which
+      // moves are hard. Null means "no usable counts", never 0%.
+      const acc = difficultRowAccuracy(row);
+      if (acc == null) return null;
       return {
         k: difficultKey(row.openingId, row.moveId),
-        // A move whose every failure was a timeout has nothing left to score
-        // against: it has never actually been played wrong, so it is 100%.
-        acc: counted > 0 ? (successes / counted) * 100 : 100,
+        acc,
         at: parseDifficultDate(row.lastUpdatedNum),
         san: typeof row.correctMove === 'string' ? row.correctMove : '',
         // The position BEFORE the move, four fields — what makes a hard move
@@ -29880,6 +30204,1141 @@
   }
 
   // ==========================================================================
+  // 25) Key moves vs difficult moves (course page) — see DESIGN-key-moves.md
+  // ==========================================================================
+  //
+  // Chessable's own "Auto-calculate key moves" (bookadmin.php?a=quality) marks,
+  // per variation, the ply from which a learner studying **Key Moves Only** is
+  // asked for anything at all; everything before it the trainer plays itself.
+  // The rule it uses is page order: a variation is quizzed from the first move
+  // that is not already covered by a variation listed before it.
+  //
+  // That rule knows nothing about the learner. A move the user gets WRONG again
+  // and again can sit in the silent run-up of every variation that contains it —
+  // played for them, never asked for, invisible to the schedule. This module is
+  // the missing half: it reads the key range back out of the course, reads the
+  // user's own per-move record out of Chessable's Difficult Moves feed, and
+  // lists the moves that are difficult AND outside the range. Then it lowers the
+  // range to cover them, one variation at a time, through the quick-edit driver.
+  //
+  // IT ONLY EVER MOVES A KEY RANGE EARLIER. Never later, never narrower, and it
+  // never touches the end mark. That single invariant is what makes the feature
+  // safe to run on a real course: the worst thing a wrong answer here can do is
+  // quiz MORE than Chessable would have.
+  function initKeyMoves() {
+    const C = CONFIG.keyMoves;
+    // Section 21's host and its two path rules: any /course/<bid>/ view, but
+    // never the chapter's own "Edit Variations" page (the chapter sort's).
+    const COURSE_PATH_RE = /^\/course\/(\d+)(?:\/|$)/;
+    const CHAPTER_EDIT_RE = /^\/course\/\d+\/\d+\/e\/?$/;
+    const KM_PANEL_ID = 'clo-key-moves-panel';
+    const KM_BTN_ID = 'clo-key-moves-launch';
+
+    const km = {
+      bid: null,
+      panel: null, launcher: null, runBtn: null, fixBtn: null, backBtn: null, stopBtn: null,
+      statusEl: null, summaryEl: null, listEl: null, leadSel: null,
+      staleBox: null, allBox: null,
+      open: false,
+      busy: false,          // a scan is running
+      running: false,       // a fix pass is running
+      cancel: false,
+      job: null,            // { oid, plyIndex, resolve } — the write we are waiting on
+      report: null,         // the analysis for km.bid
+      sel: new Set(),       // oids ticked for the fix pass
+      armed: '',            // '' | 'lower' | 'raise' - each button arms separately
+      lead: C.defaultLead,
+      useStale: false,      // also lower where page order says the range is stale
+      spread: false,        // 25c: pool difficulty by position across the course
+      course: null,         // the last scan's inputs, so a toggle needs no refetch
+      rows: null,
+      threshold: 0,
+      showAll: false,       // list every variation, not only the actionable ones
+      carryStatus: '',      // a fix pass's outcome, held across the re-read behind it
+      base: null,           // the baseline store (25b), { "<bid>:<oid>": rec }
+      baseTimer: 0,
+      ours: null,           // is this course the user's own (authorUid)? null = unknown
+    };
+
+    const el = (tag, cls, text) => {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+
+    // --- ply arithmetic ------------------------------------------------------
+    //
+    // Deliberately arithmetic and NOT `walkVariation`. Everything below needs
+    // only "which move number is this ply, and whose is it", which the start
+    // FEN answers outright — so a course with one unplayable line still gets a
+    // full report, and an 80-variation scan costs no move generation at all.
+
+    /** The variation's own first move number, and whether it opens on Black. */
+    function plyBase(v) {
+      const pos = v.fen && typeof CloSan !== 'undefined' ? CloSan.parseFen(v.fen) : null;
+      return {
+        firstNo: pos && Number.isFinite(pos.fullmove) ? pos.fullmove : 1,
+        startsBlack: pos ? pos.side === 'b' : false,
+      };
+    }
+
+    const plyColor = (base, ply) =>
+      ((ply + (base.startsBlack ? 1 : 0)) % 2 === 0 ? 'w' : 'b');
+
+    /**
+     * A key range always OPENS ON A WHOLE MOVE. Ground-truthed 2026-08-20: a
+     * mark written onto Black's 1...a6 came back stored on White's 1.h3, and
+     * every key start observed on either test course is a White ply. So the
+     * proposal is snapped here rather than left for Chessable to snap, for two
+     * reasons: the sentence on screen has to be what will actually happen, and
+     * the driver's "already covered" test compares the stored mark against the
+     * ply we ask for — unsnapped, that test would answer "no" for ever on a
+     * variation already fixed, and every re-run would rewrite it.
+     *
+     * Always EARLIER, so it cannot cost coverage. A variation whose own start
+     * position has Black to move has no earlier half to snap to and stays at 0.
+     */
+    const snapToMove = (base, ply) =>
+      (ply > 0 && plyColor(base, ply) === 'b' ? ply - 1 : ply);
+
+    /** "3.Nc3" / "3...Nc6" — the move as the course itself writes it. */
+    function plyLabel(v, base, ply) {
+      const san = v.sans[ply];
+      if (san === undefined) return '';
+      const no = base.firstNo + Math.floor((ply + (base.startsBlack ? 1 : 0)) / 2);
+      return no + (plyColor(base, ply) === 'w' ? '.' : '...') + san;
+    }
+
+    /**
+     * The stored key range as ply indices, or null when the variation has none.
+     *
+     * getList reports the range ALREADY EXPANDED — every ply from the move
+     * carrying the low mark to the one carrying the high mark — so the two marks
+     * the edit page keeps are recoverable as indexOf/lastIndexOf. A variation
+     * with EVERY ply flagged is reported as low 0, which is the same answer as
+     * "no marks at all" for every purpose here: there is nothing before it to
+     * pull the range back to.
+     */
+    function keyRange(v) {
+      const keys = v.keys;
+      if (!Array.isArray(keys) || !keys.length) return null;
+      const low = keys.indexOf(1);
+      if (low < 0) return { low: -1, high: -1, none: true };
+      return { low, high: keys.lastIndexOf(1), none: false };
+    }
+
+    // --- where the range was before we moved it (25b) ------------------------
+    //
+    // The scenario this exists for: a move is difficult, so the key range is
+    // pulled back to cover it; the user then revises it many times and it stops
+    // being difficult; the range should be able to go BACK. Nothing else in the
+    // course records where it was, and the reconstructed page-order rule (§4)
+    // must never be used for this - its whole known error is "later than
+    // Chessable", which as a RAISE would cut coverage rather than add it.
+    //
+    // So the only thing that is ever raised is a range THIS TOOL LOWERED, back
+    // to exactly the ply it took it from.
+
+    const baseKeyOf = (oid) => String(km.bid) + ':' + String(oid);
+
+    async function loadBaselines() {
+      try {
+        const got = await chrome.storage.local.get(C.baselineKey);
+        km.base = (got && got[C.baselineKey]) || {};
+      } catch (err) {
+        km.base = {};
+        warn('key moves: the baseline store could not be read:', err);
+      }
+    }
+
+    function saveBaselines() {
+      clearTimeout(km.baseTimer);
+      km.baseTimer = setTimeout(() => {
+        km.baseTimer = 0;
+        const all = km.base || {};
+        const keys = Object.keys(all);
+        if (keys.length > C.baselineMax) {
+          keys.sort((a, b) => (all[a].at || 0) - (all[b].at || 0));
+          for (const k of keys.slice(0, keys.length - C.baselineMax)) delete all[k];
+        }
+        chrome.storage.local.set({ [C.baselineKey]: all }).catch((err) => {
+          warn('key moves: the baseline store could not be written:', err);
+        });
+      }, C.baselineSaveMs);
+    }
+
+    const baselineFor = (oid) => (km.base && km.base[baseKeyOf(oid)]) || null;
+
+    /**
+     * After a successful write. `low` is the range's ORIGINAL start and is only
+     * ever written once - lowering the same variation twice must not overwrite
+     * it with the intermediate value, or the range could never get all the way
+     * back. `setTo` is where we just put it, and is what the next scan checks
+     * against: if the mark has since moved to anything else, somebody else owns
+     * this variation now and the record is dropped rather than acted on.
+     */
+    function noteBaseline(entry) {
+      if (!km.base) return;
+      const k = baseKeyOf(entry.oid);
+      const rec = km.base[k];
+      if (entry.targetDir === 'raise') {
+        // All the way back ⇒ there is nothing left to restore. A PARTIAL raise
+        // (something in between is still difficult) keeps the record and just
+        // moves the mark it is tracking.
+        if (!rec || entry.target >= rec.low) delete km.base[k];
+        else rec.setTo = entry.target;
+      } else if (rec) {
+        rec.setTo = entry.target;
+      } else {
+        km.base[k] = { low: entry.low, setTo: entry.target, name: entry.name, at: Date.now() };
+      }
+      saveBaselines();
+    }
+
+    // --- the two reads -------------------------------------------------------
+
+    /**
+     * Chessable's own Difficult Moves feed, raw. Same origin and cookie-borne,
+     * so no host permission and no JWT (section 13b's finding). `lid` is NOT
+     * optional: without the "All Chapters" sentinel the server quietly returns
+     * a subset, and a missing row here reads as "this move is fine".
+     */
+    async function fetchDifficultRows(bid) {
+      const url = new URL(location.origin + CONFIG.autoPlay.difficult.ajaxPath);
+      url.searchParams.set('bid', String(bid));
+      url.searchParams.set('lid', CONFIG.autoPlay.difficult.allChapters);
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), CONFIG.autoPlay.difficult.fetchTimeoutMs);
+      try {
+        const res = await fetch(url.toString(), { signal: ctl.signal });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const body = await res.json();
+        if (!body || !Array.isArray(body.data)) throw new Error('unexpected shape');
+        return body.data;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function readThreshold() {
+      try {
+        const got = await chrome.storage.local.get(CONFIG.autoPlay.difficult.thresholdKey);
+        const n = Number(got && got[CONFIG.autoPlay.difficult.thresholdKey]);
+        if (Number.isFinite(n) && n > 0 && n <= 100) return n;
+      } catch (err) { /* fall through to the default */ }
+      return CONFIG.autoPlay.difficult.defaultThreshold;
+    }
+
+    // --- Chessable's own rule, recomputed ------------------------------------
+
+    /**
+     * Where Chessable's page-order rule WOULD put each variation's key start,
+     * as a ply index. Informational, and only ever allowed to LOWER a stored
+     * range (see `useStale`) — which is what makes the accuracy below enough.
+     *
+     * THE RULE, reconstructed 2026-08-20 from two courses: a published White
+     * one, and a Black one whose key moves were recalculated by Chessable that
+     * day so the answer could not be stale.
+     *
+     *   1. COVERAGE is what earlier variations in page order have already
+     *      shown: for each of them, the ply at which this variation first
+     *      differs, or — when one is a prefix of the other — the whole of the
+     *      shared run. The largest such figure is where the new material
+     *      starts.
+     *   2. Move forward to the first ply of the LEARNER'S own colour, because
+     *      that is the first thing they can actually be asked for.
+     *   3. Then move BACK to the White half of that move pair. Every key start
+     *      observed on either course is a White ply, so the range always opens
+     *      on a whole move — which is also the granularity Chessable's own edit
+     *      page compares at (`det_current[2]` is a move NUMBER).
+     *
+     * Steps 2 and 3 together are why a White course rounds an odd divergence UP
+     * (5 → 6) and a Black course rounds it DOWN (3 → 2): the same two steps, a
+     * different colour in the middle. Reading it as "round to White" alone gets
+     * one of the two courses wrong.
+     *
+     * MEASURED: 71 of 79 on the freshly-calculated course, 58 of 72 on the
+     * published one. EVERY disagreement is a variation Chessable left key from
+     * ply 0 while this predicts something later — model games and annotated
+     * games, which are evidently exempt from the rule by some attribute not in
+     * `getList`. That is the DISCARDED direction: a prediction later than the
+     * stored start is never acted on, so the whole of the known error is
+     * already thrown away before anything is proposed.
+     */
+    function estimateKeyLows(vars) {
+      const out = new Map();
+      for (let i = 0; i < vars.length; i++) {
+        const v = vars[i];
+        if (!v.sans.length) continue;
+        let best = 0, covered = false;
+        for (let j = 0; j < i; j++) {
+          const w = vars[j];
+          if (!w.sans.length || w.fen !== v.fen) continue;
+          const n = Math.min(v.sans.length, w.sans.length);
+          let d = n;   // no difference within the overlap: the whole run is covered
+          for (let k = 0; k < n; k++) { if (v.sans[k] !== w.sans[k]) { d = k; break; } }
+          covered = true;
+          if (d > best) best = d;
+        }
+        if (!covered) { out.set(v.oid, 0); continue; }
+        const base = plyBase(v);
+        const side = sideOf(v.color);
+        let ply = best;
+        if (side) while (ply < v.sans.length && plyColor(base, ply) !== side) ply++;
+        if (ply < v.sans.length && plyColor(base, ply) === 'b') ply--;
+        out.set(v.oid, Math.max(0, Math.min(ply, v.sans.length - 1)));
+      }
+      return out;
+    }
+
+    // --- difficulty by POSITION (25c) ----------------------------------------
+    //
+    // Chessable's record is per CARD: `1...c5` in one variation and `1...c5` in
+    // another are separate histories with separate accuracies, and 68 of the 74
+    // variations that play it on the test course have no record of it at all.
+    // Three reasons a variation can be silent about a move it plays - it was
+    // never failed there, it was failed but stayed above the bar, or (the one
+    // that matters) IT IS NEVER ASKED THERE. A move in a variation's run-up is
+    // played for the user under Key Moves Only, so it cannot fail, so it cannot
+    // appear in that variation's record. The variations this feature most needs
+    // to fix are structurally the least able to produce the evidence for it.
+    //
+    // So: pool every row for the same POSITION and MOVE, and let that verdict
+    // apply everywhere the course reaches that position.
+    //
+    // POOLED, NOT AVERAGED, and that is why `difficultRowCounts` exists: on the
+    // test course `1...c5` has six rows whose own accuracies run 88.9-100 %, and
+    // the pooled figure is 93.6 % over 94 real attempts. Averaging six
+    // percentages would weight nine attempts like fifty-six.
+
+    const posMoveKey = (fen, san) => cacheKey(fen) + '|' + san;
+
+    /** ck+'|'+san → { successes, counted, rows } over the whole course. */
+    function poolByPosition(rows) {
+      const pool = new Map();
+      for (const row of rows) {
+        if (!row || typeof row.fen !== 'string' || !row.fen || !row.correctMove) continue;
+        const c = difficultRowCounts(row);
+        if (!c) continue;
+        const k = posMoveKey(row.fen, row.correctMove);
+        let e = pool.get(k);
+        if (!e) pool.set(k, e = { successes: 0, counted: 0, rows: 0 });
+        e.successes += c.successes;
+        e.counted += c.counted;
+        e.rows++;
+      }
+      return pool;
+    }
+
+    const pooledAccuracy = (e) => (e && e.counted > 0 ? (e.successes / e.counted) * 100 : 100);
+
+    /**
+     * Adds the moves this variation plays that are difficult SOMEWHERE ELSE in
+     * the course, and sharpens the ones it already knows about.
+     *
+     * THE SPREAD CAN ONLY EVER ADD, and the line that guarantees it is
+     * `if (acc >= threshold) continue` — a pooled figure at or above the bar
+     * leaves this variation's own record completely alone. That matters because
+     * pooling raises a move above the bar as readily as it drops one below it:
+     * `1...c5` on the test course has a row at 88.9 % that pools to 93.6 % over
+     * 94 attempts, and a checkbox called "treat a move as difficult everywhere
+     * it occurs" must not quietly WITHDRAW a lowering the user could already see.
+     *
+     * `min(own, pooled)` below is a smaller matter and only ever decides the
+     * figure DISPLAYED when both are under the bar: either way the move is in
+     * `hard`, so the proposal is identical. The worse of the two is shown
+     * because it is the one that argues for the range being where it is.
+     *
+     * Positions are WALKED with CloSan from the variation's own start, section
+     * 21's rule and for section 21's reason. Ground-truthed 2026-08-20: the
+     * feed's own `fen` is exactly the four-field position before the move, and
+     * it agreed with the course's per-ply positions on all 30 rows.
+     *
+     * A variation whose SANs will not replay is left with its own records only,
+     * and is counted so the panel can say so.
+     */
+    function spreadByPosition(v, hard, pool, threshold) {
+      const w = walkVariation(v);
+      if (!w) return false;
+      for (let i = 0; i < w.plies.length; i++) {
+        const e = pool.get(posMoveKey(w.plies[i].before, w.plies[i].san));
+        if (!e) continue;
+        const acc = pooledAccuracy(e);
+        if (acc >= threshold) continue;
+        const own = hard.find((h) => h.ply === i);
+        if (!own) {
+          hard.push({ ply: i, san: v.sans[i], acc, attempts: 0, spread: true, rows: e.rows, pooled: acc });
+        } else {
+          own.pooled = acc;
+          own.rows = e.rows;
+          if (acc < own.acc) own.acc = acc;
+        }
+      }
+      hard.sort((a, b) => a.ply - b.ply);
+      return true;
+    }
+
+    // --- the analysis --------------------------------------------------------
+
+    /**
+     * One entry per variation that has something to say. `hard` is every
+     * difficult move in it; `outside` is the subset the key range does not
+     * reach, which is the whole point of the feature; `tail` is the subset
+     * sitting after the range's END, which lowering cannot fix and which is
+     * therefore reported and never acted on.
+     */
+    async function analyse(course, rows, threshold, onProgress) {
+      const byOid = new Map();
+      for (const v of course.vars) byOid.set(String(v.oid), v);
+      const estimates = estimateKeyLows(course.vars);
+
+      const hardByOid = new Map();
+      const stale = [];   // baseline records superseded by somebody else's edit
+      let unmatched = 0, hardTotal = 0, listed = 0;
+      for (const row of rows) {
+        listed++;
+        const v = byOid.get(String(row && row.openingId));
+        if (!v) { unmatched++; continue; }
+        const ply = difficultPlyIndex(v, row);
+        if (ply < 0) { unmatched++; continue; }
+        const acc = difficultRowAccuracy(row);
+        if (acc == null) { unmatched++; continue; }
+        if (acc >= threshold) continue;
+        hardTotal++;
+        let list = hardByOid.get(v.oid);
+        if (!list) hardByOid.set(v.oid, list = []);
+        list.push({ ply, san: v.sans[ply], acc, attempts: Number(row.attempted) || 0 });
+      }
+
+      // 25c. Built from EVERY row, not only the ones below the bar: a row that
+      // is fine on its own can still pull a pooled figure down, and a pool made
+      // of the failures alone would not be a pool of the attempts.
+      const pool = km.spread ? poolByPosition(rows) : null;
+      let spreadPositions = 0;
+      if (pool) {
+        for (const e of pool.values()) if (pooledAccuracy(e) < threshold) spreadPositions++;
+      }
+      let spreadAdded = 0, spreadVars = 0, unwalkable = 0;
+
+      const entries = [];
+      let seen = 0;
+      for (const v of course.vars) {
+        if (!v.sans.length) continue;
+        const range = keyRange(v);
+        const base = plyBase(v);
+        const hard = (hardByOid.get(v.oid) || []).sort((a, b) => a.ply - b.ply);
+        if (pool) {
+          // Only the spread path yields: without it the whole analysis is a few
+          // milliseconds and the macrotasks would cost more than the work.
+          if (++seen % C.chunkVars === 0) {
+            await sleepMs(0);
+            if (onProgress) onProgress(seen, course.vars.length);
+          }
+          const before = hard.length;
+          if (spreadByPosition(v, hard, pool, threshold)) {
+            const gained = hard.length - before;
+            spreadAdded += gained;
+            if (gained) spreadVars++;
+          } else unwalkable++;
+        }
+        const est = estimates.has(v.oid) ? estimates.get(v.oid) : null;
+        const low = range && !range.none ? range.low : 0;
+        const high = range && !range.none ? range.high : v.sans.length - 1;
+        const outside = hard.filter((h) => h.ply < low);
+        const tail = hard.filter((h) => h.ply > high);
+        // The estimate only ever counts when it is EARLIER than what is stored,
+        // and only when the user asked for it (see the doc comment above).
+        const staleLow = est != null && est < low ? est : null;
+        const bl = baselineFor(v.oid);
+        // A record whose mark is no longer where we left it belongs to a key
+        // range somebody else has moved since - Chessable's own recalculation,
+        // or the edit page by hand. It cannot say anything true about this
+        // range any more, so it is dropped rather than acted on.
+        if (bl && bl.setTo !== low) { stale.push(baseKeyOf(v.oid)); }
+        entries.push({
+          oid: v.oid,
+          name: (v.name || '(unnamed)').slice(0, C.maxNameLen),
+          plies: v.sans.length,
+          low, high, noKeys: !range || range.none,
+          endMark: high < v.sans.length - 1,
+          base, sans: v.sans,
+          hard, outside, tail, staleLow,
+          baseLow: bl && bl.setTo === low && bl.low > low ? bl.low : null,
+          lowLabel: plyLabel(v, base, low),
+        });
+      }
+      for (const k of stale) delete km.base[k];
+      if (stale.length) saveBaselines();
+
+      for (const e of entries) propose(e);
+      entries.sort((a, b) => (b.outside.length - a.outside.length) ||
+        (b.hard.length - a.hard.length) || a.name.localeCompare(b.name));
+      if (unwalkable) {
+        warn('key moves: ' + unwalkable + ' variation(s) would not replay, so ' +
+          'difficulty could not be spread into them by position');
+      }
+      return {
+        bid: km.bid, name: course.name, vars: course.vars.length,
+        listed, unmatched, hardTotal, threshold, entries,
+        spread: Boolean(pool), spreadPositions, spreadAdded, spreadVars, unwalkable,
+        actionable: entries.filter((e) => e.target != null),
+      };
+    }
+
+    /**
+     * Where this variation's key range SHOULD start, and therefore whether to
+     * offer a move and in which direction. Writes `target` / `targetDir` (plus
+     * the label, SAN and colour the driver needs) onto the entry.
+     *
+     * Two numbers meet here:
+     *
+     *  * `needed` - how far back DIFFICULTY says the range has to reach: the
+     *    earliest difficult move in the whole variation, minus the lead. Not
+     *    merely the ones currently outside: once a range can be raised again,
+     *    the moves presently INSIDE it are exactly what stops it going all the
+     *    way back, so they have to be in the comparison. With no baseline the
+     *    two readings are identical - anything at or after `low` loses to `low`
+     *    in the `min` below - which is why lowering behaves as it always did.
+     *
+     *  * `ideal` - where it would sit with no difficulty pressure at all. That
+     *    is `low` for a range this tool has never touched (so it can only ever
+     *    be LOWERED, §2's invariant), and the recorded original for one it has
+     *    (so it can go back to exactly where it came from, and no further).
+     *
+     * A variation carrying an END mark is refused outright: putting that mark
+     * back goes through Chessable's own comparison of move numbers as strings,
+     * which can turn it into the START mark and shrink the range (§5). The row
+     * explains itself instead of being offered and then failing.
+     */
+    function propose(e) {
+      e.target = null;
+      e.targetDir = '';
+      e.targetLabel = '';
+      e.targetSan = '';
+      e.targetColor = '';
+      if (e.endMark) return;
+
+      let needed = null;
+      if (e.hard.length) needed = Math.max(0, e.hard[0].ply - km.lead);
+      if (km.useStale && e.staleLow != null) {
+        needed = needed == null ? e.staleLow : Math.min(needed, e.staleLow);
+      }
+      const ideal = e.baseLow != null ? e.baseLow : e.low;
+      let want = snapToMove(e.base, needed == null ? ideal : Math.min(ideal, needed));
+      if (want === e.low) return;
+
+      e.target = want;
+      e.targetDir = want < e.low ? 'lower' : 'raise';
+      e.targetLabel = plyLabel(e, e.base, want);
+      e.targetSan = e.sans[want];
+      e.targetColor = plyColor(e.base, want);
+    }
+
+    // --- scanning ------------------------------------------------------------
+
+    async function runScan() {
+      if (km.busy || km.running) return;
+      const bid = km.bid;
+      if (!bid) return;
+      const cr = chessableCreds();
+      if (!cr) { setStatus('no Chessable session found — reload the page', 'warn'); return; }
+      km.busy = true;
+      setStatus('Reading the course…');
+      render();
+      try {
+        // Never cached: key moves are exactly what this feature changes, and a
+        // 12 h old listing would report a fix that has already been applied.
+        const [course, rows, threshold] = await Promise.all([
+          fetchCourse(bid, cr, false),
+          fetchDifficultRows(bid).catch((err) => {
+            warn('key moves: the difficult-moves feed could not be read:', err);
+            return null;
+          }),
+          readThreshold(),
+        ]);
+        if (km.bid !== bid) return;
+        if (!rows) {
+          setStatus('Chessable\'s difficult-moves record could not be read — ' +
+            'nothing can be judged without it', 'warn');
+          km.report = null;
+          return;
+        }
+        // Kept so the 25c toggle can re-derive without a second 180 KB read.
+        km.course = course;
+        km.rows = rows;
+        km.threshold = threshold;
+        km.report = await analyse(course, rows, threshold, (i, n) => {
+          setStatus(`Pooling difficulty by position — ${i} of ${n} variation(s)…`);
+        });
+        if (km.bid !== bid) return;
+        km.sel = new Set(km.report.actionable.map((e) => e.oid));
+        km.armed = '';
+        // Authorship, for the same reason section 19c asks: a course the user
+        // did not write cannot be edited, and finding that out from a driver
+        // window that fails to boot is a poor way to be told.
+        chessableBooksOnce(cr).then((books) => {
+          const b = books.find((x) => x.bid === String(bid));
+          km.ours = b ? Boolean(b.ours) : null;
+          render();
+        }).catch(() => {});
+        setStatus(km.carryStatus || '', '');
+        km.carryStatus = '';
+        log('key moves:', km.report.name, '—', km.report.vars, 'variation(s),',
+          km.report.hardTotal, 'difficult move(s) below', threshold + '%,',
+          km.report.actionable.filter((e) => e.targetDir === 'lower').length, 'to lower,',
+          km.report.actionable.filter((e) => e.targetDir === 'raise').length, 'to restore' +
+          (km.report.unmatched ? ' (' + km.report.unmatched + ' feed row(s) not placed)' : ''));
+      } catch (err) {
+        warn('key moves: scan failed:', err);
+        setStatus(String((err && err.message) || err), 'warn');
+      } finally {
+        km.busy = false;
+        // renderList() is NOT part of render(): render() runs on every 500 ms
+        // tick and redrawing the list there would fight the user's scroll
+        // position and the checkbox they are in the middle of ticking (section
+        // 21's split, for section 21's reason). So every place that changes
+        // WHAT is in the list has to say so — here, and in reanalyse().
+        renderList();
+        render();
+      }
+    }
+
+    // --- writing -------------------------------------------------------------
+
+    /**
+     * One variation, one quick-edit driver visit. The worker runs ONE job at a
+     * time, so this queue is strictly sequential — which is also what makes it
+     * watchable and stoppable, and it is the only honest shape available: there
+     * is no JSON API for key moves, exactly as there is none for comments.
+     *
+     * The local watchdog is section 19's rule: the worker's own 25 s job timer
+     * does not survive an idle restart, so a result that never comes back must
+     * still end this wait.
+     */
+    function writeOne(entry) {
+      return new Promise((resolve) => {
+        const job = {
+          oid: String(entry.oid), plyIndex: entry.target, done: false,
+          finish(result) {
+            if (job.done) return;
+            job.done = true;
+            clearTimeout(job.timer);
+            if (km.job === job) km.job = null;
+            resolve(result);
+          },
+        };
+        job.timer = setTimeout(() => job.finish({ ok: false, error: 'timed out' }), C.writeWaitMs);
+        km.job = job;
+        try {
+          chrome.runtime.sendMessage({
+            type: 'clo-quick-edit-run',
+            mode: 'key',
+            oid: job.oid,
+            bid: String(km.bid),
+            plyIndex: entry.target,
+            san: entry.targetSan,
+            color: entry.targetColor,
+            // Where the mark is EXPECTED to be right now. The driver refuses
+            // when it is anywhere else - the report was computed some minutes
+            // and several page loads ago, and a range somebody has moved since
+            // is not the range this job was planned against. It is also what
+            // makes a job idempotent: equal means "already there", nothing is
+            // submitted, and re-running a pass costs one page load.
+            fromPlyIndex: entry.low,
+            win: popupDriverBounds(km.fixBtn),
+          }).catch((err) => job.finish({ ok: false, error: String((err && err.message) || err) }));
+        } catch (err) {
+          job.finish({ ok: false, error: 'the extension was reloaded — reload this page' });
+        }
+      });
+    }
+
+    /** Everything ticked that moves in this direction. The two buttons arm and
+     *  fire separately on purpose: lowering only ever ADDS to what is quizzed
+     *  and raising only ever takes away, so one armed press must never mean
+     *  both (DESIGN-key-moves.md §8). */
+    const pickedFor = (dir) => (km.report
+      ? km.report.actionable.filter((e) => e.targetDir === dir && km.sel.has(e.oid))
+      : []);
+
+    async function runFixes(dir) {
+      if (km.running || km.busy || !km.report) return;
+      const picked = pickedFor(dir);
+      if (!picked.length) { setStatus('Nothing ticked.', 'warn'); return; }
+      if (picked.length > C.maxWrites) {
+        setStatus(`That is ${picked.length} variations — untick some (the cap is ` +
+          `${C.maxWrites} in one run).`, 'warn');
+        return;
+      }
+      km.running = true;
+      km.cancel = false;
+      km.armed = '';
+      let done = 0, noop = 0;
+      const failed = [];
+      try {
+        for (const entry of picked) {
+          if (km.cancel) break;
+          setStatus(`${dir === 'raise' ? 'Restoring' : 'Lowering'} ` +
+            `${done + noop + failed.length + 1} of ${picked.length}: ` +
+            `${entry.name} → ${entry.targetLabel}…`);
+          render();
+          const res = await writeOne(entry);
+          if (res && res.ok) {
+            if (res.noop) noop++;
+            else { done++; noteBaseline(entry); }
+          } else failed.push(entry.name + ' — ' + ((res && res.error) || 'failed'));
+          if (km.cancel) break;
+          await sleepMs(C.writeGapMs);
+        }
+      } finally {
+        km.running = false;
+        km.job = null;
+      }
+      const parts = [];
+      if (done) parts.push(done + (dir === 'raise' ? ' restored' : ' lowered'));
+      if (noop) parts.push(noop + ' already covered');
+      if (failed.length) parts.push(failed.length + ' failed');
+      if (km.cancel) parts.push('stopped');
+      setStatus(parts.join(' · ') || 'Nothing to do.', failed.length ? 'warn' : '');
+      if (failed.length) warn('key moves: variations that could not be changed:', failed.join(' | '));
+      render();
+      // The listing we read this report out of is now wrong about exactly the
+      // thing it reported, so drop it and read the course again rather than
+      // trusting our own model of what we wrote — section 21's discipline.
+      if (done) {
+        await dropCourseCache(String(km.bid));
+        // The outcome has to SURVIVE the re-read: the scan's own status writes
+        // clear the line, and "4 changed" vanishing the moment the list empties
+        // leaves the user with no confirmation that anything happened at all.
+        km.carryStatus = parts.join(' · ');
+        await runScan();
+      }
+    }
+
+    chrome.runtime.onMessage.addListener((msg) => {
+      // Three other listeners share this message; each ignores what is not its
+      // own. Ours is mode 'key' plus a matching oid AND ply — a stale reply from
+      // a job we already gave up on must not end the one running now.
+      if (!msg || msg.type !== 'clo-quick-edit-result' || msg.mode !== 'key') return;
+      const job = km.job;
+      if (!job || String(msg.oid) !== job.oid) return;
+      if (msg.plyIndex != null && msg.plyIndex !== job.plyIndex) return;
+      job.finish({ ok: Boolean(msg.ok), noop: Boolean(msg.noop), error: msg.error });
+    });
+
+    // --- UI ------------------------------------------------------------------
+
+    function setStatus(text, kind) {
+      if (!km.statusEl) return;
+      km.statusEl.textContent = text || '';
+      km.statusEl.hidden = !text;
+      km.statusEl.className = 'clo-km-status' + (kind ? ' clo-km-status--' + kind : '');
+    }
+
+    const pct = (n) => (Math.round(n * 10) / 10) + '%';
+
+    function renderList() {
+      if (!km.listEl) return;
+      km.listEl.textContent = '';
+      const rep = km.report;
+      if (!rep) return;
+      const rows = km.showAll
+        ? rep.entries.filter((e) => e.hard.length || e.target != null)
+        : rep.entries.filter((e) => e.target != null || e.tail.length ||
+            (e.endMark && e.outside.length));
+      if (!rows.length) {
+        km.listEl.append(el('div', 'clo-km-empty',
+          km.showAll
+            ? 'No difficult moves recorded in this course yet.'
+            : 'Every difficult move in this course is already inside its key range.'));
+        return;
+      }
+      for (const e of rows) {
+        const row = el('div', 'clo-km-row' + (e.target == null ? ' clo-km-row--info' : '') +
+          (e.targetDir === 'raise' ? ' clo-km-row--raise' : ''));
+
+        const head = el('label', 'clo-km-head');
+        if (e.target != null) {
+          const box = el('input', 'clo-km-tick');
+          box.type = 'checkbox';
+          box.checked = km.sel.has(e.oid);
+          box.addEventListener('change', () => {
+            if (box.checked) km.sel.add(e.oid); else km.sel.delete(e.oid);
+            km.armed = '';
+            render();
+          });
+          head.append(box);
+        } else {
+          head.append(el('span', 'clo-km-tick clo-km-tick--none'));
+        }
+        head.append(el('span', 'clo-km-name', e.name));
+        head.append(el('span', 'clo-km-count' + (e.targetDir === 'raise' ? ' clo-km-count--back' : ''),
+          e.targetDir === 'raise' ? 'can go back'
+            : (e.outside.length ? e.outside.length + ' outside'
+              : (e.tail.length ? 'after the end' : ''))));
+        row.append(head);
+
+        const detail = el('div', 'clo-km-detail');
+        detail.append(el('span', 'clo-km-key',
+          e.noKeys ? 'no key moves set' : 'key moves start ' + e.lowLabel));
+        for (const h of e.hard) {
+          const inside = h.ply >= e.low && h.ply <= e.high;
+          const chip = el('span', 'clo-km-move' + (inside ? '' : ' clo-km-move--out') +
+            (h.spread ? ' clo-km-move--spread' : ''),
+            plyLabel(e, e.base, h.ply) + ' ' + pct(h.acc));
+          const where = inside
+            ? 'inside the key range — this move is already asked for'
+            : (h.ply > e.high
+              ? 'after the LAST key move: lowering the start cannot reach this one'
+              : 'before the first key move — never asked for under Key Moves Only');
+          // A move with no record of its own in THIS variation has to say so, or
+          // the percentage looks like a measurement of a card that has none.
+          chip.title = h.spread
+            ? where + '\nThis variation has no record of this move. ' +
+              pct(h.acc) + ' is pooled over ' + h.rows + ' record(s) of the same ' +
+              'position elsewhere in the course.'
+            : (h.pooled != null && h.rows > 1
+              ? where + '\nThis variation’s own record; ' + pct(h.pooled) +
+                ' pooled over ' + h.rows + ' record(s) of the same position.'
+              : where);
+          detail.append(chip);
+        }
+        if (e.staleLow != null) {
+          const chip = el('span', 'clo-km-stale', 'page order says ' + plyLabel(e, e.base, e.staleLow));
+          chip.title = 'Chessable’s own page-order rule, recomputed here, would start this ' +
+            'variation earlier than it currently does — an estimate, so it is only ever used to ' +
+            'lower a range, never to raise one.';
+          detail.append(chip);
+        }
+        row.append(detail);
+
+        if (e.targetDir === 'raise') {
+          const back = el('div', 'clo-km-fix clo-km-fix--back',
+            '→ move the key moves back to ' + e.targetLabel +
+            (e.baseLow != null && e.target < e.baseLow
+              ? ' (part of the way: ' + plyLabel(e, e.base, e.baseLow) +
+                ' is still held back by a difficult move)'
+              : ' — where they were before this lowered them'));
+          row.append(back);
+        } else if (e.target != null) {
+          row.append(el('div', 'clo-km-fix', '→ start the key moves at ' + e.targetLabel));
+        } else if (e.endMark) {
+          row.append(el('div', 'clo-km-fix clo-km-fix--no',
+            'this variation also marks a LAST key move — change it on Chessable’s edit page'));
+        } else if (e.tail.length) {
+          row.append(el('div', 'clo-km-fix clo-km-fix--no',
+            'this move is after the last key move — lowering the start cannot reach it'));
+        }
+        km.listEl.append(row);
+      }
+    }
+
+    function render() {
+      if (!km.panel) return;
+      km.panel.hidden = !km.open;
+      km.launcher.hidden = km.open;
+      if (!km.open) return;
+
+      km.runBtn.textContent = km.busy ? 'Reading…' : (km.report ? 'Scan again' : 'Scan this course');
+      km.runBtn.disabled = km.busy || km.running;
+      km.leadSel.disabled = km.busy || km.running;
+      km.staleBox.disabled = km.busy || km.running;
+      km.spreadBox.disabled = km.busy || km.running;
+
+      const rep = km.report;
+      km.summaryEl.hidden = !rep;
+      const lower = rep ? rep.actionable.filter((e) => e.targetDir === 'lower') : [];
+      const raise = rep ? rep.actionable.filter((e) => e.targetDir === 'raise') : [];
+      if (rep) {
+        const bits = [
+          rep.vars + ' variation(s)',
+          rep.hardTotal + ' difficult move(s) below ' + rep.threshold + '%',
+        ];
+        bits.push(lower.length + ' to lower');
+        if (raise.length) bits.push(raise.length + ' to restore');
+        if (rep.unmatched) bits.push(rep.unmatched + ' record(s) not placed');
+        if (km.ours === false) bits.push('NOT your course — it cannot be edited');
+        km.summaryEl.textContent = bits.join(' · ');
+      }
+      // 25c's own line, and it is the "show the count before arming" one: with
+      // the spread on, the number of variations a press would touch can go from
+      // five to seventy, and that has to be readable BEFORE the arming press
+      // rather than inside the sentence it produces.
+      km.spreadEl.hidden = !rep || !rep.spread;
+      if (rep && rep.spread) {
+        km.spreadEl.textContent = rep.spreadPositions
+          ? `Spread by position: ${rep.spreadPositions} position(s) below the bar, ` +
+            `adding ${rep.spreadAdded} move(s) across ${rep.spreadVars} variation(s)` +
+            (rep.unwalkable ? ` · ${rep.unwalkable} would not replay` : '')
+          : 'Spread by position: nothing pools below the bar.';
+      }
+
+      const setBtn = (btn, dir, idleText, n) => {
+        btn.hidden = !rep || !n;
+        btn.disabled = km.running || km.busy || !pickedFor(dir).length || km.ours === false;
+        const picked = pickedFor(dir).length;
+        btn.textContent = km.running && km.armed === ''
+          ? 'Working…'
+          : (km.armed === dir
+            ? `Press again to change ${picked} variation(s)`
+            : `${idleText} (${picked})`);
+        btn.classList.toggle('clo-km-btn--armed', km.armed === dir && !km.running);
+      };
+      setBtn(km.fixBtn, 'lower', 'Lower key moves', lower.length);
+      setBtn(km.backBtn, 'raise', 'Restore key moves', raise.length);
+      km.stopBtn.hidden = !km.running;
+    }
+
+    function buildPanel() {
+      const panel = el('div', 'clo-km');
+      panel.id = KM_PANEL_ID;
+
+      const head = el('div', 'clo-km-head-bar');
+      head.append(el('span', 'clo-km-title', 'Key moves & difficult moves'));
+      const runBtn = el('button', 'clo-km-btn', 'Scan this course');
+      runBtn.type = 'button';
+      runBtn.addEventListener('click', () => runScan());
+      const close = el('button', 'clo-km-x', '×');
+      close.type = 'button';
+      close.title = 'Close';
+      close.addEventListener('click', () => { km.open = false; km.armed = ''; render(); });
+      head.append(runBtn, close);
+
+      const body = el('div', 'clo-km-body');
+      const statusEl = el('div', 'clo-km-status');
+      statusEl.hidden = true;
+      const summaryEl = el('div', 'clo-km-summary');
+      summaryEl.hidden = true;
+      const spreadEl = el('div', 'clo-km-spread');
+      spreadEl.hidden = true;
+
+      const opts = el('div', 'clo-km-opts');
+      const leadLab = el('label', 'clo-km-opt');
+      leadLab.append(el('span', '', 'Start at '));
+      const leadSel = el('select', 'clo-km-sel');
+      for (let i = 0; i <= C.maxLead; i++) {
+        const o = el('option', '', i === 0 ? 'the difficult move' :
+          (i === 1 ? 'one ply earlier' : i + ' plies earlier'));
+        o.value = String(i);
+        leadSel.append(o);
+      }
+      leadSel.value = String(km.lead);
+      leadSel.addEventListener('change', () => {
+        km.lead = Number(leadSel.value) || 0;
+        chrome.storage.local.set({ [C.leadKey]: km.lead }).catch(() => {});
+        reanalyse();
+      });
+      leadLab.append(leadSel);
+
+      const staleLab = el('label', 'clo-km-opt');
+      const staleBox = el('input');
+      staleBox.type = 'checkbox';
+      staleBox.addEventListener('change', () => { km.useStale = staleBox.checked; reanalyse(); });
+      staleLab.append(staleBox, el('span', '', 'also lower where the page order has moved on'));
+      staleLab.title = 'Recomputes Chessable’s own page-order rule and lowers a range that ' +
+        'starts later than that rule says it should — which happens when variations were added ' +
+        'or reordered after the last "Auto-calculate key moves" run. An estimate: it can only ' +
+        'ever lower a range, never raise one.';
+
+      const spreadLab = el('label', 'clo-km-opt');
+      const spreadBox = el('input');
+      spreadBox.type = 'checkbox';
+      spreadBox.addEventListener('change', () => {
+        km.spread = spreadBox.checked;
+        chrome.storage.local.set({ [C.spreadKey]: km.spread }).catch(() => {});
+        respread();
+      });
+      spreadLab.append(spreadBox,
+        el('span', '', 'treat a move as difficult everywhere it occurs'));
+      spreadLab.title = 'Chessable keeps a separate record per variation, so the same move in ' +
+        'the same position can be difficult in one line and unrecorded in twenty others — and a ' +
+        'move in a variation’s run-up is never asked there, so it can never be recorded at all. ' +
+        'This pools every record for a position and applies the verdict wherever the course ' +
+        'reaches it. It can only ever ADD moves, never withdraw one.';
+
+      const allLab = el('label', 'clo-km-opt');
+      const allBox = el('input');
+      allBox.type = 'checkbox';
+      allBox.addEventListener('change', () => { km.showAll = allBox.checked; renderList(); });
+      allLab.append(allBox, el('span', '', 'show every variation with a difficult move'));
+
+      opts.append(leadLab, spreadLab, staleLab, allLab);
+
+      const listEl = el('div', 'clo-km-list');
+
+      const foot = el('div', 'clo-km-foot');
+      const fixBtn = el('button', 'clo-km-btn clo-km-btn--go', 'Lower key moves (0)');
+      fixBtn.type = 'button';
+      fixBtn.hidden = true;
+      const backBtn = el('button', 'clo-km-btn clo-km-btn--back', 'Restore key moves (0)');
+      backBtn.type = 'button';
+      backBtn.hidden = true;
+      backBtn.title = 'Put each range back where it was before a difficult move pulled it ' +
+        'earlier. Only ranges this panel moved can go back, and only to exactly the ply they ' +
+        'came from.';
+      backBtn.addEventListener('click', () => {
+        if (km.armed !== 'raise') { km.armed = 'raise'; render(); return; }
+        runFixes('raise');
+      });
+      // TWO PRESSES, section 19c's rule and for its reason: this writes to the
+      // user's own course, once per variation, through a window that takes over
+      // the screen for a few seconds each time. The arming press is what names
+      // the number, so nothing can change between the sentence and the write.
+      fixBtn.addEventListener('click', () => {
+        if (km.armed !== 'lower') { km.armed = 'lower'; render(); return; }
+        runFixes('lower');
+      });
+      const stopBtn = el('button', 'clo-km-btn clo-km-btn--stop', 'Stop');
+      stopBtn.type = 'button';
+      stopBtn.hidden = true;
+      stopBtn.addEventListener('click', () => {
+        km.cancel = true;
+        setStatus('Stopping after this variation…', 'warn');
+      });
+      foot.append(fixBtn, backBtn, stopBtn);
+
+      body.append(statusEl, summaryEl, spreadEl, opts, listEl, foot);
+      panel.append(head, body);
+      document.body.appendChild(panel);
+      Object.assign(km, {
+        panel, statusEl, summaryEl, spreadEl, listEl, runBtn, fixBtn, backBtn, stopBtn,
+        leadSel, staleBox, allBox, spreadBox,
+      });
+      spreadBox.checked = km.spread;
+    }
+
+    /** Re-derive the report from what is already in hand — the two settings
+     *  change only which plies are proposed, never what was read. */
+    function reanalyse() {
+      const rep = km.report;
+      if (!rep || km.busy || km.running) { render(); return; }
+      for (const e of rep.entries) propose(e);
+      rep.actionable = rep.entries.filter((e) => e.target != null);
+      // Everything actionable is re-ticked. The two settings change which
+      // variations HAVE a proposal at all, so carrying a stale selection across
+      // would leave rows ticked whose proposal no longer exists and rows
+      // unticked that only just gained one.
+      km.sel = new Set(rep.actionable.map((e) => e.oid));
+      km.armed = '';
+      renderList();
+      render();
+    }
+
+    /**
+     * The 25c toggle changes WHICH MOVES ARE DIFFICULT, not merely where a range
+     * should sit, so `reanalyse()` is not enough — the whole analysis is redone.
+     * From the cached course and rows, so it costs no fetch: the answer is a
+     * different reading of the same two reads, and a scan the user did not ask
+     * for would also silently discard the ticks they had set.
+     */
+    async function respread() {
+      if (!km.course || !km.rows || km.busy || km.running) { render(); return; }
+      const bid = km.bid;
+      km.busy = true;
+      setStatus(km.spread ? 'Pooling difficulty by position…' : '');
+      render();
+      try {
+        const report = await analyse(km.course, km.rows, km.threshold, (i, n) => {
+          setStatus(`Pooling difficulty by position — ${i} of ${n} variation(s)…`);
+        });
+        if (km.bid !== bid) return;
+        km.report = report;
+        km.sel = new Set(report.actionable.map((e) => e.oid));
+        km.armed = '';
+        setStatus('', '');
+        if (report.spread) {
+          log('key moves: spread by position —', report.spreadPositions, 'hard position(s),',
+            report.spreadAdded, 'occurrence(s) in', report.spreadVars, 'variation(s)' +
+            (report.unwalkable ? ' (' + report.unwalkable + ' would not replay)' : ''));
+        }
+      } catch (err) {
+        warn('key moves: pooling failed:', err);
+        setStatus(String((err && err.message) || err), 'warn');
+      } finally {
+        km.busy = false;
+        renderList();
+        render();
+      }
+    }
+    function buildLauncher() {
+      const btn = el('button', 'clo-km-launch', 'Key moves');
+      btn.id = KM_BTN_ID;
+      btn.type = 'button';
+      btn.title = 'Which moves you actually get wrong are being skipped by ' +
+        '"Key Moves Only" — and lower each variation’s key range to cover them.';
+      btn.addEventListener('click', () => {
+        km.open = true;
+        render();
+        if (!km.report && !km.busy) runScan();
+      });
+      document.body.appendChild(btn);
+      km.launcher = btn;
+    }
+
+    function mount() {
+      for (const id of [KM_PANEL_ID, KM_BTN_ID]) {
+        const stale = document.getElementById(id);
+        if (stale) stale.remove(); // defensive: no duplicates across re-inits
+      }
+      buildLauncher();
+      buildPanel();
+      renderList();
+      render();
+    }
+
+    function tick() {
+      const m = CHAPTER_EDIT_RE.test(location.pathname)
+        ? null : COURSE_PATH_RE.exec(location.pathname);
+      if (!m) {
+        if (km.panel) { km.panel.hidden = true; km.launcher.hidden = true; }
+        return;
+      }
+      const fresh = !km.panel || !km.panel.isConnected || !km.launcher.isConnected;
+      if (km.bid !== m[1]) {
+        // SPA-switched to another course: a report about the old one is not a
+        // report about this one, and a fix pass in flight keeps its own bid.
+        km.bid = m[1];
+        km.report = null;
+        km.course = null;
+        km.rows = null;
+        km.sel.clear();
+        km.armed = '';
+        km.ours = null;
+        if (!fresh) { setStatus('', ''); renderList(); }
+      }
+      if (fresh) { mount(); return; }
+      render();
+    }
+
+    loadBaselines();
+    chrome.storage.local.get([C.leadKey, C.spreadKey]).then((got) => {
+      const n = Number(got && got[C.leadKey]);
+      if (Number.isFinite(n) && n >= 0 && n <= C.maxLead) {
+        km.lead = n;
+        if (km.leadSel) km.leadSel.value = String(n);
+      }
+      km.spread = Boolean(got && got[C.spreadKey]);   // absent = off (opt-in)
+      if (km.spreadBox) km.spreadBox.checked = km.spread;
+    }).catch(() => {});
+
+    // One try/catch around the whole tick, section 21's discipline: the interval
+    // must survive a throw, or the panel silently freezes on whatever it last
+    // drew — the one failure mode of a watchdog poll invisible from outside.
+    let lastTickError = '';
+    const pollTimer = setInterval(() => {
+      try {
+        tick();
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        if (msg !== lastTickError) { lastTickError = msg; warn('key moves tick failed:', err); }
+      }
+    }, C.pollMs);
+    window.addEventListener('pagehide', () => clearInterval(pollTimer));
+    tick();
+  }
+
+  // ==========================================================================
   // Kick-off ("document_idle" normally means the DOM is ready, but guard anyway)
   // ==========================================================================
   async function start() {
@@ -29964,6 +31423,10 @@
     // After initCoverage only by convention: the two share fetchCourse and its
     // session cache, so opening the tree after a coverage run costs no fetch.
     initCourseTree();
+    // After initCourseTree only by convention: all three course-page panels
+    // share fetchCourse and its session cache, and this one is the only one of
+    // them that WRITES, so it deliberately reads fresh.
+    initKeyMoves();
     initDifficultLauncher();
   }
 

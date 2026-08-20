@@ -5485,3 +5485,293 @@ html.clo-touch .clo-ct-root-pick { font-size: 12px; padding: 4px 8px; }
    one thing on the row that stops reading as deliberate. Section 6c sizes its
    own the same way, for the same reason. */
 html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
+
+/* ==========================================================================
+   25) KEY MOVES vs DIFFICULT MOVES (course page) — see DESIGN-key-moves.md
+   ==========================================================================
+   Section 21's panel shape, not section 24's window-filling one: this IS a
+   report you read while deciding something, and its longest row is one line of
+   move chips. */
+
+.clo-km-launch {
+  position: fixed;
+  right: 16px;
+  /* THE CORNER NOW HOLDS FOUR THINGS on a course page: this (92px), the course
+     tree (54px), the coverage report (16px) and section 16d's pin dock, which
+     shows on every page and also takes 16px. The stack is why this one did not
+     make the existing overlap a three-way; anything further put here has to
+     solve the whole cluster rather than add a fifth offset. */
+  bottom: 92px;
+  z-index: 99999;
+  /* Neutral outline, DESIGN-ui-inventory §3's "an action away from the main
+     task" — the same tier as the course tree beside it. The coverage launcher
+     is the one filled green thing in this corner and stays that way. */
+  border: 1px solid var(--clo-line);
+  background: var(--clo-bg);
+  color: var(--clo-text-bright);
+  padding: 7px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.clo-km-launch:hover { border-color: var(--clo-line-hover); }
+.clo-km-launch[hidden] { display: none; }
+
+.clo-km {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  width: 560px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 90px);
+  box-sizing: border-box;
+  border: 1px solid var(--clo-bg-sunken);
+  border-radius: 4px;
+  background: var(--clo-bg);
+  color: var(--clo-text);
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+}
+
+/* display:flex would defeat the hidden attribute without this. */
+.clo-km[hidden] { display: none; }
+
+.clo-km-head-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--clo-bg-raised);
+  border-bottom: 1px solid var(--clo-bg-sunken);
+  border-radius: 3px 3px 0 0;
+}
+
+.clo-km-title {
+  flex: 1;
+  font-weight: 600;
+  color: var(--clo-text-bright);
+}
+
+.clo-km-x {
+  border: 0;
+  background: none;
+  color: var(--clo-text-dim);
+  font-size: 17px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.clo-km-x:hover { color: var(--clo-text-bright); }
+
+.clo-km-btn {
+  border: 1px solid var(--clo-line);
+  background: var(--clo-bg);
+  color: var(--clo-text-bright);
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.clo-km-btn:hover:not(:disabled) { border-color: var(--clo-line-hover); }
+.clo-km-btn:disabled { opacity: 0.45; cursor: default; }
+.clo-km-btn[hidden] { display: none; }
+
+/* The write. Green outline while it merely offers, filled while it is ARMED —
+   the second press is the one that changes the user's course, and the button
+   saying so is the whole of the confirmation. */
+.clo-km-btn--go { border-color: var(--clo-accent); color: var(--clo-accent); }
+.clo-km-btn--go:hover:not(:disabled) { border-color: var(--clo-accent-hover); }
+/* DOUBLED CLASS, and it is load-bearing: --go and --back are single-class base
+   rules and one of them (--back, section 25b) is written later in this file, so
+   at equal specificity it would win and an ARMED restore would keep its neutral
+   border and dim text over the green fill. The armed treatment has to outrank
+   BOTH bases whatever order they are written in. */
+.clo-km-btn.clo-km-btn--armed,
+.clo-km-btn.clo-km-btn--armed:hover:not(:disabled) {
+  background: var(--clo-accent);
+  border-color: var(--clo-accent);
+  color: #fff;
+}
+
+.clo-km-btn--stop { border-color: var(--clo-attention); color: var(--clo-attention); }
+
+.clo-km-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.clo-km-status { color: var(--clo-text-dim); }
+.clo-km-status[hidden] { display: none; }
+.clo-km-status--warn { color: var(--clo-attention); }
+
+.clo-km-summary { color: var(--clo-text-bright); }
+.clo-km-summary[hidden] { display: none; }
+
+.clo-km-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 8px;
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  color: var(--clo-text-dim);
+}
+
+.clo-km-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.clo-km-sel {
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text);
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.clo-km-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.clo-km-empty { color: var(--clo-text-dim); }
+
+.clo-km-row {
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  padding: 6px 8px;
+}
+
+/* A row with nothing to do is still worth reading — it is where the "after the
+   last key move" cases live — but it must not look like one of the offers. */
+.clo-km-row--info { opacity: 0.72; }
+
+.clo-km-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.clo-km-tick { margin: 0; }
+.clo-km-tick--none { display: inline-block; width: 13px; }
+
+.clo-km-name {
+  flex: 1;
+  color: var(--clo-text-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clo-km-count { color: var(--clo-attention); font-size: 12px; }
+
+.clo-km-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--clo-text-dim);
+}
+
+.clo-km-key { color: var(--clo-text-dim); }
+
+/* A difficult move. AMBER = "you have an outstanding item here", the trainer
+   row's own vocabulary (DESIGN-ui-inventory §3) — and it is the OUT-of-range
+   ones that carry it, because those are the ones the user can act on. One
+   inside the range is a fact about the course, not a thing to do. */
+.clo-km-move {
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+.clo-km-move--out { border-color: var(--clo-attention); color: var(--clo-attention); }
+
+.clo-km-stale {
+  border: 1px dashed var(--clo-line);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+.clo-km-fix {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--clo-accent);
+}
+
+.clo-km-fix--no { color: var(--clo-text-dim); }
+
+.clo-km-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+html.clo-touch .clo-km,
+html.clo-touch .clo-km-launch { font-size: 15px; }
+html.clo-touch .clo-km-btn { padding: 7px 12px; font-size: 14px; }
+html.clo-touch .clo-km-detail,
+html.clo-touch .clo-km-fix,
+html.clo-touch .clo-km-count { font-size: 13px; }
+
+/* --- 25b: restoring a range this panel lowered ---------------------------
+   A restore takes coverage AWAY, so it must never read as another shade of the
+   lowering offer. Neutral outline (DESIGN-ui-inventory §3's "an action away
+   from the main task") against the lowering button's green, and it arms
+   separately — one press must never mean both directions. The ARMED state is
+   still the shared filled treatment, because what an armed press means is the
+   same in both cases: this one writes. */
+.clo-km-btn--back { border-color: var(--clo-line); color: var(--clo-text-bright); }
+.clo-km-btn--back:hover:not(:disabled) { border-color: var(--clo-line-hover); }
+
+/* The row's own mark. Deliberately NOT amber: amber here means "you have an
+   outstanding item", and a range that can go back is the opposite — a piece of
+   work that is finished. Dim text and a dashed left edge, so it is legible as a
+   different KIND of row at a glance without competing with the offers above. */
+.clo-km-row--raise { border-left: 3px solid var(--clo-line-hover); }
+.clo-km-count--back { color: var(--clo-text-dim); }
+.clo-km-fix--back { color: var(--clo-text-bright); }
+
+/* --- 25c: difficulty pooled by position ----------------------------------
+   The "show the count before arming" line. It sits ABOVE the options rather
+   than beside the summary because it is a consequence of a setting below it,
+   and because with the spread on it is the largest number on the panel — the
+   press it precedes can go from five variations to seventy. */
+.clo-km-spread {
+  padding: 6px 8px;
+  border: 1px solid var(--clo-attention-line);
+  border-radius: 3px;
+  color: var(--clo-attention);
+}
+
+.clo-km-spread[hidden] { display: none; }
+
+/* A move with no record of its own in THIS variation: the percentage is pooled
+   from elsewhere in the course. Dashed, because the border is already carrying
+   "inside/outside the range" in its colour and a second solid weight there
+   would read as a third state rather than a footnote on the first two. */
+.clo-km-move--spread { border-style: dashed; }

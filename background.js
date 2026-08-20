@@ -35,9 +35,12 @@
  * focused popup window wherever there are windows, and a FOREGROUND tab where
  * there are not (Android; see openDriverSurface). One job at a
  * time, kept in chrome.storage.session so it survives a worker idle-restart:
- *   { type:'clo-quick-edit-run', mode:'probe'|'load'|'save'|'edit'|'alt'|'shapes',
+ *   { type:'clo-quick-edit-run', mode:'probe'|'load'|'save'|'edit'|'alt'|'shapes'|'key',
  *     oid, bid, san, color, plyIndex, commentText, baseText, altSans,
  *     shapes, baseShapes, forThisVariationOnly, win }
+ *     ('key' carries plyIndex/san/color plus fromPlyIndex, the ply the key mark
+ *      is expected to be on - the driver reads the mark off the edit page and
+ *      refuses when the two disagree)
  *     (review tab -> worker) -> opens /explore/edit/<oid>/ in the popup
  *   { type:'clo-quick-edit-claim', oid }   (edit-tab driver -> worker)
  *       -> { claimed, mode, san, color, plyIndex, commentText, baseText,
@@ -128,7 +131,7 @@ const QUICK_EDIT_BASE = 'https://www.chessable.com/explore/edit/';
 const QUICK_EDIT_JOB_KEY = 'cloQuickEditJob'; // chrome.storage.session; one job at a time
 // Everything the driver knows how to do. Anything else falls back to 'save'
 // (append a comment), which is what the very first version of this feature did.
-const QUICK_EDIT_MODES = ['probe', 'load', 'save', 'edit', 'alt', 'shapes'];
+const QUICK_EDIT_MODES = ['probe', 'load', 'save', 'edit', 'alt', 'shapes', 'key'];
 // Hard cap; force-fail + close the driver window. Deliberately longer than
 // every wait the driver itself owns (boot gate + drive + post-submit watch),
 // so a stall is reported by the driver with a real reason and this blind
@@ -539,6 +542,10 @@ async function startQuickEditJob(msg, sender) {
     oid, bid: msg.bid || '',
     mode: QUICK_EDIT_MODES.includes(msg.mode) ? msg.mode : 'save',
     san: msg.san, color: msg.color, plyIndex: msg.plyIndex,
+    // Mode 'key' only: which ply the key mark is expected to be on right now.
+    // The driver refuses when it is anywhere else - that write moves a range in
+    // either direction, so a mark somewhere unexpected cannot be shrugged off.
+    fromPlyIndex: msg.fromPlyIndex,
     commentText: msg.commentText, baseText: msg.baseText, altSans: msg.altSans,
     shapes: msg.shapes, baseShapes: msg.baseShapes,
     forThisVariationOnly: Boolean(msg.forThisVariationOnly),
@@ -574,6 +581,7 @@ async function claimQuickEditJob(msg, sender) {
   return {
     claimed: true, mode: job.mode,
     san: job.san, color: job.color, plyIndex: job.plyIndex,
+    fromPlyIndex: job.fromPlyIndex,
     commentText: job.commentText, baseText: job.baseText, altSans: job.altSans,
     shapes: job.shapes, baseShapes: job.baseShapes,
     forThisVariationOnly: job.forThisVariationOnly,
