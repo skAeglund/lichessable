@@ -300,5 +300,237 @@ console.log('\na line that will not replay is left alone');
   check('…and adds nothing', hard.length, 0);
 }
 
-console.log('\n' + (failures ? failures + ' FAILURE(S)' : 'all checks passed'));
-process.exit(failures ? 1 : 0);
+// --- 25d: moves the user has never been asked ----------------------------
+//
+// `propose` sees this as one more number in the same `min`: `unprovenPly`, the
+// earliest user ply of the variation whose (position, move) the course has no
+// record of ANYWHERE. Everything below is about how it composes with the two
+// numbers that were already there.
+console.log('\nnever asked (25d)');
+{
+  // The plain case: the range hides a move the user has never answered.
+  const hidden = entry({ low: 4, hard: [], unprovenPly: 1 });
+  check('an unrecorded move before the range ⇒ lower to its move pair',
+    out(hidden), { dir: 'lower', ply: 0 });
+
+  // NO LEAD IS SUBTRACTED. The lead gives context before a DIFFICULT move; the
+  // whole of this pressure is "ask this move", and stacking the two compounds.
+  km.lead = 2;
+  const lead = entry({ low: 6, hard: [], unprovenPly: 4 });
+  check('the lead does not apply to it', out(lead), { dir: 'lower', ply: 4 });
+  km.lead = 0;
+
+  // Difficulty still wins when it reaches further back — they are one `min`.
+  const both = entry({ low: 6, hard: [move(1, 70)], unprovenPly: 5 });
+  check('a difficult move earlier than it still decides',
+    out(both), { dir: 'lower', ply: 0 });
+
+  // …and the other way round.
+  const deeper = entry({ low: 6, hard: [move(5, 70)], unprovenPly: 1 });
+  check('an unrecorded move earlier than the difficult one decides',
+    out(deeper), { dir: 'lower', ply: 0 });
+}
+
+console.log('\nnever asked, against 25b\'s restore');
+{
+  // THE CASE THIS RULE EXISTS TO BOUND. The range was lowered to ply 0, the
+  // difficult move has recovered, and the baseline says it may go back to 4 —
+  // but ply 1 has still never been answered anywhere in the course, so it may
+  // not go back past it. `min(ideal, unproven)` is 1, which snaps onto the
+  // range's current start: nothing is offered at all.
+  const held = entry({ low: 0, baseLow: 4, hard: [], unprovenPly: 1 });
+  check('an unrecorded move holds a lowered range where it is',
+    out(held), { dir: '', ply: null });
+
+  // A PARTIAL restore, exactly as a still-difficult move produces one: the
+  // range comes back as far as the first move with no record and no further.
+  const partial = entry({ low: 0, baseLow: 6, hard: [], unprovenPly: 5 });
+  check('…and otherwise caps the restore at that move\'s pair',
+    out(partial), { dir: 'raise', ply: 4 });
+
+  // With the option off (or a variation the index could not read) the field is
+  // absent, and every answer above is the one 25b gave before this existed.
+  const off = entry({ low: 0, baseLow: 4, hard: [] });
+  check('no unproven answer ⇒ 25b is unchanged', out(off), { dir: 'raise', ply: 4 });
+}
+
+// --- the index behind it -------------------------------------------------
+//
+// `buildProvenIndex` decides which plies carry that flag, and it is TWO
+// sources: the feed's own `successes` for a move that has ever failed, and
+// `level - 3` for one that never has — which, per §9.2, is exactly the number
+// of sittings the user answered it in, because the reset branch never fires.
+// Its other job is §9.4's cost rule: at floor 1 the count is a boolean and
+// `unstudied` from getList answers it for free, so only a PART-learned
+// variation is fetched; above 1 the values are needed and every studied
+// variation is read.
+const lessons = new Map();   // oid → the rows getLesson would serve
+let lessonCalls = 0;
+const idxEnv = {
+  CloSan,
+  km: { bid: '1', provenIdx: null },
+  C: { chunkVars: 20, lessonMax: 2, lessonConc: 2 },
+  CONFIG: { showGrade: { lessonPath: '/api/v1/getLesson' },
+    autoPlay: { difficult: { ignoreWrongMoves: ['timeU'] } } },
+  chessableCreds: () => ({ uid: '7', jwt: 'x' }),
+  chessableHeaders: () => ({}),
+  chessableApiUrl: (path, q) => path + '?oid=' + q.oid,
+  chessableApiFetch: async (url) => {
+    lessonCalls++;
+    const oid = url.split('oid=')[1];
+    if (!lessons.has(oid)) throw new Error('no lesson for ' + oid);
+    return { lesson: { moves: lessons.get(oid) } };
+  },
+  sleepMs: async () => {},
+  warn: () => {},
+};
+
+const buildIdx = new Function(...Object.keys(idxEnv), [
+  'const SQ_FILES = "abcdefgh";',
+  sliceDecl('squareName'),
+  sliceDecl('START_FEN'),
+  sliceDecl('cacheKey'),
+  sliceDecl('RELAXED_SAN_RE'),
+  sliceDecl('sanToUciRelaxed'),
+  sliceDecl('sanToUci'),
+  sliceDecl('fenAfterUci'),
+  sliceDecl('walkVariation'),
+  sliceDecl('sideOf'),
+  sliceDecl('difficultRowCounts'),
+  sliceDecl('difficultPlyIndex'),
+  sliceDecl('posMoveKey'),
+  sliceDecl('fetchLessonLevels'),
+  sliceDecl('feedTimesByPly'),
+  sliceDecl('buildProvenIndex'),
+  'return buildProvenIndex;',
+].join('\n'))(...Object.values(idxEnv));
+
+// 1.e4 c5 2.Nf3 d6 — a Black course, so plies 1 and 3 are the user's.
+const BLACK_LINE = ['e4', 'c5', 'Nf3', 'd6'];
+const variation = (oid, unstudied, sans) => ({
+  oid, name: oid, color: 'black', fen: START_FEN_, sans: sans || BLACK_LINE, unstudied,
+});
+/** getLesson's own shape: one row per move PAIR, `level_b` on a Black course. */
+const pairRows = (sans, levels) => {
+  const rows = [];
+  for (let i = 0; i < sans.length; i += 2) {
+    rows.push({ move_white: sans[i], move_black: sans[i + 1], level: null, level_b: levels[i / 2] });
+  }
+  return rows;
+};
+/** A feed row placed on a PAIR index, in the variation's own numbering. */
+const feedFor = (oid, moveId, san, attempted, fails, timeouts) => Object.assign(
+  feedRow('', san, attempted, fails, timeouts || 0),
+  { openingId: oid, moveId: String(moveId), color: 'b' });
+const timesOf = (idx, oid, ply) => {
+  const p = (idx.vars.get(oid) || []).find((x) => x.ply === ply);
+  return p ? (idx.times.get(p.key) || 0) : null;
+};
+const underFloor = (idx, oid, floor) => (idx.vars.get(oid) || [])
+  .filter((p) => (idx.times.get(p.key) || 0) < floor).map((p) => p.ply);
+
+(async () => {
+  console.log('\nthe index behind it (25d), at "never asked"');
+  {
+    lessonCalls = 0;
+    const idx = await buildIdx({ vars: [variation('a', 0), variation('b', 2)] }, [], 1);
+    check('a fully studied variation counts each of its user moves once',
+      [timesOf(idx, 'a', 1), timesOf(idx, 'a', 3)], [1, 1]);
+    check('neither it nor an untouched one costs a lesson read', lessonCalls, 0);
+    check('the untouched one is answered by POSITION, from the other line',
+      underFloor(idx, 'b', 1), []);
+    check('…and the index is not exact, so it can only answer this floor',
+      idx.exact, false);
+  }
+
+  {
+    // b now plays a second move nothing else in the course has ever answered.
+    const idx = await buildIdx({
+      vars: [variation('a', 0), variation('b', 2, ['e4', 'c5', 'Nf3', 'Nc6'])],
+    }, [], 1);
+    check('a move no variation has answered is under the floor',
+      underFloor(idx, 'b', 1), [3]);
+  }
+
+  console.log('\nthe two sources, above "never asked"');
+  {
+    // EVERY studied variation is read now, because the counts are needed.
+    lessonCalls = 0;
+    lessons.set('a', pairRows(BLACK_LINE, [7, 4]));   // level 7 and 4 ⇒ 4 and 1 sittings
+    const idx = await buildIdx({ vars: [variation('a', 0)] }, [], 3);
+    check('the values are read', lessonCalls, 1);
+    check('level − 3 is the count', [timesOf(idx, 'a', 1), timesOf(idx, 'a', 3)], [4, 1]);
+    check('…so only the second move is under a floor of 3', underFloor(idx, 'a', 3), [3]);
+    check('…and none of them under a floor of 1', underFloor(idx, 'a', 1), []);
+    check('an index with the values answers any floor', idx.exact, true);
+  }
+
+  {
+    // THE CASE THE COMBINED RULE EXISTS FOR. A move that failed once is RESET
+    // to level 4, so the level alone says "answered once" however many times it
+    // has really been asked — and the feed, which lists it precisely because it
+    // failed, says 46. Without the feed half this move would be dragged back by
+    // any floor above 1.
+    lessonCalls = 0;
+    lessons.set('a', pairRows(BLACK_LINE, [4, 9]));
+    const rows = [feedFor('a', 0, 'c5', 56, 10, 6)];    // 46 clean answers
+    const idx = await buildIdx({ vars: [variation('a', 0)] }, rows, 5);
+    check('a failed move is counted from the feed, not from its reset level',
+      timesOf(idx, 'a', 1), 46);
+    check('…so a floor of 5 leaves it alone', underFloor(idx, 'a', 5), []);
+    const levelOnly = await buildIdx({ vars: [variation('a', 0)] }, [], 5);
+    check('…where the level alone would have dragged it back',
+      underFloor(levelOnly, 'a', 5), [1]);
+  }
+
+  {
+    // Counted per POSITION, summed across every card that plays it — the same
+    // pooling 25c does, and the reason the per-card reading is degenerate.
+    lessonCalls = 0;
+    lessons.set('a', pairRows(BLACK_LINE, [4, 4]));
+    lessons.set('b', pairRows(BLACK_LINE, [5, 4]));
+    const idx = await buildIdx({ vars: [variation('a', 0), variation('b', 0)] }, [], 3);
+    check('two cards of the same move add up', timesOf(idx, 'a', 1), 3);
+    check('…and the pooled figure is what the floor sees', underFloor(idx, 'a', 3), [3]);
+  }
+
+  console.log('\nwhat the index refuses to claim');
+  {
+    // A lesson whose rows do not line up with the walk claims NOTHING, in
+    // either direction: the variation joins `unknown` and is never proposed for.
+    lessonCalls = 0;
+    lessons.set('d', pairRows(['e4', 'e5', 'Nf3', 'Nc6'], [5, 5]));
+    const idx = await buildIdx({ vars: [variation('d', 1)] }, [], 1);
+    check('a lesson that does not match the line is refused', idx.unknown.has('d'), true);
+    check('…and counts nothing', idx.times.size, 0);
+  }
+
+  {
+    // `lessonMax` is the cap, and what it drops becomes `unknown` rather than
+    // "barely asked" — a variation we did not read must not lower a range.
+    lessonCalls = 0;
+    for (const oid of ['e', 'f', 'g']) lessons.set(oid, pairRows(BLACK_LINE, [5, 5]));
+    const idx = await buildIdx({ vars: ['e', 'f', 'g'].map((o) => variation(o, 1)) }, [], 1);
+    check('the cap holds', lessonCalls, 2);
+    check('…and what it drops is unknown, not under the floor', idx.capped, 1);
+  }
+
+  {
+    // THE GUARD. Nothing answered anywhere ⇒ every move is under the floor ⇒
+    // the answer would be "every range to ply 0". Reported as empty, not applied.
+    const idx = await buildIdx({ vars: [variation('a', 2), variation('b', 2)] }, [], 1);
+    check('a course with no record at all is empty', idx.empty, true);
+    const some = await buildIdx({ vars: [variation('a', 0), variation('b', 2)] }, [], 1);
+    check('…and one with any record is not', some.empty, false);
+  }
+
+  {
+    // A variation that will not replay is unknown in both directions.
+    const idx = await buildIdx({ vars: [variation('x', 0, ['e4', 'Qz9'])] }, [], 1);
+    check('an unplayable line is unknown', idx.unknown.has('x'), true);
+    check('…and counts nothing', idx.times.size, 0);
+  }
+
+  console.log('\n' + (failures ? failures + ' FAILURE(S)' : 'all checks passed'));
+  process.exit(failures ? 1 : 0);
+})();

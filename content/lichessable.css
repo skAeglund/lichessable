@@ -5770,6 +5770,22 @@ html.clo-touch .clo-km-count { font-size: 13px; }
 
 .clo-km-spread[hidden] { display: none; }
 
+/* Section 25d's count line shares 25c's box: the two say the same KIND of thing
+   ("this setting is about to act on N variations"), and two weights there would
+   read as one of them mattering more. */
+.clo-km-unproven { border-style: dashed; }
+
+/* "3...Nc6 never asked". Dotted rather than the solid weight `--out` carries,
+   because this is not a measurement of the move at all — it is the absence of
+   one, which is exactly why the range has to reach it. */
+.clo-km-new {
+  border: 1px dotted var(--clo-attention);
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: var(--clo-attention);
+  white-space: nowrap;
+}
+
 /* A move with no record of its own in THIS variation: the percentage is pooled
    from elsewhere in the course. Dashed, because the border is already carrying
    "inside/outside the range" in its colour and a second solid weight there

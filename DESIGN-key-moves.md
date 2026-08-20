@@ -10,7 +10,8 @@ key range to cover them — through the existing quick-edit driver, one variatio
 at a time. And, once a move stops being difficult, puts the range **back** where
 it came from (§7). Optionally it pools that record by POSITION rather than by
 card, which is the only way to see a move that is hard in a line where it is
-never even asked (§8).
+never even asked (§8) — and, optionally again, covers the moves the user has
+barely been asked at all, which no record of difficulty can ever mention (§9).
 
 Everything below the design was ground-truthed live on 2026-08-20, on the test
 account, against courses 291847 (bought, published, White) and 453453 (the test
@@ -492,7 +493,229 @@ None of those three has a record in that variation; all three are pooled from
 elsewhere. One lowering was run from it and `getList` came back with the range
 starting at ply 2.
 
-## 9. Still open
+## 9. Never asked (25d)
+
+**A move that has never been asked cannot be judged.** The scan above only ever
+argues from the Difficult Moves feed, and a move outside a key range under Key
+Moves Only can never appear in it — it is played *for* the user, so it cannot
+fail, so it has no row. §8 closes half of that gap by pooling the record of a
+POSITION across cards. This closes the other half: a position the user has never
+been asked **anywhere** in the course, about which no amount of pooling can
+produce evidence.
+
+Opt-**in** (`cloKeyMoveUnproven`, absent = off), and it composes with everything
+above rather than replacing it: it is a third number in `propose()`'s `min`.
+
+### 9.1 The signal, and why it is not the feed
+
+The feed alone cannot answer it — it is half of the answer, and this is the
+half it cannot supply:
+
+1. It lists a move only once it has **failed at least once**
+   (`DESIGN-difficult-moves.md` §6.3), so the moves in question have no row.
+2. For a row that does exist, an attempts FLOOR is degenerate. With `f >= 1`
+   real (non-timeout) failures and `s` successes, `difficultRowCounts` gives
+   `counted = s + f` and `acc = s/(s+f)`, so `acc >= 90 %` forces `s >= 9f` and
+   hence `counted >= 10`. At any floor <= 10 a move with a genuine failure is
+   *already* below the accuracy bar. Measured live on 453453 (30 rows,
+   threshold 90, floor 7): 2 rows were caught by the floor alone, and both were
+   all-timeout cards. A two-move accidental class is not a feature.
+
+The signal is the per-move **SRS level** from `getLesson` — section 13b's
+"barely learned" guard reads the same field for a neighbouring question. What
+was missing until now is what the number MEANS, which is settled below.
+
+### 9.2 What a level is (Chessable's own code, 2026-08-20)
+
+Read out of the site bundle (`static/js/main.*.js`), not inferred:
+
+```js
+// what a finished session POSTs, one entry per ply
+x = lessonPlan
+      .filter(e => (e.isUserMove === true || e.isInformational === true)
+                   && !e.isDeleted && !e.isSuspended)
+      .map(e => ({ bid, oid: e.variationId, mid: e.mid, practiceMode: e.color,
+                   level: e.progress.newLevel > 0 ? e.progress.newLevel + 3 : 0,
+                   presented: e.progress.attemptsTotal,
+                   wrong: e.progress.quizIncorrectAttempts, ... }))
+
+// how the new level is decided
+newLevel = Math.min(17, (progress.quizIncorrectTotal > 0 ? 0 : originalLevel)
+                        + levelUpFromNewBase)      // 0 when overstudying,
+                                                   // else 1 if quizCorrectStreak > 0
+
+// and what makes a ply a user move in the first place
+isUserMove = (studyCol === plyColor || studyCol === 'both')
+          && (default_study === 'key' ? isKey : default_study === 'all')
+```
+
+Four facts fall out, and all four are load-bearing:
+
+* **`getLesson`'s `level` / `level_b` is `newLevel + 3`**, which is why the
+  smallest value ever seen on a real course is 4 and the cap is 20. The reverse
+  direction is in the same bundle (`originalLevel: level_origin > 3 ?
+  level_origin - 3 : 0`). `level_origin` / `level_origin_b` are byte-identical
+  to `level` / `level_b` on all 830 plies measured — no extra information.
+* **null / 0 means the move has never completed a session as a user move.** It
+  is not "level zero", it is no record.
+* **For a move that has never failed, `level - 3` IS the number of sittings
+  the user has answered it in.** The reset branch (`quizIncorrectTotal > 0`)
+  never fires for such a move, so the level increments once per sitting from 0
+  and nothing else touches it. That is the count for exactly the class the feed
+  is blind to, and it is why the two sources compose.
+* **For a move that HAS failed it is only the streak since that failure**, which
+  is where the feed takes over: joined against it on all 30 rows, level 5 with
+  56 attempts, level 4 with 4, level 5 with 83. A floor on the LEVEL ALONE
+  therefore drags back moves the record can vouch for — measured at 46
+  variations against the combined rule's 25 (§9.3). Hence:
+
+  ```
+  timesAnswered(ply) = feed row ? difficultRowCounts(row).successes : max(0, level - 3)
+  ```
+
+  The two halves are not quite the same unit — the feed counts PRESENTATIONS and
+  a level counts SITTINGS, so the feed half is the more generous one. That is
+  the safe direction: it can only leave a move OUT of this rule, and a move the
+  feed knows about is one section 25's own accuracy test already reads.
+* **A move Key Moves Only hides cannot gain one.** Under `default_study: 'key'`
+  a non-key ply is not a user move, the save filters on exactly that, so it is
+  never sent and its level never moves. (Overstudy is level-neutral for a
+  different reason in the same code: `levelUpFromNewBase` is 0 there.)
+
+Two free course-level fields turned up beside it, both in the `getList` this
+module already fetches:
+
+* **`isKeyMode`** (and the per-move `default_study`) is the user's own study
+  mode for that course — `false` / `'all'` on 453453, `true` / `'key'` on
+  291847. So "are these key ranges hiding anything at all" is answerable, which
+  is what the panel's own line now says. (`default_review` sits on every row and
+  appears nowhere in the bundle; ignore it.)
+* **`learnMW` / `learnMB` is the number of that variation's user moves with NO
+  level, and `reviewMW` / `reviewMB` the number currently DUE** (`readyW` /
+  `readyB`). Verified 80/80 on 453453 against the per-move data. That is what
+  makes the read cheap — §9.4.
+
+### 9.3 Per card is degenerate; per POSITION is not
+
+This is the measurement the feature stands on. Course 453453, 79 variations with
+moves, 830 user plies, 306 distinct (position, move) pairs, of which **55 have
+ever been answered**. The key ranges as they stand ask for **417 of the 830**.
+
+| rule | variations lowered | to ply 0 | user moves added |
+| --- | --- | --- | --- |
+| unanswered **in this card** | 56 of 65 | **all 56** | +400 (98 % of the course) |
+| unanswered **anywhere** (pooled) | 24 of 65 | none | +66 |
+| answered fewer than 5 times, pooled | 25 of 65 | none | +70 |
+| …the same floor on the LEVEL ALONE | 46 of 65 | none | +180 |
+
+The per-card reading is exactly the failure this direction was expected to have:
+every range to ply 0, i.e. Key Moves Only switched off wholesale. It fails for a
+structural reason — a card's run-up is unanswered *by construction* — and the fix
+is the one §8 already made for difficulty: **ask the question of the position,
+not of the card.** A move the user answers in variation A is a move they have
+been asked; that variation B has never quizzed it says nothing about them.
+Counts are therefore SUMMED across every card that plays the position, the same
+pooling §8.1 does and for the same reason.
+
+The last two rows are the argument for reading both sources rather than the
+level alone. Raising the floor from "never asked" to "fewer than 5 times" costs
+**one variation and four user moves** on this course, because the moves it newly
+catches are nearly all inside ranges that were already coming back — while the
+same floor on the level by itself catches every move that has failed once since,
+however well known it now is. The whole ladder, live:
+
+| floor | positions under it | variations pulled back |
+| --- | --- | --- |
+| never at all | 251 of 306 | 24 |
+| fewer than 2 | 260 | 25 |
+| fewer than 3 | 263 | 25 |
+| fewer than 4 | 267 | 25 |
+| fewer than 5 | 271 | 25 |
+
+A course dominated by material never studied at all (82 % of positions here)
+will always look like this; one studied throughout is where the floor starts to
+matter, and no such course exists on the test account to measure.
+
+### 9.4 The read, and what it costs
+
+`getLesson` is one call per variation — 6.7 KB and ~456 ms each, 80 of them in
+7.3 s at concurrency 4. That is affordable on this course and would not be on a
+500-line repertoire, so **the floor decides the read**:
+
+* **"Never asked" is a boolean question**, and `learnM*` answers it for free:
+  0 means every user ply of that variation has a level (so each has been
+  answered at least once), its own user-ply count means none has. Only a
+  PART-learned variation needs the detail. On 453453 that is **0 calls** (14
+  variations fully studied, 65 untouched, none mixed), and the same on 291847.
+* **Any floor above it needs the VALUES**, so every variation with anything
+  studied is read: 14 calls and ~12 s here, `lessonMax` (200) calls at worst.
+  What the cap drops is `unknown` — never "barely asked" — so it can only ever
+  leave a range alone.
+
+An index built with the values is `exact` and answers every floor, so walking up
+and down the ladder costs one read, not one per step. The cheap index is kept
+only for the floor it was built for.
+
+`reduceCourse` therefore gained a per-variation `unstudied` and a course-level
+`keyMode`, which cost the third bump of `CONFIG.coverage.cacheKey`
+(`...2` -> `...3`), shared with §21 and §24 — same reason as the first: an older
+listing parses fine and is silently missing the field, which would read as
+"nothing here has ever been studied".
+
+### 9.5 The rule, and the two guards
+
+`propose()` gains one more number in the same `min`: the earliest user ply of
+the variation whose (position, move) has been answered fewer than `floor` times
+anywhere in the course, snapped to its move pair. **No lead is subtracted** —
+the lead exists to give context BEFORE a difficult move, whereas the whole of
+this pressure is "ask this move", and stacking the two would compound.
+
+The floor is a setting (0 = off, 1 = "never at all", up to 5) rather than a
+checkbox, because §9.3 shows the two ends of it are different questions and the
+cost of the read differs between them. It is stored as a NUMBER; `true` is what
+the very first build wrote and reads as 1.
+
+Because it is in the `min` and not a proposal of its own, everything §7 says
+still holds: a range can be restored only as far as its earliest under-asked
+move, and a range this tool has never touched can still only be lowered.
+
+* **A course with no record at all is refused.** With nothing answered every
+  move is under the floor and the answer would be "pull every range to ply 0" —
+  which is not an answer, it is the mode switched off (291847: `studied: 0`).
+  The panel says so, and the pressure is not applied.
+* **The count is printed before anything can be armed**, §8.4's rule and for
+  §8.4's reason: this is the second toggle here that can take a press from five
+  variations to fifty.
+
+### 9.6 Live verification, 2026-08-21
+
+Course 453453, through the panel, on the build that ships this:
+
+* floor off — *"80 variation(s) · 16 difficult move(s) below 90 % · 0 to lower"*,
+  i.e. §6's state, unchanged;
+* the summary also now reads **"studied as ALL MOVES — these ranges hide nothing
+  today"**, which is `isKeyMode` arriving through `reduceCourse`;
+* every step of the ladder in §9.3's second table, matching the figures computed
+  independently against the same three endpoints, to the position;
+* "never at all" made no `getLesson` call; the first floor above it read the 14
+  studied variations in ~12 s and every later step reused that index;
+* a row reads *"key moves start 5.Bb5 · `3...Nh6 asked 1×` → start the key moves
+  at 3.f4"*, and the chip's tooltip names the pooled count and how many moves in
+  that variation are under the floor;
+* back to off ⇒ 0 to lower and the line hidden.
+
+The WRITE is deliberately not re-verified: it is §5's driver with a different
+integer for the target ply, and §7.5 already ran that loop end to end.
+
+### 9.7 The loop it closes
+
+With Key Moves Only on, a move outside the range is never asked, so its count
+never grows and the scan keeps offering to cover it. Once covered it is asked,
+its level climbs, and §7's restore can put the range back — held only by
+whatever is still difficult. So the pair reads as one rule: **every move is
+asked N times before Key Moves Only is allowed to hide it.**
+
+## 10. Still open
 
 * **The end mark.** A variation with both marks is refused (§5). Handling it means
   either working around §1.2's string comparison or finding a write path that
@@ -514,6 +737,16 @@ starting at ply 2.
   has been comfortably above the threshold for some time. As it stands a move
   hovering either side of 90 % can be lowered and restored in alternate weeks,
   which costs two driver visits and changes nothing the user asked for.
+* **The never-asked rule (§9) has no budget either**, for the same reason and
+  with the same two brakes (the count line and the arming press). A ranking, a
+  minimum ply, or a cap on how many variations one scan may lower would suit
+  both. Measured on the test course it is 24 variations and +66 user moves,
+  which needs no brake; a course studied under Key Moves Only from the start
+  would be larger, and no such course exists on the test account to measure.
+* **Whether a restore should also require the move to have been asked N times**
+  rather than once. §9.2 says the level can express it (a floor of 5 is "two
+  clean sittings"), and §9.3 measures that floor at +180 user moves rather than
+  +66 — a different feature, deliberately not built.
 * **The spread has no depth or count limit** (§8.4). A difficult move on ply 1
   pulls every line that plays it back to ply 0, and on the test course that is 51
   of 79 variations. A minimum ply, a cap on how many variations one position may

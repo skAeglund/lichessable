@@ -175,10 +175,13 @@ Currently working (v0.18.x).
   * `DESIGN-repertoire-coverage.md` — section 21
   * `DESIGN-course-tree.md` — section 24 (§12 = the LIVE ground truth, which
     overrides §3.5, §5.1 and §8; §12.7 is why `sanToUci` has a second pass)
-  * `DESIGN-key-moves.md` — sections 25, 25b and 25c (§1 = how Chessable stores a
-    key range and the bug in its own handler; §5 = the write and the two live
-    driver failures it exposed in SHARED code; §7 = putting a range BACK;
-    §8 = why Chessable's record is per CARD and what pooling it by position costs)
+  * `DESIGN-key-moves.md` — sections 25, 25b, 25c and 25d (§1 = how Chessable
+    stores a key range and the bug in its own handler; §5 = the write and the two
+    live driver failures it exposed in SHARED code; §7 = putting a range BACK;
+    §8 = why Chessable's record is per CARD and what pooling it by position costs;
+    §9 = what an SRS level means, read out of Chessable's own bundle, why "how
+    often has this been answered" needs the feed AND the level, and why the
+    question has to be asked of the position)
   * `DESIGN-add-as-variation.md` — section 19c (§2 = the wire, and the ten live facts)
   * `DESIGN-add-as-puzzle.md` — sections 19d and 19e (§2 = the wire, incl. the
     move-PAIR fold; §6 = the clickable-line menu and why data-fen cannot be trusted)
@@ -2293,7 +2296,7 @@ Currently working (v0.18.x).
     breadcrumb"), 340x411 with no horizontal overflow; `html.clo-touch` takes
     a row from 41px to 55px.
 
-- Key moves vs difficult moves (sections 25, 25b and 25c, v0.120.0): the moves the
+- Key moves vs difficult moves (sections 25, 25b, 25c and 25d, v0.122.0): the moves the
   user actually gets WRONG must not be the moves Chessable's "Key Moves Only"
   study mode silently plays for them. A course-page panel (`/course/<bid>/`) reads
   the key range back out of the course, reads the per-move record out of the
@@ -2391,6 +2394,50 @@ Currently working (v0.18.x).
   * IT OWNS NO BRIDGES and is called by nothing. It reads `fetchCourse`,
     `dropCourseCache`, `chessableCreds`, `chessableBooksOnce`, `sideOf` and
     `popupDriverBounds`, all shared and all unchanged.
+  * A MOVE THE USER HAS BARELY BEEN ASKED IS COVERED TOO (25d, opt-in
+    `cloKeyMoveUnproven` — a NUMBER, 0 = off, else "answered fewer than N
+    times", max 5). HOW OFTEN A MOVE HAS BEEN ANSWERED IS TWO SOURCES, and each
+    covers where the other is blind: the difficult-moves feed's own
+    `successes` for a move that has EVER FAILED, and `level - 3` from
+    `getLesson` for one that never has. DESIGN-key-moves.md §9.2 decodes the
+    level out of Chessable's own bundle and the facts are shared code's
+    business: **null/0 is "no record", not level zero**; the reported value is
+    the internal level PLUS 3 (min 4, cap 20); and it increments once per
+    sitting from a base that a failure RESETS — so for a never-failed move
+    `level - 3` is exactly the number of sittings it was answered in, and for a
+    failed one it is only the streak since, which is why the feed half is not
+    optional (a floor on the level alone drags back 46 variations against 25).
+    A finished session posts only the plies with `isUserMove`, which under
+    Study: Key Moves is exactly the key ones, so a move the range hides can
+    never gain a level; overstudy is level-neutral in the same code.
+  * ASKED OF THE POSITION, NEVER OF THE CARD, and this is the measurement the
+    feature stands on (§9.3): per card, 56 of 65 ranges on the test course go to
+    ply 0 — Key Moves Only switched off wholesale — because a card's run-up is
+    unanswered BY CONSTRUCTION. Pooled by position it is 24 ranges, none at ply
+    0. Counts are SUMMED across every card that plays the position, the same
+    pooling 25c does and with the same key (`posMoveKey`).
+  * A COURSE WITH NO RECORD AT ALL PROPOSES NOTHING (`idx.empty`). With nothing
+    answered every move is under the floor and the "answer" would be every range
+    at ply 0. Said in words in the panel instead.
+  * `propose()` TAKES IT AS A THIRD NUMBER IN THE SAME `min`, with NO LEAD
+    subtracted — the lead is context before a DIFFICULT move, this is "ask this
+    move", and stacking them compounds. Everything §7 says still holds for free:
+    a restore is capped at the first move with no record.
+  * THE FLOOR DECIDES THE READ (§9.4). At 1 ("never at all") the question is a
+    boolean and `unstudied` answers it FREE — only a PART-learned variation
+    costs a `getLesson` (measured: 0 on either test course). ABOVE 1 the values
+    are needed, so every variation with anything studied is read (14 here, ~12 s;
+    `lessonMax` = 200 is the cap, and what it drops is `unknown` rather than
+    "barely asked", so it can only leave a range alone). An index built with the
+    values is `exact` and serves every floor; the cheap one serves only floor 1.
+  * `reduceCourse` NOW ALSO CARRIES per-variation `unstudied` and course-level
+    `keyMode`, which cost the THIRD bump of `CONFIG.coverage.cacheKey`
+    (`…2` → `…3`) shared with 21 and 24. `unstudied` is `learnMW`/`learnMB`,
+    ground-truthed 80/80 as the count of that variation's user moves with no
+    level (and `reviewM*` as the count currently DUE).
+    `keyMode` is the user's own study mode for the course (`isKeyMode`, matching
+    the per-move `default_study`); the panel STATES it and nothing branches on
+    it — a range still outlives a mode switch.
   * THE FIX PASS IS SEQUENTIAL AND TWO-PRESS. One variation is one driver visit —
     a focused popup, a page load, a submit — so it is a watchable, stoppable queue
     with a local watchdog per variation (section 19's rule: the worker's job timer
@@ -2436,7 +2483,8 @@ py dev/check-contracts.py
 ```
 
 After touching section 25's proposal rule — `propose`, `snapToMove`, `plyBase`,
-`plyColor`, the baseline store, or 25c's `poolByPosition` / `spreadByPosition`:
+`plyColor`, the baseline store, 25c's `poolByPosition` / `spreadByPosition`, or
+25d's `buildProvenIndex` / `fetchLessonLevels` / `feedTimesByPly`:
 
 ```
 node dev/check-key-moves.js
@@ -2449,6 +2497,16 @@ back) plus the partial restore, the no-baseline invariant, the lead setting, the
 move-pair snap, and 25c's pooling. Both interesting cases are close to
 unreachable from a live session — one needs a range this extension lowered weeks
 ago, the other needs a move to have stopped being difficult since.
+It also executes 25d's index against a fake `getLesson` and fake feed rows,
+which is where the two-source rule and the cost rule live: a failed move is
+counted from the feed rather than from its RESET level (the case the combined
+predicate exists for), counts pool by position across cards, `unstudied`
+answers floor 1 with no call at all, and a lesson that will not align — or a
+variation past `lessonMax` — is UNKNOWN rather than "barely asked", so it can
+never lower a range on no evidence. Three more controls, each failing on
+exactly its own assertions: reverting `propose`'s arm (5), letting an untouched
+variation count as answered (3), and dropping the feed half of the count (2).
+
 THREE CONTROLS, each of which must fail on exactly its own assertion: 25b
 reverted (fails the two raise cases), `own.acc = acc` in place of the min (fails
 only the displayed-figure case), and the `acc >= threshold` guard weakened (fails

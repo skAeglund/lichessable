@@ -1326,11 +1326,13 @@
       // Reduced course listings (id/name/SAN/colour/initialFEN only — never the
       // 180 KB payload) live beside cloCourseFenCache with the same 12 h TTL:
       // the analysis is re-run every time the user works through the list.
-      cacheKey:    'cloCourseListCache2', // chrome.storage.session: bid → { t, name, ours, vars[] }
+      cacheKey:    'cloCourseListCache3', // chrome.storage.session: bid → { t, name, ours, keyMode, vars[] }
       // …2 since v0.118.0: the reduced shape gained per-ply `keys` (section 25).
-      // A listing written by an older build parses fine and simply has none,
-      // which would read as "this course has no key moves" - so the KEY changes
-      // rather than a version field being checked, and the old entries age out.
+      // …3 since v0.121.0: per-variation `unstudied` and course-level `keyMode`
+      // (section 25d). A listing written by an older build parses fine and
+      // simply has neither, which would read as "nothing here has ever been
+      // studied" - so the KEY changes rather than a version field being
+      // checked, and the old entries age out on their own.
       cacheTtlMs:  12 * 60 * 60 * 1000,
       cacheMax:    6,                    // courses kept; oldest pruned first
       targetsKey:  'cloCoverageTargets',  // chrome.storage.local: sourceBid → target bid
@@ -1368,6 +1370,32 @@
       // finds those. Measured on course 453453: 11 hard positions, 165
       // occurrences, 69 of 79 variations - hence the count before the arm.
       spreadKey: 'cloKeyMoveSpread',
+
+      // Section 25d, "cover the moves you have never been asked". OPT-IN
+      // (absent = off). A move outside a key range is played FOR the user, so
+      // it can never fail, so the difficult-moves feed can never mention it —
+      // the only record that distinguishes "answered and fine" from "never
+      // asked at all" is the per-move SRS level in getLesson, whose meaning is
+      // decoded in DESIGN-key-moves.md §9.2 (null = no record; a value is a
+      // clean-sitting streak, +3).
+      //
+      // ASKED OF THE POSITION, NEVER OF THE CARD, and the measurement is the
+      // whole reason: per card, 56 of 65 ranges on the test course go to ply 0,
+      // i.e. Key Moves Only switched off. Pooled by position, 24 do and none to
+      // ply 0 (§9.3).
+      // Stored as a NUMBER: 0 = off, N = "cover a move answered fewer than N
+      // times". 1 is "never asked at all" and is the only setting the cheap
+      // read can answer — see `buildProvenIndex`.
+      unprovenKey:  'cloKeyMoveUnproven',
+      maxUnproven:  5,
+      // At floor 1 the per-ply detail is only ever fetched for a PART-learned
+      // variation, `unstudied` answering the other two cases outright (§9.4) —
+      // measured 0 such variations on either test course. Above it every
+      // STUDIED variation is read, so the cap matters: 80 calls of 6.7 KB in
+      // 7.3 s at this width, measured.
+      lessonMax:  200,
+      lessonConc: 4,
+
       // The spread WALKS every variation with CloSan, and that is the one part
       // of this module expensive enough to be felt: measured 2.0 s for 80
       // variations, synchronously, i.e. a frozen tab — and a 500-line repertoire
@@ -2484,6 +2512,18 @@
         // and 24 share: a listing written by the old build parses fine and is
         // silently missing this, which would read as "no key moves anywhere".
         keys: v.moves.map((m) => (m && m.isKey ? 1 : 0)),
+        // How many of THIS variation's own user moves have never been answered
+        // (section 25d). Ground-truthed 2026-08-20 on all 80 variations of
+        // course 453453: `learnMW`/`learnMB` is exactly the count of user plies
+        // whose getLesson `level`/`level_b` is null, and `reviewMW`/`reviewMB`
+        // the count currently DUE. That equality is what lets the whole "which
+        // moves has the user never been asked" question be answered from this
+        // one call for a variation that is entirely studied or entirely not —
+        // which is nearly all of them — instead of one getLesson each.
+        // A course with no colour of its own cannot say whose plies those are,
+        // so it takes the larger figure: over-reporting reads as "unproven",
+        // which can only ever ADD coverage (§2's invariant).
+        unstudied: unstudiedCount(v),
         color: typeof v.color === 'string' ? v.color : '',
         fen: (typeof v.initialFEN === 'string' && v.initialFEN.trim()) || '',
       });
@@ -2495,8 +2535,28 @@
     return {
       name: String((list.name || '')).trim(),
       owned: Boolean(list.owned),
+      // The user's own study mode for THIS course — `isKeyMode` is the same
+      // answer as the per-move `default_study` getLesson carries ('key'/'all',
+      // checked against each other on both test courses). Null when the field
+      // is absent, which must never read as `false`: section 25d only ever
+      // states it, never branches on it.
+      keyMode: typeof list.isKeyMode === 'boolean' ? list.isKeyMode : null,
       vars,
     };
+  }
+
+  /**
+   * The count of a variation's user moves with NO SRS level — see the field's
+   * own note in `reduceCourse`. Kept beside it rather than inline so the
+   * colour rule is stated once.
+   */
+  function unstudiedCount(v) {
+    const w = Number(v && v.learnMW) || 0;
+    const b = Number(v && v.learnMB) || 0;
+    const side = sideOf(v && v.color);
+    if (side === 'w') return w;
+    if (side === 'b') return b;
+    return Math.max(w, b);
   }
 
   // Reduced course listings (id/name/SAN/colour/initialFEN only — never the
@@ -30250,6 +30310,8 @@
       lead: C.defaultLead,
       useStale: false,      // also lower where page order says the range is stale
       spread: false,        // 25c: pool difficulty by position across the course
+      unproven: 0,          // 25d: cover moves answered fewer than N times (0 = off)
+      provenIdx: null,      // 25d's index, built once per scan and reused by a toggle
       course: null,         // the last scan's inputs, so a toggle needs no refetch
       rows: null,
       threshold: 0,
@@ -30579,6 +30641,205 @@
       return true;
     }
 
+    // --- moves the user has barely been asked (25d) --------------------------
+    //
+    // The difficult-moves feed cannot answer "has this been tried enough to
+    // judge": it lists a move only once it has FAILED, and a move outside a key
+    // range is played FOR the user, so it can never fail and can never appear
+    // (DESIGN-key-moves.md §9.1). TWO sources answer it between them, and each
+    // covers exactly where the other is blind:
+    //
+    //  * A MOVE THAT HAS FAILED is in the feed, with its whole history. Its
+    //    `successes` (section 13b's rule: timeouts dropped) is how many times
+    //    the user has actually answered it.
+    //  * A MOVE THAT NEVER HAS carries the answer in its SRS LEVEL. §9.2 reads
+    //    the arithmetic out of Chessable's own bundle: `newLevel = (failed this
+    //    session ? 0 : originalLevel) + 1`, reported as `level + 3`. With no
+    //    failure ever the reset branch never fires, so LEVEL − 3 IS THE NUMBER
+    //    OF SITTINGS THE USER HAS ANSWERED IT IN. null is no record at all.
+    //
+    // Using the level alone would be wrong in exactly one way, and it is the
+    // way that matters: a move that failed once resets to 4 however many times
+    // it has been asked since, so a floor on the level drags back moves the
+    // feed can vouch for. Measured: floor 5 on the level alone pulls 46
+    // variations back, and the two sources together pull 25 (§9.3).
+    //
+    // ASKED OF THE POSITION, NEVER OF THE CARD (§9.3 again). Per card a
+    // variation's run-up is unproven by construction and the answer is "every
+    // range to ply 0" — the mode switched off. Section 25c made the same move
+    // for difficulty, for the same structural reason.
+
+    /**
+     * Per-ply levels for ONE variation — needed only when the floor is above
+     * "never asked", since below that `unstudied` already answers it.
+     *
+     * The lesson's rows are move PAIRS in the variation's own order, so the
+     * user-colour halves line up 1:1 with the user plies of the walk. That is
+     * asserted rather than assumed (checked live over all 79 playable
+     * variations of course 453453): a mismatch returns null, and the caller
+     * then claims nothing about that variation in either direction.
+     */
+    async function fetchLessonLevels(v, userPlies, cr) {
+      const body = await chessableApiFetch(
+        chessableApiUrl(CONFIG.showGrade.lessonPath, { uid: cr.uid, oid: v.oid, bid: km.bid }),
+        { headers: chessableHeaders(cr) });
+      const rows = body && body.lesson && body.lesson.moves;
+      if (!Array.isArray(rows)) throw new Error('unexpected shape');
+      const black = sideOf(v.color) === 'b';
+      const sans = [], levels = [];
+      for (const m of rows) {
+        const san = black ? m.move_black : m.move_white;
+        if (!san) continue;
+        sans.push(String(san));
+        const lv = black ? m.level_b : m.level;
+        levels.push(Number.isFinite(lv) ? lv : null);
+      }
+      if (sans.length !== userPlies.length) return null;
+      for (let i = 0; i < sans.length; i++) if (sans[i] !== userPlies[i].san) return null;
+      return levels;
+    }
+
+    /** How many times the feed says each ply of a variation has been answered. */
+    function feedTimesByPly(course, rows) {
+      const byOid = new Map();
+      for (const v of course.vars) byOid.set(String(v.oid), v);
+      const out = new Map();
+      for (const row of rows || []) {
+        const v = byOid.get(String(row && row.openingId));
+        if (!v) continue;
+        const ply = difficultPlyIndex(v, row);
+        if (ply < 0) continue;
+        const c = difficultRowCounts(row);
+        if (!c) continue;
+        let m = out.get(v.oid);
+        if (!m) out.set(v.oid, m = new Map());
+        // The feed counts PRESENTATIONS and a level counts SITTINGS, so this
+        // half of the answer is the more generous one. That is the safe
+        // direction: it can only leave a move OUT of this rule, and a move the
+        // feed knows about is one section 25's own accuracy test already reads.
+        m.set(ply, Math.max(0, c.successes));
+      }
+      return out;
+    }
+
+    /**
+     * `{ times: Map(ck|san → n), vars: Map(oid → ply[]), unknown: Set(oid), … }`
+     * — how many times the user has answered each (position, move) ANYWHERE in
+     * this course, summed across every card that plays it, plus the user plies
+     * of each variation so the earliest under-asked one can be found.
+     *
+     * THE READ IS SHAPED BY THE FLOOR (§9.4). At "never asked" the count is a
+     * boolean question, and `unstudied` from getList answers it for free:
+     * 0 means every user ply of that variation has a level, its own count means
+     * none does. Above that the VALUES are needed, so every variation with any
+     * studied move costs one `getLesson` — capped at `lessonMax`, with whatever
+     * is left over reported rather than guessed at.
+     *
+     * A variation that will not replay, whose colour is unknown, or whose
+     * lesson could not be read or aligned is `unknown`: it contributes no count
+     * AND is never given a proposal by this rule. Claiming "barely asked" about
+     * a variation we could not read would lower a range on no evidence.
+     */
+    async function buildProvenIndex(course, rows, floor, onProgress) {
+      const idx = {
+        times: new Map(), vars: new Map(), unknown: new Set(),
+        positions: 0, fetched: 0, capped: 0, unreadable: 0, floor,
+        // True when every count in it is the real number rather than "at least
+        // once" — i.e. the levels were read. See `ensureProvenIndex`.
+        exact: floor > 1,
+      };
+      const cr = chessableCreds();
+      const feedTimes = feedTimesByPly(course, rows);
+      const needValues = floor > 1;
+      const seen = new Set();
+      const pending = [];
+      let done = 0;
+      const add = (key, n) => idx.times.set(key, (idx.times.get(key) || 0) + n);
+
+      for (const v of course.vars) {
+        if (++done % C.chunkVars === 0) {
+          await sleepMs(0);
+          if (onProgress) onProgress(done, course.vars.length);
+        }
+        if (!v.sans.length) continue;
+        const side = sideOf(v.color);
+        const w = side ? walkVariation(v) : null;
+        if (!w) { idx.unknown.add(v.oid); idx.unreadable++; continue; }
+        const plies = [];
+        for (let i = 0; i < w.plies.length; i++) {
+          if (w.plies[i].side !== side) continue;
+          plies.push({ ply: i, san: w.plies[i].san, key: posMoveKey(w.plies[i].before, w.plies[i].san) });
+        }
+        if (!plies.length) continue;
+        idx.vars.set(v.oid, plies);
+        for (const p of plies) seen.add(p.key);
+
+        const fed = feedTimes.get(v.oid) || new Map();
+        const unstudied = Number(v.unstudied) || 0;
+        // Everything the feed knows counts whatever else is read.
+        for (const p of plies) if (fed.has(p.ply)) add(p.key, fed.get(p.ply));
+        if (unstudied >= plies.length && !fed.size) continue;   // nothing studied here
+        if (needValues) { pending.push({ v, plies, fed }); continue; }
+        // "Never asked" only needs to know THAT a ply has a level, which
+        // `unstudied` gives: a variation with none unstudied has answered all
+        // of them at least once.
+        if (unstudied <= 0) { for (const p of plies) if (!fed.has(p.ply)) add(p.key, 1); }
+        else if (unstudied < plies.length) pending.push({ v, plies, fed });
+      }
+      idx.positions = seen.size;
+
+      const queue = pending.slice(0, C.lessonMax);
+      idx.capped = pending.length - queue.length;
+      for (const m of pending.slice(queue.length)) idx.unknown.add(m.v.oid);
+      if (queue.length && !cr) {
+        for (const m of queue) idx.unknown.add(m.v.oid);
+        idx.unreadable += queue.length;
+      } else if (queue.length) {
+        const work = queue.slice();
+        let read = 0;
+        await Promise.all(Array.from({ length: Math.min(C.lessonConc, work.length) }, async () => {
+          while (work.length) {
+            const m = work.shift();
+            try {
+              const levels = await fetchLessonLevels(m.v, m.plies, cr);
+              if (!levels) { idx.unknown.add(m.v.oid); idx.unreadable++; continue; }
+              idx.fetched++;
+              m.plies.forEach((p, i) => {
+                if (m.fed.has(p.ply)) return;                  // the feed already counted it
+                const lv = levels[i];
+                if (Number.isFinite(lv) && lv > 3) add(p.key, lv - 3);
+              });
+            } catch (err) {
+              idx.unknown.add(m.v.oid);
+              idx.unreadable++;
+              warn('key moves: could not read the levels of ' + m.v.oid + ':', err);
+            }
+            if (onProgress && ++read % 4 === 0) onProgress(read, queue.length, true);
+          }
+        }));
+      }
+      // WITH NOTHING ANSWERED ANYWHERE THERE IS NOTHING TO DISTINGUISH. A course
+      // the user has never studied reads as "every move under the floor", and
+      // the answer would be "pull every range to ply 0" — which is not an
+      // answer, it is Key Moves Only switched off. Said in words instead.
+      idx.empty = idx.times.size === 0;
+      return idx;
+    }
+
+    /**
+     * Built once per scan, and reused across floors WHEN IT CAN BE: an index
+     * built with the values (any floor above "never asked") holds real counts
+     * and answers every floor, while the cheap one caps each ply at 1 and can
+     * only answer that one. So raising the floor off "never asked" is the only
+     * change that costs a read.
+     */
+    async function ensureProvenIndex(course, rows, floor, onProgress) {
+      const cached = km.provenIdx;
+      if (cached && (cached.exact || floor <= 1)) return cached;
+      km.provenIdx = await buildProvenIndex(course, rows, floor, onProgress);
+      return km.provenIdx;
+    }
+
     // --- the analysis --------------------------------------------------------
 
     /**
@@ -30621,6 +30882,12 @@
       }
       let spreadAdded = 0, spreadVars = 0, unwalkable = 0;
 
+      // 25d. Built once per scan and reused by a toggle; null when the option is
+      // off, and `empty` when the course carries no record at all.
+      const floor = km.unproven;
+      const proven = floor ? await ensureProvenIndex(course, rows, floor, onProgress) : null;
+      const useProven = Boolean(proven && !proven.empty);
+
       const entries = [];
       let seen = 0;
       for (const v of course.vars) {
@@ -30650,6 +30917,18 @@
         // The estimate only ever counts when it is EARLIER than what is stored,
         // and only when the user asked for it (see the doc comment above).
         const staleLow = est != null && est < low ? est : null;
+        // 25d: the earliest user ply of this variation that the course has no
+        // record of ANYWHERE. A variation the index could not read is skipped
+        // in both directions — see `buildProvenIndex`.
+        let unprovenPly = null, unprovenCount = 0, unprovenTimes = 0;
+        if (useProven && !proven.unknown.has(v.oid)) {
+          for (const p of (proven.vars.get(v.oid) || [])) {
+            const times = proven.times.get(p.key) || 0;
+            if (times >= floor) continue;
+            unprovenCount++;
+            if (unprovenPly == null) { unprovenPly = p.ply; unprovenTimes = times; }
+          }
+        }
         const bl = baselineFor(v.oid);
         // A record whose mark is no longer where we left it belongs to a key
         // range somebody else has moved since - Chessable's own recalculation,
@@ -30664,6 +30943,7 @@
           endMark: high < v.sans.length - 1,
           base, sans: v.sans,
           hard, outside, tail, staleLow,
+          unprovenPly, unprovenCount, unprovenTimes,
           baseLow: bl && bl.setTo === low && bl.low > low ? bl.low : null,
           lowLabel: plyLabel(v, base, low),
         });
@@ -30680,8 +30960,25 @@
       }
       return {
         bid: km.bid, name: course.name, vars: course.vars.length,
+        keyMode: course.keyMode === undefined ? null : course.keyMode,
         listed, unmatched, hardTotal, threshold, entries,
         spread: Boolean(pool), spreadPositions, spreadAdded, spreadVars, unwalkable,
+        unproven: Boolean(proven),
+        unprovenFloor: floor,
+        unprovenEmpty: Boolean(proven && proven.empty),
+        unprovenPositions: proven
+          ? [...proven.vars.values()].reduce((set, plies) => {
+            for (const p of plies) if ((proven.times.get(p.key) || 0) < floor) set.add(p.key);
+            return set;
+          }, new Set()).size
+          : 0,
+        unprovenTotal: proven ? proven.positions : 0,
+        unprovenFetched: proven ? proven.fetched : 0,
+        unprovenCapped: proven ? proven.capped : 0,
+        unprovenUnreadable: proven ? proven.unreadable : 0,
+        // The variations this rule actually pulls back, which is the number a
+        // press would act on and therefore the one printed before arming.
+        unprovenVars: entries.filter((e) => e.unprovenPly != null && e.unprovenPly < e.low).length,
         actionable: entries.filter((e) => e.target != null),
       };
     }
@@ -30721,6 +31018,14 @@
 
       let needed = null;
       if (e.hard.length) needed = Math.max(0, e.hard[0].ply - km.lead);
+      // 25d: a move the course has no record of anywhere is a move that cannot
+      // be judged, so it must be asked at least once before the range is
+      // allowed to hide it. NO LEAD IS SUBTRACTED — the lead exists to give
+      // context BEFORE a difficult move, whereas the whole of this pressure is
+      // "ask this move", and stacking the two would compound.
+      if (e.unprovenPly != null) {
+        needed = needed == null ? e.unprovenPly : Math.min(needed, e.unprovenPly);
+      }
       if (km.useStale && e.staleLow != null) {
         needed = needed == null ? e.staleLow : Math.min(needed, e.staleLow);
       }
@@ -30733,6 +31038,24 @@
       e.targetLabel = plyLabel(e, e.base, want);
       e.targetSan = e.sans[want];
       e.targetColor = plyColor(e.base, want);
+    }
+
+    /** How the floor reads in a sentence — used by the panel and the log. */
+    const unprovenLabel = (floor) => (floor <= 1
+      ? 'Never asked' : 'Answered fewer than ' + floor + ' times');
+
+    /** One line per reading of 25d's index — a silent index is undiagnosable. */
+    function logUnproven(report) {
+      if (report.unprovenEmpty) {
+        log('key moves: barely-asked — nothing in this course has been answered, so nothing ' +
+          'is proposed from it');
+        return;
+      }
+      log('key moves: ' + unprovenLabel(report.unprovenFloor).toLowerCase() + ' —',
+        report.unprovenPositions, 'of', report.unprovenTotal,
+        'position(s) under the floor, pulling back', report.unprovenVars, 'variation(s)' +
+        (report.unprovenFetched ? ' (' + report.unprovenFetched + ' lesson(s) read)' : '') +
+        (report.unprovenCapped ? ' (' + report.unprovenCapped + ' not read)' : ''));
     }
 
     // --- scanning ------------------------------------------------------------
@@ -30764,12 +31087,17 @@
           km.report = null;
           return;
         }
-        // Kept so the 25c toggle can re-derive without a second 180 KB read.
+        // Kept so the 25c and 25d toggles can re-derive without a second
+        // 180 KB read. The proven index is dropped rather than kept: this is a
+        // FRESH course read, and the levels behind it may have moved since.
         km.course = course;
         km.rows = rows;
+        km.provenIdx = null;
         km.threshold = threshold;
-        km.report = await analyse(course, rows, threshold, (i, n) => {
-          setStatus(`Pooling difficulty by position — ${i} of ${n} variation(s)…`);
+        km.report = await analyse(course, rows, threshold, (i, n, reading) => {
+          setStatus(reading
+            ? `Reading your record — ${i} of ${n} variation(s)…`
+            : `Working through the course — ${i} of ${n} variation(s)…`);
         });
         if (km.bid !== bid) return;
         km.sel = new Set(km.report.actionable.map((e) => e.oid));
@@ -30789,6 +31117,7 @@
           km.report.actionable.filter((e) => e.targetDir === 'lower').length, 'to lower,',
           km.report.actionable.filter((e) => e.targetDir === 'raise').length, 'to restore' +
           (km.report.unmatched ? ' (' + km.report.unmatched + ' feed row(s) not placed)' : ''));
+        if (km.report.unproven) logUnproven(km.report);
       } catch (err) {
         warn('key moves: scan failed:', err);
         setStatus(String((err && err.message) || err), 'warn');
@@ -31004,6 +31333,25 @@
               : where);
           detail.append(chip);
         }
+        // 25d: the one move that argues for this range being pulled back. Only
+        // the EARLIEST is drawn — a variation's unproven moves are usually most
+        // of it, and the range starts at the first one anyway.
+        if (e.unprovenPly != null && e.unprovenPly < e.low) {
+          const chip = el('span', 'clo-km-new',
+            plyLabel(e, e.base, e.unprovenPly) +
+            (e.unprovenTimes ? ' asked ' + e.unprovenTimes + '×' : ' never asked'));
+          chip.title = (e.unprovenTimes
+            ? 'You have answered this move in this position ' + e.unprovenTimes + ' time(s) ' +
+              'across the whole course — under the floor, so nothing can say yet whether it is ' +
+              'difficult. '
+            : 'This course has no record of you ever answering this move in this position, in ' +
+              'any variation — so nothing can say whether it is difficult. ') +
+            (e.unprovenCount > 1
+              ? e.unprovenCount + ' move(s) in this variation are under the floor; the range ' +
+                'starts at the first of them.'
+              : 'It is the only one under the floor in this variation.');
+          detail.append(chip);
+        }
         if (e.staleLow != null) {
           const chip = el('span', 'clo-km-stale', 'page order says ' + plyLabel(e, e.base, e.staleLow));
           chip.title = 'Chessable’s own page-order rule, recomputed here, would start this ' +
@@ -31045,6 +31393,7 @@
       km.leadSel.disabled = km.busy || km.running;
       km.staleBox.disabled = km.busy || km.running;
       km.spreadBox.disabled = km.busy || km.running;
+      km.unprovenSel.disabled = km.busy || km.running;
 
       const rep = km.report;
       km.summaryEl.hidden = !rep;
@@ -31058,6 +31407,11 @@
         bits.push(lower.length + ' to lower');
         if (raise.length) bits.push(raise.length + ' to restore');
         if (rep.unmatched) bits.push(rep.unmatched + ' record(s) not placed');
+        // Whether any of this is doing anything at all: a course studied as All
+        // Moves has key ranges that hide nothing, so a lowering changes what
+        // Chessable stores and not what the user is asked. Stated, never acted
+        // on — the mode is one click away and the ranges outlive it.
+        if (rep.keyMode === false) bits.push('studied as ALL MOVES — these ranges hide nothing today');
         if (km.ours === false) bits.push('NOT your course — it cannot be edited');
         km.summaryEl.textContent = bits.join(' · ');
       }
@@ -31072,6 +31426,22 @@
             `adding ${rep.spreadAdded} move(s) across ${rep.spreadVars} variation(s)` +
             (rep.unwalkable ? ` · ${rep.unwalkable} would not replay` : '')
           : 'Spread by position: nothing pools below the bar.';
+      }
+
+      // 25d's line, and the same rule as 25c's above it: the number a press
+      // would act on has to be readable BEFORE the arming press.
+      km.unprovenEl.hidden = !rep || !rep.unproven;
+      if (rep && rep.unproven) {
+        if (rep.unprovenEmpty) {
+          km.unprovenEl.textContent = 'Nothing in this course has been answered yet, so every ' +
+            'move is under the floor — not applied.';
+        } else {
+          km.unprovenEl.textContent = unprovenLabel(rep.unprovenFloor) + ': ' +
+            `${rep.unprovenPositions} of ${rep.unprovenTotal} move(s) in this course · pulls ` +
+            `${rep.unprovenVars} variation(s) back` +
+            (rep.unprovenCapped ? ` · ${rep.unprovenCapped} variation(s) not read` : '') +
+            (rep.unprovenUnreadable ? ` · ${rep.unprovenUnreadable} could not be read` : '');
+        }
       }
 
       const setBtn = (btn, dir, idleText, n) => {
@@ -31112,6 +31482,8 @@
       summaryEl.hidden = true;
       const spreadEl = el('div', 'clo-km-spread');
       spreadEl.hidden = true;
+      const unprovenEl = el('div', 'clo-km-spread clo-km-unproven');
+      unprovenEl.hidden = true;
 
       const opts = el('div', 'clo-km-opts');
       const leadLab = el('label', 'clo-km-opt');
@@ -31157,13 +31529,41 @@
         'This pools every record for a position and applies the verdict wherever the course ' +
         'reaches it. It can only ever ADD moves, never withdraw one.';
 
+      // 25d. Its own line, its own count, and OPT-IN for 25c's reason: it can
+      // take a press from five variations to fifty.
+      const unprovenLab = el('label', 'clo-km-opt');
+      unprovenLab.append(el('span', '', 'Also cover moves answered '));
+      const unprovenSel = el('select', 'clo-km-sel');
+      for (let i = 0; i <= C.maxUnproven; i++) {
+        const o = el('option', '', i === 0 ? '(off)' :
+          (i === 1 ? 'never at all' : 'fewer than ' + i + ' times'));
+        o.value = String(i);
+        unprovenSel.append(o);
+      }
+      unprovenSel.addEventListener('change', () => {
+        km.unproven = Number(unprovenSel.value) || 0;
+        chrome.storage.local.set({ [C.unprovenKey]: km.unproven }).catch(() => {});
+        respread();
+      });
+      unprovenLab.append(unprovenSel);
+      unprovenLab.title = 'Under Key Moves Only a move outside the range is played FOR you, so ' +
+        'it can never be failed and can never appear in the difficult-moves record — "fine" and ' +
+        '"never asked" look identical there. This counts how often you have actually answered ' +
+        'each move: from the record itself where the move has ever failed, and otherwise from ' +
+        'Chessable’s own SRS level, which for a move that has never failed IS the number of ' +
+        'sittings you answered it in. Counted per POSITION across the whole course, and the ' +
+        'range is pulled back to the first move under the figure you pick. Anything above ' +
+        '"never at all" reads one lesson per studied variation, so a big course takes a moment. ' +
+        'It needs a course you have actually studied: with nothing answered, every move is ' +
+        'under the floor and nothing is proposed.';
+
       const allLab = el('label', 'clo-km-opt');
       const allBox = el('input');
       allBox.type = 'checkbox';
       allBox.addEventListener('change', () => { km.showAll = allBox.checked; renderList(); });
       allLab.append(allBox, el('span', '', 'show every variation with a difficult move'));
 
-      opts.append(leadLab, spreadLab, staleLab, allLab);
+      opts.append(leadLab, spreadLab, unprovenLab, staleLab, allLab);
 
       const listEl = el('div', 'clo-km-list');
 
@@ -31198,14 +31598,15 @@
       });
       foot.append(fixBtn, backBtn, stopBtn);
 
-      body.append(statusEl, summaryEl, spreadEl, opts, listEl, foot);
+      body.append(statusEl, summaryEl, spreadEl, unprovenEl, opts, listEl, foot);
       panel.append(head, body);
       document.body.appendChild(panel);
       Object.assign(km, {
-        panel, statusEl, summaryEl, spreadEl, listEl, runBtn, fixBtn, backBtn, stopBtn,
-        leadSel, staleBox, allBox, spreadBox,
+        panel, statusEl, summaryEl, spreadEl, unprovenEl, listEl, runBtn, fixBtn, backBtn, stopBtn,
+        leadSel, staleBox, allBox, spreadBox, unprovenSel,
       });
       spreadBox.checked = km.spread;
+      unprovenSel.value = String(km.unproven);
     }
 
     /** Re-derive the report from what is already in hand — the two settings
@@ -31226,21 +31627,25 @@
     }
 
     /**
-     * The 25c toggle changes WHICH MOVES ARE DIFFICULT, not merely where a range
-     * should sit, so `reanalyse()` is not enough — the whole analysis is redone.
-     * From the cached course and rows, so it costs no fetch: the answer is a
-     * different reading of the same two reads, and a scan the user did not ask
-     * for would also silently discard the ticks they had set.
+     * The 25c toggle changes WHICH MOVES ARE DIFFICULT, and 25d's adds a second
+     * kind of pressure entirely, so `reanalyse()` is not enough — the whole
+     * analysis is redone. From the cached course and rows, so it costs no
+     * fetch: the answer is a different reading of the same two reads, and a
+     * scan the user did not ask for would also silently discard the ticks they
+     * had set. (25d can still cost a getLesson per PART-learned variation the
+     * first time it is switched on; the index is then kept for the toggle.)
      */
     async function respread() {
       if (!km.course || !km.rows || km.busy || km.running) { render(); return; }
       const bid = km.bid;
       km.busy = true;
-      setStatus(km.spread ? 'Pooling difficulty by position…' : '');
+      setStatus(km.spread || km.unproven ? 'Re-reading the course record…' : '');
       render();
       try {
-        const report = await analyse(km.course, km.rows, km.threshold, (i, n) => {
-          setStatus(`Pooling difficulty by position — ${i} of ${n} variation(s)…`);
+        const report = await analyse(km.course, km.rows, km.threshold, (i, n, reading) => {
+          setStatus(reading
+            ? `Reading your record — ${i} of ${n} variation(s)…`
+            : `Working through the course — ${i} of ${n} variation(s)…`);
         });
         if (km.bid !== bid) return;
         km.report = report;
@@ -31252,6 +31657,7 @@
             report.spreadAdded, 'occurrence(s) in', report.spreadVars, 'variation(s)' +
             (report.unwalkable ? ' (' + report.unwalkable + ' would not replay)' : ''));
         }
+        if (report.unproven) logUnproven(report);
       } catch (err) {
         warn('key moves: pooling failed:', err);
         setStatus(String((err && err.message) || err), 'warn');
@@ -31302,6 +31708,7 @@
         km.report = null;
         km.course = null;
         km.rows = null;
+        km.provenIdx = null;
         km.sel.clear();
         km.armed = '';
         km.ours = null;
@@ -31312,7 +31719,7 @@
     }
 
     loadBaselines();
-    chrome.storage.local.get([C.leadKey, C.spreadKey]).then((got) => {
+    chrome.storage.local.get([C.leadKey, C.spreadKey, C.unprovenKey]).then((got) => {
       const n = Number(got && got[C.leadKey]);
       if (Number.isFinite(n) && n >= 0 && n <= C.maxLead) {
         km.lead = n;
@@ -31320,6 +31727,12 @@
       }
       km.spread = Boolean(got && got[C.spreadKey]);   // absent = off (opt-in)
       if (km.spreadBox) km.spreadBox.checked = km.spread;
+      // Absent = off (opt-in). `true` is what the very first build of 25d
+      // wrote, and it means the floor this setting started as.
+      const raw = got && got[C.unprovenKey];
+      const floor = raw === true ? 1 : Number(raw) || 0;
+      km.unproven = floor > 0 && floor <= C.maxUnproven ? floor : 0;
+      if (km.unprovenSel) km.unprovenSel.value = String(km.unproven);
     }).catch(() => {});
 
     // One try/catch around the whole tick, section 21's discipline: the interval
