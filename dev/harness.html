@@ -2556,6 +2556,12 @@ body {
     a single move is never drawn — it is not a decision, so the walk takes it
     automatically and the breadcrumb carries it. Variation names appear only on
     the SELECTED row.</p>
+  <p><strong>The Lichess scan (24b)</strong> is the opt-in toggle in the header. It
+    adds a share chip to every row, a <code>covers N%</code> chip to every column
+    head, and a block of the moves real games play that the course does NOT — amber
+    where it is the OPPONENT to move (a reply you will meet and have no answer to),
+    neutral where it is your own move (a repertoire decision, not a hole). Gap rows
+    are deliberately NOT navigable: there is no subtree behind them.</p>
 
   <div class="hx-grid">
     <div class="hx-card" style="flex:1 1 100%">
@@ -2564,6 +2570,9 @@ body {
         <div class="clo-ct hx-pos" style="width:min(880px,100%)">
           <div class="clo-ct-head">
             <span class="clo-ct-title">Course tree</span>
+            <input class="clo-ct-find" type="search" placeholder="Find a variation…">
+            <button type="button" class="clo-ct-toggle clo-ct-toggle--on">Lichess</button>
+            <button type="button" class="clo-ct-toggle">Flip</button>
             <button type="button" class="clo-ct-btn">Re-read</button>
             <button type="button" class="clo-ct-x">×</button>
           </div>
@@ -2571,6 +2580,7 @@ body {
             <div class="clo-ct-summary">
               <div class="clo-ct-summary-line">72 line(s) · 1118 positions · 34 from this start</div>
               <div class="clo-ct-note">9 informational card(s) ignored.</div>
+              <div class="clo-ct-keys">↑↓ branch · ←→ depth · Home start · f flip · / find · Esc close</div>
             </div>
             <div class="clo-ct-crumbs">
               <button type="button" class="clo-ct-crumb">start</button>
@@ -2579,164 +2589,207 @@ body {
               <span class="clo-ct-num">2.</span><button type="button" class="clo-ct-crumb">Nf3</button>
               <button type="button" class="clo-ct-crumb">Nc6</button>
               <span class="clo-ct-num">3.</span><button type="button" class="clo-ct-crumb">d4</button>
+              <a class="clo-ct-lichess" href="#">open on lichess ↗</a>
             </div>
             <div class="clo-ct-stage">
               <div class="clo-cr-mini clo-ct-board" style="width:240px;font-size:24px"
                    data-hx-board="r1bqkbnr/pppp1ppp/2n5/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R b KQkq - 0 3"
                    data-hx-sq="d2:last|d4:last"></div>
-              <div class="clo-ct-cols">
-
-                <div class="clo-ct-col">
-                  <div class="clo-ct-col-head">
-                    <span class="clo-ct-col-stm">Black to move</span>
-                    <span class="clo-ct-col-n">2 moves</span>
-                  </div>
-                  <div class="clo-ct-row clo-ct-row--on">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:100%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <button type="button" class="clo-ct-san">exd4</button>
-                        <span class="clo-ct-num">4.</span><button type="button" class="clo-ct-san">Nxd4</button>
-                      </div>
-                      <div class="clo-ct-meta">
-                        <span class="clo-ct-count">15</span>
-                        <span class="clo-ct-badge clo-ct-badge--in"></span>
-                        <a class="clo-ct-link" href="#">Introduction to the Scotch Opening</a>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="clo-ct-row">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:7%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <button type="button" class="clo-ct-san">d6</button>
-                        <span class="clo-ct-num">4.</span><button type="button" class="clo-ct-san">Bb5</button>
-                        <button type="button" class="clo-ct-san">exd4</button>
-                        <span class="clo-ct-num">5.</span><button type="button" class="clo-ct-san">Nxd4</button>
-                        <button type="button" class="clo-ct-san">Bd7</button>
-                        <span class="clo-ct-num">6.</span><button type="button" class="clo-ct-san">Nc3</button>
-                        <button type="button" class="clo-ct-more">+10 more</button>
-                      </div>
-                      <div class="clo-ct-meta">
-                        <span class="clo-ct-count">1</span>
-                        <span class="clo-ct-badge clo-ct-badge--trans"></span>
-                        <span class="clo-ct-tag">line ends</span>
-                      </div>
-                    </div>
-                  </div>
+              <div class="clo-ct-colswrap">
+                <!-- 24d: the DECIDED columns, folded up. Only the frontier column is
+                     drawn, so it stays in the same place however deep the browse goes;
+                     a tab puts its own column back beside it. -->
+                <div class="clo-ct-tabs">
+                  <button type="button" class="clo-ct-tab"><span class="clo-ct-num">1.</span><span class="clo-ct-tab-san">e4</span><span class="clo-ct-tab-n">+3</span></button>
+                  <button type="button" class="clo-ct-tab"><span class="clo-ct-num">2.</span><span class="clo-ct-tab-san">Nf3</span><span class="clo-ct-tab-n">+2</span></button>
+                  <button type="button" class="clo-ct-tab clo-ct-tab--open"><span class="clo-ct-num">3.</span><span class="clo-ct-tab-san">d4</span><span class="clo-ct-tab-n">+1</span></button>
                 </div>
+                <div class="clo-ct-cols">
 
-                <div class="clo-ct-col">
-                  <div class="clo-ct-col-head">
-                    <span class="clo-ct-col-stm">Black to move</span>
-                    <span class="clo-ct-col-n">3 moves</span>
-                  </div>
-                  <div class="clo-ct-row clo-ct-row--on">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:100%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <button type="button" class="clo-ct-san">Bc5</button>
-                        <span class="clo-ct-num">5.</span><button type="button" class="clo-ct-san">Nb3</button>
-                        <button type="button" class="clo-ct-san">Bb6</button>
-                        <span class="clo-ct-num">6.</span><button type="button" class="clo-ct-san">Nc3</button>
+                  <div class="clo-ct-col">
+                    <div class="clo-ct-col-head">
+                      <span class="clo-ct-col-stm">Black to move</span>
+                      <span class="clo-ct-col-n">2 moves</span>
+                      <span class="clo-ct-cover clo-ct-cover--thin">covers 54%</span>
+                    </div>
+                    <div class="clo-ct-row clo-ct-row--on">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:100%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <button type="button" class="clo-ct-san">exd4</button>
+                          <span class="clo-ct-num">4.</span><button type="button" class="clo-ct-san">Nxd4</button>
+                        </div>
+                        <div class="clo-ct-meta">
+                          <span class="clo-ct-count">15</span>
+                          <span class="clo-ct-share" title="21,904 of 41,330">53%</span>
+                          <span class="clo-ct-badge clo-ct-badge--in"></span>
+                          <a class="clo-ct-link" href="#">Introduction to the Scotch Opening</a>
+                        </div>
                       </div>
-                      <div class="clo-ct-meta">
-                        <span class="clo-ct-count">8</span>
-                        <a class="clo-ct-link" href="#">Scotch: 4…Bc5 main</a>
+                    </div>
+                    <div class="clo-ct-row">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:7%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <button type="button" class="clo-ct-san">d6</button>
+                          <span class="clo-ct-num">4.</span><button type="button" class="clo-ct-san">Bb5</button>
+                          <button type="button" class="clo-ct-san">exd4</button>
+                          <span class="clo-ct-num">5.</span><button type="button" class="clo-ct-san">Nxd4</button>
+                          <button type="button" class="clo-ct-san">Bd7</button>
+                          <span class="clo-ct-num">6.</span><button type="button" class="clo-ct-san">Nc3</button>
+                          <button type="button" class="clo-ct-more">+10 more</button>
+                        </div>
+                        <div class="clo-ct-meta">
+                          <span class="clo-ct-count">1</span>
+                          <span class="clo-ct-share" title="1,240 of 41,330">3.0%</span>
+                          <span class="clo-ct-badge clo-ct-badge--trans"></span>
+                          <span class="clo-ct-tag">line ends</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="clo-ct-gaphead clo-ct-gaphead--gap">Played here, not answered</div>
+                    <div class="clo-ct-row clo-ct-row--gap clo-ct-gap--gap">
+                      <div class="clo-ct-bar"></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <span class="clo-ct-num">3…</span><span class="clo-ct-san clo-ct-san--gap">Nxd4</span>
+                        </div>
+                        <div class="clo-ct-meta">
+                          <span class="clo-ct-share" title="11,900 of 41,330">29%</span>
+                          <span class="clo-ct-tag clo-ct-tag--gap">no answer</span>
+                          <a class="clo-ct-lichess" href="#">lichess ↗</a>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="clo-ct-row clo-ct-row--gap clo-ct-gap--gap">
+                      <div class="clo-ct-bar"></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <span class="clo-ct-num">3…</span><span class="clo-ct-san clo-ct-san--gap">Bb4+</span>
+                        </div>
+                        <div class="clo-ct-meta">
+                          <span class="clo-ct-share" title="2,060 of 41,330">5.0%</span>
+                          <span class="clo-ct-tag clo-ct-tag--gap">no answer</span>
+                          <a class="clo-ct-lichess" href="#">lichess ↗</a>
+                        </div>
                       </div>
                     </div>
                   </div>
-                  <div class="clo-ct-row">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:63%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <button type="button" class="clo-ct-san">Nf6</button>
-                        <span class="clo-ct-num">5.</span><button type="button" class="clo-ct-san">Nxc6</button>
-                        <button type="button" class="clo-ct-san">bxc6</button>
-                        <span class="clo-ct-num">6.</span><button type="button" class="clo-ct-san">e5</button>
+
+                  <div class="clo-ct-col">
+                    <div class="clo-ct-col-head">
+                      <span class="clo-ct-col-stm">Black to move</span>
+                      <span class="clo-ct-col-n">3 moves</span>
+                      <span class="clo-ct-cover clo-ct-cover--full">covers 93%</span>
+                    </div>
+                    <div class="clo-ct-row clo-ct-row--on">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:100%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <button type="button" class="clo-ct-san">Bc5</button>
+                          <span class="clo-ct-num">5.</span><button type="button" class="clo-ct-san">Nb3</button>
+                          <button type="button" class="clo-ct-san">Bb6</button>
+                          <span class="clo-ct-num">6.</span><button type="button" class="clo-ct-san">Nc3</button>
+                        </div>
+                        <div class="clo-ct-meta">
+                          <span class="clo-ct-count">8</span>
+                          <a class="clo-ct-link" href="#">Scotch: 4…Bc5 main</a>
+                        </div>
                       </div>
-                      <div class="clo-ct-meta">
-                        <span class="clo-ct-count">5</span>
-                        <span class="clo-ct-badge clo-ct-badge--in"></span>
+                    </div>
+                    <div class="clo-ct-row">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:63%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <button type="button" class="clo-ct-san">Nf6</button>
+                          <span class="clo-ct-num">5.</span><button type="button" class="clo-ct-san">Nxc6</button>
+                          <button type="button" class="clo-ct-san">bxc6</button>
+                          <span class="clo-ct-num">6.</span><button type="button" class="clo-ct-san">e5</button>
+                        </div>
+                        <div class="clo-ct-meta">
+                          <span class="clo-ct-count">5</span>
+                          <span class="clo-ct-badge clo-ct-badge--in"></span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="clo-ct-row">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:25%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <button type="button" class="clo-ct-san">Nxd4</button>
+                          <span class="clo-ct-num">5.</span><button type="button" class="clo-ct-san">Qxd4</button>
+                        </div>
+                        <div class="clo-ct-meta">
+                          <span class="clo-ct-count">2</span>
+                          <span class="clo-ct-tag clo-ct-tag--loop">repeats</span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                  <div class="clo-ct-row">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:25%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <button type="button" class="clo-ct-san">Nxd4</button>
-                        <span class="clo-ct-num">5.</span><button type="button" class="clo-ct-san">Qxd4</button>
+
+                  <div class="clo-ct-col">
+                    <div class="clo-ct-col-head">
+                      <span class="clo-ct-col-stm">Black to move</span>
+                      <span class="clo-ct-col-n">4 moves</span>
+                      <span class="clo-ct-cover clo-ct-cover--none">only 31 games</span>
+                    </div>
+                    <div class="clo-ct-row">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:100%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <button type="button" class="clo-ct-san">Nf6</button>
+                          <span class="clo-ct-num">7.</span><button type="button" class="clo-ct-san">Qe2</button>
+                          <button type="button" class="clo-ct-san">O-O</button>
+                          <span class="clo-ct-num">8.</span><button type="button" class="clo-ct-san">Bg5</button>
+                        </div>
+                        <div class="clo-ct-meta"><span class="clo-ct-count">4</span></div>
                       </div>
-                      <div class="clo-ct-meta">
-                        <span class="clo-ct-count">2</span>
-                        <span class="clo-ct-tag clo-ct-tag--loop">repeats</span>
+                    </div>
+                    <div class="clo-ct-row">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:50%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <button type="button" class="clo-ct-san">d6</button>
+                          <span class="clo-ct-num">7.</span><button type="button" class="clo-ct-san">Qe2</button>
+                        </div>
+                        <div class="clo-ct-meta"><span class="clo-ct-count">2</span></div>
+                      </div>
+                    </div>
+                    <div class="clo-ct-row">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:25%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <button type="button" class="clo-ct-san">Qf6</button>
+                          <span class="clo-ct-num">7.</span><button type="button" class="clo-ct-san">Qe2</button>
+                          <button type="button" class="clo-ct-san">Nge7</button>
+                          <span class="clo-ct-num">8.</span><button type="button" class="clo-ct-san">Be3</button>
+                          <button type="button" class="clo-ct-san">O-O-O</button>
+                          <span class="clo-ct-num">9.</span><button type="button" class="clo-ct-san">h4</button>
+                        </div>
+                        <div class="clo-ct-meta">
+                          <span class="clo-ct-count">1</span>
+                          <span class="clo-ct-tag" title="2 variations finish here, though others play on">2 lines end</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="clo-ct-row">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:25%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <button type="button" class="clo-ct-san">Nge7</button>
+                          <span class="clo-ct-num">7.</span><button type="button" class="clo-ct-san">Qe2</button>
+                          <button type="button" class="clo-ct-san">O-O</button>
+                          <span class="clo-ct-num">8.</span><button type="button" class="clo-ct-san">Be3</button>
+                          <button type="button" class="clo-ct-san">f5</button>
+                          <span class="clo-ct-num">9.</span><button type="button" class="clo-ct-san">O-O-O</button>
+                          <button type="button" class="clo-ct-more">+4 more</button>
+                        </div>
+                        <div class="clo-ct-meta"><span class="clo-ct-count">1</span></div>
                       </div>
                     </div>
                   </div>
+
                 </div>
-
-                <div class="clo-ct-col">
-                  <div class="clo-ct-col-head">
-                    <span class="clo-ct-col-stm">Black to move</span>
-                    <span class="clo-ct-col-n">4 moves</span>
-                  </div>
-                  <div class="clo-ct-row">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:100%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <button type="button" class="clo-ct-san">Nf6</button>
-                        <span class="clo-ct-num">7.</span><button type="button" class="clo-ct-san">Qe2</button>
-                        <button type="button" class="clo-ct-san">O-O</button>
-                        <span class="clo-ct-num">8.</span><button type="button" class="clo-ct-san">Bg5</button>
-                      </div>
-                      <div class="clo-ct-meta"><span class="clo-ct-count">4</span></div>
-                    </div>
-                  </div>
-                  <div class="clo-ct-row">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:50%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <button type="button" class="clo-ct-san">d6</button>
-                        <span class="clo-ct-num">7.</span><button type="button" class="clo-ct-san">Qe2</button>
-                      </div>
-                      <div class="clo-ct-meta"><span class="clo-ct-count">2</span></div>
-                    </div>
-                  </div>
-                  <div class="clo-ct-row">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:25%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <button type="button" class="clo-ct-san">Qf6</button>
-                        <span class="clo-ct-num">7.</span><button type="button" class="clo-ct-san">Qe2</button>
-                        <button type="button" class="clo-ct-san">Nge7</button>
-                        <span class="clo-ct-num">8.</span><button type="button" class="clo-ct-san">Be3</button>
-                        <button type="button" class="clo-ct-san">O-O-O</button>
-                        <span class="clo-ct-num">9.</span><button type="button" class="clo-ct-san">h4</button>
-                      </div>
-                      <div class="clo-ct-meta">
-                        <span class="clo-ct-count">1</span>
-                        <span class="clo-ct-tag" title="2 variations finish here, though others play on">2 lines end</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="clo-ct-row">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:25%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <button type="button" class="clo-ct-san">Nge7</button>
-                        <span class="clo-ct-num">7.</span><button type="button" class="clo-ct-san">Qe2</button>
-                        <button type="button" class="clo-ct-san">O-O</button>
-                        <span class="clo-ct-num">8.</span><button type="button" class="clo-ct-san">Be3</button>
-                        <button type="button" class="clo-ct-san">f5</button>
-                        <span class="clo-ct-num">9.</span><button type="button" class="clo-ct-san">O-O-O</button>
-                        <button type="button" class="clo-ct-more">+4 more</button>
-                      </div>
-                      <div class="clo-ct-meta"><span class="clo-ct-count">1</span></div>
-                    </div>
-                  </div>
-                </div>
-
               </div>
             </div>
             <div class="clo-ct-roots">
@@ -2755,6 +2808,39 @@ body {
                   <a class="clo-ct-link" href="#">Tactic: overloaded piece #7</a>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Find a variation (24c)</h3>
+      <p>The header field filters the course's variation NAMES and stands on the
+        one you pick — a search result here is a place to carry on browsing from,
+        not a dead end. The matches sit in the flow above the summary rather than
+        in a floating menu: the panel is <code>overflow: hidden</code>, and a list
+        that pushes the stage down is honest about taking the space.</p>
+      <div class="hx-stage">
+        <div class="clo-ct hx-pos" style="width:min(560px,100%)">
+          <div class="clo-ct-head">
+            <span class="clo-ct-title">Course tree</span>
+            <input class="clo-ct-find" type="search" value="scotch">
+            <button type="button" class="clo-ct-toggle clo-ct-toggle--on">Lichess</button>
+            <button type="button" class="clo-ct-toggle">Flip</button>
+            <button type="button" class="clo-ct-btn">Re-read</button>
+            <button type="button" class="clo-ct-x">×</button>
+          </div>
+          <div class="clo-ct-body">
+            <div class="clo-ct-find-box">
+              <button type="button" class="clo-ct-find-hit">Introduction to the Scotch Opening</button>
+              <button type="button" class="clo-ct-find-hit">Scotch: 4…Bc5 main</button>
+              <button type="button" class="clo-ct-find-hit">Scotch 4…Qh4?!</button>
+              <div class="clo-ct-find-none">Showing the first 12.</div>
+            </div>
+            <div class="clo-ct-summary">
+              <div class="clo-ct-summary-line">72 line(s) · 1118 positions · 34 from this start</div>
+              <div class="clo-ct-keys">↑↓ branch · ←→ depth · Home start · f flip · / find · Esc close</div>
             </div>
           </div>
         </div>
@@ -2856,37 +2942,43 @@ body {
             <div class="clo-ct-stage">
               <div class="clo-cr-mini clo-ct-board" style="width:200px;font-size:20px"
                    data-hx-board="r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 3"></div>
-              <div class="clo-ct-cols">
-                <div class="clo-ct-col">
-                  <div class="clo-ct-col-head">
-                    <span class="clo-ct-col-stm">White to move</span>
-                    <span class="clo-ct-col-n">2 moves</span>
-                  </div>
-                  <div class="clo-ct-row clo-ct-row--on">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:100%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <span class="clo-ct-num">3.</span><button type="button" class="clo-ct-san">d4</button>
-                      </div>
-                      <div class="clo-ct-meta">
-                        <span class="clo-ct-count">17</span>
-                        <a class="clo-ct-link" href="#">Scotch: main line</a>
+              <div class="clo-ct-colswrap">
+                <div class="clo-ct-tabs">
+                  <button type="button" class="clo-ct-tab"><span class="clo-ct-num">1.</span><span class="clo-ct-tab-san">e4</span><span class="clo-ct-tab-n">+3</span></button>
+                  <button type="button" class="clo-ct-tab"><span class="clo-ct-num">2.</span><span class="clo-ct-tab-san">Nf3</span><span class="clo-ct-tab-n">+2</span></button>
+                </div>
+                <div class="clo-ct-cols">
+                  <div class="clo-ct-col">
+                    <div class="clo-ct-col-head">
+                      <span class="clo-ct-col-stm">White to move</span>
+                      <span class="clo-ct-col-n">2 moves</span>
+                    </div>
+                    <div class="clo-ct-row clo-ct-row--on">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:100%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <span class="clo-ct-num">3.</span><button type="button" class="clo-ct-san">d4</button>
+                        </div>
+                        <div class="clo-ct-meta">
+                          <span class="clo-ct-count">17</span>
+                          <a class="clo-ct-link" href="#">Scotch: main line</a>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <div class="clo-ct-row">
-                    <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:24%"></div></div>
-                    <div class="clo-ct-row-main">
-                      <div class="clo-ct-line">
-                        <span class="clo-ct-num">3.</span><button type="button" class="clo-ct-san">Bb5</button>
-                        <button type="button" class="clo-ct-san">a6</button>
-                        <span class="clo-ct-num">4.</span><button type="button" class="clo-ct-san">Ba4</button>
-                        <button type="button" class="clo-ct-san">Nf6</button>
-                        <span class="clo-ct-num">5.</span><button type="button" class="clo-ct-san">O-O</button>
-                      </div>
-                      <div class="clo-ct-meta">
-                        <span class="clo-ct-count">4</span>
-                        <span class="clo-ct-badge clo-ct-badge--in"></span>
+                    <div class="clo-ct-row">
+                      <div class="clo-ct-bar"><div class="clo-ct-bar-fill" style="height:24%"></div></div>
+                      <div class="clo-ct-row-main">
+                        <div class="clo-ct-line">
+                          <span class="clo-ct-num">3.</span><button type="button" class="clo-ct-san">Bb5</button>
+                          <button type="button" class="clo-ct-san">a6</button>
+                          <span class="clo-ct-num">4.</span><button type="button" class="clo-ct-san">Ba4</button>
+                          <button type="button" class="clo-ct-san">Nf6</button>
+                          <span class="clo-ct-num">5.</span><button type="button" class="clo-ct-san">O-O</button>
+                        </div>
+                        <div class="clo-ct-meta">
+                          <span class="clo-ct-count">4</span>
+                          <span class="clo-ct-badge clo-ct-badge--in"></span>
+                        </div>
                       </div>
                     </div>
                   </div>

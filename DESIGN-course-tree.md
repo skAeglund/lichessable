@@ -1,10 +1,11 @@
 # DESIGN — Reading a course as a tree (section 24)
 
-Status: **BUILT AND VERIFIED LIVE (v0.116.0, 2026-08-19).** §1-§11 are the
-original design pass; **§12 is the live ground truth and OVERRIDES §3.5, §5.1
-and §8**, §13 is what shipped first and what was left out, and **§14 is the
-second pass, which overrides §3.1 about the panel’s shape and §3.3 about a
-forced COLUMN**. Read §12
+Status: **BUILT (v0.123.0).** §1-§11 are the original design pass; **§12 is the
+live ground truth and OVERRIDES §3.5, §5.1 and §8**, §13 is what shipped first
+and what was left out, **§14 is the second pass, which overrides §3.1 about the
+panel’s shape and §3.3 about a forced COLUMN**, and **§15 is the third, which
+REVERSES §7’s "no fetch per column" and §3.5’s exclusion of Lichess popularity**
+— read §15.1 before assuming that rule is still in force anywhere. Read §12
 before trusting anything above it: four of §8’s seven questions came back with
 an answer the design did not expect.
 
@@ -199,6 +200,10 @@ request per position and a column is a dozen positions the moment it opens;
 §7's "never fetch per column" rule outranks it. The panel beside the board
 already answers it for the position you are standing on.
 
+**REVERSED in v0.123.0 (§15).** The arithmetic above is wrong: a column is one
+POSITION, not a dozen, and one explorer request answers every move of it. What
+was being priced was one request per ROW, which is still refused.
+
 ---
 
 ## 4) The data — most of which exists
@@ -328,7 +333,10 @@ which is a different feature and can reuse the same walk.
   surface here.
 * **No fetch per column.** The whole course is one call, already cached. A
   browser that fetches as you click is a browser that rate-limits the user out
-  of their own course.
+  of their own course. **LIFTED IN v0.123.0 — see §15.1.** A column is ONE
+  position and one explorer request answers all of it, which is what makes the
+  scan two to four requests a click rather than a dozen. Everything else in this
+  list still holds, including "it never writes".
 * **It must not freeze the page.** Yield every `chunkVars`, as 6c does.
 * **An unresolvable line is dropped and COUNTED, never guessed at.** Section
   21's lesson (DESIGN-repertoire-coverage.md, opening section): taking a parse
@@ -720,3 +728,320 @@ Columns HUG their content rather than stretching. A Finder column browser
 stretches them; §12.1 says a column here is two to five rows, so stretching
 leaves most of a maximised panel as empty column. `max-height: 100%` is the
 safety valve for the nine-row worst case.
+
+---
+
+## 15) Third pass (v0.123.0) — the Lichess scan (24b) and the browsing controls (24c)
+
+Two changes, one of which **reverses a rule §3.5 and §7 stated flatly**. That is
+the important part of this section: read §15.1 before assuming the old rule is
+still in force anywhere.
+
+### 15.1 "No fetch per column" is lifted, and exactly how far
+
+§3.5 kept Lichess popularity off a row, and §7 said:
+
+> **No fetch per column.** The whole course is one call, already cached. A
+> browser that fetches as you click is a browser that rate-limits the user out
+> of their own course.
+
+The rule was right about the **cost** and silent about the **value**, and the
+value turns out to be the single most useful thing this panel can show: *the
+author covered these three moves — here is what the other 40% of games play.*
+A course tree without it answers "what did the author write"; with it, it
+answers "what did the author MISS", which is the question a repertoire owner
+actually has.
+
+What makes it affordable is one fact the original rule did not use:
+
+> **A COLUMN IS ONE POSITION, and one explorer request answers every move of a
+> position.**
+
+So the price is **one request per column DRAWN** — at most `maxColumns` (8), in
+practice two to four, and most of those already sitting in the `cloPopularityCache`
+that sections 14 and 21 fill and share. §3.5's fear was one request per *row*,
+which would have been a dozen per click; that version is still refused.
+
+Everything in the implementation follows from that being the only justification,
+and each of these is load-bearing rather than polite:
+
+* **opt-in, off by default** (`cloTreeLichess`, storage.local). Opening a tree is
+  not asking for network traffic;
+* **only DRAWN columns**. Never a row, never a hover, never the plies inside a
+  folded run, and never a column the breadcrumb is carrying. The call sits in
+  `renderColumns`, not in `columnsFor` — the walk goes *through* auto-taken and
+  off-screen columns, and asking about those would turn "per column drawn" into
+  "per column walked";
+* **one at a time**, `requestGapMs` apart, section 21's 429 cooldown and single
+  retry;
+* **a failure is remembered** (`ct.db` holds `{error}`), or a rejected token
+  would be one request per redraw for ever. Switching the toggle off and on is
+  the retry;
+* **`ct.dbSeq` fences staleness.** A course switch bumps it and everything in
+  flight is dropped rather than written into a tree it is not about.
+
+### 15.2 The three things a scanned column says
+
+1. **A share chip on each row** — how often real games play that move. On the
+   row's FIRST move only: the rest of a folded run is forced, so its share is
+   the first one's by construction.
+2. **`covers N%` in the column head** — the games the course's answers account
+   for, summed over **every** answer at the position rather than over the rows
+   drawn (`maxRows` is a runaway guard, and a coverage figure that quietly
+   ignored the rows past it would be wrong rather than capped). This is the one
+   number the whole feature exists to produce.
+3. **A block of the moves the course does not play**, over `gapMinShare`, capped
+   at `gapMaxRows`, commonest first, UNDER the course's own rows and never
+   merged into their sort — a row that leads nowhere sitting between two that do
+   would read as a branch.
+
+Gap rows are deliberately **not navigable**. There is no subtree behind one,
+because the author never wrote one. Hovering puts it on the board (§14.3's arrow,
+unchanged) and a link opens the position it leads to on Lichess. Nothing is
+offered that would WRITE — §7 stands, and sections 19c/19d are where adding a
+line safely already lives.
+
+### 15.3 Whose move it is decides what a gap MEANS — and `courseSide` cannot answer it
+
+Section 6c's rule, for section 6c's reason: on the **opponent's** move an
+uncovered popular reply is a hole the user will meet; on their **own** move it is
+a repertoire decision (1…c5 over 1…e5). Drawing the second as a gap would paint
+every course red for having an opinion.
+
+`courseSide` cannot be the source, and §12.6 is why: it is a course-wide
+**majority**, and it answers `'w'` for course 291847, which holds fifteen Black
+lines. So the walk now counts, **per move**, how many lines of each colour play
+it (two ints on an `answers` entry), and `positionSide` sums them over the
+position's own moves. A position both colours pass through answers `null` and the
+distinction is simply not drawn — the fail-soft arm, and it fires on a real
+course.
+
+This is the judgement in the whole feature most able to be wrong without anyone
+noticing, which is why `dev/check-course-tree.js` asserts it directly and a
+control (`positionSide` falling back to `courseSide`) fails on exactly the
+assertion that covers it.
+
+### 15.4 The explorer's SAN is resolved, never compared
+
+`repertoireMoveState` learned this in v0.48.1 and the lesson transfers whole:
+Lichess writes castling as king-takes-rook, Chessable over-disambiguates
+(§12.7), and the only stable identity for a move is the pair of squares. Every
+explorer SAN goes through `sanToUci` against the column's own position, and one
+that will not resolve is dropped rather than guessed at. Memoised on the entry,
+since a position's answer never changes and this is ~50 `moveToSan` sweeps.
+
+A control that compares the raw SAN fails four assertions, including the
+castling one.
+
+### 15.5 The shared cache is RE-READ before it is written
+
+`savePopCache` writes the object whole, and this panel keeps its read open for as
+long as it is on screen — minutes, during which the coverage report on the same
+page can fill hundreds of positions of its own. Saving our snapshot back would
+delete every one of them silently, and the only symptom would be section 21
+re-fetching what it had already paid for. `flushDbCache` therefore loads fresh,
+merges only the entries WE added, and saves that. Section 21's own window is one
+run rather than one sitting, which is why it has never needed this.
+
+### 15.5a A REDRAW MUST NOT HAPPEN INSIDE A DRAW (found live, v0.123.1)
+
+The panel drew the same column twice, and only on the SECOND course opened in a
+session. `renderColumns` calls `wantDb` from inside its own loop over the
+columns; `wantDb` starts `drainDb`; and an `async` function runs synchronously
+up to its first EXECUTED await. Once `ct.dbCache` is loaded the
+`await loadPopCache()` is skipped by its own `if`, so a position already in the
+cache was answered with no yield at all — putting a whole `renderTree` inside
+`renderColumns`'s loop. The inner one cleared the host and drew every column;
+the outer one then carried on appending its own.
+
+`refreshColumns` is therefore DEFERRED (`setTimeout(0)`, coalesced) rather than
+guarded by a re-entrancy flag: a flag would have to drop the inner redraw, and
+that redraw is the one carrying the new data.
+
+Worth stating as a class, not an incident: **an async function is not
+asynchronous.** Every await in this file that sits behind an `if` is a place the
+same shape can recur.
+
+### 15.6 The keyboard (24c)
+
+A Miller-column browser is a keyboard object — Finder's is, Explorer's is — and
+this one shipped pure mouse. `↑↓` pick a branch in the frontier column, `←→` move
+in depth, `Home` returns to the start, `f` flips, `/` focuses the find field,
+`Esc` closes. Bound on `document` in **capture** phase (section 18's overlays'
+discipline: the panel fills the window and is almost never the focused element),
+standing down for a modifier chord and for any focused text field, so the
+browser's own Ctrl-F and every box on the page underneath are untouched. The
+handler is wrapped in a try/catch for section 23's reason: a key handler that
+throws is *silent*.
+
+`goShallower` goes through the target column's own `prefix`, never arithmetic on
+`ct.path` — §14.2's rule, and the reason it exists.
+
+The shortcuts say so themselves, in one dim line under the summary. A shortcut
+nobody is told about is a shortcut nobody uses, and the tooltips only reach a
+pointer.
+
+### 15.7 Finding a line by name (24c)
+
+§2.5's third patch-in, and the one thing columns are worse at than an outline.
+The walk now keeps `lines` — `{ oid, name, startCk, ucis }` per variation — and a
+match **stands on** the line: `rootKey` and `path` are set and everything else
+follows as if the user had clicked their way there, so a search result is a place
+to carry on browsing from rather than a dead end. The path is rebuilt from
+`answers` at navigation time rather than stored, precisely so it cannot disagree
+with what the columns will draw.
+
+Not the indented outline of §3.2, which is still not built and still cheap.
+
+### 15.8 Measured on the third pass (harness, replica at 880px)
+
+| | |
+| --- | --- |
+| header | 878x39, no wrap, five controls beside the title |
+| find field | 210x24 (34px and 16px type under `html.clo-touch`, section 22's anti-zoom rule) |
+| key hint | one 12px line |
+| a row | 59px normal, 49px for a gap, in a 197px column |
+| gap heading band | 18px |
+| `covers N%` / share chips | 57x12 / 28x12 |
+| horizontal overflow | none |
+| at 380px panel width | header wraps to 71px with the find field on its own line, one column, no overflow |
+| under `html.clo-touch` | row 55px, gap row 62px, toggle 73x32, still no overflow |
+
+### 15.9 Still not built
+
+Everything in §13.2 except the two items §15 delivers, plus:
+
+* **the tree's own gaps fed into section 21's report.** The two panels still do
+  not talk, and this is now the obvious join: 21 ranks the gaps between two
+  COURSES, 24b shows the gaps between a course and the WORLD. Same explorer
+  cache, same walk, different question;
+* **a gap row launching anything.** §7 and §10 both hold: it is a reading
+  surface, and 19c/19d already add a line safely from a board.
+
+---
+
+## 16) Fourth pass (v0.124.0) — three changes from using it, all about the pointer
+
+Three complaints from a real browse of course 453453, each of which turned out to
+be the same shape of problem: the panel answering a slightly different question
+from the one the pointer was asking.
+
+### 16.1 Hovering ONE move of a run (24)
+
+§14.3 gave the ROW a hover: the position BEFORE its branching move, with that
+move drawn as an arrow. That is right for the row, and it is what lets two
+candidates in a column be compared by moving the pointer between them.
+
+It is the wrong answer for a *ply inside a folded run*. §12.1 says 93-98% of a
+course's positions are forced, and the whole reason the fold exists is that a
+20-ply variation is two or three ROWS — so most of the moves on screen are
+`.clo-ct-san` buttons inside a run, and pointing at the eleventh of them and
+being shown the position before the FIRST is not an answer to anything. What the
+pointer is asking there is "what does it look like at this point of the line".
+
+So `setPreview` grew a third argument, the ply:
+
+| pointing at | position shown | the move |
+|---|---|---|
+| the row | BEFORE its first move | drawn as an ARROW — a claim about a move available here |
+| one ply of the run | AFTER that ply | TINTED, exactly like the last move — a move already played |
+
+The two treatments were already in `renderBoard` for exactly this distinction
+(§14.3's own note: "an arrow at this size is thin and a one-square move barely
+registers"); the ply reading simply reuses the tint arm with the hovered ply
+standing in for the last one.
+
+**Two things this cost, both of them the kind that fails quietly:**
+
+* `mouseenter`/`mouseleave` do NOT fire between an element and its own
+  descendant. Entering a ply button therefore never fires the row's `mouseleave`,
+  and coming back out of it never re-fires the row's `mouseenter`. So the ply's
+  own leave handler must *restore the row's reading*, not clear it — clearing
+  would blank the board while the pointer is still inside the row. Leaving the
+  row entirely then still clears, through the row's own listener and the host's
+  safety net, in that order.
+* The two readings of one row differ in NOTHING but that third argument, so
+  `setPreview`'s "is this the same preview" test had to start including it. A
+  field-by-field compare on `{ck, uci}` says "same" and leaves the board on
+  whichever of the two landed first. It is compared through a composed key now.
+
+### 16.2 A gap list is meaningless on your own move (24b)
+
+§15.3 established that whose move it is decides what an uncovered move MEANS, and
+built `gapKind` to say so. What it then did with the answer was change the
+HEADING — "Played here, not answered" against "Played here, not in the course" —
+and print the same list either way.
+
+That is the same mistake one step further on. On the user's own move the list is
+half a dozen moves *the author chose not to play*, printed underneath the move
+the author did play, under a heading saying the course does not have them. A
+Najdorf repertoire is not missing 1…e5. §15.3's own argument — "drawing the
+second as a gap paints every course red for having an opinion" — applies to the
+list, not merely to its title.
+
+So on a `'choice'` column the list is DROPPED. The guard is conditional on the
+course actually answering the position: where it plays nothing here, "what do
+people play from this position" really is the only thing that can be said, and
+the list stands. (In practice a *drawn* column always has answers — `columnsFor`
+stops walking where there are none — so the condition is documentation of the
+rule rather than a live branch. It is written out anyway, because the rule is
+what a later change would violate.)
+
+The "covers N%" chip is the same claim in a smaller space and gets the same
+treatment: on a user move it reads **"plays N%"** and wears none of the `--thin`
+alarm colouring. Same number, different word. "Covers 12%" is a verdict; "plays
+12%" is a fact about how fashionable the author's choice is, which is genuinely
+interesting and is not a hole.
+
+`dev/check-course-tree.js` asserts BOTH arms — nothing listed on the user's move
+however popular, and the opponent's move still listing them. A control with the
+guard removed fails on exactly the first.
+
+### 16.3 The frontier column never moves (24d)
+
+A Miller-column browser walks rightwards. That is its defining property and here
+it was its one real cost: the *frontier* — the column with the open question in
+it, the only one you are ever about to click — moved one step right on every
+click, so the pointer chased it across the panel, and the column sitting under
+the pointer changed identity each time.
+
+§14.2 had already removed one class of this (a column with one row is not a
+decision and is never drawn). This removes the rest: **a column whose question is
+answered collapses into a TAB above the columns**, and the frontier takes its
+place. Standing anywhere, the thing to read is at the same x.
+
+A tab is expandable, not a label. Clicking one puts its column back on screen
+beside the frontier, which is what keeps "what else could I have played there"
+one click away instead of gone. `ct.openCols` is keyed by POSITION, so an opened
+column stays open across a redraw and across every later arrival at the same
+position, and it is cleared wherever `ct.expanded` is.
+
+It is not the breadcrumb, which says the same moves and does the other thing with
+them: the breadcrumb TRUNCATES the path back to a ply. A tab changes what is
+drawn and nothing about where the board stands.
+
+Three consequences worth writing down:
+
+* The frontier is the last real column and is LAST in the list handed to the
+  `columnsThatFit()` slice, which cuts from the front — so no width, however
+  narrow, can drop it. `activeColumn()` (24c) already picked that same column, so
+  the keyboard needed no change at all.
+* `wantDb` is still called from `renderColumns` and only for a column being
+  DRAWN, so §15.1's licence is untouched — and since fewer columns are drawn,
+  this strictly REDUCES the scan's request count.
+* The tabs need the columns to live inside a wrapper (`.clo-ct-colswrap`), since
+  the stage is a row — board, then this — and this is a column: tabs, then the
+  columns. `.clo-ct-cols` gained `min-height: 0` so `.clo-ct-col`'s `max-height:
+  100%` still resolves against a definite height.
+
+### 16.4 What was deliberately not done
+
+* **Hovering a TAB does preview its move, but clicking one does not navigate.**
+  Navigating is the breadcrumb's job and the tab is a display control; one
+  control doing both would make the difference between them unlearnable.
+* **The gap rows were not made navigable on a `'choice'` column instead of
+  hidden.** There is still no subtree behind them (§15.2), and a list of moves
+  you can hover but never enter is a worse answer than no list.
+* **No number was declared for how many tabs fit.** They wrap, which is what a
+  row of short labels should do; a deep path is a second line of tabs, not a
+  scroller.

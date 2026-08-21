@@ -52,7 +52,17 @@ const shared = [
   sliceDecl('columnsFor'),
   sliceDecl('standingPlies'),
   sliceDecl('keyOfPlies'),
-  'return { buildCourseTree, foldFrom, rowsAt, columnsFor, standingPlies, keyOfPlies };',
+  // 24b/24c. `positionSide` and `gapKind` are the whole of "is an uncovered
+  // move a gap or a decision", which is the one judgement in the scan that can
+  // be wrong in a way nobody notices; `dbMovesFor`/`gapsFor` are the read that
+  // rests on it; `pathOfLine` is what the find field stands on.
+  sliceDecl('positionSide'),
+  sliceDecl('gapKind'),
+  sliceDecl('dbMovesFor'),
+  sliceDecl('gapsFor'),
+  sliceDecl('pathOfLine'),
+  'return { buildCourseTree, foldFrom, rowsAt, columnsFor, standingPlies, keyOfPlies,' +
+  '         positionSide, gapKind, dbMovesFor, gapsFor, pathOfLine };',
 ].join('\n');
 
 // CONFIG.courseTree, read out of the shipped file so the numbers cannot drift.
@@ -63,17 +73,28 @@ const num = (name) => {
   if (!m) throw new Error('CONFIG.courseTree.' + name + ' not found');
   return Number(m[1]);
 };
+// CONFIG.courseTree.lichess sits past the window `num` reads, and its two
+// interesting values are FRACTIONS rather than ints.
+const lichessBody = cfgBody.slice(cfgBody.indexOf('lichess: {'), cfgBody.indexOf('lichess: {') + 1600);
+const lnum = (name) => {
+  const m = new RegExp('\\b' + name + ':\\s*([\\d.]+)').exec(lichessBody);
+  if (!m) throw new Error('CONFIG.courseTree.lichess.' + name + ' not found');
+  return Number(m[1]);
+};
 const C = {
   foldShow: num('foldShow'), foldMax: num('foldMax'), maxRows: num('maxRows'),
   maxColumns: num('maxColumns'), maxDepth: num('maxDepth'),
   maxNames: num('maxNames'), maxNameLen: num('maxNameLen'), chunkVars: num('chunkVars'),
+  lichess: {
+    minGames: lnum('minGames'), gapMinShare: lnum('gapMinShare'), gapMaxRows: lnum('gapMaxRows'),
+  },
 };
 
-const ct = { tree: null, rootKey: null, path: [] };
+const ct = { tree: null, rootKey: null, path: [], dbOn: true, db: new Map() };
 // eslint-disable-next-line no-new-func
 const api = new Function(
-  'CloSan', 'squareName', 'cacheKey', 'sleepMs', 'warn', 'C', 'ct', 'START_FEN',
-  shared)(CloSan, squareName, cacheKey, sleepMs, warn, C, ct, START_FEN);
+  'CloSan', 'squareName', 'cacheKey', 'sleepMs', 'warn', 'C', 'ct', 'START_FEN', 'L',
+  shared)(CloSan, squareName, cacheKey, sleepMs, warn, C, ct, START_FEN, C.lichess);
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -260,6 +281,183 @@ function check(name, cond, detail) {
     check('a branching root is NOT auto-taken', cols[0].auto === false, String(cols[0].auto));
     check('…and stands on the root itself',
       api.standingPlies(cols).length === 0, String(api.standingPlies(cols).length));
+  }
+
+  console.log('\nfinding a line by name (24c)');
+  {
+    // The find field STANDS on a match, so the only thing that can be wrong is
+    // the path it builds — and it is rebuilt from `answers` rather than stored,
+    // precisely so that it cannot disagree with what the columns will draw.
+    ct.tree = trees['291847'];
+    check('every playable line is indexed by name',
+      ct.tree.lines.length === ct.tree.indexed,
+      ct.tree.lines.length + ' vs ' + ct.tree.indexed);
+    let bad = 0, short = 0, offEnd = 0;
+    for (const line of ct.tree.lines) {
+      const plies = api.pathOfLine(line);
+      if (!plies) { bad++; continue; }
+      if (plies.length !== line.ucis.length) short++;
+      // Contiguity, the same property the fold has to have: a path whose plies
+      // do not join up would put the board on a position the line never reached.
+      for (let i = 1; i < plies.length; i++) {
+        if (plies[i].before !== plies[i - 1].after) offEnd++;
+      }
+    }
+    check('every indexed line rebuilds into a path', bad === 0, bad + ' failed');
+    check('…of its own length', short === 0, short + ' wrong length');
+    check('…and contiguous', offEnd === 0, offEnd + ' break(s)');
+
+    // Standing on one really does put the browser at its end.
+    const line = ct.tree.lines.find((l) => l.ucis.length > 6) || ct.tree.lines[0];
+    const plies = api.pathOfLine(line);
+    ct.rootKey = line.startCk;
+    ct.path = plies;
+    const cols = api.columnsFor();
+    check('standing on a found line lands on its last position',
+      api.keyOfPlies(api.standingPlies(cols)) === plies[plies.length - 1].after,
+      api.keyOfPlies(api.standingPlies(cols)));
+  }
+
+  console.log('\nwhose move it is (24b)');
+  {
+    // 453453 is a Black repertoire end to end, so the START position — White to
+    // move — is the OPPONENT's, and an uncovered popular move there is a gap.
+    // One ply on it is the user's own, where the same uncovered move is a
+    // repertoire decision. Getting this backwards would paint every course red
+    // for having an opinion, and nothing on screen would say so.
+    ct.tree = trees['453453'];
+    const root = ct.tree.starts[0].ck;
+    const rootFen = ct.tree.fens.get(root);
+    check('an all-Black course reads as Black at its root', api.positionSide(root) === 'b',
+      String(api.positionSide(root)));
+    check('…so White to move there is the opponent', api.gapKind(root, rootFen) === 'gap',
+      api.gapKind(root, rootFen));
+    const firstUci = [...ct.tree.answers.get(root).keys()][0];
+    const after = ct.tree.answers.get(root).get(firstUci).afterCk;
+    check('…and one ply on it is the user’s own move',
+      api.gapKind(after, ct.tree.fens.get(after)) === 'choice',
+      api.gapKind(after, ct.tree.fens.get(after)));
+
+    // A mixed course must never be forced into an answer. 291847 holds 66 White
+    // and 15 Black lines, which is exactly the case `courseSide` gets wrong.
+    ct.tree = trees['291847'];
+    let odd = 0, mixed = 0;
+    for (const ck of ct.tree.answers.keys()) {
+      const s = api.positionSide(ck);
+      if (s !== 'w' && s !== 'b' && s !== null) odd++;
+      if (s === null) mixed++;
+    }
+    check('positionSide only ever answers w / b / null', odd === 0, odd + ' odd answer(s)');
+    check('…and does answer null somewhere on a mixed course', mixed > 0, mixed + ' position(s)');
+  }
+
+  console.log('\nreading the explorer (24b)');
+  {
+    ct.tree = trees['453453'];
+    const root = ct.tree.starts[0].ck;
+    const fen = ct.tree.fens.get(root);
+    const pos = CloSan.parseFen(fen);
+    const covered = [...ct.tree.answers.get(root).values()];
+    // A fake explorer answer built from the course's OWN moves plus two the
+    // course does not play, one of them under the share floor.
+    const counts = {};
+    covered.forEach((e, i) => { counts[e.san.replace(/[+#]+$/, '')] = 4000 - i * 100; });
+    const gapSan = ['d4', 'c4', 'Nf3', 'g3', 'b3', 'f4']
+      .find((s) => !covered.some((e) => e.san.replace(/[+#]+$/, '') === s));
+    counts[gapSan] = 3000;
+    counts.a3 = 1;               // real, and far under gapMinShare
+    counts.Zz9 = 500;            // not a move at all: must be dropped, never guessed at
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    ct.db.set(root, { counts, total });
+
+    const col = { ck: root, pos };
+    const db = api.dbMovesFor(col);
+    check('a healthy sample is not thin', db && db.thin === false, String(db && db.thin));
+    check('every covered move resolves to its own uci',
+      [...ct.tree.answers.get(root).keys()].every((u) => db.byUci.has(u)),
+      [...ct.tree.answers.get(root).keys()].filter((u) => !db.byUci.has(u)).join(','));
+    check('an unresolvable SAN is dropped rather than guessed at',
+      db.byUci.size === Object.keys(counts).length - 1, db.byUci.size + ' of ' +
+      (Object.keys(counts).length - 1));
+
+    const gaps = api.gapsFor(col, db);
+    check('the uncovered move is reported', gaps.some((g) => g.san === gapSan),
+      gaps.map((g) => g.san).join(','));
+    check('…and nothing the course covers is', !gaps.some((g) =>
+      ct.tree.answers.get(root).has(g.uci)), gaps.map((g) => g.san).join(','));
+    check('a move under gapMinShare is not a gap', !gaps.some((g) => g.san === 'a3'),
+      gaps.map((g) => g.san).join(','));
+    check('gaps are commonest first',
+      gaps.every((g, i) => i === 0 || gaps[i - 1].games >= g.games));
+    check('at most gapMaxRows of them', gaps.length <= C.lichess.gapMaxRows, String(gaps.length));
+    check('each carries the position it leads to',
+      gaps.every((g) => g.after && CloSan.parseFen(g.after)));
+
+    // §7's floor, and the reason it exists: at this size "more popular" is
+    // regularly three games against two, so NOTHING is claimed.
+    ct.db.set(root, { counts, total: C.lichess.minGames - 1 });
+    const thin = api.dbMovesFor({ ck: root, pos });
+    check('a sample under minGames reads as thin', thin && thin.thin === true, String(thin && thin.thin));
+    check('…and yields no gaps at all', api.gapsFor({ ck: root, pos }, thin).length === 0);
+
+    // ON THE USER'S OWN MOVE THE LIST IS DROPPED, not merely re-worded
+    // (v0.124.0). `gapKind` has always known the difference; until now both
+    // answers still printed a list of moves the course "does not have", which
+    // on your own move is a repertoire DECISION and reads as a coverage
+    // failure for having an opinion. The one thing that can be wrong here
+    // invisibly is the direction, so both arms are asserted.
+    {
+      ct.db.clear();
+      const mine = ct.tree.answers.get(root).get([...ct.tree.answers.get(root).keys()][0]).afterCk;
+      const minePos = CloSan.parseFen(ct.tree.fens.get(mine));
+      const mineCovered = [...ct.tree.answers.get(mine).values()];
+      const mc = {};
+      mineCovered.forEach((e, i) => { mc[e.san.replace(/[+#]+$/, '')] = 1000 - i * 10; });
+      // Something popular the course does not play here — taken from the
+      // position's own legal moves, so it cannot be a SAN this board refuses.
+      const spare = CloSan.generateMoves(minePos)
+        .map((m) => CloSan.moveToSan(minePos, squareName(m.from) + squareName(m.to)))
+        .filter(Boolean)
+        .find((sn) => !mineCovered.some((e) => e.san.replace(/[+#]+$/, '') === sn.replace(/[+#]+$/, '')));
+      mc[spare.replace(/[+#]+$/, '')] = 5000;
+      const mineTotal = Object.values(mc).reduce((a, b) => a + b, 0);
+      ct.db.set(mine, { counts: mc, total: mineTotal });
+      const mineDb = api.dbMovesFor({ ck: mine, pos: minePos });
+      check('the fake answer for the user-move position is healthy',
+        Boolean(mineDb) && mineDb.thin === false && mineDb.byUci.size > 1,
+        String(mineDb && mineDb.byUci.size));
+      check('a course answer here really is the user’s own move',
+        api.gapKind(mine, ct.tree.fens.get(mine)) === 'choice',
+        api.gapKind(mine, ct.tree.fens.get(mine)));
+      check('…so nothing is listed as missing, however popular',
+        api.gapsFor({ ck: mine, pos: minePos }, mineDb).length === 0,
+        api.gapsFor({ ck: mine, pos: minePos }, mineDb).map((g) => g.san).join(','));
+      // …and the opponent's move is untouched by the same rule: that is where
+      // an uncovered popular reply IS a hole the user will meet.
+      ct.db.set(root, { counts, total });
+      check('…while the opponent’s move still lists them',
+        api.gapsFor({ ck: root, pos }, api.dbMovesFor({ ck: root, pos })).length > 0);
+    }
+
+    // THE EXPLORER'S OWN SPELLING, which is the trap section 6c fell into:
+    // Lichess writes castling as KING TAKES ROOK. Resolving through CloSan is
+    // what makes the two agree; a string compare never would.
+    const cFen = 'r3k2r/pppq1ppp/2n1bn2/2bpp3/2BPP3/2N1BN2/PPPQ1PPP/R3K2R w KQkq - 0 1';
+    ct.db.set('castle', { counts: { 'O-O': 900, 'O-O-O': 100 }, total: 1000 });
+    const cdb = api.dbMovesFor({ ck: 'castle', pos: CloSan.parseFen(cFen) });
+    check('castling resolves to the king-two-files uci both sides use',
+      cdb.byUci.get('e1g1') === 900 && cdb.byUci.get('e1c1') === 100,
+      [...cdb.byUci].join(' '));
+
+    // A failed position is remembered, and must read as "no answer" rather than
+    // as an empty one — an empty one would say the course covers 0%.
+    ct.db.set('boom', { error: 'nope' });
+    check('a failed position yields no reading',
+      api.dbMovesFor({ ck: 'boom', pos }) === null);
+    // …and with the scan off nothing is read at all, however much is cached.
+    ct.dbOn = false;
+    check('with the scan off nothing is read', api.dbMovesFor({ ck: root, pos }) === null);
+    ct.dbOn = true;
   }
 
   console.log('\nthe refusal (§7)');

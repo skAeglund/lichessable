@@ -1465,6 +1465,10 @@
       maxNames:   6,
       linksShown: 1,
       maxNameLen: 60,
+      // How many name matches the find field lists (24c). A drop-down longer
+      // than this is not a search result, it is the course listing again — and
+      // the field is a filter, so the answer to "too many" is to type more.
+      findShow:   12,
       chunkVars:  20,     // yield to the event loop every N variations (a 500-line course is ~8 s)
       // The preview board. Written INLINE as a WIDTH only — the CSS gives it
       // `aspect-ratio: 1/1` and `max-width: 100%`, so a narrow panel shrinks it
@@ -1476,6 +1480,29 @@
       boardPx:    320,
       boardMinPx: 220,
       boardMaxPx: 560,
+
+      // Scanning Lichess while you browse (section 24b). §3.5 and §7 refused
+      // this in v1 — "no fetch per column" — and the refusal was about the
+      // COST, not the value: an explorer request per ROW would be a dozen per
+      // click. What lifts it is that A COLUMN IS ONE POSITION, and the explorer
+      // answers every move of a position in ONE request — so the price of the
+      // whole feature is one request per column DRAWN, most of which are
+      // already in the cache section 21 and the chapter sort fill.
+      lichess: {
+        // OPT-IN, and it stays that way: nobody opening a course tree asked for
+        // network traffic. storage.local, absent = off.
+        enabledKey: 'cloTreeLichess',
+        // Below this the position's sample is noise and no share is shown at
+        // all — section 21's floor and its reason: deep in a line "more
+        // popular" is regularly 3 games against 2.
+        minGames: 50,
+        // A move Lichess plays in less than this share of games is not a branch
+        // the course is missing, it is the tail. 1.5% of a 40k-game position is
+        // still 600 games.
+        gapMinShare: 0.015,
+        gapMaxRows:   6,     // …and at most this many tail rows per column
+        requestGapMs: 300,   // politeness pause between uncached explorer calls
+      },
     },
   };
 
@@ -29405,8 +29432,9 @@
     const ct = {
       bid: null,
       panel: null, launcher: null, runBtn: null,
-      statusEl: null, crumbEl: null, colsEl: null, rootsEl: null, summaryEl: null,
+      statusEl: null, crumbEl: null, colsEl: null, tabsEl: null, rootsEl: null, summaryEl: null,
       boardEl: null, boardGrid: null, boardLayer: null, boardShapes: null, stageEl: null,
+      dbBtn: null, flipBtn: null, findEl: null, findBoxEl: null, lichessLinkEl: null,
       open: false,
       busy: false,
       job: null,          // in-flight walk, so the button can cancel it
@@ -29417,6 +29445,21 @@
       preview: null,      // { ck, uci } while a row is hovered — board only, never the columns
       showRoots: false,
       repWanted: false,   // the badges were asked for; the index may still be loading
+      cols: null,         // the last drawn columns — the keyboard's view of where it is (24c)
+      openCols: new Set(),// cks of DECIDED columns the user has re-opened (24d)
+      flip: false,        // board orientation override (24c)
+      find: '',           // the find field's text (24c)
+      // --- 24b: the Lichess scan ---------------------------------------------
+      dbOn: false,        // the opt-in toggle; read from storage on mount
+      db: new Map(),      // ck → { counts, total } | { error: '…' } — this session's answers
+      dbQueue: [],        // [{ ck, fen }] positions asked for and not yet answered
+      dbWanted: new Set(),// their cks, so a position is never queued twice
+      dbBusy: false,      // the drain loop is running
+      dbSeq: 0,           // bumped by a course switch / re-read; a stale answer is dropped
+      dbCache: null,      // the shared cloPopularityCache, read once per scan session
+      dbAdd: null,        // …and the entries WE added, merged back on the way out
+      dbNote: '',         // one line for the summary while scanning or after a failure
+      redrawPending: false, // a redraw is queued — see refreshColumns, which must not be synchronous
     };
 
     // --- the walk ------------------------------------------------------------
@@ -29439,10 +29482,16 @@
      * reports progress rather than merely eventually answering.
      */
     async function buildCourseTree(course, bid, job, onProgress) {
-      const answers = new Map();  // ck → Map(uci → { san, n, afterCk, lines[] })
+      const answers = new Map();  // ck → Map(uci → { san, n, w, b, afterCk, lines[] })
       const fens = new Map();     // ck → one full FEN for that position
       const ends = new Map();     // ck → [{ oid, name }] variations FINISHING here
       const startMap = new Map(); // ck → { ck, fen, n, lines[] }
+      // Every variation as { oid, name, startCk, ucis } — what the find field
+      // (24c) needs to STAND on a line the user named. Ucis rather than plies:
+      // the path's `san`/`before`/`after` are all recoverable from `answers` at
+      // navigation time, and storing them would triple the index for a course
+      // whose plies are already in `answers`.
+      const lines = [];
       const unplayable = [];
       let informational = 0, i = 0;
 
@@ -29456,6 +29505,7 @@
         const w = walkVariation(v);
         if (!w) { unplayable.push(v); continue; }
         const line = { oid: v.oid, name: (v.name || '').slice(0, C.maxNameLen) };
+        const vSide = sideOf(v.color);
 
         const startKey = cacheKey(w.start);
         if (!fens.has(startKey)) fens.set(startKey, w.start);
@@ -29463,6 +29513,7 @@
         if (!st) startMap.set(startKey, st = { ck: startKey, fen: w.start, n: 0, lines: [] });
         st.n++;
         if (st.lines.length < C.maxNames) st.lines.push(line);
+        lines.push({ oid: v.oid, name: line.name, startCk: startKey, ucis: w.plies.map((p) => p.uci) });
 
         for (const p of w.plies) {
           const ck = cacheKey(p.before);
@@ -29472,8 +29523,15 @@
           let m = answers.get(ck);
           if (!m) answers.set(ck, m = new Map());
           let e = m.get(p.uci);
-          if (!e) m.set(p.uci, e = { san: p.san, n: 0, afterCk, lines: [] });
+          if (!e) m.set(p.uci, e = { san: p.san, n: 0, w: 0, b: 0, afterCk, lines: [] });
           e.n++;
+          // WHOSE SIDE THE LINES THROUGH HERE ARE WRITTEN FOR, counted per move
+          // rather than taken from `courseSide` — 24b needs it and courseSide is
+          // a course-wide MAJORITY, which §12.6 measured answering 'w' for a
+          // course holding 15 Black lines. Two ints per move; the position's own
+          // answer is the sum over its moves, and it is only ever used where it
+          // is unanimous (see `positionSide`).
+          if (vSide === 'w') e.w++; else if (vSide === 'b') e.b++;
           if (e.lines.length < C.maxNames) e.lines.push(line);
         }
         const endKey = cacheKey(w.end);
@@ -29504,7 +29562,7 @@
         bid: String(bid),
         name: course.name,
         side: courseSide(course.vars),
-        answers, fens, ends,
+        answers, fens, ends, lines,
         starts: [...startMap.values()].sort((a, b) => b.n - a.n || a.ck.localeCompare(b.ck)),
         vars: course.vars.length,
         indexed,
@@ -29636,6 +29694,286 @@
 
     const keyOfPlies = (plies) => (plies.length ? plies[plies.length - 1].after : ct.rootKey);
 
+    // --- 24b) the Lichess scan ------------------------------------------------
+    //
+    // "Standing here, what do real games play, and which of it did the author
+    // not cover." §3.5 and §7 refused this in v1 under the rule "no fetch per
+    // column", and the rule was right about the COST and silent about the
+    // value. What lifts it, and the only thing that does:
+    //
+    //   A COLUMN IS ONE POSITION, and one explorer request answers every move
+    //   of a position. So the whole feature is ONE REQUEST PER COLUMN DRAWN —
+    //   at most `maxColumns`, in practice two to four, and most of them already
+    //   sitting in the cache section 21 and the chapter sort fill.
+    //
+    // Everything else here follows from that being the only justification:
+    //  * OPT-IN and off by default. Opening a tree is not asking for traffic.
+    //  * ONLY DRAWN COLUMNS are ever asked about. Never a row, never a hover,
+    //    never the folded plies inside a run, and never a column the breadcrumb
+    //    is carrying — those are not on screen, so nothing on them can be read.
+    //  * ONE POSITION AT A TIME, `requestGapMs` apart, with section 21's 429
+    //    cooldown and single retry. A course tree must never be the reason
+    //    Lichess stops answering the panel.
+    //  * IT SHARES `cloPopularityCache` with sections 14 and 21, tag and all
+    //    (`popCacheTag`), so a coverage run warms the tree and vice versa. That
+    //    sharing is most of why the request count is bearable at all.
+    //
+    // The answers are read TWO ways, and the second is the point of the feature:
+    // a share on each row (what the world plays of what the author covered) and
+    // a row for each move the world plays that the author did NOT.
+    const L = C.lichess;
+
+    /**
+     * Whose side the course's lines through this position are written for —
+     * 'w', 'b', or null where the position's own lines disagree or say nothing.
+     *
+     * NOT `courseSide`, which is a course-wide MAJORITY: §12.6 measured it
+     * answering 'w' for course 291847, which holds 15 Black lines. That is
+     * harmless where it is used today and would be actively wrong here, since
+     * it decides whether an uncovered move is a GAP in the repertoire or merely
+     * a line the author chose not to play. Counted per MOVE in the walk and
+     * summed here; a position both colours pass through answers null and the
+     * distinction is simply not drawn.
+     */
+    function positionSide(ck) {
+      const m = ct.tree && ct.tree.answers.get(ck);
+      if (!m) return null;
+      let w = 0, b = 0;
+      for (const e of m.values()) { w += e.w || 0; b += e.b || 0; }
+      if (w && b) return null;
+      if (w) return 'w';
+      if (b) return 'b';
+      return (ct.tree && ct.tree.side) || null;
+    }
+
+    /**
+     * What an uncovered move MEANS at this position, which is entirely a
+     * question of whose move it is — section 6c's rule, for section 6c's
+     * reason. On the OPPONENT's move an uncovered popular reply is a hole the
+     * user will meet and have no answer to. On the user's OWN move it is a
+     * repertoire DECISION (1...c5 over 1...e5), and drawing it as a gap would
+     * paint every course red for having an opinion.
+     */
+    function gapKind(ck, fen) {
+      const side = positionSide(ck);
+      const stm = (fen || '').split(' ')[1];
+      if (!side || (stm !== 'w' && stm !== 'b')) return 'unknown';
+      return side === stm ? 'choice' : 'gap';
+    }
+
+    /**
+     * This position's explorer answer as a uci to games map, or null when there
+     * is none yet. `thin` is the honest answer below `minGames`: the sample is
+     * noise and no share is drawn from it (section 21's floor).
+     *
+     * THE EXPLORER'S MOVES ARE RESOLVED THROUGH CloSan, NEVER COMPARED AS SAN —
+     * section 6c's `repertoireMoveState` learned this the hard way. Lichess and
+     * Chessable can spell the same move differently (Lichess writes castling as
+     * king-takes-rook; Chessable over-disambiguates, §12.7), so the only stable
+     * identity for a move is the pair of squares. Memoised on the entry because
+     * a position's answer never changes and this is ~50 `moveToSan` sweeps.
+     */
+    function dbMovesFor(col) {
+      if (!ct.dbOn) return null;
+      const got = ct.db.get(col.ck);
+      if (!got || got.error || !col.pos) return null;
+      if (!(got.total >= L.minGames)) return { total: got.total || 0, thin: true, byUci: new Map() };
+      if (!got.byUci) {
+        const byUci = new Map();
+        for (const san of Object.keys(got.counts || {})) {
+          const uci = sanToUci(col.pos, san);
+          if (uci) byUci.set(uci, (byUci.get(uci) || 0) + (got.counts[san] || 0));
+        }
+        got.byUci = byUci;
+      }
+      return { total: got.total, thin: false, byUci: got.byUci };
+    }
+
+    /** Ask about a position, at most once. Called only for a column being DRAWN. */
+    function wantDb(ck, fen) {
+      if (!ct.dbOn || !ck || !fen) return;
+      if (ct.db.has(ck) || ct.dbWanted.has(ck)) return;
+      ct.dbWanted.add(ck);
+      ct.dbQueue.push({ ck, fen });
+      drainDb();
+    }
+
+    /**
+     * Drains the queue one position at a time. `ct.dbSeq` is the staleness
+     * fence — a course switch or a re-read bumps it and everything in flight is
+     * dropped rather than written into a tree it is not about, which is the
+     * panel's own sequence-number discipline.
+     */
+    async function drainDb() {
+      if (ct.dbBusy) return;
+      ct.dbBusy = true;
+      const seq = ct.dbSeq;
+      try {
+        if (!ct.dbCache) ct.dbCache = await loadPopCache();
+        if (seq !== ct.dbSeq) return;
+        const tag = popCacheTag();
+        while (ct.dbQueue.length) {
+          if (seq !== ct.dbSeq) return;
+          const { ck, fen } = ct.dbQueue.shift();
+          setDbNote(ct.dbQueue.length
+            ? 'scanning Lichess — ' + (ct.dbQueue.length + 1) + ' position(s) to go'
+            : 'scanning Lichess...');
+          const key = tag + '||' + ck;
+          const hit = ct.dbCache[key];
+          if (hit && hit.m && typeof hit.n === 'number') {
+            ct.db.set(ck, { counts: hit.m, total: hit.n });
+            if (!ct.dbQueue.length) refreshColumns();
+            continue;
+          }
+          let got = null;
+          try {
+            got = await fetchPopularityCounts(fen, CONFIG.lichess.bulkMovesLimit);
+          } catch (err) {
+            if (err && err.isRateLimit) {
+              setDbNote('Lichess rate limit — waiting a minute');
+              await sleepMs(CONFIG.lichess.rateLimitCooldownMs);
+              if (seq !== ct.dbSeq) return;
+              try {
+                got = await fetchPopularityCounts(fen, CONFIG.lichess.bulkMovesLimit);
+              } catch (again) { got = null; recordDbFailure(ck, again); }
+            } else {
+              recordDbFailure(ck, err);
+            }
+          }
+          if (seq !== ct.dbSeq) return;
+          if (got) {
+            ct.db.set(ck, { counts: got.counts, total: got.total });
+            ct.dbCache[key] = { m: got.counts, n: got.total, t: Date.now() };
+            (ct.dbAdd || (ct.dbAdd = {}))[key] = ct.dbCache[key];
+          }
+          refreshColumns();
+          if (ct.dbQueue.length) await sleepMs(L.requestGapMs);
+        }
+        setDbNote('');
+      } catch (err) {
+        warn('course tree: the Lichess scan stopped:', err);
+        setDbNote('the Lichess scan stopped — ' + String((err && err.message) || err));
+      } finally {
+        ct.dbBusy = false;
+        syncDbButton(); // the "..." is a claim about dbBusy, so it must not outlive it
+        if (seq === ct.dbSeq) flushDbCache();
+        // A position asked for while the loop was finishing would otherwise sit
+        // in the queue for ever, since `wantDb` only starts a drain it believes
+        // is not already running.
+        if (seq === ct.dbSeq && ct.dbQueue.length) drainDb();
+      }
+    }
+
+    /**
+     * Puts what we learned back into the SHARED cache, and it RE-READS before
+     * writing rather than saving the snapshot it has been holding.
+     *
+     * `savePopCache` writes the object whole, and this panel keeps its read
+     * open for as long as it is on screen — minutes, during which the coverage
+     * report on the same page can fill hundreds of positions of its own. Saving
+     * our snapshot back would delete every one of them, silently, and the only
+     * symptom would be section 21 re-fetching what it had already paid for.
+     * Section 21's own window is one run rather than one sitting, which is why
+     * it has never needed this.
+     */
+    function flushDbCache() {
+      const add = ct.dbAdd;
+      if (!add || !Object.keys(add).length) return;
+      ct.dbAdd = null;
+      Promise.resolve(loadPopCache())
+        .then((fresh) => savePopCache(Object.assign(fresh, add)))
+        .catch(() => {});
+    }
+
+    /**
+     * A failure is REMEMBERED, so the position is not asked about again on the
+     * next redraw — a rejected token or an offline browser would otherwise be
+     * one request per draw, for ever. Switching the scan off and on is the retry.
+     */
+    function recordDbFailure(ck, err) {
+      const msg = err && err.isAuth
+        ? (err.noToken
+          ? 'a Lichess API token is needed — add one in the extension options'
+          : 'Lichess rejected the API token — check it in the extension options')
+        : String((err && err.message) || err);
+      ct.db.set(ck, { error: msg });
+      setDbNote('Lichess: ' + msg);
+    }
+
+    function setDbNote(text) {
+      if (ct.dbNote === text) return;
+      ct.dbNote = text;
+      if (ct.summaryEl) renderSummary();
+      syncDbButton();
+    }
+
+    /**
+     * A redraw driven by data landing rather than by the user. Guarded, never
+     * fatal — and NEVER SYNCHRONOUS, which is not a nicety:
+     *
+     * `renderColumns` calls `wantDb` from inside its own loop over the columns,
+     * and `wantDb` starts the drain. `drainDb` is `async`, but an async function
+     * runs synchronously up to its first EXECUTED await — and once `ct.dbCache`
+     * is loaded the `await loadPopCache()` is skipped by its own `if`, so a
+     * position already in the cache is answered without ever yielding. That put
+     * a whole `renderTree` INSIDE `renderColumns`'s loop: the inner one cleared
+     * the host and drew every column, then the outer one carried on appending
+     * its own, and the panel showed the same column twice. Seen live on
+     * 2026-08-21, on the second course opened in a session — i.e. only once the
+     * cache was warm, which is why the first course looked fine.
+     *
+     * Deferring is the fix rather than a re-entrancy flag, because a flag would
+     * have to DROP the inner redraw, and that redraw is the one carrying the new
+     * data. Coalesced, so a burst of cache hits is one draw.
+     */
+    function refreshColumns() {
+      if (!ct.open || !ct.tree || !ct.panel) return;
+      if (ct.redrawPending) return;
+      ct.redrawPending = true;
+      setTimeout(() => {
+        ct.redrawPending = false;
+        if (!ct.open || !ct.tree || !ct.panel) return;
+        try { renderTree(); } catch (err) {
+          warn('course tree: the redraw after a Lichess answer failed:', err);
+        }
+      }, 0);
+    }
+
+    /** Everything collected is about ONE course; a switch invalidates all of it. */
+    function resetDb() {
+      ct.dbSeq++;
+      ct.db.clear();
+      ct.dbQueue.length = 0;
+      ct.dbWanted.clear();
+      ct.dbNote = '';
+      flushDbCache();
+    }
+
+    function setDbEnabled(on) {
+      ct.dbOn = Boolean(on);
+      // Deliberately KEEPS what has already been collected: switching the scan
+      // off and on again is then free, and nothing on screen was wrong while it
+      // was off — it was only not drawn.
+      if (!ct.dbOn) { ct.dbQueue.length = 0; ct.dbWanted.clear(); setDbNote(''); }
+      syncDbButton();
+      try {
+        chrome.storage.local.set({ [L.enabledKey]: ct.dbOn });
+      } catch (err) { /* an orphaned content script cannot persist; the session still works */ }
+      refreshColumns();
+    }
+
+    function syncDbButton() {
+      if (!ct.dbBtn) return;
+      const scanning = ct.dbOn && (ct.dbBusy || ct.dbQueue.length > 0);
+      ct.dbBtn.textContent = scanning ? 'Lichess ...' : 'Lichess';
+      ct.dbBtn.classList.toggle('clo-ct-toggle--on', ct.dbOn);
+      ct.dbBtn.setAttribute('aria-pressed', ct.dbOn ? 'true' : 'false');
+      ct.dbBtn.title = (ct.dbOn
+        ? 'Scanning the Lichess database as you browse: every row carries how often real games play it, and the popular moves this course does NOT cover are listed under them.'
+        : 'Scan the Lichess database as you browse — how often each of the course’s moves is played, and which popular replies it never answers.') +
+        '\nOne request per column on screen, sharing the coverage report’s cache.';
+    }
+
     // --- the board -----------------------------------------------------------
 
     /**
@@ -29652,12 +29990,23 @@
       // the move on purpose — an arrow is a claim about a move being available
       // here, and holding the position still is what lets two candidates in the
       // same column be compared by moving the pointer between them.
+      //
+      // HOVERING ONE MOVE INSIDE THE RUN IS THE OTHER QUESTION (v0.124.0), and
+      // it wants the other answer: the position AFTER that move, with the move
+      // itself TINTED rather than drawn. A run is a sequence being read left to
+      // right, so "what does it look like here" is what the pointer is asking,
+      // and an arrow for a move already made would be the wrong claim — the
+      // same distinction the last-move tint below is drawn for.
       const plies = standingPlies(cols);
       const hover = ct.preview;
-      const fen = (hover && ct.tree.fens.get(hover.ck))
-        || (ct.tree && ct.tree.fens.get(keyOfPlies(plies))) || '';
+      const hoverPly = hover && hover.ply;
+      const showKey = hover ? (hoverPly ? hoverPly.after : hover.ck) : keyOfPlies(plies);
+      const fen = (ct.tree && ct.tree.fens.get(showKey)) || '';
       const pos = fen ? CloSan.parseFen(fen) : null;
-      const view = (ct.tree && ct.tree.side === 'b') ? 'b' : 'w';
+      // The course's own side, flippable by hand (24c). A mixed course answers
+      // its majority, which is exactly the case the Flip button is for.
+      const natural = (ct.tree && ct.tree.side === 'b') ? 'b' : 'w';
+      const view = ct.flip ? (natural === 'b' ? 'w' : 'b') : natural;
       const squares = new Map();
       fillBoardGrid(ct.boardGrid, view, (sq, idx) => squares.set(idx, sq));
       const layer = ct.boardLayer;
@@ -29672,7 +30021,7 @@
         placeBoardPiece(piece, idx, view);
         layer.appendChild(piece);
       }
-      if (hover) {
+      if (hover && !hoverPly) {
         const mv = CloSan.uciToMove(pos, hover.uci);
         if (mv) shapes.appendChild(boardShapeArrow(mv.from, mv.to, view));
         return;
@@ -29681,7 +30030,8 @@
       // is thin and a one-square move barely registers (section 18b's finding).
       // The hover arrow above is a different claim — a move NOT yet made — which
       // is why the two are drawn differently rather than sharing a treatment.
-      const last = plies.length ? plies[plies.length - 1] : null;
+      // A hovered ply is the same claim as a last move and gets the same tint.
+      const last = hoverPly || (plies.length ? plies[plies.length - 1] : null);
       const before = last && ct.tree.fens.get(last.before);
       const bpos = before ? CloSan.parseFen(before) : null;
       const mv = bpos && CloSan.uciToMove(bpos, last.uci);
@@ -29700,11 +30050,15 @@
      * arrive. `cols` is re-derived rather than cached because the walk is cheap
      * and a stale one after a click is a board on the wrong position.
      */
-    function setPreview(ck, uci) {
-      const same = ct.preview && ct.preview.ck === ck && ct.preview.uci === uci;
-      const none = !ct.preview && !ck;
-      if (same || none) return;
-      ct.preview = ck ? { ck, uci } : null;
+    function setPreview(ck, uci, ply) {
+      // `ply` is the ONE ply of a run being pointed at (v0.124.0), and it
+      // switches the board from "before, with an arrow" to "after, tinted".
+      // Compared through a key rather than field by field: the two readings of
+      // the same row differ only in this argument, and a comparison that missed
+      // it would leave the board on whichever landed first.
+      const key = ck ? ck + '|' + uci + '|' + (ply ? ply.after : '') : '';
+      if (key === (ct.preview ? ct.preview.key : '')) return;
+      ct.preview = ck ? { key, ck, uci, ply: ply || null } : null;
       renderBoard(columnsFor());
     }
 
@@ -29752,11 +30106,20 @@
         }
         const san = el('button', 'clo-ct-san', ply.san);
         san.type = 'button';
-        san.title = 'Stand here';
+        san.title = 'Stand here (hover to see the position after it)';
         san.addEventListener('click', (e) => {
           e.stopPropagation();
           goTo(col, row, i + 1);
         });
+        // POINTING AT ONE MOVE OF A RUN SHOWS THE POSITION AFTER IT (v0.124.0).
+        // `mouseenter`/`mouseleave` do not bubble and do not fire for a move
+        // between an element and its own descendant — so entering this button
+        // never fires the ROW's mouseleave, and leaving it back into the row
+        // never re-fires the row's mouseenter. Restoring the row's own reading
+        // here is what closes that gap; leaving the row entirely then clears it
+        // through the row's (and the host's) own listener, in that order.
+        san.addEventListener('mouseenter', () => setPreview(col.ck, row.uci, ply));
+        san.addEventListener('mouseleave', () => setPreview(col.ck, row.uci));
         frag.append(san, document.createTextNode(' '));
       }
       if (shown < row.plies.length) {
@@ -29793,7 +30156,125 @@
       return mark;
     }
 
-    function renderRow(col, row, maxN) {
+    /**
+     * "N% (12.4k)" — how often real games play this move from this position
+     * (24b). Deliberately beside the course's own count rather than instead of
+     * it: the two answer different questions, and the whole value of the scan
+     * is being able to read "one line covers this, and it is what 40% of games
+     * play" off a single row.
+     */
+    function shareChip(games, total) {
+      const pct = total > 0 ? (games / total) * 100 : 0;
+      const chip = el('span', 'clo-ct-share', pct >= 9.5 ? Math.round(pct) + '%'
+        : pct >= 0.95 ? pct.toFixed(1) + '%' : '<1%');
+      chip.title = games.toLocaleString() + ' of ' + total.toLocaleString() +
+        ' Lichess games from this position play this move.\n' +
+        'The rating and speed filters are the Lichess panel’s own (its cogwheel menu).';
+      return chip;
+    }
+
+    /** "12.4k" / "938" — a games count in the width a column has for one. */
+    function shortCount(n) {
+      if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k';
+      return String(n);
+    }
+
+    /** The Lichess analysis board for one position, in a new tab. Read-only. */
+    function lichessLink(fen, text, why) {
+      const a = document.createElement('a');
+      a.className = 'clo-ct-lichess';
+      a.href = 'https://lichess.org/analysis/standard/' + encodeURI(fen.replace(/ /g, '_'));
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = text;
+      a.title = why;
+      a.addEventListener('click', (e) => e.stopPropagation());
+      return a;
+    }
+
+    /**
+     * A move Lichess plays that the course does NOT (24b) — the whole point of
+     * the scan, and the one row here that is not about the course at all.
+     *
+     * It is NOT navigable, and that is not a limitation to work around: there
+     * is no subtree behind it, because the author never wrote one. Hovering
+     * puts it on the board, and the link opens the position it leads to on
+     * Lichess. Nothing is offered that would WRITE — §7, and sections 19c/19d
+     * are where adding a line safely already lives.
+     */
+    function renderGapRow(col, gap, kind) {
+      const node = el('div', 'clo-ct-row clo-ct-row--gap clo-ct-gap--' + kind);
+      // An empty bar rather than no bar: the moves must stay in one column with
+      // the rows above, and "no fill" is the true reading — no line takes this.
+      node.append(el('div', 'clo-ct-bar'));
+
+      const main = el('div', 'clo-ct-row-main');
+      const line = el('div', 'clo-ct-line');
+      const numText = moveNumberOf({ before: col.ck });
+      if (numText) line.append(el('span', 'clo-ct-num', numText));
+      line.append(el('span', 'clo-ct-san clo-ct-san--gap', gap.san));
+      main.append(line);
+
+      const meta = el('div', 'clo-ct-meta');
+      meta.append(shareChip(gap.games, gap.total));
+      const tag = el('span', 'clo-ct-tag clo-ct-tag--gap',
+        kind === 'gap' ? 'no answer' : 'not played');
+      tag.title = kind === 'gap'
+        ? 'The opponent plays this and the course never answers it — a gap you will meet.'
+        : kind === 'choice'
+          ? 'A move of your own colour the course chose not to play. That is a repertoire ' +
+            'decision, not a hole.'
+          : 'The course does not play this move here. Which side this course is written ' +
+            'for could not be read from these lines, so it is not called a gap.';
+      meta.append(tag);
+      if (gap.after) {
+        meta.append(lichessLink(gap.after, 'lichess ↗',
+          'Open the position after ' + gap.san + ' on Lichess in a new tab'));
+      }
+      main.append(meta);
+
+      node.append(main);
+      // Hover shows it on the board, exactly as a real row does — an arrow from
+      // the position BEFORE the move (§14.3), which is what lets a gap and the
+      // course's own answer be compared by moving the pointer between them.
+      node.addEventListener('mouseenter', () => setPreview(col.ck, gap.uci));
+      node.addEventListener('mouseleave', () => setPreview(null, null));
+      return node;
+    }
+
+    /**
+     * The moves Lichess plays here that the course's `answers` do not hold, over
+     * `gapMinShare` and capped at `gapMaxRows`. Commonest first — this list is
+     * read top-down and the first row is the one worth doing something about.
+     */
+    function gapsFor(col, db) {
+      if (!db || db.thin || !col.pos) return [];
+      const covered = ct.tree.answers.get(col.ck);
+      const fen = ct.tree.fens.get(col.ck) || '';
+      // ON THE USER'S OWN MOVE THERE IS NOTHING TO LIST (v0.124.0), as long as
+      // the course actually answers this position. `gapKind` has always known
+      // the difference and only re-worded the heading; that was not enough. A
+      // move of your own colour the author did not pick is a repertoire
+      // DECISION (1...c5 over 1...e5), and half a dozen of them printed under
+      // the course's own move reads as a coverage failure for having an opinion
+      // - section 6c's rule, and the reason that whole distinction exists.
+      // Where the course plays NOTHING here the list still stands: then the
+      // question really is "what do people play from this position".
+      if (covered && covered.size && gapKind(col.ck, fen) === 'choice') return [];
+      const out = [];
+      for (const [uci, games] of db.byUci) {
+        if (covered && covered.has(uci)) continue;
+        if (games / db.total < L.gapMinShare) continue;
+        const san = CloSan.moveToSan(col.pos, uci);
+        if (!san) continue; // the explorer and our board disagree; never guessed at
+        out.push({ uci, san, games, total: db.total, after: fen ? fenAfterUci(fen, uci) : '' });
+      }
+      out.sort((a, b) => b.games - a.games);
+      return out.slice(0, L.gapMaxRows);
+    }
+
+    function renderRow(col, row, maxN, db) {
       const isOn = col.chosen >= 0 && col.rows[col.chosen] === row;
       const node = el('div', 'clo-ct-row' + (isOn ? ' clo-ct-row--on' : ''));
 
@@ -29818,6 +30299,14 @@
         (row.lines.length ? ':\n' + row.lines.map((l) => l.name || ('#' + l.oid)).join('\n') : '.') +
         (row.n > row.lines.length ? '\n…and ' + (row.n - row.lines.length) + ' more' : '');
       meta.append(count);
+
+      // 24b: how often the world plays the row's FIRST move. Only the first —
+      // the rest of a folded run is forced, so its share is this one's by
+      // construction and printing it again would be noise.
+      if (db && !db.thin) {
+        const games = db.byUci.get(row.uci);
+        if (games !== undefined) meta.append(shareChip(games, db.total));
+      }
 
       const badge = badgeFor(col.pos, col.repAnswers, row.uci);
       if (badge) meta.append(badge);
@@ -29895,11 +30384,68 @@
       setInlinePx(ct.boardEl, { width: edge });
     }
 
+    /**
+     * 24d) THE DECIDED COLUMNS AS TABS. A Miller browser walks RIGHTWARDS, and
+     * that is the one thing wrong with it here: every branch taken moved the
+     * frontier — the only column with an undecided question in it — one step
+     * further right, so the pointer had to chase it across the panel and the
+     * column under it changed identity on every click.
+     *
+     * So a column whose question is ANSWERED collapses to a tab naming the move
+     * that answered it, and the frontier takes its place. The frontier is then
+     * always in the same spot, which is what makes clicking down a line
+     * possible without moving the hand.
+     *
+     * A tab is EXPANDABLE, not merely a label: clicking it puts that column
+     * back on screen beside the frontier (`ct.openCols`, keyed by position, so
+     * it survives a redraw and every arrival at the same column). That is what
+     * keeps the comparison the columns were for — "what else could I have
+     * played there" — one click away rather than gone.
+     *
+     * The breadcrumb above says the same moves and does something else with
+     * them: it TRUNCATES the path back to a ply. A tab changes what is drawn
+     * and nothing about where the board stands.
+     */
+    function renderTabs(prior) {
+      const host = ct.tabsEl;
+      if (!host) return;
+      host.textContent = '';
+      host.hidden = !prior.length;
+      if (!prior.length) return;
+      for (const col of prior) {
+        const row = col.chosen >= 0 ? col.rows[col.chosen] : null;
+        const ply = row ? row.plies[0] : null;
+        const open = ct.openCols.has(col.ck);
+        const tab = el('button', 'clo-ct-tab' + (open ? ' clo-ct-tab--open' : ''));
+        tab.type = 'button';
+        const numText = ply ? moveNumberOf(ply) : '';
+        if (numText) tab.append(el('span', 'clo-ct-num', numText));
+        tab.append(el('span', 'clo-ct-tab-san', ply ? ply.san : '?'));
+        const alts = Math.max(0, col.rows.length - 1);
+        if (alts) tab.append(el('span', 'clo-ct-tab-n', '+' + alts));
+        tab.title = (open ? 'Hide this column again' : 'Show this column again') +
+          (alts ? ' - ' + alts + ' other move(s) the course plays here.'
+                : ' - the course plays nothing else here.');
+        tab.addEventListener('click', () => {
+          if (open) ct.openCols.delete(col.ck); else ct.openCols.add(col.ck);
+          renderTree();
+        });
+        // Hovering a tab puts its own move back on the board, exactly as the
+        // row it stands for does - the tab IS that row, folded up.
+        if (ply) {
+          tab.addEventListener('mouseenter', () => setPreview(col.ck, ply.uci));
+          tab.addEventListener('mouseleave', () => setPreview(null, null));
+        }
+        host.append(tab);
+      }
+    }
+
     function renderColumns(cols) {
       const host = ct.colsEl;
       host.textContent = '';
       if (!ct.tree) return;
       if (!cols.length) {
+        renderTabs([]);
         host.append(el('div', 'clo-ct-empty', 'The course plays nothing from this position.'));
         return;
       }
@@ -29909,23 +30455,106 @@
       // depth, with the count measured off the panel rather than declared.
       const real = cols.filter((c) => !c.auto);
       if (!real.length) {
+        renderTabs([]);
         host.append(el('div', 'clo-ct-empty', 'The course plays nothing from this position.'));
         return;
       }
-      const shown = real.slice(Math.max(0, real.length - columnsThatFit()));
+      // 24d: everything but the frontier is a tab unless the user re-opened it.
+      // The frontier is the LAST real column — `columnsFor` stops walking the
+      // moment a column has no chosen row, so it is the only one that can still
+      // be undecided, and it is drawn whether or not it is.
+      const frontier = real[real.length - 1];
+      const prior = real.slice(0, real.length - 1);
+      renderTabs(prior);
+      const open = prior.filter((c) => ct.openCols.has(c.ck));
+      const wanted = open.concat([frontier]);
+      // The frontier is last, so a slice from the END can never drop it.
+      const shown = wanted.slice(Math.max(0, wanted.length - columnsThatFit()));
       for (const col of shown) {
         const fen = ct.tree.fens.get(col.ck) || '';
         col.pos = fen ? CloSan.parseFen(fen) : null;
         col.repAnswers = repertoireMovesAt(fen);
+        // 24b: THE ONLY PLACE ANY EXPLORER REQUEST IS EVER ASKED FOR, and it is
+        // here rather than in `columnsFor` on purpose — the columns walk past
+        // auto-taken and off-screen ones, and asking about those would turn one
+        // request per column DRAWN into one per column WALKED. No-op when the
+        // scan is off, and idempotent when it is on.
+        wantDb(col.ck, fen);
+        const db = dbMovesFor(col);
+        const gaps = gapsFor(col, db);
+        // Whose move it is decides what every Lichess figure in this column
+        // MEANS (24b's founding rule), so it is read once here rather than
+        // twice further down.
+        const kind = gapKind(col.ck, fen);
+
         const box = el('div', 'clo-ct-col');
         const head = el('div', 'clo-ct-col-head');
         head.append(el('span', 'clo-ct-col-stm',
           (fen.split(' ')[1] === 'b' ? 'Black' : 'White') + ' to move'));
         head.append(el('span', 'clo-ct-col-n',
           col.rows.length + (col.rows.length === 1 ? ' move' : ' moves')));
+        // "covers 84%" — the one number the scan exists to produce, and it is
+        // per COLUMN because that is the unit a position's answer arrives in.
+        // Summed over every answer at this position, not over the rows drawn:
+        // `maxRows` is a runaway guard, and a coverage figure that quietly
+        // ignored the rows past it would be wrong rather than capped.
+        if (db && !db.thin) {
+          let covered = 0;
+          for (const uci of (ct.tree.answers.get(col.ck) || new Map()).keys()) {
+            covered += db.byUci.get(uci) || 0;
+          }
+          const pct = Math.round((covered / db.total) * 100);
+          // "covers 12%" is a verdict, and on your OWN move it is the wrong
+          // one: the figure is then how popular the author's CHOICE is, and a
+          // sideline repertoire is not 88% uncovered. Same number, different
+          // word, and none of the alarm colouring.
+          const chip = el('span', 'clo-ct-cover' +
+            (kind === 'choice' ? ''
+              : pct >= 90 ? ' clo-ct-cover--full' : pct < 60 ? ' clo-ct-cover--thin' : ''),
+            (kind === 'choice' ? 'plays ' : 'covers ') + pct + '%');
+          chip.title = kind === 'choice'
+            ? 'It is your move here, so this is how popular the course’s own choice is: ' +
+              covered.toLocaleString() + ' of the ' + db.total.toLocaleString() +
+              ' Lichess games from this position play what the author plays (' + pct + '%).\n' +
+              'The rest are moves the author chose not to play, not gaps.'
+            : 'This course answers ' + covered.toLocaleString() + ' of the ' +
+              db.total.toLocaleString() + ' Lichess games from this position (' + pct + '%).' +
+              (gaps.length ? '\n' + gaps.length + ' move(s) it does not cover are listed below.' : '');
+          head.append(chip);
+        } else if (db && db.thin) {
+          const chip = el('span', 'clo-ct-cover clo-ct-cover--none',
+            db.total ? 'only ' + shortCount(db.total) + ' games' : 'not in the database');
+          chip.title = 'Fewer than ' + L.minGames + ' Lichess games reach this position, so no ' +
+            'share is shown: at that size "more popular" is regularly three games against two.';
+          head.append(chip);
+        } else if (ct.dbOn) {
+          const got = ct.db.get(col.ck);
+          const chip = el('span', 'clo-ct-cover clo-ct-cover--none',
+            got && got.error ? 'no answer' : 'scanning...');
+          if (got && got.error) chip.title = got.error;
+          head.append(chip);
+        }
         box.append(head);
+
         const maxN = col.rows.reduce((n, r) => Math.max(n, r.n), 1);
-        for (const row of col.rows) box.append(renderRow(col, row, maxN));
+        for (const row of col.rows) box.append(renderRow(col, row, maxN, db));
+        // The gaps go UNDER the course's own moves, never merged into the sort:
+        // a column is "what the author covered here", and a row that leads
+        // nowhere sitting between two that do would be read as a branch.
+        if (gaps.length) {
+          const sep = el('div', 'clo-ct-gaphead clo-ct-gaphead--' + kind,
+            kind === 'gap' ? 'Played here, not answered' : 'Played here, not in the course');
+          sep.title = kind === 'gap'
+            ? 'The opponent is to move, so every one of these is a reply you can meet and ' +
+              'the course does not cover.'
+            : kind === 'choice'
+              ? 'Your own move, so these are lines the author chose not to play rather than ' +
+                'holes — a repertoire is allowed an opinion.'
+              : 'Which side this course is written for could not be read from the lines ' +
+                'through this position, so these are listed without calling them gaps.';
+          box.append(sep);
+          for (const gap of gaps) box.append(renderGapRow(col, gap, kind));
+        }
         host.append(box);
       }
     }
@@ -29962,6 +30591,93 @@
         });
         host.append(b);
       }
+      // The standing position on Lichess, at the END of the line it describes —
+      // the natural place to leave for "what actually happens here", and the one
+      // thing this read-only browser can offer that costs nothing and writes
+      // nothing. Not in the header: it is about the POSITION, and the breadcrumb
+      // is what names the position.
+      const fen = ct.tree && ct.tree.fens.get(keyOfPlies(plies));
+      if (fen) {
+        host.append(lichessLink(fen, 'open on lichess ↗',
+          'Open this exact position on Lichess in a new tab'));
+      }
+    }
+
+    // --- 24c) finding a line by name ------------------------------------------
+    //
+    // §2.5's third patch-in: the community's answer to a move tree is "make it
+    // an outline, mark the transpositions, LET ME SEARCH IT". Columns are worse
+    // than an outline at exactly one thing — finding a line you can name — and
+    // this is that thing, for a tenth of the outline's cost.
+    //
+    // It STANDS ON the line rather than listing it: the browser's whole
+    // vocabulary is a path, so a match sets `rootKey` and `path` and everything
+    // else (the board, the breadcrumb, the columns, the scan) follows as if the
+    // user had clicked their way there. Which also means a search result is a
+    // place you can carry on browsing FROM, not a dead end.
+
+    /** The plies of one indexed line, rebuilt from `answers`. Null if it will
+     *  not walk — which can only happen if the index and the line disagree. */
+    function pathOfLine(line) {
+      const out = [];
+      let ck = line.startCk;
+      for (const uci of line.ucis) {
+        const m = ct.tree.answers.get(ck);
+        const e = m && m.get(uci);
+        if (!e) return null;
+        out.push({ uci, san: e.san, before: ck, after: e.afterCk });
+        ck = e.afterCk;
+      }
+      return out;
+    }
+
+    function findMatches() {
+      const q = ct.find.trim().toLowerCase();
+      if (!q || !ct.tree || !ct.tree.lines) return [];
+      const out = [];
+      for (const line of ct.tree.lines) {
+        if (line.name.toLowerCase().includes(q)) out.push(line);
+        if (out.length >= C.findShow) break;
+      }
+      return out;
+    }
+
+    function goToLine(line) {
+      const plies = pathOfLine(line);
+      if (!plies) { setStatus('That line could not be replayed from the index.', 'warn'); return; }
+      ct.rootKey = line.startCk;
+      // The whole line, so the browser lands at its END — where the interesting
+      // part of a named line usually is, and one crumb click from anywhere in it.
+      ct.path = plies.slice(0, C.maxDepth);
+      ct.preview = null;
+      ct.expanded.clear();
+      ct.openCols.clear();
+      ct.find = '';
+      if (ct.findEl) ct.findEl.value = '';
+      renderTree();
+    }
+
+    function renderFind() {
+      const host = ct.findBoxEl;
+      if (!host) return;
+      host.textContent = '';
+      const matches = findMatches();
+      host.hidden = !ct.find.trim();
+      if (host.hidden) return;
+      if (!matches.length) {
+        host.append(el('div', 'clo-ct-find-none', 'No variation name contains that.'));
+        return;
+      }
+      for (const line of matches) {
+        const b = el('button', 'clo-ct-find-hit', line.name || ('#' + line.oid));
+        b.type = 'button';
+        b.title = 'Stand at the end of this variation (' + line.ucis.length + ' plies)';
+        b.addEventListener('click', () => goToLine(line));
+        host.append(b);
+      }
+      if (matches.length >= C.findShow) {
+        host.append(el('div', 'clo-ct-find-none', 'Showing the first ' + C.findShow + '.'));
+      }
     }
 
     /**
@@ -29994,6 +30710,7 @@
           ct.rootKey = s.ck;
           ct.path = [];
           ct.expanded.clear();
+        ct.openCols.clear();
           renderTree();
         });
         row.append(pick);
@@ -30022,6 +30739,7 @@
       if (start) parts.push(`${start.n} from this start`);
       host.append(el('div', 'clo-ct-summary-line', parts.join(' · ')));
       const notes = [];
+      if (ct.dbNote) notes.push(ct.dbNote);
       if (t.informational) notes.push(`${t.informational} informational card(s) ignored`);
       if (t.unplayable) {
         notes.push(`${t.unplayable} line(s) could not be replayed (named in the console)`);
@@ -30033,6 +30751,11 @@
         notes.push('repertoire badges are still loading');
       }
       if (notes.length) host.append(el('div', 'clo-ct-note', notes.join('. ') + '.'));
+      // The keyboard says so itself (24c). A shortcut nobody is told about is a
+      // shortcut nobody uses, and one dim line is cheaper than any other way of
+      // saying it — the tooltips on the controls only reach a pointer.
+      host.append(el('div', 'clo-ct-keys',
+        '↑↓ branch · ←→ depth · Home start · f flip · / find · Esc close'));
     }
 
     /** A full redraw. Only ever called from an interaction or a finished walk —
@@ -30043,14 +30766,22 @@
       // the board must agree about where the auto-take (columnsFor) has walked
       // to, and re-deriving it three times is how they would drift apart.
       const cols = columnsFor();
+      ct.cols = cols; // the keyboard's view of where it is (24c); never read by render
       renderCrumb(cols);
       renderColumns(cols);
+      renderFind();
       renderRoots();
       renderSummary();
       // After the columns: they are what give the stage its height, which is
       // the one thing the board's edge is measured from.
       sizeBoard();
       renderBoard(cols);
+      // The chosen row of the LAST drawn column, brought into view — a column
+      // scrolls inside itself (`max-height: 100%`), so arrowing down a nine-row
+      // column would otherwise walk the selection off the bottom of it.
+      // `block: 'nearest'` scrolls the column and never the page.
+      const on = ct.colsEl && ct.colsEl.querySelector('.clo-ct-col:last-child .clo-ct-row--on');
+      if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest' });
       render();
     }
 
@@ -30084,6 +30815,103 @@
       renderTree();
     }
 
+    // --- 24c) the keyboard ----------------------------------------------------
+    //
+    // A Miller-column browser is a KEYBOARD object — Finder's is, Explorer's is
+    // — and this one shipped pure mouse. Up/down pick a branch in the frontier
+    // column, right takes it, left goes back to the decision before it, so a
+    // whole course can be walked without the pointer ever moving.
+    //
+    // Bound on `document` in CAPTURE phase, like section 18's overlays and for a
+    // milder version of the same reason: this panel covers the whole window and
+    // is almost never the focused element, while the course page underneath
+    // binds handlers of its own. It stands down for a MODIFIER CHORD and for any
+    // focused text field — the find field is one, and it is ours — so the
+    // browser's own Ctrl-F and every text box on the page are untouched.
+
+    const isTypingTarget = (t) => {
+      if (!t) return false;
+      const tag = (t.tagName || '').toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable === true;
+    };
+
+    /**
+     * The column the keyboard acts on: the last one actually DRAWN. That is
+     * where the undecided branch is (`columnsFor` stops walking the moment a
+     * column has no chosen row), and where the path ends when the user is
+     * standing mid-run.
+     */
+    function activeColumn() {
+      const real = (ct.cols || []).filter((c) => !c.auto);
+      return real.length ? real[real.length - 1] : null;
+    }
+
+    function moveSelection(delta) {
+      const col = activeColumn();
+      if (!col || !col.rows.length) return;
+      const n = col.rows.length;
+      let i = col.chosen;
+      i = i < 0 ? (delta > 0 ? 0 : n - 1) : Math.min(n - 1, Math.max(0, i + delta));
+      goTo(col, col.rows[i], col.rows[i].plies.length);
+    }
+
+    /** Right: take the frontier column's first row. With one already taken the
+     *  next column is already open, so there is nothing to do. */
+    function goDeeper() {
+      const col = activeColumn();
+      if (col && col.chosen < 0 && col.rows.length) {
+        goTo(col, col.rows[0], col.rows[0].plies.length);
+      }
+    }
+
+    /** Left: back to the last column that HAS a decision in it, and un-take it.
+     *  Its own `prefix` is that position — never arithmetic on ct.path, which
+     *  stopped being an index into the columns when forced ones became
+     *  automatic (see columnsFor). */
+    function goShallower() {
+      const real = (ct.cols || []).filter((c) => !c.auto);
+      for (let i = real.length - 1; i >= 0; i--) {
+        if (real[i].chosen < 0) continue;
+        ct.path = real[i].prefix.slice();
+        ct.preview = null;
+        renderTree();
+        return;
+      }
+      if (ct.path.length) { ct.path = []; ct.preview = null; renderTree(); }
+    }
+
+    function onKey(e) {
+      if (!ct.open || !ct.panel || ct.panel.hidden) return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (isTypingTarget(e.target)) return;
+      let handled = true;
+      switch (e.key) {
+        case 'Escape':     ct.open = false; render(); break;
+        case 'ArrowDown':  moveSelection(1); break;
+        case 'ArrowUp':    moveSelection(-1); break;
+        case 'ArrowRight': goDeeper(); break;
+        case 'ArrowLeft':  goShallower(); break;
+        case 'Home':
+          if (ct.path.length) { ct.path = []; ct.preview = null; renderTree(); }
+          break;
+        // 'f' flips, the same letter section 19's analysis board uses — one
+        // vocabulary for "flip the board" across the extension.
+        case 'f': case 'F': ct.flip = !ct.flip; renderTree(); break;
+        case '/':          if (ct.findEl) ct.findEl.focus(); break;
+        default: handled = false;
+      }
+      if (!handled) return;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    // Wrapped like `tick` and section 23's `onKey`: a key handler that throws is
+    // SILENT — nothing on screen changes and there is no status to read — which
+    // is indistinguishable from "the keyboard stopped working".
+    document.addEventListener('keydown', (e) => {
+      try { onKey(e); } catch (err) { warn('course tree: a key press failed:', err); }
+    }, true);
+
     // --- loading -------------------------------------------------------------
 
     async function runWalk() {
@@ -30109,6 +30937,7 @@
         ct.rootKey = tree.starts.length ? tree.starts[0].ck : null;
         ct.path = [];
         ct.expanded.clear();
+        ct.openCols.clear();
         ct.showRoots = false;
         ct.repWanted = true;
         setStatus('', '');
@@ -30141,6 +30970,41 @@
 
       const head = el('div', 'clo-ct-head');
       head.append(el('span', 'clo-ct-title', 'Course tree'));
+
+      // 24c: the find field. In the HEADER rather than over the columns because
+      // it is about the whole course, not the position on screen — the same
+      // reading that puts the Lichess link in the breadcrumb instead.
+      const findEl = document.createElement('input');
+      findEl.className = 'clo-ct-find';
+      findEl.type = 'search';
+      findEl.placeholder = 'Find a variation…';
+      findEl.title = 'Type part of a variation’s name and stand on it. "/" focuses this field.';
+      findEl.addEventListener('input', () => { ct.find = findEl.value; renderFind(); });
+      // Its own keys, and it must swallow them: the document-capture handler
+      // above stands down for a focused field, but Escape and Enter here mean
+      // something narrower than they do outside it — Escape backs out of the
+      // SEARCH, not out of the browser, which is the nearer thing to abandon.
+      findEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          if (ct.find) { ct.find = ''; findEl.value = ''; renderFind(); } else { findEl.blur(); }
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          e.stopPropagation();
+          const first = findMatches()[0];
+          if (first) { findEl.blur(); goToLine(first); }
+        }
+      });
+
+      const dbBtn = el('button', 'clo-ct-toggle', 'Lichess');
+      dbBtn.type = 'button';
+      dbBtn.addEventListener('click', () => setDbEnabled(!ct.dbOn));
+
+      const flipBtn = el('button', 'clo-ct-toggle', 'Flip');
+      flipBtn.type = 'button';
+      flipBtn.title = 'Turn the board round (f)';
+      flipBtn.addEventListener('click', () => { ct.flip = !ct.flip; renderTree(); });
+
       const runBtn = el('button', 'clo-ct-btn', 'Read this course');
       runBtn.type = 'button';
       runBtn.addEventListener('click', () => {
@@ -30149,14 +31013,16 @@
       });
       const close = el('button', 'clo-ct-x', '×');
       close.type = 'button';
-      close.title = 'Close';
+      close.title = 'Close (Esc)';
       close.addEventListener('click', () => { ct.open = false; render(); });
-      head.append(runBtn, close);
+      head.append(findEl, dbBtn, flipBtn, runBtn, close);
 
       const body = el('div', 'clo-ct-body');
 
       const statusEl = el('div', 'clo-ct-status');
       statusEl.hidden = true;
+      const findBoxEl = el('div', 'clo-ct-find-box');
+      findBoxEl.hidden = true;
       const summaryEl = el('div', 'clo-ct-summary');
       summaryEl.hidden = true;
       const crumbEl = el('div', 'clo-ct-crumbs');
@@ -30173,20 +31039,33 @@
       boardShapes.setAttribute('viewBox', '0 0 8 8');
       boardShapes.setAttribute('preserveAspectRatio', 'none');
       boardEl.append(boardGrid, boardLayer, boardShapes);
+      const colsWrapEl = el('div', 'clo-ct-colswrap');
+      const tabsEl = el('div', 'clo-ct-tabs');
+      tabsEl.hidden = true;
       const colsEl = el('div', 'clo-ct-cols');
-      stageEl.append(boardEl, colsEl);
+      // THE PREVIEW'S SAFETY NET, and it is load-bearing now that the columns
+      // are redrawn by something other than a click (a Lichess answer landing,
+      // 24b): a rebuild replaces the very row being hovered, so its own
+      // `mouseleave` never arrives and the board would stay on the preview.
+      // One listener on the host they all live in cannot be replaced by a
+      // rebuild, so leaving the area always clears it.
+      colsEl.addEventListener('mouseleave', () => setPreview(null, null));
+      colsWrapEl.append(tabsEl, colsEl);
+      stageEl.append(boardEl, colsWrapEl);
 
       const rootsEl = el('div', 'clo-ct-roots');
       rootsEl.hidden = true;
 
-      body.append(statusEl, summaryEl, crumbEl, stageEl, rootsEl);
+      body.append(statusEl, findBoxEl, summaryEl, crumbEl, stageEl, rootsEl);
       panel.append(head, body);
       document.body.appendChild(panel);
 
       Object.assign(ct, {
-        panel, statusEl, summaryEl, crumbEl, colsEl, rootsEl,
+        panel, statusEl, summaryEl, crumbEl, colsEl, tabsEl, rootsEl,
         boardEl, boardGrid, boardLayer, boardShapes, stageEl, runBtn,
+        dbBtn, flipBtn, findEl, findBoxEl,
       });
+      syncDbButton();
     }
 
     function buildLauncher() {
@@ -30230,8 +31109,15 @@
         ct.tree = null;
         ct.rootKey = null;
         ct.path = [];
+        ct.cols = null;
         ct.expanded.clear();
+        ct.openCols.clear();
         ct.showRoots = false;
+        ct.find = '';
+        if (ct.findEl) ct.findEl.value = '';
+        // Everything the scan collected is about the course being left, and its
+        // seq bump is what stops a request in flight landing in the new one.
+        resetDb();
         if (ct.job) ct.job.cancelled = true;
         if (!fresh) { setStatus('', ''); renderTree(); return; }
       }
@@ -30253,6 +31139,16 @@
       }
     }, C.pollMs);
     window.addEventListener('pagehide', () => clearInterval(pollTimer));
+    // The scan's opt-in, read once (24b). Not watched through storage.onChanged:
+    // this toggle has exactly one host and it is this panel, unlike the filters
+    // and the touch keys, which are set in one document and read in another.
+    try {
+      Promise.resolve(chrome.storage.local.get(L.enabledKey)).then((got) => {
+        ct.dbOn = Boolean(got && got[L.enabledKey]);
+        syncDbButton();
+        if (ct.dbOn) refreshColumns();
+      }).catch(() => {});
+    } catch (err) { /* an orphaned content script; the scan simply stays off */ }
     // How many columns fit is MEASURED off the panel, and the panel fills the
     // window — so a resize really can change the answer. Redraw rather than
     // reflow: the columns shown are a different SET, not the same set relaid.

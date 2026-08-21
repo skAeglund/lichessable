@@ -4630,6 +4630,58 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 }
 .clo-ct-board .clo-cr-piece--glyph { font-size: inherit; }
 
+/* 24d) The tabs sit directly above the columns rather than up with the
+   breadcrumb, because they are about what is DRAWN below them and nothing to do
+   with where the board stands. Hence the wrapper: the stage is a row (board,
+   then this) and this is a column (tabs, then the columns). */
+.clo-ct-colswrap {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.clo-ct-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.clo-ct-tabs[hidden] { display: none; }
+
+/* A decided column, folded up. Quiet by design — it is a record of a choice
+   already made, and the frontier column beside it is the thing to read. */
+.clo-ct-tab {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text-dim);
+  padding: 2px 7px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.clo-ct-tab:hover { border-color: var(--clo-line-hover); color: var(--clo-text-bright); }
+
+/* Re-opened: it has a column of its own on screen again, so it reads as the
+   pressed state of a toggle rather than as a second kind of tab. */
+.clo-ct-tab--open {
+  background: var(--clo-bg-raised);
+  border-color: var(--clo-accent);
+  color: var(--clo-accent-text);
+}
+
+.clo-ct-tab-san { font-size: 13px; }
+.clo-ct-tab-n { color: var(--clo-text-faint); font-size: 11px; }
+
 /* Columns HUG their content and scroll only when they outgrow the stage. A
    Finder column browser stretches them full height, and that is wrong here:
    §12.1 says a column is two to five rows, so stretching leaves most of a
@@ -4637,6 +4689,7 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 .clo-ct-cols {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
@@ -4778,6 +4831,147 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 
 .clo-ct-tag { color: var(--clo-text-faint); }
 .clo-ct-tag--loop { color: var(--clo-attention); }
+
+/* --- 24b) the Lichess scan -------------------------------------------------
+   COLOUR MEANS THE SAME HERE AS EVERYWHERE ELSE IN THIS FILE. The share chip
+   carries no verdict at all, so it is plain dim text on the inset well every
+   other read-only figure here uses — green would read as "this is the good
+   move", which is exactly what a popularity figure does not claim. AMBER is
+   "you have N outstanding items", so it is what a gap on the OPPONENT's move
+   gets and the only thing that does; a move of your own colour the author
+   passed over is a decision, not an item, and stays neutral. Green appears in
+   one place only, the coverage chip at 90 %+, where it is a summary of the
+   column rather than a claim about any move in it. */
+
+.clo-ct-share {
+  color: var(--clo-text-dim);
+  background: var(--clo-bg-sunken);
+  border-radius: 2px;
+  padding: 0 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "covers 84%" in a column head. The head is already a dim band, so the three
+   states differ in COLOUR only — there is no room for a second signal and no
+   action attached to any of them. */
+.clo-ct-cover { color: var(--clo-text-dim); font-variant-numeric: tabular-nums; }
+.clo-ct-cover--full { color: var(--clo-accent-text); }
+.clo-ct-cover--thin { color: var(--clo-attention); }
+.clo-ct-cover--none { color: var(--clo-text-faint); font-style: italic; }
+
+/* The band introducing a column's uncovered moves. It is a heading, not a row:
+   nothing under it is navigable, and without the break the first gap would read
+   as one more branch of the course. */
+.clo-ct-gaphead {
+  padding: 3px 6px 2px;
+  border-top: 1px solid var(--clo-line);
+  font-size: 11px;
+  color: var(--clo-text-faint);
+  background: rgba(0, 0, 0, 0.15);
+}
+.clo-ct-gaphead--gap { color: var(--clo-attention); }
+
+/* A gap row. Not clickable — there is no subtree behind it, because the author
+   never wrote one — so it takes the default cursor and no hover fill of the
+   kind a navigable row has. Its bar is EMPTY rather than absent, which keeps
+   the moves in one column with the rows above and is the true reading: no line
+   takes this. */
+.clo-ct-row--gap { cursor: default; }
+.clo-ct-row--gap:hover { background: rgba(255, 255, 255, 0.03); }
+.clo-ct-gap--gap .clo-ct-tag--gap { color: var(--clo-attention); }
+.clo-ct-tag--gap { color: var(--clo-text-faint); }
+
+/* The move itself, drawn as text rather than as one of the row's buttons: it
+   is not somewhere you can stand. Dashed underline is the same "this is not a
+   measurement of this card" vocabulary section 25's spread chip uses. */
+.clo-ct-san--gap {
+  padding: 1px 3px;
+  color: var(--clo-text-dim);
+  border-bottom: 1px dashed var(--clo-line-hover);
+}
+.clo-ct-gap--gap .clo-ct-san--gap { color: var(--clo-text-bright); }
+
+.clo-ct-lichess {
+  color: var(--clo-text-faint);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.clo-ct-lichess:hover { color: var(--clo-accent-text); text-decoration: underline; }
+
+/* --- 24c) the header controls, the find field and the key hint ------------- */
+
+/* Toggles, not actions: a neutral outline that fills green when ON. The same
+   argument section 13's auto-play cog makes — a setting must never wear the
+   "this is the one thing to press" fill, and hiding its state is the one thing
+   a toggle cannot afford. */
+.clo-ct-toggle {
+  border: 1px solid var(--clo-line);
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+.clo-ct-toggle:hover { border-color: var(--clo-line-hover); color: var(--clo-text-bright); }
+.clo-ct-toggle--on {
+  border-color: var(--clo-accent);
+  color: var(--clo-accent-text);
+  background: rgba(98, 153, 36, 0.14);
+}
+
+/* An inset well, the shape every text field in this extension uses. It goes
+   green at the BORDER on focus — section 22's rule: "the keyboard is going
+   here" without claiming to be the thing to press. */
+.clo-ct-find {
+  flex: 0 1 210px;
+  min-width: 90px;
+  box-sizing: border-box;
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text-bright);
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.clo-ct-find::placeholder { color: var(--clo-text-faint); }
+.clo-ct-find:focus { outline: none; border-color: var(--clo-accent); }
+
+/* The matches, in the flow above the summary rather than as a floating menu:
+   the panel is `overflow: hidden` (the same reason the Lichess panel's settings
+   menu is an in-flow block) and a list that pushes the stage down for as long
+   as it is open is honest about taking the space. */
+.clo-ct-find-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 0 6px;
+  max-height: 22vh;
+  overflow-y: auto;
+}
+.clo-ct-find-box[hidden] { display: none; }
+
+.clo-ct-find-hit {
+  border: 1px solid var(--clo-line);
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text-bright);
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+}
+.clo-ct-find-hit:hover { border-color: var(--clo-accent); color: var(--clo-accent-text); }
+.clo-ct-find-none { color: var(--clo-text-faint); font-size: 12px; align-self: center; }
+
+.clo-ct-keys {
+  color: var(--clo-text-faint);
+  font-size: 11px;
+  margin-top: 2px;
+}
 
 .clo-ct-link {
   color: var(--clo-text-faint);
@@ -5465,6 +5659,12 @@ html.clo-touch .clo-sg-lead-btn {
   .clo-ct-board { align-self: center; }
   .clo-ct-cols { width: 100%; }
   .clo-ct-cols > .clo-ct-col:not(:last-child) { display: none; }
+  /* The header's five controls do not fit beside a title at this width, and the
+     find field is the one that wants a whole line — it is a text field, and a
+     90px text field is not one. Order matters: it drops BELOW the buttons, so
+     the row above keeps the shape it has on a wide panel. */
+  .clo-ct-head { flex-wrap: wrap; }
+  .clo-ct-find { order: 1; flex: 1 0 100%; }
 }
 
 html.clo-touch .clo-ct-launch { font-size: 15px; padding: 9px 16px; }
@@ -5472,12 +5672,21 @@ html.clo-touch .clo-ct { font-size: 15px; }
 html.clo-touch .clo-ct-btn { font-size: 14px; padding: 7px 14px; }
 html.clo-touch .clo-ct-x { font-size: 22px; padding: 0 6px; }
 html.clo-touch .clo-ct-crumb { font-size: 15px; padding: 4px 6px; }
+html.clo-touch .clo-ct-tab { font-size: 13px; padding: 5px 10px; }
+html.clo-touch .clo-ct-tab-san { font-size: 15px; }
+html.clo-touch .clo-ct-tab-n { font-size: 12px; }
 html.clo-touch .clo-ct-num { font-size: 13px; }
 html.clo-touch .clo-ct-san { font-size: 15px; padding: 3px 5px; }
 html.clo-touch .clo-ct-more { font-size: 13px; padding: 3px 6px; }
 html.clo-touch .clo-ct-meta { font-size: 13px; }
 html.clo-touch .clo-ct-col-head { font-size: 12px; padding: 6px 8px; }
 html.clo-touch .clo-ct-row { padding: 7px 8px 8px; }
+html.clo-touch .clo-ct-toggle { font-size: 14px; padding: 7px 12px; }
+html.clo-touch .clo-ct-find { font-size: 16px; padding: 7px 9px; }
+html.clo-touch .clo-ct-find-hit { font-size: 14px; padding: 6px 10px; }
+html.clo-touch .clo-ct-san--gap { font-size: 15px; padding: 2px 4px; }
+html.clo-touch .clo-ct-gaphead { font-size: 12px; padding: 5px 8px 4px; }
+html.clo-touch .clo-ct-keys { font-size: 12px; }
 html.clo-touch .clo-ct-roots-toggle { font-size: 14px; padding: 6px 0; }
 html.clo-touch .clo-ct-root { font-size: 13px; padding: 4px 0; }
 html.clo-touch .clo-ct-root-pick { font-size: 12px; padding: 4px 8px; }

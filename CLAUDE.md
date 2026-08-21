@@ -70,7 +70,11 @@ COURSE TREE (section 24) walks the course into a position-keyed graph and
 browses it as Miller columns — standing anywhere, what did the author cover,
 how many of their lines take each move, and where do two chapters transpose
 into one; forced runs are folded into a row, so a 20-ply variation is two or
-three of them. Read-only. And "Repertoire coverage"
+three of them. An opt-in LICHESS SCAN (24b) reads the explorer for each column
+on screen and answers the other half of the question — how often real games play
+each of those moves, what share of them the course accounts for, and which
+popular replies it never answers at all. Read-only, keyboard-driven, with a
+field that finds a line by name (24c). And "Repertoire coverage"
 (section 21): it walks the course's move tree against one of the user's own
 courses, lists the variations that are missing ranked by how likely the user is
 to face them, flags the lines their repertoire holds twice, and writes both
@@ -173,8 +177,10 @@ Currently working (v0.18.x).
     live ground truth, §15 = what must never happen, §18 = what is still open)
   * `DESIGN-key-move-leadin.md` — section 23c (§2 = the gate, live; §3 = the loop)
   * `DESIGN-repertoire-coverage.md` — section 21
-  * `DESIGN-course-tree.md` — section 24 (§12 = the LIVE ground truth, which
-    overrides §3.5, §5.1 and §8; §12.7 is why `sanToUci` has a second pass)
+  * `DESIGN-course-tree.md` — sections 24, 24b, 24c and 24d (§12 = the LIVE ground
+    truth, which overrides §3.5, §5.1 and §8; §12.7 is why `sanToUci` has a
+    second pass; §15 is the Lichess scan, and §15.1 is where §7's "no fetch per
+    column" is LIFTED — do not quote that rule from §7 without reading it)
   * `DESIGN-key-moves.md` — sections 25, 25b, 25c and 25d (§1 = how Chessable
     stores a key range and the bug in its own handler; §5 = the write and the two
     live driver failures it exposed in SHARED code; §7 = putting a range BACK;
@@ -2202,18 +2208,21 @@ Currently working (v0.18.x).
     lead-in owns the board AND the pause, and `endLead` is the only thing that
     gives either back. `pagehide` calls it for the same reason.
 
-- Course tree (section 24, v0.115.0): the whole course as a POSITION-KEYED
-  graph, browsed as Miller columns on `/course/<bid>/`, beside section 21's
-  panel and sharing its `fetchCourse` session cache — so opening the tree after
-  a coverage run costs no fetch.
+- Course tree (sections 24, 24b and 24c, v0.123.0): the whole course as a
+  POSITION-KEYED graph, browsed as Miller columns on `/course/<bid>/`, beside
+  section 21's panel and sharing its `fetchCourse` session cache — so opening
+  the tree after a coverage run costs no fetch. 24b scans the LICHESS DATABASE
+  as you browse (opt-in) and lists the popular moves the course never answers;
+  24c is the keyboard, the find-a-line field and the flip.
   **READ `DESIGN-course-tree.md` BEFORE CHANGING ANYTHING HERE** — §12 is the
   live ground truth (measured by `dev/probe-course-tree.js` over all three
-  courses on the account) and it OVERRIDES §3.5, §5.1 and §8. What follows is
-  only what an edit ELSEWHERE can break.
-  * IT NEVER WRITES, and it never fetches per column. Editing from a tree row
-    belongs to sections 12 / 19c / 19d, which already do it safely; a browser
-    that fetched as you clicked would rate-limit the user out of their own
-    course.
+  courses on the account) and it OVERRIDES §3.5, §5.1 and §8; §15 is the third
+  pass and REVERSES §7 about fetching. What follows is only what an edit
+  ELSEWHERE can break.
+  * IT NEVER WRITES. Editing from a tree row belongs to sections 12 / 19c / 19d,
+    which already do it safely — and that includes the 24b rows naming a move the
+    course is MISSING, which is the most tempting place in the file to put an
+    "add it" button and still must not have one.
   * KEYED ON `cacheKey`, NOT `repKey`, AND THAT IS DELIBERATE — the two
     neighbouring features really do use two different position keys. Both sides
     of every comparison here come out of `walkVariation` and are EXACT, so
@@ -2271,16 +2280,118 @@ Currently working (v0.18.x).
     `mouseenter`/`mouseleave`, not pointer events: a finger has no hover, and
     a tap that both previewed and navigated would flash the board through a
     position it is about to leave.
+    THE ROW AND ONE PLY OF IT ARE TWO DIFFERENT QUESTIONS (v0.124.0), and
+    `setPreview`'s THIRD argument is which one is being asked. The row means
+    "is this move available here" — position BEFORE, move drawn as an ARROW.
+    One `.clo-ct-san` inside a folded run means "what does it look like at this
+    point of the line" — position AFTER, the move TINTED like a last move,
+    since an arrow for a move already played is the wrong claim. Two rules
+    every caller inherits: the preview is compared through a KEY that includes
+    the ply (the two readings of one row differ in nothing else, so a
+    field-by-field compare would leave the board on whichever landed first),
+    and a ply's own `mouseleave` must RESTORE the row's reading rather than
+    clear it — `mouseenter`/`mouseleave` do not fire between an element and its
+    own descendant, so entering a ply button never fires the row's leave and
+    coming back out never re-fires its enter. Clearing outright there would
+    leave the board blank while the pointer is still inside the row.
   * ONLY THE SELECTED ROW NAMES ITS VARIATIONS. A column is a few hundred px
     wide, so every link wraps onto a line of its own; a name on every row is a
     wall of prose over the moves. `maxNames` is what the INDEX remembers (all
     of them, in the count's tooltip) and `linksShown` is what a row draws.
+  * THE LICHESS SCAN (24b, v0.123.0) IS ONE REQUEST PER COLUMN **DRAWN**, and
+    that sentence is the entire licence for it — §15.1. §7 forbade fetching per
+    column on the arithmetic that "a column is a dozen positions"; a column is
+    ONE position and one explorer request answers every move of it. One request
+    per ROW is still refused.
+    - `wantDb` is called from `renderColumns` and NOWHERE ELSE. Not from
+      `columnsFor`, which walks THROUGH auto-taken and off-screen columns — that
+      would turn "per column drawn" into "per column walked". Never from a hover,
+      never from inside a folded run.
+    - OPT-IN, off by default (`cloTreeLichess`, storage.local), read once: this
+      toggle has exactly one host, unlike the filters and the touch keys.
+    - It shares `cloPopularityCache` with sections 14 and 21, `popCacheTag` and
+      all — which is most of why the request count is bearable. But it RE-READS
+      before it writes (`flushDbCache`): `savePopCache` writes the object whole
+      and this panel holds its snapshot for a whole sitting, so saving that back
+      would silently delete every position the coverage report filled meanwhile.
+      Section 21's window is one RUN, which is why it has never needed this.
+    - A FAILURE IS REMEMBERED in `ct.db` as `{error}`, or a rejected token is one
+      request per redraw for ever. Toggling off and on is the retry.
+    - `refreshColumns` IS DEFERRED AND MUST STAY THAT WAY (v0.123.1). `wantDb` is
+      called from inside `renderColumns`'s own loop, and `drainDb` — though
+      `async` — runs SYNCHRONOUSLY once `ct.dbCache` is loaded, because its only
+      await sits behind an `if`. A cache hit therefore re-entered `renderTree`
+      mid-draw and the panel showed a column twice. A re-entrancy flag is the
+      wrong fix: it would have to drop the inner redraw, which is the one
+      carrying the new data.
+    - THE EXPLORER'S SAN IS RESOLVED THROUGH `sanToUci`, NEVER COMPARED — section
+      6c's v0.48.1 lesson, unchanged: Lichess writes castling as king-takes-rook
+      and Chessable over-disambiguates (§12.7), so the only stable identity for a
+      move is the pair of squares. One that will not resolve is dropped.
+  * WHOSE MOVE IT IS DECIDES WHAT AN UNCOVERED MOVE MEANS, and `courseSide`
+    CANNOT ANSWER IT. On the opponent's move a popular uncovered reply is a hole;
+    on the user's own it is a repertoire decision (1…c5 over 1…e5), and drawing
+    the second as a gap paints every course red for having an opinion — section
+    6c's rule, for section 6c's reason. `courseSide` is a course-wide MAJORITY
+    and §12.6 measured it answering 'w' for a course holding 15 Black lines, so
+    the walk counts `w`/`b` PER MOVE (two ints on an `answers` entry) and
+    `positionSide` sums them; a position both colours pass through answers null
+    and the distinction is simply not drawn. `dev/check-course-tree.js` asserts
+    this directly, because it is the judgement here most able to be wrong
+    invisibly.
+    AND ON THE USER'S OWN MOVE THE GAP LIST IS DROPPED, NOT RE-WORDED
+    (v0.124.0, `gapsFor`'s own `'choice'` guard). Knowing the difference and
+    still printing "Played here, not in the course" under the author's own move
+    was the same mistake one heading away: half a dozen moves the author chose
+    not to play, listed as things the course lacks. The guard is conditional on
+    the course ANSWERING the position — where it plays nothing the list is the
+    only thing that can be said, so it stands. The "covers N%" chip is the same
+    claim and gets the same treatment: on a user move it reads "plays N%" and
+    wears none of the `--thin` alarm colouring, since a sideline repertoire is
+    not 88% uncovered. Both arms are asserted in `dev/check-course-tree.js`.
+  * THE KEYBOARD IS BOUND ON `document` IN CAPTURE PHASE (24c) — the panel fills
+    the window and is almost never focused. It stands down for a modifier chord
+    and for any focused text field, so Ctrl-F and every box on the page beneath
+    still work, and it is wrapped in a try/catch for section 23's reason: a key
+    handler that throws is SILENT. `goShallower` navigates through the target
+    column's own `prefix`, never arithmetic on `ct.path` — the auto-take rule
+    above is why.
+  * THE FIND FIELD STANDS ON A LINE rather than listing it (24c): the walk keeps
+    `lines` (`{oid, name, startCk, ucis}`) and a match sets `rootKey` + `path`, so
+    a search result is a place to carry on browsing from. The path is REBUILT
+    from `answers` at navigation time rather than stored, so it cannot disagree
+    with what the columns will draw.
   * IT OWNS NO BRIDGES and is called by nothing. It READS three of section 6c's
     top-level helpers for the badges — `ensureRepertoireIndex`,
     `repertoireMovesAt`, `repertoireMoveState` — all optional and additive: with
-    no repertoire nominated the rows simply carry no mark. The unprepared-reply
-    WARNING is deliberately absent, being comparative on Lichess popularity,
-    which the no-fetch-per-column rule forbids.
+    no repertoire nominated the rows simply carry no mark. 24b additionally reads
+    the shared explorer machinery — `fetchPopularityCounts`, `popCacheTag`,
+    `loadPopCache`, `savePopCache`, `sanToUci`, `fenAfterUci` — all unchanged.
+    6c's unprepared-reply WARNING is still deliberately absent even now that the
+    popularity IS fetched: that badge is a claim about the nominated REPERTOIRE,
+    and these columns are about the course on screen. 24b's own "no answer" tag
+    is the same shape of statement made about the right subject.
+  * THE FRONTIER COLUMN NEVER MOVES (24d, v0.124.0). A Miller browser walks
+    rightwards, and here that was its one real cost: every branch taken pushed
+    the only column with an open question in it one step further right, so the
+    pointer chased it across the panel and the column under it changed identity
+    on each click. So a column whose question is ANSWERED collapses to a TAB
+    above the columns (`ct.openCols`, `renderTabs`), and the frontier takes its
+    place. Three things this rests on:
+    - THE FRONTIER IS THE LAST REAL COLUMN, always drawn, and it is LAST in
+      `wanted` so the `columnsThatFit()` slice — which cuts from the front —
+      can never drop it. `activeColumn()` (24c) already picked the same column,
+      so the keyboard needed no change.
+    - A TAB IS EXPANDABLE, NOT A LABEL. Clicking one puts its column back
+      beside the frontier, which is what keeps "what else could I have played
+      there" one click away rather than gone. Keyed by POSITION, so it survives
+      a redraw and every later arrival at the same column, and cleared wherever
+      `ct.expanded` is.
+    - IT IS NOT THE BREADCRUMB. That says the same moves and does the other
+      thing with them — it TRUNCATES the path. A tab changes what is drawn and
+      nothing about where the board stands.
+    `wantDb` is still called from `renderColumns` and only for a column being
+    DRAWN, so this strictly REDUCES 24b's request count; the rule is unchanged.
   * THE BOTTOM-RIGHT CORNER OF A COURSE PAGE NOW HAS THREE OCCUPANTS: this
     launcher (stacked at `bottom: 54px`), section 21's (16px) and section 16d's
     pin dock, which shows on every page and takes 16px too. 21 and 16d already
@@ -2532,7 +2643,8 @@ resolved; it resolves only when exactly one legal move survives the written
 SAN's hints, and refuses otherwise. The controls are the point of the file.
 
 After touching section 24's walk, fold or columns — `buildCourseTree`,
-`foldFrom`, `rowsAt`, `columnsFor`:
+`foldFrom`, `rowsAt`, `columnsFor` — or 24b/24c's `positionSide`, `gapKind`,
+`dbMovesFor`, `gapsFor` or `pathOfLine`:
 
 ```
 node dev/check-course-tree.js
@@ -2547,6 +2659,15 @@ eighty-ply run and the position graph's back-edge both occur only on the bought
 one. Run a control (`CLO_SRC` at a copy with the change reverted) and confirm it
 FAILS — removing the fold's line-end stop and the cycle guard is caught by
 exactly the three assertions that cover them.
+
+It also covers 24b and 24c against a FAKE explorer answer, which is the only way
+to reach the three things there that can be wrong invisibly: that `positionSide`
+answers null on a mixed course rather than taking `courseSide`'s majority (a
+control that falls back to it fails on exactly that one assertion), that the
+explorer's SAN is resolved through CloSan rather than compared — castling is the
+case, and a raw-compare control fails four assertions — and that a move under
+`gapMinShare` is not called a gap. Plus that every indexed line rebuilds into a
+contiguous path, which is what the find field stands on.
 
 After touching section 18's line reading — `walkLine`, `branchLines`,
 `quizzableLines`, `dropAmbiguous`, `mergeUserAlternatives`, or `tryMove`'s
