@@ -49,6 +49,7 @@ const shared = [
   sliceDecl('isLineEnd'),
   sliceDecl('foldFrom'),
   sliceDecl('rowsAt'),
+  sliceDecl('standColumn'),
   sliceDecl('columnsFor'),
   sliceDecl('standingPlies'),
   sliceDecl('keyOfPlies'),
@@ -61,7 +62,7 @@ const shared = [
   sliceDecl('dbMovesFor'),
   sliceDecl('gapsFor'),
   sliceDecl('pathOfLine'),
-  'return { buildCourseTree, foldFrom, rowsAt, columnsFor, standingPlies, keyOfPlies,' +
+  'return { buildCourseTree, foldFrom, rowsAt, standColumn, columnsFor, standingPlies, keyOfPlies,' +
   '         positionSide, gapKind, dbMovesFor, gapsFor, pathOfLine };',
 ].join('\n');
 
@@ -216,18 +217,40 @@ function check(name, cond, detail) {
     check('the second column starts where the run ended',
       cols[1].ck === first.end, cols[1].ck + ' vs ' + first.end);
 
-    // Stand HALFWAY into a run (§3.3: the board must be able to). No further
-    // column may open, and the row must still read as chosen.
+    // Stand HALFWAY into a run (§3.3: the board must be able to). Since
+    // v0.125.0 that position gets a COLUMN OF ITS OWN — it is the frontier, it
+    // is what the panel is about, and it is the only way 24b's scan (which asks
+    // only about a column DRAWN) ever reads the position the user selected.
     const deep = cols[1].rows.find((r) => r.plies.length > 2) || cols[1].rows[0];
     ct.path = first.plies.concat(deep.plies.slice(0, 1));
     cols = api.columnsFor();
-    check('standing mid-run opens no further column', cols.length === 2, String(cols.length));
+    check('standing mid-run opens a column for the standing position',
+      cols.length === 3 && cols[2].ck === deep.plies[0].after,
+      cols.length + ' / ' + (cols[2] || {}).ck + ', wanted ' + deep.plies[0].after);
+    // A control that reverts the arm has no third column at all, and every
+    // assertion below it must still REPORT rather than throw.
+    const stand = cols[2] || { rows: [], prefix: [] };
+    check('…marked mid and NOT auto, so it is drawn rather than walked through',
+      stand.mid === true && stand.auto === false,
+      'mid=' + stand.mid + ' auto=' + stand.auto);
+    check('…with nothing chosen in it, so it reads as the frontier',
+      stand.chosen === -1, String(stand.chosen));
+    check('…carrying the plies stood through as its prefix',
+      stand.prefix.length === ct.path.length &&
+      stand.prefix.every((p, i) => p.uci === ct.path[i].uci),
+      stand.prefix.map((p) => p.uci).join(' '));
+    check('…and the course’s continuation as its only move',
+      stand.rows.length === 1 && stand.rows[0].plies[0].uci === deep.plies[1].uci,
+      stand.rows.length + ' row(s), first ' + (stand.rows[0] || {}).uci);
     // Compared by UCI, not by identity: columnsFor rebuilds its rows on every
     // call (the visited set differs), so the objects from the previous call are
     // not the ones in this one.
     check('…and the row it is inside still reads as chosen',
       cols[1].chosen >= 0 && cols[1].rows[cols[1].chosen].uci === deep.uci,
       cols[1].chosen + ' → ' + (cols[1].rows[cols[1].chosen] || {}).uci + ', wanted ' + deep.uci);
+    check('…and the board still stands on the ply that was clicked',
+      api.keyOfPlies(api.standingPlies(cols)) === deep.plies[0].after,
+      api.keyOfPlies(api.standingPlies(cols)));
 
     // A path that does not match any row must not silently pick one.
     ct.path = [{ uci: 'a2a3', san: 'a3', before: ct.rootKey, after: 'nonsense' }];

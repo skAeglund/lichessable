@@ -177,10 +177,11 @@ Currently working (v0.18.x).
     live ground truth, §15 = what must never happen, §18 = what is still open)
   * `DESIGN-key-move-leadin.md` — section 23c (§2 = the gate, live; §3 = the loop)
   * `DESIGN-repertoire-coverage.md` — section 21
-  * `DESIGN-course-tree.md` — sections 24, 24b, 24c and 24d (§12 = the LIVE ground
-    truth, which overrides §3.5, §5.1 and §8; §12.7 is why `sanToUci` has a
+  * `DESIGN-course-tree.md` — sections 24, 24b, 24c, 24d and 24e (§12 = the LIVE
+    ground truth, which overrides §3.5, §5.1 and §8; §12.7 is why `sanToUci` has a
     second pass; §15 is the Lichess scan, and §15.1 is where §7's "no fetch per
-    column" is LIFTED — do not quote that rule from §7 without reading it)
+    column" is LIFTED — do not quote that rule from §7 without reading it; §17 is
+    the mid-run column and the one exception to §14.2's auto-take)
   * `DESIGN-key-moves.md` — sections 25, 25b, 25c and 25d (§1 = how Chessable
     stores a key range and the bug in its own handler; §5 = the write and the two
     live driver failures it exposed in SHARED code; §7 = putting a range BACK;
@@ -2208,7 +2209,7 @@ Currently working (v0.18.x).
     lead-in owns the board AND the pause, and `endLead` is the only thing that
     gives either back. `pagehide` calls it for the same reason.
 
-- Course tree (sections 24, 24b and 24c, v0.123.0): the whole course as a
+- Course tree (sections 24, 24b, 24c, 24d and 24e, v0.125.0): the whole course as a
   POSITION-KEYED graph, browsed as Miller columns on `/course/<bid>/`, beside
   section 21's panel and sharing its `fetchCourse` session cache — so opening
   the tree after a coverage run costs no fetch. 24b scans the LICHESS DATABASE
@@ -2267,12 +2268,33 @@ Currently working (v0.18.x).
     `columnsFor`'s `auto`) — it is the same non-decision the fold collapses
     inside a row, one level up, and a White repertoire opens with a whole
     column containing nothing but "1.e4". Standing MID-RUN is untouched: that
-    case breaks out of the walk before the auto-take is reached. It is why a
+    case breaks out of the walk before the auto-take is reached, and since
+    v0.125.0 it gets a column of its OWN instead (below). It is why a
     column carries `prefix` (the plies leading to it) and why `goTo` navigates
     through that rather than by index into `ct.path` — the path no longer
     holds every ply the columns have walked through. `standingPlies` is what
     keeps the board and the breadcrumb on the position the leftmost DRAWN
     column is about, instead of two forced moves behind it.
+  * A POSITION STOOD ON MID-RUN GETS A COLUMN OF ITS OWN (24e, v0.125.0,
+    `standColumn`) — the ONE deliberate exception to the auto-take above.
+    Clicking a ply inside a folded run always moved the BOARD there and stopped
+    at that: the frontier stayed the branching column from before the run, so
+    every word on screen — the moves, the "covers N%" chip, the gap list — was
+    about a position several moves back, and 24b's scan, which only ever asks
+    about a column DRAWN, never read the one the user had selected. Everything
+    downstream needed no change, which is the argument for putting it here:
+    `renderColumns` draws it as the frontier and so calls `wantDb` for it (one
+    request per column DRAWN, §15.1 UNTOUCHED — never per ply and never per
+    hover), 24d turns the branch behind it into a tab, and `activeColumn()`
+    picks it up for free.
+    - IT MUST NOT BE MARKED `auto`, though its shape is identical (a mid-run
+      position has exactly one course move, by the fold's own definition — and
+      a run never passes through a line end). `auto` means "a non-decision
+      nobody asked for, walk through it"; this one was asked for by name.
+      `chosen` is -1, since nothing has been decided here.
+    - IT MUST FEED THE VISITED SET the plies stood through before `rowsAt` is
+      called: the walk breaks BEFORE `columnsFor` adds them, so without that
+      the cycle guard (§12.5) is blind to exactly the plies just walked down.
   * HOVER REDRAWS THE BOARD AND NOTHING ELSE (`setPreview`): the row's own
     position with its branching move as an arrow. Never the columns —
     rebuilding those under the pointer drops the very row being hovered, so
@@ -2294,6 +2316,16 @@ Currently working (v0.18.x).
     own descendant, so entering a ply button never fires the row's leave and
     coming back out never re-fires its enter. Clearing outright there would
     leave the board blank while the pointer is still inside the row.
+    …AND IT MUST RESTORE ONLY WHEN THE POINTER HAS LEFT THE RUN (v0.125.1):
+    the plies are NOT adjacent — a move number and a space sit between them —
+    so an unconditional restore fired at every "4." and snapped the board back
+    to the run's start position with its arrow before landing on the next ply,
+    i.e. reading a line left to right STUTTERED through the original position
+    once per move pair. The guard is `relatedTarget` still inside the same
+    `.clo-ct-line`, and between two plies the right thing to say is NOTHING:
+    the last ply crossed stands until the next takes over, which is also the
+    correct reading right-to-left. Leaving the run for the rest of the row
+    still restores, and leaving the row still clears.
   * ONLY THE SELECTED ROW NAMES ITS VARIATIONS. A column is a few hundred px
     wide, so every link wraps onto a line of its own; a name on every row is a
     wall of prose over the moves. `maxNames` is what the INDEX remembers (all
@@ -2643,8 +2675,8 @@ resolved; it resolves only when exactly one legal move survives the written
 SAN's hints, and refuses otherwise. The controls are the point of the file.
 
 After touching section 24's walk, fold or columns — `buildCourseTree`,
-`foldFrom`, `rowsAt`, `columnsFor` — or 24b/24c's `positionSide`, `gapKind`,
-`dbMovesFor`, `gapsFor` or `pathOfLine`:
+`foldFrom`, `rowsAt`, `standColumn`, `columnsFor` — or 24b/24c's `positionSide`,
+`gapKind`, `dbMovesFor`, `gapsFor` or `pathOfLine`:
 
 ```
 node dev/check-course-tree.js
@@ -2658,7 +2690,10 @@ without it the check exits 2 and says so. It has to be a real course: the fold's
 eighty-ply run and the position graph's back-edge both occur only on the bought
 one. Run a control (`CLO_SRC` at a copy with the change reverted) and confirm it
 FAILS — removing the fold's line-end stop and the cycle guard is caught by
-exactly the three assertions that cover them.
+exactly the three assertions that cover them, and reverting `columnsFor`'s
+mid-run arm (24e) by exactly the five that cover the standing column. Those five
+are written to REPORT rather than throw when there is no third column, since
+that is precisely the control's shape.
 
 It also covers 24b and 24c against a FAKE explorer answer, which is the only way
 to reach the three things there that can be wrong invisibly: that `positionSide`

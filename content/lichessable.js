@@ -29627,6 +29627,42 @@
     }
 
     /**
+     * A COLUMN FOR A POSITION STOOD ON MID-RUN (v0.125.0). Clicking a ply
+     * inside a folded run has always MOVED THE BOARD there (§3.3) and stopped
+     * at that — the frontier stayed the branching column BEFORE the run, so
+     * everything the panel said in words was about a position several moves
+     * back, and 24b's scan, which only ever asks about a column DRAWN, never
+     * read the one the user had actually selected. So the whole point of
+     * standing there — "what do real games play from HERE, and did the author
+     * answer it" — was the one question the browser could not answer.
+     *
+     * Three things it rests on:
+     *  * A MID-RUN POSITION HAS EXACTLY ONE COURSE MOVE, by the fold's own
+     *    definition (branching factor 1, and a run never passes through a line
+     *    end). So this column is `auto`-shaped and must NOT be marked `auto`:
+     *    that flag means "a non-decision nobody asked for, walk through it", and
+     *    this one was asked for by name. It is the frontier, drawn, and 24d
+     *    turns the branching column behind it into a tab exactly as it does for
+     *    a row taken whole.
+     *  * `chosen` IS -1 — nothing has been decided here. That is what makes the
+     *    keyboard (24c) and `goShallower` treat it like any other frontier.
+     *  * THE VISITED SET MUST BE FED THE PLIES ALREADY STOOD THROUGH, since the
+     *    walk breaks before `columnsFor` adds them. Without it the cycle guard
+     *    (§12.5) is blind to exactly the plies the user just walked down.
+     * It still fetches nothing by itself: the request is `renderColumns`'s, for
+     * a column on screen, which is 24b's rule unchanged.
+     */
+    function standColumn(row, took, prefix, pathKeys) {
+      const stand = row.plies.slice(0, took);
+      if (!stand.length) return null;
+      const at = stand[stand.length - 1].after;
+      for (const p of stand) pathKeys.add(p.after);
+      const rows = rowsAt(at, pathKeys);
+      if (!rows.length) return null;
+      return { ck: at, rows, chosen: -1, prefix: prefix.concat(stand), auto: false, mid: true };
+    }
+
+    /**
      * The columns the current path implies. Each is a position, its folded
      * rows, which row the path took, and `prefix` — the plies leading to it.
      * The walk stops where the path stops, which is how the board can stand
@@ -29663,13 +29699,18 @@
         if (chosen < 0) break;
         const row = rows[chosen];
         // How much of this row's run the path actually holds. Less than all of
-        // it means the user is standing mid-run and there is no next column.
+        // it means the user is standing mid-run, which gets a column OF ITS OWN
+        // (v0.125.0, see standColumn).
         // An auto-taken column holds none of it and is walked through whole.
         let took = 0;
         if (!auto) {
           while (took < row.plies.length && i + took < ct.path.length
                  && ct.path[i + took].uci === row.plies[took].uci) took++;
-          if (took < row.plies.length) break;
+          if (took < row.plies.length) {
+            const stand = standColumn(row, took, prefix, pathKeys);
+            if (stand) cols.push(stand);
+            break;
+          }
           i += took;
         }
         prefix = prefix.concat(row.plies);
@@ -30118,8 +30159,28 @@
         // never re-fires the row's mouseenter. Restoring the row's own reading
         // here is what closes that gap; leaving the row entirely then clears it
         // through the row's (and the host's) own listener, in that order.
+        //
+        // …BUT ONLY WHEN THE POINTER HAS ACTUALLY LEFT THE RUN (v0.125.0). The
+        // plies are not adjacent: a move NUMBER and a space sit between them,
+        // and crossing one used to fire this leave, snap the board all the way
+        // back to the run's start position with its arrow, and then land on the
+        // next ply — so reading a line left to right STUTTERED through the
+        // original position at every "4.". Between two plies there is nothing
+        // to say, and saying nothing is the whole fix: `relatedTarget` inside
+        // the same `.clo-ct-line` means the pointer is still walking the run,
+        // so the last ply shown stands until the next one takes over. That is
+        // also the right reading in both directions — the position on the board
+        // is always the one belonging to the nearest move already crossed.
+        // Leaving the run for the rest of the ROW (the meta line, the bar)
+        // still restores the row's own reading, which is what v0.124.0's note
+        // above is about, and leaving the row entirely still clears it.
         san.addEventListener('mouseenter', () => setPreview(col.ck, row.uci, ply));
-        san.addEventListener('mouseleave', () => setPreview(col.ck, row.uci));
+        san.addEventListener('mouseleave', (e) => {
+          const to = e.relatedTarget;
+          const run = san.closest('.clo-ct-line');
+          if (run && to && to.nodeType === 1 && to.closest && to.closest('.clo-ct-line') === run) return;
+          setPreview(col.ck, row.uci);
+        });
         frag.append(san, document.createTextNode(' '));
       }
       if (shown < row.plies.length) {

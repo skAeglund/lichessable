@@ -1,13 +1,16 @@
 # DESIGN — Reading a course as a tree (section 24)
 
-Status: **BUILT (v0.123.0).** §1-§11 are the original design pass; **§12 is the
+Status: **BUILT (v0.125.1).** §1-§11 are the original design pass; **§12 is the
 live ground truth and OVERRIDES §3.5, §5.1 and §8**, §13 is what shipped first
 and what was left out, **§14 is the second pass, which overrides §3.1 about the
-panel’s shape and §3.3 about a forced COLUMN**, and **§15 is the third, which
+panel’s shape and §3.3 about a forced COLUMN**, **§15 is the third, which
 REVERSES §7’s "no fetch per column" and §3.5’s exclusion of Lichess popularity**
-— read §15.1 before assuming that rule is still in force anywhere. Read §12
-before trusting anything above it: four of §8’s seven questions came back with
-an answer the design did not expect.
+— read §15.1 before assuming that rule is still in force anywhere — §16 is the
+frontier/tabs pass, and **§17 gives a position stood on MID-RUN a column of its
+own, which is the one deliberate exception to §14.2, and §17.3 is why a ply's
+hover may not restore the row's reading unconditionally**. Read §12 before trusting
+anything above it: four of §8’s seven questions came back with an answer the
+design did not expect.
 
 Section number: **24**, its own module (`initCourseTree`), hosted on
 `/course/<bid>/` beside section 21. §6 is the argument for that home.
@@ -1045,3 +1048,111 @@ Three consequences worth writing down:
 * **No number was declared for how many tabs fit.** They wrap, which is what a
   row of short labels should do; a deep path is a second line of tabs, not a
   scroller.
+
+---
+
+## 17. Fourth pass (v0.125.0): a position stood on mid-run is a position
+
+Clicking a move inside a folded run has been possible since the first build —
+§3.3 called it "the board can stand inside a run", and it has always done
+exactly that: the board moved, the breadcrumb grew, and *nothing else on screen
+changed*.
+
+That is the whole of the bug. The columns are what the panel SAYS; the board is
+only what it shows. Standing on 8…Nbd7 in the middle of a nine-ply run, the
+frontier column was still the branching position from before the run — "Black to
+move", its moves, its coverage figure, its gap list — all of it about a position
+five moves back. And because §15.1's licence is *one request per column DRAWN*,
+the Lichess scan asked about that column and never about the one the user had
+selected. So the single question standing there is for — **what do real games
+play from HERE, and did the author answer it** — was the one question the
+browser could not answer.
+
+### 17.1 The fix
+
+`columnsFor` used to `break` when the path held only part of a row's run. It now
+builds one more column first (`standColumn`) and then breaks. The column is the
+standing position, its rows, and the plies stood through as its `prefix`.
+
+Everything downstream needed no change at all, which is the argument that this
+is the right place for it:
+
+* `renderColumns` draws it as the frontier, so `wantDb` is called for it — the
+  scan reads the standing position because it is now a column ON SCREEN, not
+  because anything about the scan's rule was relaxed. §15.1 is untouched.
+* 24d turns the branching column behind it into a TAB, exactly as it does for a
+  row taken whole, so the frontier is still at the same x and the alternatives at
+  the branch are still one click away.
+* `activeColumn()` picks it up for free, so ↑↓ pick the continuation and ← goes
+  back to the branch.
+* The board and breadcrumb are unaffected — `standingPlies` reads `ct.path`,
+  which was already right. This never was a board bug.
+
+### 17.2 Three things it rests on
+
+* **A mid-run position has exactly ONE course move**, by the fold's own
+  definition — branching factor 1, and `foldFrom` stops at a line end, so a run
+  never passes through one. The column therefore always has one row, which is
+  the shape §14.2 collapses automatically.
+* **…so it must NOT be marked `auto`.** That flag means "a non-decision nobody
+  asked for, walk through it"; this one was asked for by name, and it is the
+  only thing on screen about the position the user selected. It is the one
+  deliberate exception to §14.2, and it is not really an exception at all —
+  §14.2 is about columns the WALK invented, not about where the path ends.
+* **`chosen` is -1.** Nothing has been decided at this position, which is what
+  makes every frontier-shaped consumer treat it correctly with no special case.
+
+The visited set has to be fed the plies stood through before `rowsAt` is called
+on the standing position: the walk breaks before `columnsFor` adds them, so
+without that the cycle guard (§12.5) is blind to exactly the plies just walked
+down.
+
+### 17.3 Reading a run left to right must not stutter (v0.125.1)
+
+The run's plies are not adjacent: a move number and a space sit between them.
+§16's ply hover restored the ROW's reading on every `mouseleave`, so dragging
+the pointer along `3.d5 b5 4.cxb5 a6 5.bxa6` snapped the board all the way back
+to the run's start position — arrow and all — at every "4.", and then landed on
+the next ply. Once per move pair, the line being read flashed back to where it
+started.
+
+**Between two plies there is nothing to say, and saying nothing is the fix.** The
+ply's leave now returns early when `relatedTarget` is still inside the same
+`.clo-ct-line`, so the last ply crossed stands until the next one takes over.
+That is also the right reading in the other direction — the board always shows
+the position belonging to the nearest move already crossed — and it needs no
+timer, no latch and no state: the DOM already knows where the pointer went.
+
+The two other exits are unchanged and are what makes the guard precise rather
+than a suppression: leaving the run for the rest of the ROW (the meta line, the
+bar) restores the row's reading, and leaving the row clears it.
+
+Verified live 2026-08-21 on course 453453 by dispatching the real handlers with
+an explicit `relatedTarget` and reading the board back — the discriminating
+evidence being that the SAME event with a relatedTarget outside the line still
+restores the arrow:
+
+| pointer goes | arrow | tinted squares |
+|---|---|---|
+| into the row | 1 | — |
+| onto `d4` | 0 | d2, d4 |
+| across `"2."` | 0 | d2, d4 *(unchanged — was the stutter)* |
+| onto `Nf6` | 0 | g8, f6 |
+| across `"3."` | 0 | g8, f6 |
+| onto `c4` | 0 | c2, c4 |
+| out of the run into the meta line | 1 | — |
+| out of the row | 0 | — |
+
+### 17.4 What was deliberately not done
+
+* **No new label on the column.** The head reads "White to move · 1 move" plus
+  the coverage chip, which is true and is the same vocabulary every other column
+  uses. A "you are inside a line" tag would be the panel explaining its own
+  mechanics rather than the course.
+* **The row does not name its variations** (`isOn` is false with nothing
+  chosen). Correct: the names belong to a branch that has been chosen, and the
+  count's tooltip still carries them.
+* **No request is made per PLY.** Hovering a ply of a run still fetches nothing
+  and never will — §15.1's rule is per column drawn, and standing on a ply is
+  what promotes it to one.
+
