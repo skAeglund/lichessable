@@ -73,7 +73,11 @@ into one; forced runs are folded into a row, so a 20-ply variation is two or
 three of them. An opt-in LICHESS SCAN (24b) reads the explorer for each column
 on screen and answers the other half of the question — how often real games play
 each of those moves, what share of them the course accounts for, and which
-popular replies it never answers at all. Read-only, keyboard-driven, with a
+popular replies it never answers at all. It also SCANS FOR SPLITS (24h): the
+positions the course answers with more than one of YOUR OWN moves — alternative
+moves that are not registered as alternatives, so the trainer will refuse
+whichever of them you happen to play — and, on request, reads each card to say
+which ones will actually refuse. Read-only, keyboard-driven, with a
 field that finds a line by name (24c). And "Repertoire coverage"
 (section 21): it walks the course's move tree against one of the user's own
 courses, lists the variations that are missing ranked by how likely the user is
@@ -177,11 +181,12 @@ Currently working (v0.18.x).
     live ground truth, §15 = what must never happen, §18 = what is still open)
   * `DESIGN-key-move-leadin.md` — section 23c (§2 = the gate, live; §3 = the loop)
   * `DESIGN-repertoire-coverage.md` — section 21
-  * `DESIGN-course-tree.md` — sections 24, 24b, 24c, 24d and 24e (§12 = the LIVE
+  * `DESIGN-course-tree.md` — sections 24, 24b, 24c, 24d, 24e, 24f, 24g and 24h (§12 = the LIVE
     ground truth, which overrides §3.5, §5.1 and §8; §12.7 is why `sanToUci` has a
     second pass; §15 is the Lichess scan, and §15.1 is where §7's "no fetch per
     column" is LIFTED — do not quote that rule from §7 without reading it; §17 is
-    the mid-run column and the one exception to §14.2's auto-take)
+    the mid-run column and the one exception to §14.2's auto-take; §19 is the
+    split scan, and §19.2 is the measurement that decides its one real judgement)
   * `DESIGN-key-moves.md` — sections 25, 25b, 25c and 25d (§1 = how Chessable
     stores a key range and the bug in its own handler; §5 = the write and the two
     live driver failures it exposed in SHARED code; §7 = putting a range BACK;
@@ -2235,7 +2240,7 @@ Currently working (v0.18.x).
     lead-in owns the board AND the pause, and `endLead` is the only thing that
     gives either back. `pagehide` calls it for the same reason.
 
-- Course tree (sections 24, 24b, 24c, 24d, 24e, 24f and 24g, v0.126.0): the whole course as a
+- Course tree (sections 24, 24b, 24c, 24d, 24e, 24f, 24g and 24h, v0.127.0): the whole course as a
   POSITION-KEYED graph, browsed as Miller columns on `/course/<bid>/`, beside
   section 21's panel and sharing its `fetchCourse` session cache — so opening
   the tree after a coverage run costs no fetch. 24b scans the LICHESS DATABASE
@@ -2243,7 +2248,8 @@ Currently working (v0.18.x).
   now with a WIN RATE on every row (24f); 24c is the keyboard, the find-a-line
   field and the flip; 24g runs section 19's ANALYSIS BOARD — engine, database and
   all three writes — inside the tree's own window, on any position and on any of
-  those unanswered moves.
+  those unanswered moves; 24h lists the SPLIT POSITIONS
+  and offers the alternatives check that says which cards will refuse.
   **READ `DESIGN-course-tree.md` BEFORE CHANGING ANYTHING HERE** — §12 is the
   live ground truth (measured by `dev/probe-course-tree.js` over all three
   courses on the account) and it OVERRIDES §3.5, §5.1 and §8; §15 is the third
@@ -2540,6 +2546,40 @@ Currently working (v0.18.x).
       will eventually forget. The tree's × closes the board FIRST, though, since
       hiding the window would otherwise leave a board floating over the page for
       up to a tick.
+  * SPLIT POSITIONS (24h, v0.127.0): the positions this course answers with more
+    than one of the user's OWN moves — de facto alternative moves that are not
+    registered as alternatives, so the trainer will refuse whichever of them the
+    user plays. A `Splits (n)` toggle in the header, an in-flow list above the
+    summary, `s` on the keyboard. The scan is FREE: it is a second reading of the
+    index the walk already built. **READ `DESIGN-course-tree.md` §19 BEFORE
+    CHANGING IT.** Four things an edit elsewhere can break:
+    - WHOSE MOVE IT IS COMES FROM THE LINE, NOT FROM `positionSide`, and this is
+      the one judgement here that is wrong INVISIBLY. `positionSide` answers null
+      wherever both colours pass through a position — which includes the STANDARD
+      START POSITION of any course holding lines for both sides. Measured (§19.2):
+      on course 291847 it finds 1 split against the per-move count's 3, and the
+      two it hides are "1.e4 (26 lines) / 1.c4 (2) / 1.d4 (2)" and
+      "3.d4 (18) / 3.Bb5 (2)". It is RIGHT on 453453, which is why the naive
+      version would have shipped. A card only ever QUIZZES its own colour, so the
+      test is per MOVE: at a position with `stm` to move, count the lines WRITTEN
+      FOR `stm` (`e.w`/`e.b`, which 24b added). Hence `lines` carries `side`.
+      `dev/check-course-tree.js` asserts it, `positionSide`'s null at the root
+      included, so a "simplification" back to it fails loudly.
+    - IT STILL NEVER WRITES. Registering an alternative already has a home
+      (section 12's pencil, alt tab); a split row must not grow a button for it,
+      for the same reason a 24b gap row must not grow "add it".
+    - `userPly` IS THE JOIN ONTO `getLesson` and nothing else validates it — a
+      card's index among its OWN colour's plies. A lesson row whose SAN does not
+      match the walk's move there means the join failed, and `cardVerdict` returns
+      NULL rather than reporting whatever move did land at that index.
+    - THE ALTERNATIVE SANs ARE RESOLVED THROUGH CloSan, NEVER COMPARED (section
+      6c's v0.48.1 lesson, and 24b's): an alternative is a string the author typed
+      on the edit page and Chessable over-disambiguates (§12.7). The list itself
+      is a JSON-encoded STRING, not an array (section 23's ground truth) — a
+      correct field name alone still reads as empty.
+    AMBER, never red: a split is not an error — a repertoire covering three first
+    moves is one — so the verdict wears the row palette's "you have something
+    outstanding", with the word always printed beside the colour.
   * THE BOTTOM-RIGHT CORNER OF A COURSE PAGE NOW HAS THREE OCCUPANTS: this
     launcher (stacked at `bottom: 54px`), section 21's (16px) and section 16d's
     pin dock, which shows on every page and takes 16px too. 21 and 16d already
@@ -2793,7 +2833,8 @@ SAN's hints, and refuses otherwise. The controls are the point of the file.
 After touching section 24's walk, fold or columns — `buildCourseTree`,
 `foldFrom`, `rowsAt`, `standColumn`, `columnsFor` — or 24b/24c's `positionSide`,
 `gapKind`, `dbMovesFor`, `gapsFor` or `pathOfLine`, or 24f's shared
-`popEntryWdl` / `popEntryScore` / `moverScorePct`:
+`popEntryWdl` / `popEntryScore` / `moverScorePct`, or 24h's `findSplits` /
+`cardVerdict` / `groupVerdict` / `parseAltList`:
 
 ```
 node dev/check-course-tree.js
@@ -2819,6 +2860,20 @@ total rather than stored (a control returning the draws instead fails on exactly
 the four assertions that cover it), that a gap row carries the split of the move
 it names, and that an entry written before the split still answers SHARES and
 simply draws no bar.
+
+It also covers 24h, whose one real judgement — whose move it is — is wrong
+INVISIBLY if taken from `positionSide`: the assertions name the two splits that
+reading hides on course 291847 AND that `positionSide` answers null at the root,
+so a control reverting to it fails on exactly four assertions and still passes
+every 453453 case, which is the whole point. Plus that every card named is a line
+written for the side to move, and that each card's `userPly` really does index
+its own move — the join onto `getLesson`, and the other thing here that would be
+wrong with full confidence. The alternatives verdict is covered against a
+SYNTHETIC `ct.alts` (a course where the user has registered one is not
+reproducible): an over-disambiguated spelling still resolves, an unresolvable one
+is dropped rather than guessed at, and a lesson that will not align claims
+nothing. Controls run 2026-08-26 — `positionSide`, a raw SAN compare, and the
+alignment check removed — each failing on exactly its own assertions.
 
 It also covers 24b and 24c against a FAKE explorer answer, which is the only way
 to reach the three things there that can be wrong invisibly: that `positionSide`

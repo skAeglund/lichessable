@@ -1503,6 +1503,25 @@
         gapMaxRows:   6,     // …and at most this many tail rows per column
         requestGapMs: 300,   // politeness pause between uncached explorer calls
       },
+
+      // Split positions (section 24h): one position, two of the user's OWN
+      // moves, across different cards. The scan itself is free — it is a second
+      // reading of the index the walk already built — so the only numbers here
+      // are about the OPTIONAL alternatives check, which costs one `getLesson`
+      // per card.
+      splits: {
+        // A list cap, not a fold: 200 split positions is a course with a
+        // different problem, and the console line says how many were dropped.
+        maxRows: 200,
+        // The alternatives check is bounded because a single split can involve
+        // sixty cards (measured on course 453453: 60 lines play 2…Nc6). Cards
+        // are read SMALLEST GROUP FIRST, which is both the cheap end and the
+        // actionable one — the two-card minority line is what bites you when
+        // you habitually play the sixty-card move.
+        altsMax: 40,
+        requestGapMs: 120,  // politeness pause between getLesson calls
+        pathPlies: 10,      // plies of the run-up printed on a row, then a leading "…"
+      },
     },
   };
 
@@ -29785,6 +29804,14 @@
       dbAdd: null,        // …and the entries WE added, merged back on the way out
       dbNote: '',         // one line for the summary while scanning or after a failure
       redrawPending: false, // a redraw is queued — see refreshColumns, which must not be synchronous
+      // --- 24h: split positions ----------------------------------------------
+      splitsOpen: false,  // the list is showing
+      splits: null,       // derived from the tree once per walk; null = not derived yet
+      splitsEl: null, splitBtn: null, splitsLabel: '',
+      alts: new Map(),    // oid → { plies: [{san, alts[]}] } | { error } — one getLesson each
+      altsBusy: false,
+      altsJob: null,      // in-flight alternatives check, so the button can cancel it
+      altsNote: '',       // one line above the list: progress, or what was left unread
       // --- 24g: analysing inside this window ---------------------------------
       explore: null,      // { ck, given } while the analysis board is up in here
       xstageEl: null, xBoardEl: null, xPanelEl: null, xDbEl: null, xBtn: null,
@@ -29841,7 +29868,14 @@
         if (!st) startMap.set(startKey, st = { ck: startKey, fen: w.start, n: 0, lines: [] });
         st.n++;
         if (st.lines.length < C.maxNames) st.lines.push(line);
-        lines.push({ oid: v.oid, name: line.name, startCk: startKey, ucis: w.plies.map((p) => p.uci) });
+        // `side` is 24h's: a card only ever QUIZZES its own colour, so which
+        // plies of this line are the user's is a per-LINE fact and cannot be
+        // taken from `courseSide` (§12.6 measured that answering 'w' for a
+        // course holding 15 Black lines).
+        lines.push({
+          oid: v.oid, name: line.name, startCk: startKey, side: vSide,
+          ucis: w.plies.map((p) => p.uci),
+        });
 
         for (const p of w.plies) {
           const ck = cacheKey(p.before);
@@ -31472,6 +31506,397 @@
       }
     }
 
+    // --- 24h) split positions -------------------------------------------------
+    //
+    // ONE POSITION, TWO OF YOUR OWN MOVES. A Chessable course is a flat list of
+    // cards and each card quizzes ONE move per position, so when two variations
+    // reach the same position and answer it differently, the trainer will show
+    // you that position and refuse whichever of your own two moves you happen to
+    // play. They are alternative moves in everything but the one respect that
+    // matters — being registered as alternatives — and nothing in Chessable's UI
+    // will tell you they exist, because nothing in Chessable's UI knows that two
+    // cards share a position.
+    //
+    // The scan itself is FREE: the walk has already keyed every position and
+    // counted, per move, how many lines of each COLOUR play it (`e.w`/`e.b`,
+    // added for 24b). A split is one line of arithmetic on that.
+    //
+    // WHOSE MOVE IT IS COMES FROM THE LINE, NOT FROM `positionSide`, and this is
+    // the one judgement here that can be wrong invisibly. `positionSide` answers
+    // null wherever both colours pass through a position — which includes the
+    // STANDARD START POSITION of any course holding lines for both sides — so
+    // reading it here silently hid the most consequential split there is.
+    // Measured on the account's own courses: by `positionSide`, course 291847
+    // has 1 split; per move colour it has 3, and the two recovered are
+    // "1.e4 (26 lines) / 1.d4 (2) / 1.c4 (2)" and "3.d4 (18) / 3.Bb5 (2)".
+    // A card only ever quizzes ITS OWN colour, so the test is per move: at a
+    // position with `stm` to move, count the lines WRITTEN FOR `stm`.
+    //
+    // NOT A DEFECT REPORT. Two answers to one position is how a repertoire with
+    // a sideline is built, and the root split above is simply a course covering
+    // three first moves. The scan says the split is there and — if asked — which
+    // cards will actually refuse; what to do about it is the author's.
+
+    /** Chessable stores a move's alternatives as a JSON-encoded STRING, not an
+     *  array (section 23's ground truth, which is why a correct field name alone
+     *  still read as empty). Null when there are none. */
+    function parseAltList(raw) {
+      if (Array.isArray(raw)) return raw.map(String);
+      if (typeof raw !== 'string' || !raw.trim()) return [];
+      try {
+        const got = JSON.parse(raw);
+        return Array.isArray(got) ? got.map(String) : [];
+      } catch (err) {
+        return [];
+      }
+    }
+
+    /**
+     * Every position where the course plays more than one of the user's own
+     * moves, shallowest first, each with a path to stand on it.
+     *
+     * Two passes. The first reads `answers` for the arithmetic above; the second
+     * walks the indexed lines once to find WHICH cards play which move — needed
+     * for the alternatives check, and not derivable from the move entry's own
+     * `lines`, which is capped at `maxNames`. That walk also yields the ply index
+     * IN USER MOVES, which is the join onto `getLesson`'s rows.
+     */
+    function findSplits() {
+      const t = ct.tree;
+      if (!t) return [];
+      const byCk = new Map();
+      for (const [ck, m] of t.answers) {
+        if (m.size < 2) continue;
+        const fen = t.fens.get(ck) || '';
+        const stm = fen.split(' ')[1];
+        if (stm !== 'w' && stm !== 'b') continue;
+        const groups = [];
+        for (const [uci, e] of m) {
+          const n = stm === 'w' ? (e.w || 0) : (e.b || 0);
+          if (n > 0) groups.push({ uci, san: e.san, n, cards: [], seen: new Set() });
+        }
+        if (groups.length < 2) continue;
+        groups.sort((a, b) => b.n - a.n || a.san.localeCompare(b.san));
+        byCk.set(ck, { ck, fen, stm, groups, plies: null, startCk: null, depth: Infinity, cards: 0 });
+      }
+      if (!byCk.size) return [];
+
+      for (const line of t.lines) {
+        if (line.side !== 'w' && line.side !== 'b') continue;
+        const plies = pathOfLine(line);
+        if (!plies) continue;
+        let userPly = 0;
+        for (let i = 0; i < plies.length; i++) {
+          const p = plies[i];
+          const mine = ((t.fens.get(p.before) || '').split(' ')[1]) === line.side;
+          if (mine) {
+            const hit = byCk.get(p.before);
+            const g = hit && hit.groups.find((x) => x.uci === p.uci);
+            if (g && !g.seen.has(line.oid)) {
+              g.seen.add(line.oid);
+              g.cards.push({ oid: line.oid, name: line.name, userPly });
+            }
+            // The SHALLOWEST way in, so a row's run-up is the short one and
+            // standing on it lands where the branch is easiest to read.
+            if (hit && i < hit.depth) {
+              hit.depth = i;
+              hit.plies = plies.slice(0, i);
+              hit.startCk = line.startCk;
+            }
+            userPly++;
+          }
+        }
+      }
+
+      const out = [];
+      for (const s of byCk.values()) {
+        // A group whose lines all failed to rebuild claims nothing: the count
+        // came from the walk and the cards from the index, and where the two
+        // disagree the honest answer is to drop the group rather than report a
+        // split with nobody in it.
+        s.groups = s.groups.filter((g) => g.cards.length);
+        if (s.groups.length < 2 || !s.plies) continue;
+        s.cards = s.groups.reduce((n, g) => n + g.cards.length, 0);
+        out.push(s);
+      }
+      out.sort((a, b) => a.depth - b.depth || b.cards - a.cards || a.ck.localeCompare(b.ck));
+      if (out.length > C.splits.maxRows) {
+        log('course tree: ' + out.length + ' split position(s); listing the first ' +
+          C.splits.maxRows);
+        return out.slice(0, C.splits.maxRows);
+      }
+      return out;
+    }
+
+    /** Derived once per walk — the second pass walks every indexed line. */
+    function ensureSplits() {
+      if (!ct.splits && ct.tree) ct.splits = findSplits();
+      return ct.splits || [];
+    }
+
+    /**
+     * A new tree means a new list, AND a new set of cards: the alternatives
+     * already read are keyed by oid against the course being left (or the
+     * version of it being replaced), and a re-read is exactly when a card may
+     * have gained the alternative the list said it was missing. Keeping them
+     * would report the old answer about the new course.
+     */
+    function resetSplits() {
+      ct.splits = null;
+      ct.alts.clear();
+      ct.altsNote = '';
+      if (ct.altsJob) ct.altsJob.cancelled = true;
+    }
+
+    /**
+     * What one card says about its siblings at one split, or null when nothing
+     * can be claimed — not read yet, unreadable, or a lesson whose rows will not
+     * line up with the walk.
+     *
+     * THE SANs ARE RESOLVED THROUGH CloSan, NEVER COMPARED (section 6c's
+     * v0.48.1 lesson, and 24b's): an alternative is a string the author typed on
+     * the edit page and Chessable over-disambiguates (§12.7), so the only stable
+     * identity for a move is the pair of squares.
+     */
+    function cardVerdict(split, group, card) {
+      const got = ct.alts.get(card.oid);
+      if (!got || got.error || !Array.isArray(got.plies)) return null;
+      const row = got.plies[card.userPly];
+      if (!row || row.san !== group.san) return null;
+      const pos = CloSan.parseFen(split.fen);
+      if (!pos) return null;
+      const accepted = new Set();
+      for (const san of row.alts) {
+        const uci = sanToUci(pos, san);
+        if (uci) accepted.add(uci);
+      }
+      const missing = split.groups.filter((g) => g !== group && !accepted.has(g.uci));
+      return { missing, refuses: missing.length > 0 };
+    }
+
+    /** One group's answer once some of its cards have been read. */
+    function groupVerdict(split, group) {
+      let checked = 0, refusing = 0;
+      for (const card of group.cards) {
+        const v = cardVerdict(split, group, card);
+        if (!v) continue;
+        checked++;
+        if (v.refuses) refusing++;
+      }
+      return { checked, refusing, accepting: checked - refusing };
+    }
+
+    /**
+     * One variation's user moves with their registered alternatives.
+     *
+     * `getLesson` is the same call section 23 reads alternatives from and
+     * section 25d reads SRS levels from — one entry per move PAIR carrying
+     * `move_white`/`move_black` and `alt_white`/`alt_black`. The trainer's own
+     * lesson plan strips the alt fields, so this is a fetch or nothing.
+     */
+    async function fetchCardAlts(oid, side, cr) {
+      const body = await chessableApiFetch(
+        chessableApiUrl(CONFIG.showGrade.lessonPath, { uid: cr.uid, oid, bid: ct.bid }),
+        { headers: chessableHeaders(cr) });
+      const rows = body && body.lesson && body.lesson.moves;
+      if (!Array.isArray(rows)) throw new Error('unexpected shape');
+      const black = side === 'b';
+      const plies = [];
+      for (const m of rows) {
+        const san = black ? m.move_black : m.move_white;
+        if (!san) continue;
+        plies.push({ san: String(san), alts: parseAltList(black ? m.alt_black : m.alt_white) });
+      }
+      return { plies };
+    }
+
+    /**
+     * The optional second pass: which of these cards will actually refuse the
+     * other move. One `getLesson` per card, so it is bounded and explicitly
+     * asked for — the free scan above stands whether or not this is ever run.
+     *
+     * SMALLEST GROUP FIRST. A split of 60 cards against 2 is the common shape
+     * (measured on course 453453), and the two are both the cheap end and the
+     * actionable one: the sixty-card move is the one the fingers already know,
+     * so the minority cards are where a refusal is actually met. Cards are
+     * deduped by oid — one lesson answers every split that variation takes part
+     * in.
+     */
+    async function runAltCheck() {
+      if (ct.altsBusy) return;
+      const cr = chessableCreds();
+      if (!cr) { setStatus('no Chessable session found — reload the page', 'warn'); return; }
+      const splits = ensureSplits();
+      const items = [];
+      for (const s of splits) {
+        for (const g of s.groups) {
+          for (const c of g.cards) items.push({ n: g.n, oid: c.oid, side: s.stm });
+        }
+      }
+      items.sort((a, b) => a.n - b.n);
+      const seen = new Set();
+      const queue = [];
+      for (const it of items) {
+        if (seen.has(it.oid)) continue;
+        seen.add(it.oid);
+        if (!ct.alts.has(it.oid)) queue.push(it);
+      }
+      const left = Math.max(0, queue.length - C.splits.altsMax);
+      const todo = queue.slice(0, C.splits.altsMax);
+      if (!todo.length) {
+        ct.altsNote = seen.size ? 'Every card in this list has been read.' : '';
+        renderTree();
+        return;
+      }
+      const job = { cancelled: false };
+      ct.altsJob = job;
+      ct.altsBusy = true;
+      const bid = ct.bid;
+      let failed = 0;
+      try {
+        for (let i = 0; i < todo.length; i++) {
+          if (job.cancelled || ct.bid !== bid) return;
+          ct.altsNote = 'Reading card ' + (i + 1) + ' of ' + todo.length + '…';
+          renderSplits();
+          try {
+            ct.alts.set(todo[i].oid, await fetchCardAlts(todo[i].oid, todo[i].side, cr));
+          } catch (err) {
+            failed++;
+            ct.alts.set(todo[i].oid, { error: String((err && err.message) || err) });
+          }
+          if (i < todo.length - 1) await sleepMs(C.splits.requestGapMs);
+        }
+        const notes = [];
+        if (failed) notes.push(failed + ' card(s) could not be read');
+        if (left) notes.push(left + ' more not read yet — press again');
+        ct.altsNote = notes.length ? notes.join(' · ') + '.' : '';
+      } finally {
+        if (ct.altsJob === job) { ct.altsJob = null; ct.altsBusy = false; }
+        if (job.cancelled) ct.altsNote = 'Stopped.';
+        renderTree();
+      }
+    }
+
+    /** Stand on a split, exactly as clicking one's way there would. */
+    function goToSplit(s) {
+      if (!s.plies) { setStatus('That position could not be reached from the index.', 'warn'); return; }
+      ct.rootKey = s.startCk;
+      ct.path = s.plies.slice(0, C.maxDepth);
+      ct.preview = null;
+      ct.expanded.clear();
+      ct.openCols.clear();
+      renderTree();
+    }
+
+    /** "1.e4 c5 2.Nf3", with a leading "…" when the run-up is longer than the
+     *  row can carry. The whole path is in the breadcrumb once you stand on it.
+     *
+     *  THE NUMBER IS PRINTED FOR WHITE, and for the first ply shown whatever its
+     *  colour — `renderCrumb`'s own rule, and the ordinary convention. This is a
+     *  RUN read as one line, not a column of plies each standing alone: numbering
+     *  every ply gives "1.e4 1…c5 2.Nf3", which is not how anyone writes it. */
+    function splitPathText(s) {
+      if (!s.plies.length) return 'the starting position';
+      const shown = s.plies.slice(-C.splits.pathPlies);
+      const parts = [];
+      for (let i = 0; i < shown.length; i++) {
+        const num = moveNumberOf(shown[i]);
+        parts.push(num && (num.endsWith('.') || i === 0) ? num + shown[i].san : shown[i].san);
+      }
+      // A SPACE after the truncation mark, or a run starting on a Black move
+      // reads "…5…g6" — two different ellipses meaning two different things.
+      return (shown.length < s.plies.length ? '… ' : '') + parts.join(' ');
+    }
+
+    function renderSplits() {
+      const host = ct.splitsEl;
+      if (!host) return;
+      host.textContent = '';
+      host.hidden = !(ct.splitsOpen && ct.tree);
+      if (host.hidden) return;
+      const splits = ensureSplits();
+
+      const head = el('div', 'clo-ct-splits-head');
+      head.append(el('span', 'clo-ct-splits-count', splits.length
+        ? splits.length + ' position(s) answered with more than one of YOUR moves'
+        : 'No position in this course is answered two ways.'));
+      if (splits.length) {
+        const check = el('button', 'clo-ct-splits-check',
+          ct.altsBusy ? 'Stop' : 'Check alternatives');
+        check.type = 'button';
+        check.title = 'Read each card and say whether it already accepts the other move as ' +
+          'an alternative. One request per card, smallest group first.';
+        check.addEventListener('click', () => {
+          if (ct.altsBusy) { if (ct.altsJob) ct.altsJob.cancelled = true; return; }
+          runAltCheck();
+        });
+        head.append(check);
+      }
+      host.append(head);
+      if (ct.altsNote) host.append(el('div', 'clo-ct-splits-note', ct.altsNote));
+      if (!splits.length) return;
+
+      const list = el('div', 'clo-ct-splits-list');
+      for (const s of splits) list.append(splitRow(s));
+      host.append(list);
+    }
+
+    function splitRow(s) {
+      // ONE control, not a row of them: every part of it does the same thing —
+      // stand here — and the move chips are a description, hovered rather than
+      // pressed. (Section 9's one-button rule, one level down.)
+      const row = el('button', 'clo-ct-split');
+      row.type = 'button';
+      row.title = 'Stand on this position';
+      row.append(el('span', 'clo-ct-split-path', splitPathText(s)));
+      const moves = el('span', 'clo-ct-split-moves');
+      for (const g of s.groups) {
+        const chip = el('span', 'clo-ct-split-move');
+        chip.append(el('span', 'clo-ct-split-san', g.san));
+        chip.append(el('span', 'clo-ct-split-n', g.n + (g.n === 1 ? ' line' : ' lines')));
+        const v = groupVerdict(s, g);
+        if (v.checked) {
+          const others = s.groups.filter((x) => x !== g);
+          const what = others.length === 1 ? others[0].san : 'the others';
+          const tag = el('span', 'clo-ct-split-tag clo-ct-split-tag--' +
+            (v.refusing ? 'refuse' : 'accept'),
+            v.refusing
+              ? v.refusing + ' of ' + v.checked + ' refuse ' + what
+              : (v.checked === g.n ? 'all' : v.checked + ' checked') + ' accept ' + what);
+          chip.append(tag);
+        }
+        // The chip's own reading of the board: this move, drawn as an arrow on
+        // the position. Leaving it RESTORES the row's (24e's rule) — a chip is a
+        // descendant, so the row's own mouseleave never fires between them.
+        chip.addEventListener('mouseenter', () => setPreview(s.ck, g.uci));
+        chip.addEventListener('mouseleave', (e) => {
+          const to = e.relatedTarget;
+          if (to && to.nodeType === 1 && to.closest && to.closest('.clo-ct-split') === row) {
+            setPreview(s.ck, '');
+          }
+        });
+        moves.append(chip);
+      }
+      row.append(moves);
+      // The row means the POSITION, so no arrow: two candidate moves and an
+      // arrow for one of them would be a claim the row is not making.
+      row.addEventListener('mouseenter', () => setPreview(s.ck, ''));
+      row.addEventListener('mouseleave', () => setPreview(null, null));
+      row.addEventListener('click', () => goToSplit(s));
+      return row;
+    }
+
+    function syncSplitButton() {
+      if (!ct.splitBtn) return;
+      ct.splitBtn.disabled = !ct.tree;
+      const label = ct.tree ? 'Splits (' + ensureSplits().length + ')' : 'Splits';
+      if (label !== ct.splitsLabel) { ct.splitsLabel = label; ct.splitBtn.textContent = label; }
+      ct.splitBtn.classList.toggle('clo-ct-toggle--on', ct.splitsOpen);
+      ct.splitBtn.title = 'Positions this course answers with more than one of YOUR OWN moves ' +
+        '— alternative moves that are not registered as alternatives, so the trainer will ' +
+        'refuse whichever of them you happen to play (s)';
+    }
+
     /**
      * The other starting positions (§12.6). A course does not have a root: the
      * bought course measured had 39, one covering 34 lines and 38 covering one
@@ -31547,7 +31972,7 @@
       // shortcut nobody uses, and one dim line is cheaper than any other way of
       // saying it — the tooltips on the controls only reach a pointer.
       host.append(el('div', 'clo-ct-keys',
-        '↑↓ branch · ←→ depth · Home start · f flip · / find · Esc close'));
+        '↑↓ branch · ←→ depth · Home start · f flip · / find · s splits · Esc close'));
     }
 
     /** A full redraw. Only ever called from an interaction or a finished walk —
@@ -31567,6 +31992,7 @@
       renderCrumb(cols);
       renderColumns(cols);
       renderFind();
+      renderSplits();
       renderRoots();
       renderSummary();
       // After the columns: they are what give the stage its height, which is
@@ -31591,6 +32017,7 @@
       // 24g: it is disabled until there is a tree to stand in, and `render` is
       // the only thing that runs after a walk finishes.
       syncExploreButton();
+      syncSplitButton();
       const cancellable = ct.busy && Boolean(ct.job);
       ct.runBtn.textContent = cancellable ? 'Cancel' : (ct.tree ? 'Re-read' : 'Read this course');
       ct.runBtn.classList.toggle('clo-ct-btn--cancel', cancellable);
@@ -31704,6 +32131,11 @@
         // vocabulary for "flip the board" across the extension.
         case 'f': case 'F': ct.flip = !ct.flip; renderTree(); break;
         case '/':          if (ct.findEl) ct.findEl.focus(); break;
+        // 24h. A list about the WHOLE course, like the find field beside it —
+        // and, like it, reachable without the pointer.
+        case 's': case 'S':
+          if (ct.tree) { ct.splitsOpen = !ct.splitsOpen; renderTree(); }
+          break;
         default: handled = false;
       }
       if (!handled) return;
@@ -31746,6 +32178,7 @@
         ct.openCols.clear();
         ct.showRoots = false;
         ct.repWanted = true;
+        resetSplits();
         setStatus('', '');
         log('course tree:', tree.name, '—', tree.indexed, 'line(s),', tree.answers.size,
           'positions,', tree.starts.length, 'start position(s)');
@@ -31822,6 +32255,13 @@
         openExplore(keyOfPlies(standingPlies(cols)));
       });
 
+      // 24h. A toggle beside the other two, not an action: it opens a reading
+      // of the index that is already in memory, and it carries its own count so
+      // the answer is on screen before anything is pressed.
+      const splitBtn = el('button', 'clo-ct-toggle', 'Splits');
+      splitBtn.type = 'button';
+      splitBtn.addEventListener('click', () => { ct.splitsOpen = !ct.splitsOpen; renderTree(); });
+
       const runBtn = el('button', 'clo-ct-btn', 'Read this course');
       runBtn.type = 'button';
       runBtn.addEventListener('click', () => {
@@ -31839,7 +32279,7 @@
         ct.open = false;
         render();
       });
-      head.append(findEl, dbBtn, xBtn, flipBtn, runBtn, close);
+      head.append(findEl, dbBtn, splitBtn, xBtn, flipBtn, runBtn, close);
 
       const body = el('div', 'clo-ct-body');
 
@@ -31847,6 +32287,8 @@
       statusEl.hidden = true;
       const findBoxEl = el('div', 'clo-ct-find-box');
       findBoxEl.hidden = true;
+      const splitsEl = el('div', 'clo-ct-splits');
+      splitsEl.hidden = true;
       const summaryEl = el('div', 'clo-ct-summary');
       summaryEl.hidden = true;
       const crumbEl = el('div', 'clo-ct-crumbs');
@@ -31891,18 +32333,19 @@
       const rootsEl = el('div', 'clo-ct-roots');
       rootsEl.hidden = true;
 
-      body.append(statusEl, findBoxEl, summaryEl, crumbEl, stageEl, xstageEl, rootsEl);
+      body.append(statusEl, findBoxEl, splitsEl, summaryEl, crumbEl, stageEl, xstageEl, rootsEl);
       panel.append(head, body);
       document.body.appendChild(panel);
 
       Object.assign(ct, {
         panel, statusEl, summaryEl, crumbEl, colsEl, tabsEl, rootsEl,
         boardEl, boardGrid, boardLayer, boardShapes, stageEl, runBtn,
-        dbBtn, flipBtn, findEl, findBoxEl,
+        dbBtn, flipBtn, findEl, findBoxEl, splitsEl, splitBtn,
         xstageEl, xBoardEl, xPanelEl, xDbEl, xBtn,
       });
       syncDbButton();
       syncExploreButton();
+      syncSplitButton();
       applyExploreLayout();
     }
 
@@ -31966,6 +32409,7 @@
         ct.showRoots = false;
         ct.find = '';
         if (ct.findEl) ct.findEl.value = '';
+        resetSplits();
         // Everything the scan collected is about the course being left, and its
         // seq bump is what stops a request in flight landing in the new one.
         resetDb();

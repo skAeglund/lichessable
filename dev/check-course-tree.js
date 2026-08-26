@@ -69,8 +69,15 @@ const shared = [
   sliceDecl('dbMovesFor'),
   sliceDecl('gapsFor'),
   sliceDecl('pathOfLine'),
+  // 24h. The split scan is a second reading of the same index - free, and wrong
+  // in exactly one way that nobody would notice (see the assertions below).
+  sliceDecl('parseAltList'),
+  sliceDecl('findSplits'),
+  sliceDecl('cardVerdict'),
+  sliceDecl('groupVerdict'),
   'return { buildCourseTree, foldFrom, rowsAt, standColumn, columnsFor, standingPlies, keyOfPlies,' +
-  '         positionSide, gapKind, dbMovesFor, gapsFor, pathOfLine, moverScorePct };',
+  '         positionSide, gapKind, dbMovesFor, gapsFor, pathOfLine, moverScorePct,' +
+  '         parseAltList, findSplits, cardVerdict, groupVerdict };',
 ].join('\n');
 
 // CONFIG.courseTree, read out of the shipped file so the numbers cannot drift.
@@ -89,6 +96,13 @@ const lnum = (name) => {
   if (!m) throw new Error('CONFIG.courseTree.lichess.' + name + ' not found');
   return Number(m[1]);
 };
+// CONFIG.courseTree.splits, like `lichess` past the window `num` reads.
+const splitsBody = cfgBody.slice(cfgBody.indexOf('splits: {'), cfgBody.indexOf('splits: {') + 1400);
+const snum = (name) => {
+  const m = new RegExp('\\b' + name + ':\\s*(\\d+)').exec(splitsBody);
+  if (!m) throw new Error('CONFIG.courseTree.splits.' + name + ' not found');
+  return Number(m[1]);
+};
 const C = {
   foldShow: num('foldShow'), foldMax: num('foldMax'), maxRows: num('maxRows'),
   maxColumns: num('maxColumns'), maxDepth: num('maxDepth'),
@@ -96,13 +110,20 @@ const C = {
   lichess: {
     minGames: lnum('minGames'), gapMinShare: lnum('gapMinShare'), gapMaxRows: lnum('gapMaxRows'),
   },
+  splits: {
+    maxRows: snum('maxRows'), altsMax: snum('altsMax'), pathPlies: snum('pathPlies'),
+  },
 };
 
-const ct = { tree: null, rootKey: null, path: [], dbOn: true, db: new Map() };
+const ct = {
+  tree: null, rootKey: null, path: [], dbOn: true, db: new Map(),
+  splits: null, alts: new Map(),
+};
+const log = () => {};
 // eslint-disable-next-line no-new-func
 const api = new Function(
-  'CloSan', 'squareName', 'cacheKey', 'sleepMs', 'warn', 'C', 'ct', 'START_FEN', 'L',
-  shared)(CloSan, squareName, cacheKey, sleepMs, warn, C, ct, START_FEN, C.lichess);
+  'CloSan', 'squareName', 'cacheKey', 'sleepMs', 'warn', 'log', 'C', 'ct', 'START_FEN', 'L',
+  shared)(CloSan, squareName, cacheKey, sleepMs, warn, log, C, ct, START_FEN, C.lichess);
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -580,6 +601,159 @@ function check(name, cond, detail) {
       Math.abs(api.moverScorePct(one.wdl, 'b') - 60) < 0.001,
       String(api.moverScorePct(one.wdl, 'b')));
     ct.db.clear();
+  }
+
+  console.log('\nsplit positions (24h)');
+  {
+    // The whole feature is one line of arithmetic on the index, and the line
+    // can be wrong in exactly one way that nobody would notice: reading whose
+    // move it is from `positionSide` instead of from the LINE. That answers
+    // null wherever both colours pass through a position — which includes the
+    // standard start position of any course holding lines for both sides — so
+    // the naive version silently hides the most consequential split there is.
+    const splitsOf = (bid) => {
+      ct.tree = trees[bid];
+      ct.rootKey = ct.tree.starts[0].ck;
+      ct.path = [];
+      return api.findSplits();
+    };
+
+    const sp291 = splitsOf('291847');
+    check('291847 has the 3 own-move splits per-line colour finds', sp291.length === 3,
+      String(sp291.length));
+    const root = sp291[0];
+    check('…the shallowest of them is the start position', root && root.depth === 0,
+      root ? String(root.depth) : '(none)');
+    check('…and it is the course’s three first moves',
+      root && root.groups.map((g) => g.san + ':' + g.n).join(' ') === 'e4:26 c4:2 d4:2',
+      root ? root.groups.map((g) => g.san + ':' + g.n).join(' ') : '');
+    // THE CONTROL-SENSITIVE ONE. If this ever passes with `positionSide` in
+    // `findSplits`, the assertion above has stopped meaning anything.
+    check('…which `positionSide` cannot see (it answers null there)',
+      api.positionSide(root.ck) === null, String(api.positionSide(root.ck)));
+    check('a Black split in a White-majority course is still found',
+      sp291.some((s) => s.stm === 'b'), '');
+
+    const sp453 = splitsOf('453453');
+    check('453453 has its 3 own-move splits', sp453.length === 3, String(sp453.length));
+    check('…the shallowest being 2…Nc6 (60 lines) against 2…Qb6 (2)',
+      sp453[0] && sp453[0].groups.map((g) => g.san + ':' + g.n).join(' ') === 'Nc6:60 Qb6:2',
+      sp453[0] ? sp453[0].groups.map((g) => g.san + ':' + g.n).join(' ') : '');
+    check('groups are listed commonest first',
+      sp453.every((s) => s.groups.every((g, i) => i === 0 || s.groups[i - 1].n >= g.n)));
+    check('a repertoire with no two answers reports none', splitsOf('455941').length === 0,
+      String(splitsOf('455941').length));
+
+    // Every card named is (a) a line written for the side to move — a card only
+    // ever QUIZZES its own colour, so a line passing through playing the
+    // opponent's move is not a card that can refuse anything — and (b) carries
+    // a `userPly` that really is the index of this move among that line's own
+    // user moves. (b) is the join onto getLesson's rows, and it is the other
+    // thing here that would be wrong invisibly: a misaligned index reads a
+    // DIFFERENT move's alternatives and reports them with full confidence.
+    let cards = 0, wrongSide = 0, misaligned = 0, miscounted = 0;
+    for (const bid of ['291847', '453453']) {
+      const tree = trees[bid];
+      ct.tree = tree;
+      const byOid = new Map(tree.lines.map((l) => [l.oid, l]));
+      for (const s of api.findSplits()) {
+        for (const g of s.groups) {
+          if (g.cards.length !== g.n) miscounted++;
+          for (const c of g.cards) {
+            cards++;
+            const line = byOid.get(c.oid);
+            if (!line || line.side !== s.stm) { wrongSide++; continue; }
+            const user = api.pathOfLine(line)
+              .filter((p) => (tree.fens.get(p.before) || '').split(' ')[1] === line.side);
+            if (!user[c.userPly] || user[c.userPly].san !== g.san) misaligned++;
+          }
+        }
+      }
+    }
+    check('every card named is a line written for the side to move',
+      cards > 0 && wrongSide === 0, wrongSide + ' of ' + cards);
+    check('every card’s userPly indexes its own move', misaligned === 0,
+      misaligned + ' of ' + cards);
+    check('the cards found match the walk’s own per-colour count', miscounted === 0,
+      String(miscounted));
+  }
+
+  console.log('\nthe alternatives verdict (24h)');
+  {
+    // Synthetic, because the only way to reach this is a course where the user
+    // HAS registered an alternative — and the three things it can get wrong all
+    // fail silently: an over-disambiguated spelling, castling, and a lesson row
+    // that does not line up with the walk.
+    ct.tree = trees['453453'];
+    const split = api.findSplits()[0];           // 2…Nc6 (60) / 2…Qb6 (2)
+    const [main, minor] = split.groups;
+    const card = minor.cards[0];                 // one of the two Qb6 cards
+
+    const set = (alts) => ct.alts.set(card.oid, {
+      plies: Object.assign([], { length: card.userPly + 1 }, { [card.userPly]: { san: minor.san, alts } }),
+    });
+
+    ct.alts.clear();
+    check('an unread card claims nothing', api.cardVerdict(split, minor, card) === null);
+
+    set([]);
+    check('no alternatives registered ⇒ it refuses the other move',
+      api.cardVerdict(split, minor, card).refuses === true);
+
+    set([main.san]);
+    check('the other move registered ⇒ it accepts',
+      api.cardVerdict(split, minor, card).refuses === false);
+
+    // CHESSABLE OVER-DISAMBIGUATES (§12.7) and an author types the alternative
+    // by hand, so the stored string is not necessarily the walk's spelling.
+    // Only the b8 knight can reach c6, so "Nbc6" is the same move spelled long.
+    set(['Nbc6']);
+    check('an over-disambiguated spelling is still the same move',
+      api.cardVerdict(split, minor, card).refuses === false);
+
+    set(['Qa5']);
+    check('an unrelated alternative does not count',
+      api.cardVerdict(split, minor, card).refuses === true);
+
+    set(['not a move']);
+    check('an unresolvable alternative is dropped, not guessed at',
+      api.cardVerdict(split, minor, card).refuses === true);
+
+    // A lesson whose row does not carry this move's SAN means the join failed,
+    // and the honest answer is silence: reporting the alternatives of whatever
+    // move DID land at that index is worse than reporting nothing.
+    ct.alts.set(card.oid, {
+      plies: Object.assign([], { length: card.userPly + 1 },
+        { [card.userPly]: { san: 'e5', alts: [main.san] } }),
+    });
+    check('a lesson that will not align claims nothing',
+      api.cardVerdict(split, minor, card) === null);
+
+    ct.alts.set(card.oid, { error: 'HTTP 500' });
+    check('a card that could not be read claims nothing',
+      api.cardVerdict(split, minor, card) === null);
+
+    // The group summary is what the row prints, and "checked" must never count
+    // a card nothing is known about.
+    ct.alts.clear();
+    set([]);
+    const gv = api.groupVerdict(split, minor);
+    check('the group counts only the cards actually read',
+      gv.checked === 1 && gv.refusing === 1, JSON.stringify(gv));
+    ct.alts.clear();
+  }
+
+  console.log('\nthe alternatives wire (24h)');
+  {
+    // Chessable stores the list as a JSON-encoded STRING (section 23's ground
+    // truth). A correct field name alone still read as empty, so this is the
+    // shape, not a formality.
+    check('a JSON-encoded string parses', api.parseAltList('["d5","Nc6"]').join(',') === 'd5,Nc6');
+    check('null is no alternatives', api.parseAltList(null).length === 0);
+    check('an empty string is no alternatives', api.parseAltList('').length === 0);
+    check('a bare array is taken as-is', api.parseAltList(['d5']).join(',') === 'd5');
+    check('garbage is no alternatives, never a throw', api.parseAltList('{oops').length === 0);
+    check('a JSON non-array is no alternatives', api.parseAltList('"d5"').length === 0);
   }
 
   console.log('\nthe refusal (§7)');

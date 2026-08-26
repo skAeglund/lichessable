@@ -2588,16 +2588,51 @@ body {
             <span class="clo-ct-title">Course tree</span>
             <input class="clo-ct-find" type="search" placeholder="Find a variation…">
             <button type="button" class="clo-ct-toggle clo-ct-toggle--on">Lichess</button>
+            <button type="button" class="clo-ct-toggle clo-ct-toggle--on">Splits (3)</button>
             <button type="button" class="clo-ct-toggle">Analyse</button>
             <button type="button" class="clo-ct-toggle">Flip</button>
             <button type="button" class="clo-ct-btn">Re-read</button>
             <button type="button" class="clo-ct-x">×</button>
           </div>
           <div class="clo-ct-body">
+            <!-- 24h) split positions. Shown open, and with the alternatives check
+                 already run on some rows and not on others - which is the state
+                 the list actually spends most of its life in. -->
+            <div class="clo-ct-splits">
+              <div class="clo-ct-splits-head">
+                <span class="clo-ct-splits-count">3 position(s) answered with more than one of YOUR moves</span>
+                <button type="button" class="clo-ct-splits-check">Check alternatives</button>
+              </div>
+              <div class="clo-ct-splits-note">14 more not read yet - press again.</div>
+              <div class="clo-ct-splits-list">
+                <button type="button" class="clo-ct-split">
+                  <span class="clo-ct-split-path">the starting position</span>
+                  <span class="clo-ct-split-moves">
+                    <span class="clo-ct-split-move"><span class="clo-ct-split-san">e4</span><span class="clo-ct-split-n">26 lines</span><span class="clo-ct-split-tag clo-ct-split-tag--refuse">4 of 4 refuse the others</span></span>
+                    <span class="clo-ct-split-move"><span class="clo-ct-split-san">c4</span><span class="clo-ct-split-n">2 lines</span><span class="clo-ct-split-tag clo-ct-split-tag--accept">all accept the others</span></span>
+                    <span class="clo-ct-split-move"><span class="clo-ct-split-san">d4</span><span class="clo-ct-split-n">2 lines</span><span class="clo-ct-split-tag clo-ct-split-tag--refuse">2 of 2 refuse the others</span></span>
+                  </span>
+                </button>
+                <button type="button" class="clo-ct-split">
+                  <span class="clo-ct-split-path">1.e4 e5 2.Nf3 Nc6</span>
+                  <span class="clo-ct-split-moves">
+                    <span class="clo-ct-split-move"><span class="clo-ct-split-san">d4</span><span class="clo-ct-split-n">18 lines</span></span>
+                    <span class="clo-ct-split-move"><span class="clo-ct-split-san">Bb5</span><span class="clo-ct-split-n">2 lines</span><span class="clo-ct-split-tag clo-ct-split-tag--accept">all accept d4</span></span>
+                  </span>
+                </button>
+                <button type="button" class="clo-ct-split">
+                  <span class="clo-ct-split-path">&#8230;22.Qg5 g4 23.Bg2 Kg7 24.Kh2 Nf6 25.f5 a6 26.d5 Qc8</span>
+                  <span class="clo-ct-split-moves">
+                    <span class="clo-ct-split-move"><span class="clo-ct-split-san">Kf8</span><span class="clo-ct-split-n">1 line</span></span>
+                    <span class="clo-ct-split-move"><span class="clo-ct-split-san">Kh7</span><span class="clo-ct-split-n">1 line</span></span>
+                  </span>
+                </button>
+              </div>
+            </div>
             <div class="clo-ct-summary">
               <div class="clo-ct-summary-line">72 line(s) · 1118 positions · 34 from this start</div>
               <div class="clo-ct-note">9 informational card(s) ignored.</div>
-              <div class="clo-ct-keys">↑↓ branch · ←→ depth · Home start · f flip · / find · Esc close</div>
+              <div class="clo-ct-keys">↑↓ branch · ←→ depth · Home start · f flip · / find · s splits · Esc close</div>
             </div>
             <div class="clo-ct-crumbs">
               <button type="button" class="clo-ct-crumb">start</button>
@@ -2875,7 +2910,7 @@ body {
             </div>
             <div class="clo-ct-summary">
               <div class="clo-ct-summary-line">72 line(s) · 1118 positions · 34 from this start</div>
-              <div class="clo-ct-keys">↑↓ branch · ←→ depth · Home start · f flip · / find · Esc close</div>
+              <div class="clo-ct-keys">↑↓ branch · ←→ depth · Home start · f flip · / find · s splits · Esc close</div>
             </div>
           </div>
         </div>

@@ -5174,6 +5174,92 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
   color: var(--clo-text-faint);
 }
 
+/* --- 24h) split positions ---------------------------------------------------
+
+   One position answered with two of the user's OWN moves. In the flow above the
+   summary, exactly like the find box and for the same reason: the panel is
+   `overflow: hidden`, so a floating list would be clipped, and a block that
+   pushes the stage down for as long as it is open is honest about the space it
+   is taking. It scrolls inside itself at the same 22vh — the list is capped at
+   200 rows and a course with that many is one you want to scroll, not one you
+   want to lose the board to. */
+.clo-ct-splits {
+  padding: 4px 0 6px;
+  max-height: 22vh;
+  overflow-y: auto;
+}
+.clo-ct-splits[hidden] { display: none; }
+
+.clo-ct-splits-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.clo-ct-splits-count { color: var(--clo-text-bright); font-size: 12px; }
+
+/* An ordinary action: a neutral outline. It is not the one thing to press —
+   the list above it is already the answer — and it costs a request per card,
+   which is not something to invite with a fill. */
+.clo-ct-splits-check {
+  border: 1px solid var(--clo-line);
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 3px 9px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  flex: none;
+}
+.clo-ct-splits-check:hover { border-color: var(--clo-line-hover); color: var(--clo-text-bright); }
+
+.clo-ct-splits-note { color: var(--clo-text-faint); font-size: 11px; padding-bottom: 4px; }
+
+.clo-ct-splits-list { display: flex; flex-direction: column; gap: 2px; }
+
+/* The whole row is the control (one intention: stand here), so it is a button
+   carrying spans rather than a div carrying a button. `text-align: left` and
+   the resets are what stop a button looking like one. */
+.clo-ct-split {
+  display: grid;
+  grid-template-columns: minmax(0, 17em) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 2px 12px;
+  width: 100%;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  padding: 3px 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+}
+.clo-ct-split:hover { background: var(--clo-bg-sunken); }
+
+.clo-ct-split-path { color: var(--clo-text-dim); }
+
+.clo-ct-split-moves { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+
+.clo-ct-split-move { display: inline-flex; align-items: baseline; gap: 5px; }
+
+.clo-ct-split-san { color: var(--clo-text-bright); font-weight: 600; }
+.clo-ct-split-n { color: var(--clo-text-faint); font-size: 11px; }
+
+/* The verdict, and the ONE place in this list that is coloured. AMBER for
+   "these cards will refuse the other move" — the row's palette meaning "you
+   have something outstanding here" (the trainer row's rule), never red: a split
+   is not an error, and half of them are a repertoire deliberately covering two
+   moves. GREEN for "already accepted", which is the panel's ordinary accent and
+   the only positive answer this list can give. The word is always there, so the
+   colour is never carrying the meaning alone. */
+.clo-ct-split-tag { font-size: 11px; }
+.clo-ct-split-tag--refuse { color: var(--clo-attention); }
+.clo-ct-split-tag--accept { color: var(--clo-accent-text); }
+
 /* --- the other starting positions (§12.6) ---------------------------------- */
 
 .clo-ct-roots {
@@ -5832,6 +5918,9 @@ html.clo-touch .clo-sg-lead-btn {
      the row above keeps the shape it has on a wide panel. */
   .clo-ct-head { flex-wrap: wrap; }
   .clo-ct-find { order: 1; flex: 1 0 100%; }
+  /* 24h: two 150px tracks would break both halves of a split row, so it goes
+     to one - the run-up on its own line, the moves under it at full width. */
+  .clo-ct-split { grid-template-columns: minmax(0, 1fr); }
 }
 
 html.clo-touch .clo-ct-launch { font-size: 15px; padding: 9px 16px; }
@@ -5853,6 +5942,13 @@ html.clo-touch .clo-ct-row { padding: 7px 8px 8px; }
 html.clo-touch .clo-ct-toggle { font-size: 14px; padding: 7px 12px; }
 html.clo-touch .clo-ct-find { font-size: 16px; padding: 7px 9px; }
 html.clo-touch .clo-ct-find-hit { font-size: 14px; padding: 6px 10px; }
+html.clo-touch .clo-ct-splits-count,
+html.clo-touch .clo-ct-splits-check { font-size: 14px; }
+html.clo-touch .clo-ct-splits-check { padding: 6px 10px; }
+html.clo-touch .clo-ct-split { font-size: 14px; padding: 7px 6px; }
+html.clo-touch .clo-ct-split-n,
+html.clo-touch .clo-ct-split-tag,
+html.clo-touch .clo-ct-splits-note { font-size: 12px; }
 html.clo-touch .clo-ct-san--gap { font-size: 15px; padding: 2px 4px; }
 html.clo-touch .clo-ct-gaphead { font-size: 12px; padding: 5px 8px 4px; }
 html.clo-touch .clo-ct-keys { font-size: 12px; }

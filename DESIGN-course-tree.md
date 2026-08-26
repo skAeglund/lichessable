@@ -1341,3 +1341,174 @@ Everything in §15.9 except the gap row's dead end, which this removes, plus:
   and 19d has had its own destination picker since v0.97.0;
 * **the position's own W/D/B in the column head.** The rows carry theirs; a
   fourth chip in a band that already holds three was refused.
+
+## 19) Sixth pass (v0.127.0) — split positions (24h)
+
+### 19.1 The question
+
+*"Where does this course answer one position with two of MY moves?"*
+
+A Chessable course is a flat list of cards, and a card quizzes **one** move per
+position. So when two variations reach the same position and answer it
+differently, the trainer will one day show you that position and refuse
+whichever of your own two moves you happen to play — and mark the card wrong.
+
+They are alternative moves in every respect but the one that matters: being
+registered as alternatives. Nothing in Chessable's own UI can tell you they
+exist, because nothing in Chessable's own UI knows that two cards share a
+position. The tree already does: §2.2's whole argument for a position-keyed
+graph was that a tree cannot say "this node and that node are the same
+position", and a DAG can.
+
+So the scan is FREE. The walk has already keyed every position and — since
+24b — counted, per move, how many lines of each COLOUR play it (`e.w`/`e.b`).
+A split is one line of arithmetic on that, and the second pass exists only to
+find WHICH cards, which the alternatives check needs.
+
+### 19.2 The one judgement that can be wrong invisibly
+
+Whose move it is at a position. The obvious answer is 24b's `positionSide`, and
+it is **wrong here**, silently:
+
+> `positionSide` answers `null` wherever both colours pass through a position.
+> That includes the STANDARD START POSITION of any course holding lines for both
+> sides.
+
+Measured on the account's own courses:
+
+| course | splits by `positionSide` | splits per move colour |
+|---|---|---|
+| 291847 Intermediate Starter Kit | 1 | **3** |
+| 453453 Testing course | 3 | 3 |
+| 455941 Testing Repertoire | 0 | 0 |
+
+The two that `positionSide` hides on 291847 are the two that matter most:
+
+* the start position — **1.e4 (26 lines) / 1.c4 (2) / 1.d4 (2)**;
+* after 1.e4 e5 2.Nf3 Nc6 — **3.d4 (18) / 3.Bb5 (2)**.
+
+Note that it is right on 453453, which is exactly why this would have shipped:
+the naive version is correct on one course and quietly blind on another.
+
+The rule that works is per MOVE, not per position, and it follows from what a
+card is: **a card only ever quizzes its own colour.** At a position with `stm`
+to move, count the lines *written for* `stm`. A Black line passing through a
+White-to-move position plays the opponent's move there and can refuse nothing.
+
+`dev/check-course-tree.js` asserts this directly, including that `positionSide`
+answers null at the root split — so a "simplification" back to it fails on
+exactly the four assertions that cover it. (Control run 2026-08-26: it does,
+and nothing else.)
+
+### 19.3 Not a defect report
+
+Two answers to one position is also how a repertoire with a sideline is built,
+and the root split above is simply a course covering three first moves. The
+panel says the split is there, how many cards take each side of it and — if
+asked — which of them will actually refuse. What to do about it is the author's.
+
+This is why the verdict colour is **amber and never red**: the trainer row's
+"you have something outstanding here", not an error. Green for "already
+accepted", the panel's ordinary accent. The word is always printed beside the
+colour.
+
+### 19.4 The alternatives check — the second, optional pass
+
+The free scan says a split exists. It does not say whether the trainer will
+actually refuse, because a card may already have the other move registered as an
+accepted alternative. That answer costs one `getLesson` per card.
+
+`getLesson` is the same call section 23 reads alternatives from and 25d reads
+SRS levels from: one entry per move PAIR, `move_white`/`move_black` beside
+`alt_white`/`alt_black`. Two facts inherited from section 23's ground truth,
+both of which make a wrong implementation look like an empty one:
+
+* **the alt value is a JSON-encoded STRING**, `"[\"d5\"]"`, `null` when there
+  are none — so a correct field name alone still reads as empty;
+* **the trainer's own lesson plan does not carry them at all.** MoveTrainer2
+  strips the alt fields building its plan, so this is a fetch or nothing.
+
+Three rules on top:
+
+* **SMALLEST GROUP FIRST.** A split of 60 cards against 2 is the common shape
+  (453453's 2…Nc6 / 2…Qb6). The two are both the cheap end and the actionable
+  one: the sixty-card move is what the fingers already know, so the minority
+  cards are where a refusal is actually met. Bounded by `altsMax` (40) with the
+  remainder reported, never silently dropped.
+* **cards are deduped by oid** — one lesson answers every split that variation
+  takes part in.
+* **the SANs are RESOLVED through CloSan, never compared.** An alternative is a
+  string the author typed on the edit page, and Chessable over-disambiguates
+  (§12.7) — "Nbc6" for a move only one knight can make. This is section 6c's
+  v0.48.1 lesson and 24b's, unchanged.
+
+And one refusal: a lesson row whose SAN does not match the walk's move at that
+index means the join failed, and the honest answer is **silence**. Reporting the
+alternatives of whatever move did land at that index would be a confident lie.
+`userPly` — the index of the move among that line's own user moves — is the
+whole of that join, and the check asserts it against the index for every card of
+every split on both real courses (163 cards, 0 misaligned).
+
+### 19.5 Where it lives
+
+Inside the tree, because the tree already has the walk, the position keys and
+the vocabulary for standing somewhere. A standalone panel would have needed a
+fifth occupant of the course page's bottom-right corner, which §18 says has to
+be solved rather than added to.
+
+* a `Splits (n)` **toggle** in the header beside Lichess and Analyse — a toggle,
+  not an action: it opens a reading of an index already in memory. It carries
+  its own count, so the answer is on screen before anything is pressed;
+* the list is an **in-flow block** above the summary, exactly like the find box
+  and for the same reason: the panel is `overflow: hidden`, and a block that
+  pushes the stage down for as long as it is open is honest about the space;
+* a row is **one control** — everything on it does the same thing, stand here —
+  so it is a `<button>` carrying spans, not a div carrying a button;
+* **hover reads the board**, 24e's rule: the row means the POSITION (no arrow —
+  two candidate moves and an arrow for one of them is a claim the row is not
+  making), a move chip means that MOVE (position, arrow), and leaving a chip
+  RESTORES the row's rather than clearing it, since a chip is a descendant and
+  the row's own `mouseleave` never fires between them;
+* `s` toggles it, beside `/` for find — both are about the whole course.
+
+### 19.6 Measured (dev/harness.html, 2026-08-26)
+
+The row is a **grid**, not a flex line, and that came out of the harness: with
+the run-up as a flex item the moves began at x = 315, 641 and 719 on three
+consecutive rows, so the one column anybody scans had no left edge to scan down.
+Two tracks (`minmax(0, 17em) minmax(0, 1fr)`) give both halves an edge.
+
+| panel width | moves start at | run-up starts at | list height | row heights |
+|---|---|---|---|---|
+| 880 | 274 | 58 | 130 | 20 / 20 / 34 |
+| 880 `clo-touch` | 308 | 58 | 156 (capped) | 30 / 30 / 46 |
+| 340 (narrow rules) | 58 | 58 | 158 (capped) | 72 / 36 / 50 |
+| 340 `clo-touch` | 58 | 58 | 158 (capped) | 88 / 48 / 64 |
+
+No horizontal overflow at any of them, on the block or on the panel. Under the
+narrow container rules the row goes to ONE track — two 150px tracks would break
+both halves — with the run-up on its own line and the moves at full width below.
+The block scrolls inside itself at 22vh, so a long list never costs the stage.
+
+The 34px row is a deep tactical line whose run-up wraps inside its own track.
+`pathPlies` (10) is what bounds it, truncating from the FRONT with a leading "…"
+— the end of a run-up is the half that names the position, so a CSS end-ellipsis
+would cut the wrong end.
+
+### 19.7 Not built
+
+* **writing the alternative from a split row.** The tree never writes (§7's
+  rule, and 24g is not a loophole — that offers a BOARD, which has always
+  written behind section 19's own arming presses). Registering an alternative
+  already has a home: the quick-edit pencil's alt tab, section 12.
+* **whether a course-level alternative propagates.** Chessable's edit page has a
+  "For This Variation Only" checkbox and the driver already honours it
+  (`forThisVariationOnly`), but whether an alternative saved with it UNticked
+  reaches every card sharing the position is unverified — so nothing here claims
+  it. The check reads each card and reports what that card says.
+* **the `eq_<bid>_<colour>_alternative` course setting**, i.e. whether
+  alternatives are accepted at all. `pagestate.js` reads it out of the trainer's
+  own context (§23), which a course page does not have.
+* **a split between two colours' lines.** A position where a White line and a
+  Black line each play a move is two different cards asking two different
+  people; the per-move colour count already excludes it, and it is not a split.
