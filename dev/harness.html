@@ -229,40 +229,40 @@ body {
               <span class="clo-total">1,204,556 games</span>
               <div class="clo-bar clo-summary-bar" data-hx-bar="38,32,30"></div>
             </div>
-            <table class="clo-table">
+            <table class="clo-table clo-table--cdb">
               <thead><tr>
-                <th class="clo-th-move">Move</th><th class="clo-th-pct">%</th>
+                <th class="clo-th-move">Move</th><th class="clo-th-cdb">Eval</th><th class="clo-th-pct">%</th>
                 <th class="clo-th-games">Games</th><th class="clo-th-wdb">White / Draw / Black</th>
               </tr></thead>
               <tbody>
                 <tr class="clo-rep-row clo-rep-row--in">
                   <td class="clo-move" data-san="Nf3">Nf3<span class="clo-rep-badge clo-rep-badge--in" data-kind="in"></span></td>
-                  <td class="clo-pct">41%</td><td class="clo-games">498k</td>
+                  <td class="clo-cdb">+0.3</td><td class="clo-pct">41%</td><td class="clo-games">498k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="39,33,28"></div></td>
                 </tr>
                 <tr class="clo-rep-row clo-rep-row--transposes">
                   <td class="clo-move" data-san="c3">c3<span class="clo-rep-badge clo-rep-badge--transposes" data-kind="transposes"></span></td>
-                  <td class="clo-pct">22%</td><td class="clo-games">266k</td>
+                  <td class="clo-cdb">+0.2</td><td class="clo-pct">22%</td><td class="clo-games">266k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="42,31,27"></div></td>
                 </tr>
                 <tr class="clo-rep-row clo-rep-row--risk">
                   <td class="clo-move" data-san="Nc3">Nc3<span class="clo-rep-badge clo-rep-badge--risk" data-kind="risk"></span></td>
-                  <td class="clo-pct">18%</td><td class="clo-games">217k</td>
+                  <td class="clo-cdb">+0.1</td><td class="clo-pct">18%</td><td class="clo-games">217k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="37,30,33"></div></td>
                 </tr>
                 <tr>
                   <td class="clo-move" data-san="d4">d4</td>
-                  <td class="clo-pct">9.4%</td><td class="clo-games">113k</td>
+                  <td class="clo-cdb">+0.4</td><td class="clo-pct">9.4%</td><td class="clo-games">113k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="35,34,31"></div></td>
                 </tr>
                 <tr>
                   <td class="clo-move" data-san="Bb5+">Bb5+</td>
-                  <td class="clo-pct">4.1%</td><td class="clo-games">49k</td>
+                  <td class="clo-cdb clo-cdb--est">-0.2</td><td class="clo-pct">4.1%</td><td class="clo-games">49k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="33,38,29"></div></td>
                 </tr>
                 <tr>
                   <td class="clo-move" data-san="g3">g3</td>
-                  <td class="clo-pct">0.8%</td><td class="clo-games">9.6k</td>
+                  <td class="clo-cdb clo-cdb--est">-0.6</td><td class="clo-pct">0.8%</td><td class="clo-games">9.6k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="30,32,38"></div></td>
                 </tr>
               </tbody>
@@ -286,6 +286,11 @@ body {
           </div>
           <div class="clo-body">
             <div class="clo-filters">
+              <div class="clo-filters-row clo-cdb-menu">
+                <span class="clo-filters-label">Cloud eval</span>
+                <label class="clo-cdb-opt"><input type="checkbox" checked> ChessDB eval per move</label>
+                <span class="clo-cdb-note">Sends the position to chessdb.cn</span>
+              </div>
               <div class="clo-filters-row clo-rep-menu">
                 <span class="clo-filters-label">Repertoire</span>
                 <span class="clo-rep-menu-pick">

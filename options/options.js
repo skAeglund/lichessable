@@ -6,6 +6,7 @@
 
 const TOKEN_KEY = 'lichessToken'; // must match background.js and content/lichessable.js
 const BUILD_KEY = 'cloEngineBuild'; // must match CONFIG.engine.buildKey in content/lichessable.js
+const SOURCE_KEY = 'cloEngineSource'; // must match CONFIG.chessdb.sourceKey in content/lichessable.js
 // must match CONFIG.continuation.headsUpKey in content/lichessable.js. Opt-OUT:
 // absent means ON, so only an explicit false is ever stored as "off".
 const HEADS_UP_KEY = 'cloLineHeadsUp';
@@ -76,10 +77,12 @@ async function init() {
   const stored = await chrome.storage.local.get(
     [TOKEN_KEY, BUILD_KEY, HEADS_UP_KEY, AUTO_REVIEW_KEY, TEXT_MOVE_KEY,
      PIN_PROMPT_KEY, SHOW_GRADE_KEY, TOUCH_KEY, TOUCH_DEVICE_KEY,
-     DIFFICULT_THRESHOLD_KEY, DIFFICULT_RECENT_KEY]);
+     DIFFICULT_THRESHOLD_KEY, DIFFICULT_RECENT_KEY, SOURCE_KEY]);
   if (stored[TOKEN_KEY]) $('token').value = stored[TOKEN_KEY];
   const build = stored[BUILD_KEY];
   $('engineBuild').value = build === 'full' || build === 'lite' ? build : 'auto';
+  const source = stored[SOURCE_KEY];
+  $('engineSource').value = source === 'chessdb' || source === 'local' ? source : 'auto';
   $('headsUp').checked = stored[HEADS_UP_KEY] !== false;
   $('autoReview').checked = stored[AUTO_REVIEW_KEY] === true;
   $('textMove').checked = stored[TEXT_MOVE_KEY] === true;
@@ -180,6 +183,13 @@ $('touchUi').addEventListener('change', async () => {
   setStatus($('touchUi').value === 'auto'
     ? 'Interface size back to automatic.'
     : 'Interface size forced to ' + $('touchUi').value + '.');
+});
+
+$('engineSource').addEventListener('change', async () => {
+  // The content script's storage listener drops whatever the other source
+  // had on screen and re-asks; no reload needed.
+  await chrome.storage.local.set({ [SOURCE_KEY]: $('engineSource').value });
+  setStatus('Analysis source saved.');
 });
 
 $('engineBuild').addEventListener('change', async () => {

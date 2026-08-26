@@ -104,7 +104,9 @@ Currently working (v0.18.x).
 ## Structure
 
 - `manifest.json` — MV3. Permissions: `storage` + `offscreen` + host
-  permission for `explorer.lichess.org`. Nothing else, keep it that way.
+  permissions for `explorer.lichess.org` and `www.chessdb.cn` (section 26,
+  added v0.128.0 on explicit request). Nothing else, keep it that way — a
+  third host needs the same conversation the second one got.
   The CSP (`wasm-unsafe-eval`) and COOP/COEP keys exist solely so the
   offscreen document can compile WASM and use SharedArrayBuffer (engine
   threads) — do not remove them.
@@ -197,6 +199,9 @@ Currently working (v0.18.x).
   * `DESIGN-add-as-variation.md` — section 19c (§2 = the wire, and the ten live facts)
   * `DESIGN-add-as-puzzle.md` — sections 19d and 19e (§2 = the wire, incl. the
     move-PAIR fold; §6 = the clickable-line menu and why data-fen cannot be trusted)
+  * `DESIGN-chessdb.md` — section 26 (§2 = the wire; §3 = the three findings the
+    design rests on, and §3.1 is a do-not-reintroduce; §5 = the gate; §6.2 = why
+    the alt check is deliberately NOT on this; §10 = what is still unmeasured)
 - `DESIGN-ui-inventory.md` — every control by host and state, what competes with
   what, the agreed visual hierarchy, and the remaining change list. Read it
   before adding a control to the overstudy row or picking a colour for one; §3
@@ -2746,6 +2751,96 @@ Currently working (v0.18.x).
     section 24's tree (54px), section 21's coverage (16px) and 16d's pin dock
     (16px, every page). A fifth has to solve the cluster rather than add an offset.
 
+- ChessDB eval column (section 26, v0.128.0): a cloud-analysis eval beside every
+  move in the Lichess panel — where the explorer says how OFTEN a move is
+  played, this says how GOOD it is, at book depth, with no WASM and no engine
+  running. OPT-IN (`cloChessdbEval`, storage.local, absent = off; checkbox in the
+  panel's own cogwheel menu, section 6b, where the panel's other preferences
+  live). It is the SECOND host permission this extension has ever had.
+  **READ `DESIGN-chessdb.md` BEFORE CHANGING ANYTHING HERE** — §2 is the wire,
+  §3 the three findings the design rests on, §10 what is still unmeasured. What
+  follows is only what an edit ELSEWHERE can break.
+  * IT IS TWO REQUESTS PER POSITION AND THAT IS NOT WASTE (§3.2/§3.3). `learn=1`
+    scores EVERY legal move but computes the unknown ones on the spot; `learn=0`
+    scores only what is really in the distributed book. NOTHING INSIDE A
+    `learn=1` ANSWER DISTINGUISHES THE TWO — measured, the on-the-fly fills
+    routinely carry a HIGHER `note` than the real book entries beside them, and
+    `rank` is 0 for both. So "is this eval trustworthy" is answerable only by
+    asking twice, which is what `book` on each entry records and what
+    `.clo-cdb--est` draws. Collapsing this to one request silently turns every
+    estimate into a claim.
+  * THERE IS NO DEPTH FIELD, and both candidates look exactly like one (§3.1).
+    `querypv`'s `depth` is the PV LENGTH (34/34, 24/24, 49/49 measured) and the
+    `note`'s first number moves the opposite way from it. Neither is comparable
+    to `CONFIG.engine`'s depth 30. Do not write a depth gate against them.
+  * THE WORKER ALLOWS `queryall` AND NOTHING ELSE (`handleChessdbFetch`,
+    background.js). `queue` and `store` are this API's two WRITES — they spend a
+    volunteer network's compute, ground-truthed live (a queued position came
+    back analysed ~25 minutes later) — so the guard is an allow-list of one
+    rather than a block-list, and nothing may reach them from a poll or a scan.
+  * SCORES ARE THE MOVER'S; THE PANEL IS WHITE'S. `cdbEvalText` flips on Black's
+    move, because the engine section directly above the table is normalised to
+    White (in engine.js) and two conventions in one panel is one too many. This
+    is the opposite call from 24f's mover-score, which has no engine beside it.
+  * THREE SCORE BANDS, and a plain centipawn read is wrong in two of them: a
+    mate is `30000 - distance` (mate in 1 = 29999) and a TABLEBASE result is
+    ~`25000 - DTZ` (KRK win in 22 = 24978, note `(W-0022)`). Without the bands a
+    rook endgame prints "+249.78" — a plausible-looking number that never
+    throws. The lettered note is the authority; the numeric band is the fallback.
+  * THE EXPLORER'S UCI IS RESOLVED THROUGH CloSan BEFORE THE LOOKUP, never
+    compared raw — section 6c's v0.48.1 rule, from the OTHER side of the same
+    trap. Lichess writes castling king-takes-rook (`e1h1`); ChessDB writes
+    `e1g1`, which is what CloSan and every index in this file use. So the CDB
+    map is keyed by ChessDB's own uci and each Lichess row is resolved with
+    `sanToUci` into that spelling (`tr.dataset.cdbUci`). A raw compare misses
+    exactly the castling rows, and SUCCEEDS everywhere else.
+  * IT NEVER DELAYS THE LICHESS TABLE. `requestCdb` is fired from `refresh()`
+    ABOVE the explorer cache short-circuit (so a cached position still gets its
+    evals) and is deliberately NOT awaited; the cells are drawn empty and filled
+    by `fillCdbEvals()` a round trip later. `state.cdbFen` is what stops a
+    previous position's evals painting onto the current rows — never assume it
+    equals `state.fen`, which is the whole reason `cdbCurrent()` exists.
+  * COLOUR: PLAIN DIM TEXT, never green. An eval is a VERDICT, and in this table
+    green is the lichess accent while blue/orange/red are the repertoire badges'
+    three answers (6c) — 24f's ruling, for 24f's reason.
+  * UNDER `html.clo-touch` THE GAMES COLUMN IS HIDDEN when this column is on,
+    and that is a measurement, not a preference: the four-column touch table is
+    already at the edge (330px panel: needs 328, has 328) and at the panel's own
+    300px minimum it overflows by 11px unaided, so a fifth column does not fit.
+    Games yields because % says the same thing and the exact count is kept in the
+    percentage cell's tooltip. Anything added to this table has to re-measure.
+  * IT ALSO ANSWERS THE ENGINE SECTION (§6.1, `cloEngineSource`:
+    `auto` | `chessdb` | `local`, options page). `syncEngine` branches BEFORE
+    its ordinary analyze: with the book able to answer it fills the same three
+    lines from `queryall` (already cached) plus one `querypv` per line, and
+    Stockfish is never started. Four rules an edit elsewhere can break:
+    - THE GATE IS `cdbEngineReady()`, i.e. "at least one move here is in the
+      book", never a depth (§3.1). In `auto` a position the book does not know
+      falls through to Stockfish; in `chessdb` nothing is ever booted, which is
+      that state's whole purpose.
+    - `syncEngine` HOLDS WHILE AN ANSWER IS IN FLIGHT (`state.cdbPending`,
+      compared on `cacheKey`). Without it `auto` boots a WASM engine and a few
+      hundred MB for the ~400 ms before the book replies, then stops it. The
+      hold is released in a `finally`, because a hold that outlives its fetch
+      is an engine section that never starts at all.
+    - `applyCdbAnswer` CALLS `syncEngine()`. The source decision is not
+      answerable until the answer lands — before it, `cdbEngineReady()` is
+      false for want of data rather than because the book is ignorant.
+    - THE EVAL COMES FROM `queryall`, NOT from the `querypv` replies. queryall
+      already scored every move from the PARENT's mover perspective; taking the
+      child's score instead means negating it back up a ply, which is the kind
+      of arithmetic that is wrong in one case out of four and looks right in
+      the other three. The pv reply is used for its `pvSAN` continuation only.
+    The section is LABELLED "ChessDB" whenever it is the source, and the depth
+    slot says `book · N ply line` rather than borrowing the word "depth" for a
+    number that means something else entirely.
+  * IT OWNS NO BRIDGES and is called by nothing. It reads `cacheKey`,
+    `sanToUci`, `fenAfterUci`, `CloSan` and the panel's own `state`/`ui`, all
+    unchanged.
+  * EVERYTHING FAILS SOFT: an unreachable host, a rejected fetch, or a position
+    ChessDB has never seen (the ordinary case off theory, and for most tactics
+    courses' custom start FENs) leaves an empty column and nothing else changed.
+
 - SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
   (`quickEditSelectMoveEl`, hoisted out of `quickEditSelectMove` — which now just
@@ -2813,6 +2908,27 @@ only "a comfortable pool leaves an own record below the bar alone"). The second
 of those is why the first version of these checks was rewritten: it asserted the
 min was what made the spread additive, and passed against a source where it was
 not.
+
+After touching section 26's ChessDB fold or its score bands — `parseCdbAnswer`,
+`cdbEvalText`:
+
+```
+node dev/check-chessdb.js
+```
+
+Same discipline: it EXECUTES both, sliced out by `dev/slice-source.js`, against
+answers in the shape the live API returns. It also asserts the WORKER's action
+allow-list, read straight out of `background.js` — `queue` and `store` are this
+API's two writes and must stay unreachable, and a hidden automated tab cannot
+exercise the `querypv` path at all. Every failure mode here is SILENT —
+a missing band prints a mate as "+299.99" and a rook endgame as "+249.78", a
+lost perspective flip inverts every Black-to-move position into a tidy column of
+backwards numbers, and losing the `learn=0` half presents on-the-fly guesses as
+book evals. Controls run 2026-08-27 — perspective pinned to White, the mate band
+disabled, and a truthiness test in place of the `typeof score === 'number'`
+check — each failing on exactly its own assertions (4, 4 and 3), the last of
+those including "a score of 0 counts as book", which is the one a truthiness
+bug gets wrong in both directions at once.
 
 After touching `sanToUci` — or `sanToUciRelaxed`, the second pass beside it:
 

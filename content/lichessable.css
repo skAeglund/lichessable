@@ -5311,6 +5311,108 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 
 .clo-ct-root-pick:hover { border-color: var(--clo-accent); color: var(--clo-accent-text); }
 
+/* --- ChessDB eval column (DESIGN-chessdb.md §7) ---------------------------
+   Hidden entirely unless the preference is on: one class on the table carries
+   both cells, so nothing has to be rebuilt when it is flipped. */
+.clo-th-cdb,
+.clo-cdb {
+  display: none;
+}
+
+.clo-table--cdb .clo-th-cdb,
+.clo-table--cdb .clo-cdb {
+  display: table-cell;
+}
+
+.clo-th-cdb {
+  text-align: right;
+}
+
+/* PLAIN DIM TEXT, and this is load-bearing rather than a style choice. An eval
+   is a VERDICT, and in this table green already means the lichess accent while
+   blue/orange/red are the repertoire badges' three answers (section 6c) — a
+   coloured eval would either collide with one of those or read as "this is the
+   good move", which is the one claim a raw database figure does not make. Same
+   ruling section 24f made for the tree's mover-score, for the same reason. */
+.clo-cdb {
+  width: 2.8em;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--clo-text-dim);
+  font-variant-numeric: tabular-nums; /* a column of evals should align on the point */
+}
+
+/* An estimate: scored by ChessDB on the spot rather than held in its analysed
+   book (DESIGN-chessdb.md §3.3 — the two are indistinguishable inside a single
+   learn=1 answer, which is why the panel asks twice). Dimmer, so it cannot be
+   read as the equal of a book eval beside it; the tooltip says which it is. */
+.clo-cdb--est {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+/* Slightly tighter than its neighbours: at the panel's own 300px minimum the
+   four-column table already sat exactly on the edge, so the fifth column has to
+   pay for itself. Measured: 5px clears it, the inherited 6px overflows by 2.
+   The selector is DOUBLED because `.clo-table td` (0,1,1) outranks a bare
+   `.clo-cdb` (0,1,0) — the same trick .clo-panel--tree and the touch block use. */
+.clo-table .clo-cdb,
+.clo-table .clo-th-cdb {
+  padding-left: 5px;
+  padding-right: 5px;
+}
+
+/* Settings-menu row. Sits ABOVE the repertoire picker, inside the same
+   non-filter group — .clo-rep-menu's rule is what closes that group off from
+   the database filters, so neither of these reads as something "Reset" puts
+   back. */
+.clo-cdb-opt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: var(--clo-text);
+}
+
+.clo-cdb-opt input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.clo-cdb-note {
+  color: var(--clo-text-dim);
+  font-size: 11px;
+}
+
+/* NARROW + TOUCH: the Games column yields to the eval column.
+   Measured in dev/harness.html, panel at its configured 300-420px range
+   (CONFIG.review.panelMinWidth/panelMaxWidth) with html.clo-touch on:
+   the four-column table is ALREADY at the edge (330px: needs 328, has 328)
+   and at 300px it already overflows by 11px on its own, so a fifth column
+   simply does not fit — +30px at 330, +60px at 300.
+   Tightening the eval column alone recovers 17 of those; the rest has to
+   come from a column. Games is the one that yields because it is the most
+   redundant of the five: % says the same thing relative to a total the
+   summary line above already states, and the exact count is kept in the
+   percentage cell's tooltip (renderData) so nothing is actually lost.
+   Result: 0px overflow at 300/330/360 — i.e. BETTER than the four-column
+   table it replaces at 300px. Desktop is untouched; it has the room. */
+html.clo-touch .clo-table .clo-cdb,
+html.clo-touch .clo-table .clo-th-cdb {
+  padding-left: 3px;
+  padding-right: 3px;
+  font-size: 13px;
+}
+
+html.clo-touch .clo-table .clo-cdb {
+  width: 2.6em;
+}
+
+html.clo-touch .clo-table--cdb .clo-games,
+html.clo-touch .clo-table--cdb .clo-th-games {
+  display: none;
+}
+
 /* --- touch-sized UI (html.clo-touch) ----------------------------------------
    Set by applyTouchUiClass() in lichessable.js on the <html> of whichever
    document this script runs in (the mt1 iframe for the panel, the top document
@@ -5382,6 +5484,8 @@ html.clo-touch .clo-body {
    repertoire" hint are tap targets on the free-play boards. */
 html.clo-touch .clo-rep,
 html.clo-touch .clo-rep-menu-note,
+html.clo-touch .clo-cdb-note,
+html.clo-touch .clo-cdb-opt,
 html.clo-touch .clo-rep-select,
 html.clo-touch .clo-rep-reload {
   font-size: 13px;

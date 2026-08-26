@@ -294,6 +294,30 @@
       rateLimitCooldownMs: 61000, // Lichess asks for a full minute after a 429
     },
 
+    // --- ChessDB cloud analysis (DESIGN-chessdb.md) -----------------------
+    // The eval column beside the Lichess move table. OPT-IN, absent = off:
+    // this is a SECOND third party seeing the position, so it is the user's
+    // to switch on — section 24b's Lichess scan, for section 24b's reason.
+    chessdb: {
+      apiBase: 'https://www.chessdb.cn/cdb.php',
+      evalKey: 'cloChessdbEval',  // chrome.storage.local: boolean, absent = off
+      cacheMax: 200,              // positions in the in-memory LRU (mirrors lichess.cacheMax)
+      // Score bands, ground-truthed 2026-08-26 (DESIGN-chessdb.md §2.3). A
+      // plain centipawn read prints "+249.78" for a rook endgame, so both
+      // decisive bands have to be recognised before the division: a mate is
+      // 30000 - distance (mate in 1 = 29999) and a tablebase result is
+      // ~25000 - DTZ (KRK win in 22 = 24978, note "(W-0022)").
+      mateBand: 29000,
+      mateBase: 30000,
+      decisiveBand: 20000,
+      // Which source answers the panel's engine section (§6.1/§8). Three
+      // states, not a boolean: 'local' is a real preference rather than a
+      // fallback — the host is in China, and on a slow, filtered or offline
+      // network the engine already on the machine is the better answer.
+      sourceKey: 'cloEngineSource', // storage.local: auto | chessdb | local
+      engineLines: 3,               // to match the engine section's MultiPV 3
+    },
+
     // --- Analysis-board overlay placement (positionAnalysisPanel) ----------
     analysis: {
       panelMinHeight: 260,      // never shrink the overlay below this, whatever the column does
@@ -1786,6 +1810,13 @@
                           // repertoire badges (section 6c) can be drawn onto those rows
                           // once the index finishes loading
     requestSeq: 0,        // increases per fetch; responses for stale positions are dropped
+    cdbEnabled: false,    // ChessDB eval column on? (persisted; DESIGN-chessdb.md)
+    cdbFen: null,         // the position state.cdbMoves describes — NEVER assume it is
+                          // state.fen: the answer lands a round trip after the rows are drawn
+    cdbMoves: null,       // Map canonical-uci -> { score, note, san, book }
+    engineSource: 'auto',  // 'auto' | 'chessdb' | 'local' (persisted; options page)
+    cdbEngineFen: null,   // position the engine section was last filled from ChessDB for
+    cdbPending: null,     // cacheKey of a ChessDB answer in flight (syncEngine waits on it)
     hidden: false,        // panel body collapsed? (persisted in chrome.storage.local)
     filtersOpen: false,   // settings menu (header cogwheel) open? deliberately NOT persisted
     debounceTimer: 0,
@@ -1819,6 +1850,8 @@
     state.hidden = await loadHiddenPref();
     state.engineEnabled = await loadEnginePref();
     state.engineBuild = await loadEngineBuildPref();
+    state.cdbEnabled = await loadCdbPref();
+    state.engineSource = await loadEngineSourcePref();
     await loadFilters();
     await loadRepertoirePref(); // before mountPanel, so the first draw is right
     mountPanel();
@@ -1862,6 +1895,25 @@
         if (state.lastData) present(state.lastData); // drop the old badges now
         if (rep.bid) ensureRepertoireIndex(false);
       }
+    }
+    // The eval column (DESIGN-chessdb.md) — flipped here, in the other document
+    // of this tab, or in another tab. The panel lives in the mt1 iframe on
+    // Explore/Analysis and in the top document everywhere else, so this key has
+    // to be watched in both.
+    if (changes[CONFIG.chessdb.evalKey]) {
+      state.cdbEnabled = Boolean(changes[CONFIG.chessdb.evalKey].newValue);
+      applyCdbEnabled();
+      if (state.cdbEnabled && state.fen) requestCdb(state.fen, state.requestSeq);
+    }
+    // Which source answers the engine section (options page, section 26).
+    // Changing it must drop whatever the other source had put on screen.
+    if (changes[CONFIG.chessdb.sourceKey]) {
+      state.engineSource = normalizeEngineSource(changes[CONFIG.chessdb.sourceKey].newValue);
+      state.cdbEngineFen = null;
+      if (state.engineFen) { state.engineFen = null; engineSend({ type: 'clo-engine-stop' }); }
+      if (state.engineEnabled && state.ui) resetEngineDisplay('Switching analysis source…');
+      if (state.fen) requestCdb(state.fen, state.requestSeq);
+      syncEngine();
     }
     // Keeps the toggle in sync across tabs/modes (idempotent in the tab that
     // flipped it — syncEngine dedups on state.engineFen).
@@ -2017,6 +2069,8 @@
     if (fen === state.fen) return; // tbody churn without an actual position change
     state.fen = fen;
     state.lastData = null;        // whatever is on screen describes the previous position
+    state.cdbFen = null;          // ditto the cloud evals
+    state.cdbMoves = null;
     syncEngine(); // before the cache short-circuit: engine analysis is per-position
     // The repertoire's answer for this position needs no network and no Lichess
     // data, so it is drawn immediately rather than with the move table.
@@ -2025,6 +2079,11 @@
 
     const seq = ++state.requestSeq;
     log('position:', fen);
+
+    // Fired here, ABOVE the cache short-circuit below, so a position whose
+    // explorer data is cached still gets its evals. Deliberately not awaited:
+    // the Lichess table must never wait on a second service.
+    requestCdb(fen, seq);
 
     // Cache first: cached positions render instantly — no loading flicker,
     // no network — and they keep working even during a rate-limit pause.
@@ -2294,6 +2353,236 @@
     fenCache.set(key, data);
     if (fenCache.size > CONFIG.lichess.cacheMax) {
       fenCache.delete(fenCache.keys().next().value); // evict least recently used
+    }
+  }
+
+  // --- ChessDB cloud analysis (DESIGN-chessdb.md) ----------------------------
+  // A second opinion about the position, from a distributed analysis book:
+  // where Lichess says how OFTEN a move is played, this says how GOOD it is.
+  // Read-only, opt-in, and it never delays the Lichess render — the evals are
+  // painted into cells that have already been drawn.
+
+  const cdbCache = new Map(); // cacheKey(fen) -> parsed answer (see parseCdbAnswer)
+
+  function cdbCacheGet(fen) {
+    const key = cacheKey(fen);
+    if (!cdbCache.has(key)) return null;
+    const value = cdbCache.get(key);
+    cdbCache.delete(key);
+    cdbCache.set(key, value);
+    return value;
+  }
+
+  function cdbCachePut(fen, value) {
+    const key = cacheKey(fen);
+    if (cdbCache.has(key)) cdbCache.delete(key);
+    cdbCache.set(key, value);
+    if (cdbCache.size > CONFIG.chessdb.cacheMax) {
+      cdbCache.delete(cdbCache.keys().next().value);
+    }
+  }
+
+  /**
+   * ONE queryall. The URL is built by hand rather than with URLSearchParams
+   * because that spells a space as "+", and every live probe behind
+   * DESIGN-chessdb.md used "%20" — this is a third-party parser we do not get
+   * to test against, so it is sent exactly the bytes that were verified.
+   * The worker refuses any action but queryall (background.js), which is what
+   * keeps this API's two WRITE actions unreachable from a poll.
+   */
+  async function fetchChessdb(fen, learn) {
+    const url = CONFIG.chessdb.apiBase + '?action=queryall&json=1&learn=' +
+      (learn ? '1' : '0') + '&board=' + encodeURIComponent(fen);
+    const reply = await chrome.runtime.sendMessage({ type: 'clo-fetch-chessdb', url });
+    if (!reply) throw new Error('no reply from background worker');
+    if (reply.ok) return reply.data;
+    throw new Error(reply.error || 'HTTP ' + reply.status);
+  }
+
+  /**
+   * Folds the two answers into one map.
+   *
+   * TWO REQUESTS, AND THE SECOND ONE IS THE WHOLE POINT (DESIGN-chessdb.md
+   * §3.2/§3.3). `learn=1` scores EVERY legal move but computes the unknown
+   * ones on the spot; `learn=0` scores only what is genuinely in the book.
+   * Nothing in a `learn=1` response can tell the two apart — measured, the
+   * on-the-fly fills routinely carry a HIGHER `note` than the real book
+   * entries beside them — so "is this a book eval" is answerable only by
+   * asking twice. That is what `book` on each entry records, and it is why a
+   * fill-in is drawn dimmed and says so in its tooltip instead of sitting
+   * beside a Lichess win rate looking equally authoritative.
+   */
+  function parseCdbAnswer(full, book) {
+    const out = { status: (full && full.status) || 'unknown', moves: new Map() };
+    if (!full || full.status !== 'ok' || !Array.isArray(full.moves)) return out;
+
+    const booked = new Set();
+    if (book && book.status === 'ok' && Array.isArray(book.moves)) {
+      for (const m of book.moves) {
+        // An unelaborated move comes back as the literal STRING "??", so this
+        // has to be a type check and not a truthiness one — 0 is a real eval.
+        if (m && m.uci && typeof m.score === 'number') booked.add(m.uci);
+      }
+    }
+    for (const m of full.moves) {
+      if (!m || !m.uci || typeof m.score !== 'number') continue;
+      out.moves.set(m.uci, {
+        score: m.score,
+        note: m.note || '',
+        san: m.san || '',
+        book: booked.has(m.uci),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Asks for the current position's evals and paints them when they land.
+   * Called from refresh() BEFORE the Lichess cache short-circuit, so a
+   * position whose explorer data is already cached still gets its evals.
+   */
+  /**
+   * TWO callers want this answer, and either alone is reason enough to ask:
+   * the eval column (§7) and the engine section when ChessDB is its source
+   * (§6.1). Without the second clause the engine source could never engage
+   * unless the column happened to be switched on too.
+   */
+  function cdbWanted() {
+    return Boolean(state.cdbEnabled ||
+      (state.engineEnabled && state.engineSource !== 'local'));
+  }
+
+  async function requestCdb(fen, seq) {
+    if (!cdbWanted() || !fen) return;
+
+    const cached = cdbCacheGet(fen);
+    if (cached) { applyCdbAnswer(fen, cached); return; }
+
+    // What syncEngine waits on, so 'auto' does not boot Stockfish for the
+    // ~400 ms it takes the book to answer and then stop it again.
+    state.cdbPending = cacheKey(fen);
+    syncEngine();
+    let answer;
+    try {
+      // Parallel: the pair costs one round trip, not two.
+      const [full, book] = await Promise.all([
+        fetchChessdb(fen, true),
+        fetchChessdb(fen, false),
+      ]);
+      answer = parseCdbAnswer(full, book);
+    } catch (err) {
+      // Fails soft, always: an empty eval column and everything else
+      // unchanged. This is a volunteer service with no SLA, and a position it
+      // has never seen is the ordinary case rather than an error.
+      warn('ChessDB fetch failed:', err);
+      return;
+    } finally {
+      // Unconditionally: a hold that outlives its fetch is an engine section
+      // that never starts, which is far worse than one that starts twice.
+      if (state.cdbPending === cacheKey(fen)) state.cdbPending = null;
+    }
+    cdbCachePut(fen, answer);
+    if (seq !== state.requestSeq) return; // a newer position took over
+    applyCdbAnswer(fen, answer);
+  }
+
+  function applyCdbAnswer(fen, answer) {
+    state.cdbFen = fen;
+    state.cdbMoves = answer.moves;
+    fillCdbEvals();
+    // The engine section's source decision is only answerable once this has
+    // landed — before it, cdbEngineReady() is false for want of data rather
+    // than because the book does not know the position.
+    syncEngine();
+  }
+
+  /** True when what is in state.cdbMoves describes the position on screen. */
+  function cdbCurrent() {
+    return Boolean(state.cdbEnabled && state.cdbMoves && state.cdbFen && state.fen &&
+      cacheKey(state.cdbFen) === cacheKey(state.fen));
+  }
+
+  /**
+   * The eval as the panel should read it.
+   *
+   * CDB scores are from the MOVER's perspective; the panel's engine section
+   * normalises to White (engine.js does that at its own boundary), and two
+   * conventions in one panel is one too many — so this flips on Black's move.
+   */
+  function cdbEvalText(entry, whiteToMove) {
+    const C = CONFIG.chessdb;
+    const sign = whiteToMove ? 1 : -1;
+
+    // Tablebase entries carry a lettered note and a score in the ~25000 band;
+    // the letter is the authority, the band below is only the fallback.
+    const tb = /\(([WDL])-(\d+)\)/.exec(entry.note || '');
+    if (tb) {
+      const dtz = Number(tb[2]);
+      if (tb[1] === 'D') return { text: '0.0', title: 'Tablebase draw' };
+      const winForMover = tb[1] === 'W';
+      const winForWhite = whiteToMove ? winForMover : !winForMover;
+      return {
+        text: winForWhite ? '+∞' : '−∞',
+        title: 'Tablebase ' + (winForMover ? 'win' : 'loss') +
+               ' for the side to move (DTZ ' + dtz + ')',
+      };
+    }
+
+    const abs = Math.abs(entry.score);
+    const signed = entry.score * sign;
+    if (abs >= C.mateBand) {
+      const dist = C.mateBase - abs;
+      return { text: '#' + (signed > 0 ? '' : '-') + dist, title: 'Mate in ' + dist };
+    }
+    if (abs >= C.decisiveBand) {
+      // Between the two bands: decisive, but not a distance we can name.
+      return { text: signed > 0 ? '+∞' : '−∞', title: 'Decisive' };
+    }
+    const pawns = signed / 100;
+    // A rounded zero is written "0.0", never "+0.0" and above all never
+    // "-0.0" — which is what a score of -1cp produced live on 1.f4, and which
+    // reads as a defect rather than as equality. The sign is applied to the
+    // ROUNDED figure, so it always agrees with the digits beside it.
+    const rounded = pawns.toFixed(1);
+    const text = (Math.abs(Number(rounded)) < 0.05) ? '0.0'
+      : (Number(rounded) > 0 ? '+' + rounded : rounded);
+    const exact = (pawns >= 0 ? '+' : '') + pawns.toFixed(2);
+    return { text, title: 'ChessDB ' + exact + ' (White’s perspective)' };
+  }
+
+  /**
+   * Paints every drawn row's eval cell from whatever is currently known.
+   * Split out of renderData because the answer usually arrives AFTER the rows
+   * — the Lichess table must never wait on a second service.
+   */
+  function fillCdbEvals() {
+    const ui = state.ui;
+    if (!ui || !ui.tbody) return;
+    const known = cdbCurrent();
+    const whiteToMove = String(state.fen || '').split(' ')[1] !== 'b';
+
+    for (const tr of ui.tbody.rows) {
+      const cell = tr.querySelector('.clo-cdb');
+      if (!cell) continue;
+      cell.textContent = '';
+      cell.removeAttribute('title');
+      cell.classList.remove('clo-cdb--est');
+      if (!known) continue;
+
+      const entry = state.cdbMoves.get(tr.dataset.cdbUci || '');
+      if (!entry) continue;
+
+      const shown = cdbEvalText(entry, whiteToMove);
+      cell.textContent = shown.text;
+      if (entry.book) {
+        cell.title = shown.title;
+      } else {
+        // Not in the book: a number computed for us on the spot, of unmeasured
+        // provenance. It may be shown, dimmed and labelled — never presented
+        // as the equal of the book entries beside it.
+        cell.classList.add('clo-cdb--est');
+        cell.title = shown.title + ' — estimate, not in ChessDB’s analysed book';
+      }
     }
   }
 
@@ -2933,6 +3222,11 @@
       <div class="clo-moves" hidden></div>
       <div class="clo-body">
         <div class="clo-filters" hidden>
+          <div class="clo-filters-row clo-cdb-menu">
+            <span class="clo-filters-label">Cloud eval</span>
+            <label class="clo-cdb-opt"><input type="checkbox" class="clo-cdb-check"> ChessDB eval per move</label>
+            <span class="clo-cdb-note">Sends the position to chessdb.cn</span>
+          </div>
           <div class="clo-filters-row clo-rep-menu">
             <span class="clo-filters-label">Repertoire</span>
             <span class="clo-rep-menu-pick">
@@ -2975,6 +3269,7 @@
           <thead>
             <tr>
               <th class="clo-th-move">Move</th>
+              <th class="clo-th-cdb" title="ChessDB cloud evaluation, from White&#39;s perspective">Eval</th>
               <th class="clo-th-pct">%</th>
               <th class="clo-th-games">Games</th>
               <th class="clo-th-wdb">White / Draw / Black</th>
@@ -3012,6 +3307,7 @@
       total:      panel.querySelector('.clo-total'),
       summaryBar: panel.querySelector('.clo-summary-bar'),
       status:     panel.querySelector('.clo-status'),
+      cdbCheck:   panel.querySelector('.clo-cdb-check'),
       table:      panel.querySelector('.clo-table'),
       tbody:      panel.querySelector('.clo-table tbody'),
       cog:          panel.querySelector('.clo-cog'),
@@ -3039,6 +3335,7 @@
     state.ui.engineToggle.addEventListener('click', onEngineToggle);
     state.ui.cog.addEventListener('click', onCogToggle);
     state.ui.filtersReset.addEventListener('click', onFiltersReset);
+    state.ui.cdbCheck.addEventListener('change', onCdbToggle);
     state.ui.repSelect.addEventListener('change', onRepertoireSelect);
     state.ui.repReload.addEventListener('click', onRepertoireReload);
     buildFilterChips();
@@ -3050,6 +3347,7 @@
     applyHidden();
     applyFiltersOpen();   // …and the settings menu (closed unless it was open)
     applyEngineEnabled(); // restore the engine section state on (re)mount
+    applyCdbEnabled();    // and the eval column
     if (IS_ANALYSIS) {
       adoptAnalysisMoves();
       positionAnalysisPanel();
@@ -4383,6 +4681,14 @@
     // Decided for the whole list at once: the "more popular than anything you
     // cover" warning is comparative, so it cannot be answered per row.
     const repStates = repertoireRowStates(repFen, moveList, total);
+    // Resolved once for the whole table: the ChessDB lookup is keyed on a
+    // CANONICAL uci, and the explorer's spelling is not one. Lichess writes
+    // castling as king-takes-rook ("e1h1") where CDB — and CloSan, and so
+    // every other index in this file — writes "e1g1", so a raw compare would
+    // silently miss exactly the castling rows (section 6c, v0.48.1, from the
+    // other side of the same trap).
+    const cdbPos = (state.cdbEnabled && typeof CloSan !== 'undefined')
+      ? CloSan.parseFen(repFen) : null;
     for (let mi = 0; mi < moveList.length; mi++) {
       const move = moveList[mi];
       const moveTotal = (move.white || 0) + (move.draws || 0) + (move.black || 0);
@@ -4414,11 +4720,20 @@
         tr.classList.add('clo-rep-row', 'clo-rep-row--' + badge.dataset.kind);
       }
 
+      // ChessDB eval — the cell is created empty and filled by fillCdbEvals(),
+      // which usually runs a round trip later. The Lichess table never waits.
+      const tdCdb = document.createElement('td');
+      tdCdb.className = 'clo-cdb';
+      if (cdbPos) tr.dataset.cdbUci = sanToUci(cdbPos, move.san || '') || move.uci || '';
+
       const tdPct = document.createElement('td');
       tdPct.className = 'clo-pct';
       const pct = total ? (100 * moveTotal) / total : 0;
       tdPct.textContent = (pct >= 10 ? Math.round(pct) : pct.toFixed(1)) + '%';
-      tdPct.title = `${pct.toFixed(1)}% of games`;
+      // The count as well as the share: under html.clo-touch the Games column
+      // is hidden to make room for the eval column (lichessable.css), and this
+      // is what keeps that lossless.
+      tdPct.title = `${pct.toFixed(1)}% of games (${moveTotal.toLocaleString('en-US')})`;
 
       const tdGames = document.createElement('td');
       tdGames.className = 'clo-games';
@@ -4432,9 +4747,10 @@
       buildBar(bar, move.white, move.draws, move.black);
       tdBar.appendChild(bar);
 
-      tr.append(tdMove, tdPct, tdGames, tdBar);
+      tr.append(tdMove, tdCdb, tdPct, tdGames, tdBar);
       ui.tbody.appendChild(tr);
     }
+    fillCdbEvals(); // no-op unless an answer for THIS position is already in
     ui.table.hidden = false;
   }
 
@@ -4519,6 +4835,40 @@
     const active = state.engineEnabled && !state.hidden && !document.hidden &&
       !state.altCheckBusy &&
       Boolean(state.fen) && (!IS_REVIEW || (state.panel && !state.panel.hidden));
+    // ChessDB may answer instead of Stockfish (DESIGN-chessdb.md §6.1). The
+    // gate is "the book knows this position", never a depth (§3.1). In 'auto'
+    // a position the book does not know falls through to the engine below; in
+    // 'chessdb' nothing is ever booted, which is the point of that state.
+    if (active && state.engineSource !== 'local') {
+      // In flight: say so and boot nothing. Stockfish costs a WASM compile and
+      // a few hundred MB, and paying that for the 400 ms before the book
+      // answers — only to stop it — is the whole reason this hold exists.
+      if (state.cdbPending && state.cdbPending === cacheKey(state.fen)) {
+        if (state.ui && !state.cdbEngineFen) resetEngineDisplay('Asking ChessDB…');
+        return;
+      }
+      if (cdbEngineReady()) {
+        // Stop any search still running from before the source could answer.
+        if (state.engineFen) { state.engineFen = null; engineSend({ type: 'clo-engine-stop' }); }
+        if (state.cdbEngineFen !== state.fen) {
+          state.cdbEngineFen = state.fen;
+          requestCdbEngineLines(state.fen, state.requestSeq);
+        }
+        return;
+      }
+      if (state.engineSource === 'chessdb') {
+        if (state.engineFen) { state.engineFen = null; engineSend({ type: 'clo-engine-stop' }); }
+        state.cdbEngineFen = null;
+        if (state.ui) {
+          state.ui.engine.classList.remove('clo-busy');
+          resetEngineDisplay(cdbCurrent()
+            ? 'Not in ChessDB’s book — switch the engine source to Auto for Stockfish here.'
+            : 'Asking ChessDB…');
+        }
+        return;
+      }
+    }
+    state.cdbEngineFen = null;
     if (active && state.fen !== state.engineFen) {
       state.engineFen = state.fen;
       if (state.ui) state.ui.engine.classList.add('clo-busy'); // dim until fresh lines land
@@ -4538,6 +4888,9 @@
     saveEnginePref(state.engineEnabled);
     applyEngineEnabled();
     if (state.engineEnabled) {
+      // The engine section may be about to be answered by ChessDB, which needs
+      // an answer for THIS position — the column may well be switched off.
+      if (state.engineSource !== 'local' && state.fen) requestCdb(state.fen, state.requestSeq);
       syncEngine();
     } else {
       // Full shutdown (not just stop): closing the offscreen document frees
@@ -4553,6 +4906,169 @@
     ui.engineToggle.setAttribute('aria-pressed', String(state.engineEnabled));
     ui.engine.hidden = !state.engineEnabled;
     if (state.engineEnabled) resetEngineDisplay('Starting engine…');
+  }
+
+
+  // --- ChessDB as an engine SOURCE (DESIGN-chessdb.md §6.1/§8) ---------------
+  // The panel's engine section, answered from the cloud book instead of from
+  // Stockfish, whenever the book actually knows the position. Same three lines,
+  // same eval slot, no WASM and no ~300 MB.
+
+  function normalizeEngineSource(value) {
+    return (value === 'chessdb' || value === 'local') ? value : 'auto';
+  }
+
+  async function loadEngineSourcePref() {
+    try {
+      const res = await chrome.storage.local.get(CONFIG.chessdb.sourceKey);
+      return normalizeEngineSource(res[CONFIG.chessdb.sourceKey]);
+    } catch (err) {
+      warn('storage read failed:', err);
+      return 'auto';
+    }
+  }
+
+  /**
+   * THE GATE (§5). There is no depth field to compare — both candidates look
+   * like one and neither is (§3.1) — so the only honest test of "is this answer
+   * good enough to stand in for a depth-30 search" is whether the move is in
+   * ChessDB's own analysed book, which is what the second (`learn=0`) request
+   * establishes. A position whose best move is an on-the-spot fill-in is one
+   * Stockfish should answer.
+   */
+  function cdbEngineReady() {
+    if (!cdbCurrent()) return false;
+    for (const entry of state.cdbMoves.values()) if (entry.book) return true;
+    return false;
+  }
+
+  /** Book-backed moves, best first, from the answer already in hand. */
+  function cdbBestMoves(limit) {
+    const out = [];
+    for (const [uci, entry] of state.cdbMoves) if (entry.book) out.push({ uci, entry });
+    // Scores are the mover's, so "best" is simply the largest.
+    out.sort((a, b) => b.entry.score - a.entry.score);
+    return out.slice(0, limit);
+  }
+
+  /**
+   * Fills the engine section from ChessDB.
+   *
+   * ONE `querypv` PER LINE, on the position AFTER that move — the continuation,
+   * with `pvSAN` already spelled by the server. The EVAL is deliberately NOT
+   * taken from those replies: `queryall` already scored every move from the
+   * PARENT's mover perspective, and reusing that avoids negating a child's
+   * score back up a ply, which is the sort of arithmetic that is wrong in one
+   * of four cases and looks fine in the other three.
+   */
+  async function requestCdbEngineLines(fen, seq) {
+    const ui = state.ui;
+    if (!ui) return;
+    const top = cdbBestMoves(CONFIG.chessdb.engineLines);
+    if (!top.length) return;
+
+    const whiteToMove = String(fen).split(' ')[1] !== 'b';
+    // Draw what is already known immediately; the continuations fill in after.
+    renderCdbEngine(top, [], whiteToMove, false);
+
+    let pvs;
+    try {
+      pvs = await Promise.all(top.map(async (m) => {
+        const childFen = fenAfterUci(fen, m.uci);
+        if (!childFen) return null;
+        try {
+          const url = CONFIG.chessdb.apiBase + '?action=querypv&json=1&learn=0&board=' +
+            encodeURIComponent(childFen);
+          const reply = await chrome.runtime.sendMessage({ type: 'clo-fetch-chessdb', url });
+          if (!reply || !reply.ok || !reply.data || reply.data.status !== 'ok') return null;
+          return reply.data;
+        } catch (err) { return null; }
+      }));
+    } catch (err) {
+      warn('ChessDB pv fetch failed:', err);
+      return;
+    }
+    if (seq !== state.requestSeq) return;      // a newer position took over
+    if (!cdbCurrent() || state.engineSource === 'local') return;
+    renderCdbEngine(top, pvs, whiteToMove, true);
+  }
+
+  function renderCdbEngine(top, pvs, whiteToMove, done) {
+    const ui = state.ui;
+    if (!ui) return;
+    ui.engine.classList.remove('clo-busy');
+    // NAMED, always. The engine section has meant "Stockfish, running here"
+    // for this panel's whole life, and a number of a different provenance
+    // sitting in that slot unlabelled is the one thing this must not do.
+    ui.engineNote.textContent = 'ChessDB';
+
+    const best = top[0];
+    ui.engineEval.textContent = best ? cdbEvalText(best.entry, whiteToMove).text : '—';
+    // NOT "depth N" — ChessDB has no search depth to report (§3.1), and
+    // borrowing that word for the PV length would be a number that means
+    // something else in the very slot a reader compares against Stockfish.
+    const plies = done && pvs[0] && Array.isArray(pvs[0].pvSAN) ? pvs[0].pvSAN.length + 1 : 0;
+    ui.engineDepth.textContent = done
+      ? (plies ? 'book · ' + plies + ' ply line' : 'book')
+      : 'book…';
+
+    for (let i = 0; i < ui.engineLines.length; i++) {
+      const row = ui.engineLines[i];
+      const m = top[i];
+      if (!m) { row.evalEl.textContent = ''; row.movesEl.textContent = ''; row.movesEl.title = ''; continue; }
+      row.evalEl.textContent = cdbEvalText(m.entry, whiteToMove).text;
+      const cont = pvs && pvs[i] && Array.isArray(pvs[i].pvSAN) ? pvs[i].pvSAN : [];
+      const line = [m.entry.san || m.uci].concat(cont).join(' ');
+      row.movesEl.textContent = line;
+      row.movesEl.title = line; // long lines truncate; full text on hover
+    }
+  }
+
+  // --- ChessDB eval column: the preference (DESIGN-chessdb.md §7) ------------
+
+  async function onCdbToggle() {
+    const ui = state.ui;
+    if (!ui || !ui.cdbCheck) return;
+    state.cdbEnabled = Boolean(ui.cdbCheck.checked);
+    applyCdbEnabled();
+    try {
+      await chrome.storage.local.set({ [CONFIG.chessdb.evalKey]: state.cdbEnabled });
+    } catch (err) {
+      warn('storage write failed:', err);
+    }
+    // Switched on with a position already on screen: fetch it now rather than
+    // leaving an empty column until the user moves.
+    if (state.cdbEnabled && state.fen) requestCdb(state.fen, state.requestSeq);
+  }
+
+  function applyCdbEnabled() {
+    const ui = state.ui;
+    if (!ui) return;
+    if (ui.cdbCheck) ui.cdbCheck.checked = state.cdbEnabled;
+    // One class hides or shows the whole column, header cell included.
+    if (ui.table) ui.table.classList.toggle('clo-table--cdb', state.cdbEnabled);
+    if (!state.cdbEnabled) {
+      // Drop what was read, so switching back on cannot flash the evals of a
+      // position the user has since left.
+      state.cdbFen = null;
+      state.cdbMoves = null;
+    }
+    // RE-RENDER, not just repaint: a row is only stamped with its canonical
+    // uci (tr.dataset.cdbUci) while the column is on, so rows drawn with it off
+    // have nothing for fillCdbEvals to match and would stay empty until the
+    // user moved. Same idiom the repertoire preference uses (section 6c).
+    if (state.lastData) present(state.lastData);
+    else fillCdbEvals();
+  }
+
+  async function loadCdbPref() {
+    try {
+      const res = await chrome.storage.local.get(CONFIG.chessdb.evalKey);
+      return Boolean(res[CONFIG.chessdb.evalKey]); // absent = off (opt-in)
+    } catch (err) {
+      warn('storage read failed:', err);
+      return false;
+    }
   }
 
   function resetEngineDisplay(note) {
@@ -5157,6 +5673,8 @@
     state.hidden = await loadHiddenPref();
     state.engineEnabled = await loadEnginePref();
     state.engineBuild = await loadEngineBuildPref();
+    state.cdbEnabled = await loadCdbPref();
+    state.engineSource = await loadEngineSourcePref();
     await loadFilters(); // also serves the alt-check's win-rate lookup and the chapter sort
     await loadRepertoirePref();
     chrome.storage.onChanged.addListener(onStorageChanged);

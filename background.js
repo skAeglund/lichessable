@@ -11,6 +11,10 @@
  * Message protocol (from content/lichessable.js):
  *   { type: 'clo-fetch-explorer', url }  -> { ok:true, data }
  *                                        |  { ok:false, status, error, noToken? }
+ *   { type: 'clo-fetch-chessdb', url }   -> { ok:true, data }
+ *                                        |  { ok:false, status, error }
+ *                                           (queryall/querypv ONLY — read actions;
+ *                                            see handleChessdbFetch)
  *   { type: 'clo-open-options' }         -> opens the extension options page
  *   { type: 'clo-open-overstudy', url }  -> opens a chessable.com /learn/ URL
  *                                           in a BACKGROUND tab (review-mode
@@ -79,6 +83,11 @@
 'use strict';
 
 const ALLOWED_URL_PREFIX = 'https://explorer.lichess.org/';
+// ChessDB cloud analysis (DESIGN-chessdb.md). No auth, no token — the fetch is
+// relayed through this worker anyway, for the same reason the explorer one is:
+// the host permission makes it CORS-exempt, where a content-script fetch would
+// be at the mercy of chessable.com's own connect-src.
+const CHESSDB_URL_PREFIX = 'https://www.chessdb.cn/cdb.php';
 const TOKEN_KEY = 'lichessToken'; // must match content/lichessable.js and options/options.js
 
 // A token this browser profile can start with, so a new profile (or a reinstall,
@@ -175,6 +184,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === 'clo-fetch-explorer') {
     handleExplorerFetch(msg.url).then(sendResponse);
     return true; // keep the message channel open for the async response
+  }
+  if (msg && msg.type === 'clo-fetch-chessdb') {
+    handleChessdbFetch(msg.url).then(sendResponse);
+    return true;
   }
   if (msg && msg.type === 'clo-open-options') {
     chrome.runtime.openOptionsPage();
@@ -665,6 +678,35 @@ async function handleExplorerFetch(url) {
     }
     const data = await response.json();
     return { ok: true, data };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err) };
+  }
+}
+
+/**
+ * ChessDB probe (DESIGN-chessdb.md §2). Read-only by construction: the URL is
+ * refused unless it names `action=queryall`, which is the ONLY action this
+ * extension may ever perform unattended.
+ *
+ * `queue` and `store` are the API's two writes — they spend a volunteer
+ * network's compute, verified live (§2.4: a queued position came back analysed
+ * ~25 minutes later). Neither may ever be reachable from a poll, a panel
+ * refresh or a scan, which is why the check below is on an allow-list of one
+ * rather than a block-list.
+ */
+async function handleChessdbFetch(url) {
+  try {
+    if (typeof url !== 'string' || !url.startsWith(CHESSDB_URL_PREFIX)) {
+      return { ok: false, status: 0, error: 'blocked non-chessdb URL' };
+    }
+    if (!/[?&]action=(queryall|querypv)(&|$)/.test(url)) {
+      return { ok: false, status: 0, error: 'blocked non-read chessdb action' };
+    }
+    const response = await fetch(url);
+    if (!response.ok) {
+      return { ok: false, status: response.status, error: `HTTP ${response.status}` };
+    }
+    return { ok: true, data: await response.json() };
   } catch (err) {
     return { ok: false, status: 0, error: String(err) };
   }
