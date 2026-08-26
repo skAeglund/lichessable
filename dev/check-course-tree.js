@@ -59,11 +59,18 @@ const shared = [
   // rests on it; `pathOfLine` is what the find field stands on.
   sliceDecl('positionSide'),
   sliceDecl('gapKind'),
+  // 24f's result split. Shipped top level (both bulk fillers of the shared
+  // popularity cache write it), and `dbMovesFor` resolves it move by move
+  // alongside the counts — so it has to come along or the read under test
+  // throws rather than answering.
+  sliceDecl('popEntryWdl'),
+  sliceDecl('popEntryScore'),
+  sliceDecl('moverScorePct'),
   sliceDecl('dbMovesFor'),
   sliceDecl('gapsFor'),
   sliceDecl('pathOfLine'),
   'return { buildCourseTree, foldFrom, rowsAt, standColumn, columnsFor, standingPlies, keyOfPlies,' +
-  '         positionSide, gapKind, dbMovesFor, gapsFor, pathOfLine };',
+  '         positionSide, gapKind, dbMovesFor, gapsFor, pathOfLine, moverScorePct };',
 ].join('\n');
 
 // CONFIG.courseTree, read out of the shipped file so the numbers cannot drift.
@@ -481,6 +488,98 @@ function check(name, cond, detail) {
     ct.dbOn = false;
     check('with the scan off nothing is read', api.dbMovesFor({ ck: root, pos }) === null);
     ct.dbOn = true;
+  }
+
+  // --- 24f) the result split -------------------------------------------------
+  //
+  // Three things here can be wrong without anyone noticing, because a missing
+  // win rate looks exactly like a position with no data: that the split is
+  // MERGED the way the counts are (two spellings of one move), that BLACK is
+  // derived rather than stored, and that an entry written before v0.126.0
+  // yields no bar rather than a wrong one.
+  console.log('\nwin rates (24f)');
+  {
+    const cFen = 'r3k2r/pppq1ppp/2n1bn2/2bpp3/2BPP3/2N1BN2/PPPQ1PPP/R3K2R w KQkq - 0 1';
+    const cPos = CloSan.parseFen(cFen);
+    // Two spellings of the SAME move, which is what Lichess and our own
+    // generator regularly disagree about. `counts` merges them; so must the
+    // split, or the bar would describe half the games its share is drawn from.
+    ct.db.set('wdl', {
+      counts: { 'O-O': 600, 'O-O-O': 400 },
+      total: 1000,
+      entry: {
+        m: { 'O-O': 600, 'O-O-O': 400 },
+        n: 1000,
+        r: { 'O-O': [300, 200], 'O-O-O': [100, 100] },
+        s: [400, 300],
+      },
+    });
+    const wdb = api.dbMovesFor({ ck: 'wdl', pos: cPos });
+    const short = wdb.wdlByUci.get('e1g1');
+    check('a move carries its own split', Boolean(short), JSON.stringify(short));
+    check('…which sums to the games the share is drawn from',
+      short.w + short.d + short.b === wdb.byUci.get('e1g1'),
+      short.w + '+' + short.d + '+' + short.b + ' vs ' + wdb.byUci.get('e1g1'));
+    check('…with Black DERIVED, never stored', short.b === 600 - 300 - 200, String(short.b));
+    const longCastle = wdb.wdlByUci.get('e1c1');
+    check('the other spelling keeps its own', Boolean(longCastle) && longCastle.w === 100,
+      JSON.stringify(longCastle));
+    check('the position’s own score comes back too',
+      Boolean(wdb.score) && wdb.score.w === 400 && wdb.score.b === 300,
+      JSON.stringify(wdb.score));
+
+    // A hit written before the split existed. The share must survive it and the
+    // bar must simply not be drawn: the tree re-asks for these ONCE (drainDb),
+    // but a redraw between the ask and the answer still has to render.
+    ct.db.set('old', {
+      counts: { 'O-O': 600, 'O-O-O': 400 }, total: 1000,
+      entry: { m: { 'O-O': 600, 'O-O-O': 400 }, n: 1000 },
+    });
+    const odb = api.dbMovesFor({ ck: 'old', pos: cPos });
+    check('a pre-split entry still answers shares', odb.byUci.get('e1g1') === 600,
+      String(odb.byUci.get('e1g1')));
+    check('…and offers no win rate rather than a wrong one',
+      odb.wdlByUci.size === 0 && odb.score === null,
+      odb.wdlByUci.size + ' / ' + JSON.stringify(odb.score));
+
+    // A gap row carries the split of the move it names, since that is the half
+    // of the answer its share cannot give.
+    ct.tree = trees['453453'];
+    const root2 = ct.tree.starts[0].ck;
+    const fen2 = ct.tree.fens.get(root2);
+    const pos2 = CloSan.parseFen(fen2);
+    const covered2 = [...ct.tree.answers.get(root2).values()];
+    const counts2 = {}, r2 = {};
+    covered2.forEach((e, i) => {
+      const sn = e.san.replace(/[+#]+$/, '');
+      counts2[sn] = 4000 - i * 100;
+      r2[sn] = [Math.round(counts2[sn] * 0.4), Math.round(counts2[sn] * 0.2)];
+    });
+    const gapSan2 = ['d4', 'c4', 'Nf3', 'g3', 'b3', 'f4']
+      .find((sn) => !covered2.some((e) => e.san.replace(/[+#]+$/, '') === sn));
+    counts2[gapSan2] = 3000;
+    r2[gapSan2] = [900, 600];
+    const total2 = Object.values(counts2).reduce((a, b) => a + b, 0);
+    ct.db.set(root2, {
+      counts: counts2, total: total2,
+      entry: { m: counts2, n: total2, r: r2, s: [1, 1] },
+    });
+    const db2 = api.dbMovesFor({ ck: root2, pos: pos2 });
+    const gaps2 = api.gapsFor({ ck: root2, pos: pos2 }, db2);
+    const one = gaps2.find((g) => g.san === gapSan2);
+    check('a gap row carries its own split', Boolean(one && one.wdl),
+      JSON.stringify(one && one.wdl));
+    check('…summing to its own games', one.wdl.w + one.wdl.d + one.wdl.b === one.games,
+      one.wdl.w + '+' + one.wdl.d + '+' + one.wdl.b + ' vs ' + one.games);
+    // The mover's score, which is what the number beside the bar says: 900 wins
+    // and 600 draws of 3000 is 40% for White, and the mirror for Black.
+    check('the mover’s score is wins plus half the draws',
+      Math.abs(api.moverScorePct(one.wdl, 'w') - 40) < 0.001,
+      String(api.moverScorePct(one.wdl, 'w')));
+    check('…and it inverts for the other side',
+      Math.abs(api.moverScorePct(one.wdl, 'b') - 60) < 0.001,
+      String(api.moverScorePct(one.wdl, 'b')));
+    ct.db.clear();
   }
 
   console.log('\nthe refusal (§7)');

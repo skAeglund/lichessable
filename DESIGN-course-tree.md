@@ -1156,3 +1156,188 @@ restores the arrow:
   and never will — §15.1's rule is per column drawn, and standing on a ply is
   what promotes it to one.
 
+---
+
+## 18) Fifth pass (v0.126.0) — win rates (24f), and analysing inside the window (24g)
+
+Two changes from one complaint, and the complaint is worth quoting because it is
+the whole argument for the second:
+
+> Browsing unanswered lines without an engine isn't valuable.
+
+§15 shipped a panel that could say *the author never answers this, and 12% of
+real games play it.* The next question is immediate and the panel could not
+answer any of it: **is that actually a problem, and what should the answer be?**
+24f answers the first half from data the same request already carried; 24g
+answers the second by putting a board you can play on where the columns were.
+
+### 18.1 The win rate was already in the response (24f)
+
+`fetchExplorerData` returns `white` / `draws` / `black` per move and for the
+position. `fetchPopularityCounts` — the shared reducer all three bulk consumers
+go through — was throwing the split away and keeping the sum, because the two
+consumers it was written for (the chapter sort, the coverage report) only ever
+ask *how often*.
+
+So this cost **no new request at all**: the reducer keeps the split, the shared
+`popCacheEntry(got)` writes it, and every position any of the three features
+pays for now carries it for the others.
+
+Four decisions inside that, each of which could have been made worse:
+
+**Stored as `[white, draws]`, black derived.** `counts[san]` is already the sum
+of the three, so the third number is `total - w - d`, exactly. Not miserliness:
+`cloPopularityCache` keeps 3000 positions of up to 50 moves in `storage.local`,
+and the naive `[w, d, b]` is a third more of a quota nobody notices spending
+until a write starts failing. `popEntryWdl` and `popEntryScore` are the only
+readers, so the derivation exists once.
+
+**No new cache key.** Three features share `CONFIG.chapterSort.popularity.cacheKey`
+and a new one would invalidate all of them for what is, to two of them, a
+decoration. An entry written before this parses fine and is silently missing
+`r`, which reads as "no result data" — the fail-soft direction.
+
+But leaving it there would have been the wrong kind of soft: the entries WITHOUT
+the split are precisely the early positions, because the cache is warmest exactly
+where a tree opens. Every course would have opened with no win rates on its first
+three columns, for ever. So `drainDb` treats a hit with no `r` as a **miss,
+once**, re-asks, and puts the answer back for everyone — while KEEPING the hit as
+the fallback, so a failed re-ask costs the bar and never the row.
+
+**The percentage is the mover's; the bar is absolute.** Every row of a column is
+played by the same side, so one perspective serves the whole column and the rows
+stay comparable by eye. The bar keeps White-left/Black-right because that is what
+every chess database draws, and re-orienting it per column would make two columns
+unreadable against each other.
+
+**It is a line of its own, not another chip.** The meta row already wraps at a
+column's width, and a bar that jumped between line one and line two as tags came
+and went would be unreadable down a column. Cost, measured in the harness: at a 237px
+column a scanned row goes 59 → 73px and a gap row 49 → 63px; at 360px the course
+rows come back to 55px (the run stops wrapping) and the gaps stay at 62. Only at
+the narrowest column the layout allows (197px) does a gap row's meta wrap for the
+new `analyse` control beside the lichess link, at 81px. 92 and 77 under
+`html.clo-touch`. No horizontal overflow at any width.
+
+The colours are `.clo-seg-white/-draw/-black` — the panel's own, reused rather
+than restated. `.clo-seg`, which carries the 18px height and the percentage
+labels, is deliberately not applied: this is a 5px strip.
+
+### 18.2 The board goes where the columns were (24g)
+
+The alternative was to swap to the analysis board over the course page and hide
+the tree. That was rejected for a reason that only shows up when you ask what the
+board would have beside it: **on a `/course/` page there is no Lichess panel**,
+so the board would have had neither database nor engine — the exact thing the
+complaint was about.
+
+Inside the tree's window there is room for all three, so:
+
+* the tree renders **three empty slots** and measures them;
+* section 19's board and section 19's panel are pinned onto two of them
+  (`cr.treeSlot`, checked before `cr.standalone` in `positionOverlays`);
+* the Lichess panel is pinned onto the third, as its **fourth host**.
+
+Nothing is rebuilt. The drag layer, the promotion picker, the move list, Flip,
+"Remove from here", the engine, the database table, the repertoire badges and all
+three writes are the ones that already exist, unchanged.
+
+**What the tree had to supply is the ARGUMENT, not the machinery.** Section 19's
+two hosts read the page — which move is highlighted, which variation the URL
+names, which chapter the drawer row is in. A course page has none of that markup;
+it has an INDEX, which knows the same facts *exactly* rather than by inference.
+So `openAnalysis` takes a `given` descriptor and four readers prefer it:
+`analysisStartFen`, `analysisEntryMove`, `analysisSource`, `analysisSourceTitle`.
+A host supplying none of it behaves exactly as a host that never existed.
+
+The position is the tree's own and therefore exact — castling and en passant
+included, since every FEN in the index came out of `walkVariation`. That is
+better than either DOM host manages inside a comment line, and it is what makes
+the ply cross-check in `prepareAddVariation` meaningful rather than decorative.
+
+### 18.3 An unanswered move is PLAYED, not made the start
+
+The obvious implementation is to open the board on the position after the gap
+move. It is wrong, and the reason is 19's, not 24's: the comment an added line
+goes into hangs off the move BEFORE it. Opening after the gap move would put the
+board one ply past the last position any comment of the course hangs at, and
+"Add as line" would have to be refused there.
+
+So the board opens on the column's own position — where the course's last move
+left off — and the gap move is played as the line's **first ply** (`playUci`).
+"Add as line" then writes `(4...Nxd4 5.Qxd4)` into the comment of the move that
+led here, which is exactly what an author would write.
+
+### 18.4 The chapter is the one thing `getList` does not say
+
+19c's body wants `target: { courseId, chapterId }`. Both existing hosts have a
+page of Chessable's showing the chapter; the tree has neither, and the course
+listing carries `bid` but no `lid`.
+
+Ground-truthed 2026-08-22 on course 453453: **`getList` also takes a `lid`** and
+answers that chapter alone — 16 and 64 variations against 80 for the whole
+course. So membership is exact rather than picked from a menu, at one call per
+chapter. `fetchVariationChapter` therefore reads chapters one at a time and stops
+at the oid, keeping everything it learns on the way; memoised per document like
+`importTargetsOnce` beside it.
+
+It is resolved **behind the open**, into the very `source` object section 19
+holds, because almost no board is opened in order to write. An arming press that
+beats it is told to press again — and the test is for ABSENCE, never falsity:
+`lid` 0 is a real chapter ("Main Level").
+
+### 18.5 Three rules the coupling rests on
+
+* **The tree's keyboard stands down.** Section 18's swallow is a capture listener
+  on `document` too, and `stopPropagation` does not silence a second listener on
+  the SAME node. Without the stand-down the arrows would walk the columns
+  underneath the board and Escape would close the window out from under it.
+* **The teardown is noticed, never signalled.** `closeReview` nulls
+  `cr.treeSlot`; the tree's own tick sees `continuationActive()` go false and puts
+  the columns back. A teardown that has to remember to tell someone is one that
+  will eventually forget. The one exception is the tree's own ×, which closes the
+  board first — hiding the window would otherwise leave a board floating over the
+  course page for up to a tick.
+* **No scrim.** The standalone drill dims the page behind it; here the tree's own
+  window is what hides the page, and a second dimming layer would darken the
+  columns the board is being read against.
+
+### 18.6 "It never writes" is untouched
+
+§7's rule and §15.2's refusal both stand, and this is not a loophole in either.
+They are about the TREE: a row must not grow an "add it" button, because a row is
+a statement about the course and a write is not. What a row now offers is a
+BOARD, and a board has always written — behind section 19's own arming presses,
+its own rights probe and its own read-back. The gap row's control says `analyse`,
+and that is the whole of what it does.
+
+### 18.7 Measured (harness, 2026-08-22)
+
+| panel width | board slot | analysis panel | Lichess panel |
+| --- | --- | --- | --- |
+| 1400 | 422x422 | 448 | 488 |
+| 880 | 343 (in a 422-tall box) | 232 | 263 |
+| 700 (narrow rules) | 203x203 | 465 beside it | 678, on the row below |
+| 380 (narrow rules) | 186x186 | 162 beside it | 358, below |
+
+No horizontal overflow and no scrolling at any of them — which is a requirement
+rather than a nicety: the overlays are pinned to these rects from a 500 ms poll,
+so a slot that moved under a scroll would drag a board along behind the finger.
+Hence the narrow rules size in PERCENT of the stage, whose own height is definite.
+
+Where the 40% cap bites, the board's BOX is taller than it is wide and the board
+inside it is not: `exploreSlots` takes `min(w, h)`, so the square is right and the
+spare few pixels sit under it.
+
+### 18.8 Still not built
+
+Everything in §15.9 except the gap row's dead end, which this removes, plus:
+
+* **standing on a gap move in the COLUMNS.** 24g answers "explore it" with a
+  board; walking on through the database inside the Miller columns is a different
+  feature and would need positions the index does not hold. Not obviously worth
+  it now that the board is one click away;
+* **a chapter picker.** `fetchVariationChapter` makes one unnecessary for 19c,
+  and 19d has had its own destination picker since v0.97.0;
+* **the position's own W/D/B in the column head.** The rows carry theirs; a
+  fourth chip in a band that already holds three was refused.

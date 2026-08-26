@@ -853,6 +853,17 @@
   display: none;
 }
 
+/* 24g) THE PANEL'S FOURTH HOST: a slot inside the course tree's window. Fixed
+   rather than absolute — the tree window is itself fixed, so its slots are
+   already viewport coordinates — and z-index just under the overlays it sits
+   beside, so a promotion picker or a status popup of theirs is never covered by
+   a database table. Trebled class: it has to beat `.clo-panel.clo-panel--review`
+   above AND the wide-window side-mode media query. */
+.clo-panel.clo-panel--review.clo-panel--tree {
+  position: fixed;
+  z-index: 100000;
+}
+
 .clo-panel.clo-panel--review .clo-header {
   flex: none;
 }
@@ -2577,6 +2588,28 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cr-panel.clo-cr-standalone {
   align-items: stretch;
   max-height: 40vh;
+  overflow-y: auto;
+}
+
+/* --- 24g) the analysis board inside the course tree --------------------------
+   The same `position: fixed` as the standalone drill above, for the same
+   reason: the course tree's own window is fixed, so the slots it measures are
+   viewport rects by construction and adding a scroll offset would push these
+   off screen the moment the page behind moved. NO scrim — the tree window IS
+   what hides the page, and a second dimming layer over it would darken the
+   columns the board is being read against. Doubled classes so both beat the
+   base rules without those rules knowing this mode exists. */
+.clo-cr-board.clo-cr-intree,
+.clo-cr-panel.clo-cr-intree {
+  position: fixed;
+}
+
+/* Sized to the slot the tree measured (height written inline), not to its own
+   content as the drill's is: the three surfaces stand side by side here and a
+   panel that grew with its move list would leave the row ragged. */
+.clo-cr-panel.clo-cr-intree {
+  align-items: stretch;
+  max-height: none;
   overflow-y: auto;
 }
 
@@ -4630,6 +4663,82 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 }
 .clo-ct-board .clo-cr-piece--glyph { font-size: inherit; }
 
+/* --- 24g) the explore stage --------------------------------------------------
+   Three EMPTY slots. Nothing is ever drawn into them: the tree measures them
+   and pins section 19's board, section 19's panel and the Lichess panel on top,
+   which is why they carry a size and no content of their own. Replacing the
+   columns rather than squeezing beside them — with a board you can play on,
+   an engine and a database on screen, there is no room left for a Miller
+   column, and the breadcrumb above still says where in the course this is.
+
+   The board takes the height and the two panels split what is left, the
+   database column a little wider because it holds a table. */
+.clo-ct-xstage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+
+/* `display: flex` would defeat the hidden attribute on BOTH stages — and the
+   symptom is not an invisible box but a laid-out one: the two stages stacked,
+   each with half the height, and the overlays pinned to slots that were 350px
+   further down the window than they looked (seen live 2026-08-22). */
+.clo-ct-xstage[hidden],
+.clo-ct-stage[hidden] { display: none; }
+
+.clo-ct-xslot { min-width: 0; min-height: 0; }
+
+/* Square, and as big as the stage's height allows — the same reasoning as the
+   preview board it replaces, done in CSS because there is no content in here to
+   measure against. */
+.clo-ct-xslot--board {
+  flex: none;
+  aspect-ratio: 1 / 1;
+  height: 100%;
+  /* The board is what the height allows, capped so it cannot crowd the two
+     panels out on a laptop. Where the cap bites, the BOX is taller than it is
+     wide and the board inside it is not: exploreSlots takes min(w, h), so the
+     square is right and the spare few px sit under it. */
+  max-width: 40%;
+}
+
+/* Floors rather than a plain ratio: the analysis panel is a move list with five
+   buttons under it and the database a four-column table, and both stop being
+   usable below these widths long before the layout stops fitting. */
+.clo-ct-xslot--panel { flex: 1 1 300px; min-width: 230px; }
+.clo-ct-xslot--db    { flex: 1 1 340px; min-width: 260px; }
+
+/* Narrow: the board goes on top and the two panels share the row beneath it —
+   the same shape the columns take at this width. A container query, not a
+   media one, for section 24's reason: dev/harness.html sizes a CARD, so a media
+   query could never be measured there. */
+/* Narrow: the board on top and the two panels sharing the row beneath it, all
+   three still on screen at once and NOTHING SCROLLING — the overlays are pinned
+   to these rects from a 500 ms poll, so a slot that moved under a scroll would
+   drag a board along behind the finger. Hence heights in PERCENT of the stage
+   rather than content-sized boxes: the stage's own height is definite (the
+   window's, minus the header and the breadcrumb), so this always adds to one
+   screenful. A container query, not a media one, for section 24's reason:
+   dev/harness.html sizes a CARD, so a media query could never be measured
+   there. */
+@container (max-width: 780px) {
+  .clo-ct-xstage { flex-wrap: wrap; align-content: flex-start; }
+  .clo-ct-xslot--board {
+    flex: none;
+    height: 52%;
+    width: auto;
+    max-width: 100%;
+  }
+  .clo-ct-xslot--panel,
+  .clo-ct-xslot--db {
+    flex: 1 1 40%;
+    min-width: 130px;
+    height: 44%;
+  }
+}
+
 /* 24d) The tabs sit directly above the columns rather than up with the
    breadcrumb, because they are about what is DRAWN below them and nothing to do
    with where the board stands. Hence the wrapper: the stage is a row (board,
@@ -4851,6 +4960,48 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
   font-variant-numeric: tabular-nums;
 }
 
+/* --- 24f) the win/draw/loss strip ------------------------------------------
+   The share chip says how OFTEN a move is played; this says how WELL it goes,
+   and the pair is the reading the scan exists for. It is a line of its own
+   under the meta row rather than another chip in it: the meta row already
+   wraps at a column's width, and a bar that jumped between line one and line
+   two as tags came and went would be unreadable down a column.
+
+   5px, no labels, no border. The segment colours are the PANEL's own
+   (.clo-seg-white/-draw/-black), reused rather than restated — this element
+   deliberately does not carry `.clo-seg`, which is where the 18px height and
+   the percentage labels live. The percentage beside it is the MOVER's score
+   and is plain dim text: green would read as "this is the good move", the one
+   claim a raw database figure does not make. */
+
+.clo-ct-wdl {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+}
+
+.clo-ct-wdl-bar {
+  display: flex;
+  flex: 1;
+  min-width: 40px;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--clo-bg-sunken);
+}
+
+.clo-ct-wdl-seg { display: block; height: 100%; }
+
+.clo-ct-wdl-pct {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--clo-text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.2em;
+  text-align: right;
+}
+
 /* "covers 84%" in a column head. The head is already a dim band, so the three
    states differ in COLOUR only — there is no room for a second signal and no
    action attached to any of them. */
@@ -4870,6 +5021,22 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
   background: rgba(0, 0, 0, 0.15);
 }
 .clo-ct-gaphead--gap { color: var(--clo-attention); }
+
+/* 24g) "analyse" on a gap row. Underlined dim text, exactly like the lichess
+   link beside it and the "+N more" inside a run: this is a way OUT of the row,
+   not an action on the course, and the tier ranking (DESIGN-ui-inventory §3)
+   keeps outlines and fills for things that write. */
+.clo-ct-gap-analyse {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--clo-text-dim);
+  text-decoration: underline dotted;
+}
+
+.clo-ct-gap-analyse:hover { color: var(--clo-accent-text); }
 
 /* A gap row. Not clickable — there is no subtree behind it, because the author
    never wrote one — so it takes the default cursor and no hover fill of the
@@ -5679,6 +5846,8 @@ html.clo-touch .clo-ct-num { font-size: 13px; }
 html.clo-touch .clo-ct-san { font-size: 15px; padding: 3px 5px; }
 html.clo-touch .clo-ct-more { font-size: 13px; padding: 3px 6px; }
 html.clo-touch .clo-ct-meta { font-size: 13px; }
+html.clo-touch .clo-ct-wdl-bar { height: 7px; }
+html.clo-touch .clo-ct-wdl-pct { font-size: 13px; }
 html.clo-touch .clo-ct-col-head { font-size: 12px; padding: 6px 8px; }
 html.clo-touch .clo-ct-row { padding: 7px 8px 8px; }
 html.clo-touch .clo-ct-toggle { font-size: 14px; padding: 7px 12px; }

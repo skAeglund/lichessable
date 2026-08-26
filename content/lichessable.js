@@ -2319,19 +2319,81 @@
   }
 
   /**
-   * One explorer lookup reduced to what both callers want: how many games each
+   * One explorer lookup reduced to what its callers want: how many games each
    * move was played in, and the position's own total. The total comes from the
    * response's top level, NOT from summing `counts` — the move list is capped
    * at `movesLimit`, so the sum is short wherever the tail was cut off.
+   *
+   * `wdl` is the SAME answer split by RESULT, which is what a win-rate is drawn
+   * from (section 24f). It is beside `counts` rather than instead of it: the
+   * two bulk callers (14 and 21) want only "how often", and the split is
+   * carried for the one caller that wants "how well".
+   *
+   * STORED AS [white, draws] AND NOTHING ELSE — black is `counts[san] - w - d`,
+   * exactly, since the three are what the count is the sum of. That is not
+   * miserliness: the shared cache keeps 3000 positions of up to 50 moves each
+   * in `chrome.storage.local`, and a third array per move is a third of a
+   * quota nobody notices spending until a write starts failing.
    */
   async function fetchPopularityCounts(fen, movesLimit) {
     const data = await fetchExplorerData(fen, movesLimit);
     const counts = {};
+    const wdl = {};
     for (const m of (data && data.moves) || []) {
-      counts[bareSan(m.san)] = (m.white || 0) + (m.draws || 0) + (m.black || 0);
+      const san = bareSan(m.san);
+      const w = m.white || 0, d = m.draws || 0, b = m.black || 0;
+      counts[san] = w + d + b;
+      wdl[san] = [w, d];
     }
     const total = data ? (data.white || 0) + (data.draws || 0) + (data.black || 0) : 0;
-    return { counts, total };
+    const score = data ? [data.white || 0, data.draws || 0] : [0, 0];
+    return { counts, total, wdl, score };
+  }
+
+  /**
+   * One popularity-cache entry, written the same way by all three fillers (the
+   * chapter sort, the coverage report and the course tree) so that whichever
+   * one paid for a position, the tree can read its win rates back.
+   *
+   * `r`/`s` are the v0.126.0 addition. An entry written before it parses fine
+   * and is silently missing them, which reads as "this position has no result
+   * data" — deliberately NOT a new cache key: a share is still a share, and
+   * invalidating three features' caches to add a decoration would be the wrong
+   * trade. The tree re-asks for the ones it needs (see `drainDb`).
+   */
+  const popCacheEntry = (got) =>
+    ({ m: got.counts, n: got.total, t: Date.now(), r: got.wdl, s: got.score });
+
+  /**
+   * White/draw/black game counts for one move of a cached entry, or null when
+   * that entry predates the split. Black is DERIVED, never stored: it is the
+   * only one of the three the move's own total already determines.
+   */
+  function popEntryWdl(entry, san) {
+    const pair = entry && entry.r && entry.r[san];
+    const total = entry && entry.m && entry.m[san];
+    if (!pair || typeof total !== 'number') return null;
+    const w = pair[0] || 0, d = pair[1] || 0;
+    return { w, d, b: Math.max(0, total - w - d), total };
+  }
+
+  /** The same for the position itself, from `s` and the entry's own total. */
+  function popEntryScore(entry) {
+    const pair = entry && entry.s;
+    if (!pair || typeof entry.n !== 'number') return null;
+    const w = pair[0] || 0, d = pair[1] || 0;
+    return { w, d, b: Math.max(0, entry.n - w - d), total: entry.n };
+  }
+
+  /**
+   * How the SIDE THAT PLAYS a move scores with it, in percent — wins plus half
+   * the draws, from that side's own point of view. The one figure a repertoire
+   * owner reads off a move; the raw W/D/B bar beside it is the detail.
+   */
+  function moverScorePct(wdl, side) {
+    if (!wdl || !wdl.total) return null;
+    const good = side === 'b' ? wdl.b : wdl.w;
+    return ((good + wdl.d / 2) / wdl.total) * 100;
   }
 
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2491,6 +2553,55 @@
     const targets = await fetchImportTargets(cr);
     importTargetsMemo = targets;
     return targets;
+  }
+
+  /**
+   * WHICH CHAPTER A VARIATION LIVES IN — the one thing the course listing does
+   * not say, and the one thing "Add as variation" (19c) cannot do without: its
+   * body wants `target: { courseId, chapterId }`, and everywhere else that
+   * write is reached from, a page of Chessable's own is already showing the
+   * chapter (the trainer's drawer row, the variation page's breadcrumb). The
+   * course tree (24g) has neither.
+   *
+   * `getList` ALSO TAKES A `lid` and answers that chapter alone — ground-truthed
+   * 2026-08-22 on course 453453, whose two chapters return 16 and 64 variations
+   * against 80 for the whole course. So membership is exact rather than guessed,
+   * at the price of one call per chapter.
+   *
+   * Hence LAZY AND EARLY-STOPPING: chapters are read one at a time and the scan
+   * returns the moment the oid turns up, so the common case is one call. What is
+   * learned on the way is kept — every variation of a chapter read, not only the
+   * one asked for — so a second question about the same chapter is free.
+   * Memoised per DOCUMENT, like `importTargetsOnce` beside it, for the same
+   * reason: chapters move far more rarely than a line is added.
+   *
+   * Null means "not found in any chapter the user can import into", which is a
+   * refusal to write, never a default chapter to fall back on.
+   */
+  const chapterScanByBid = new Map();
+
+  async function fetchVariationChapter(bid, oid, cr) {
+    const key = String(bid), want = String(oid);
+    let st = chapterScanByBid.get(key);
+    if (!st) chapterScanByBid.set(key, st = { byOid: new Map(), done: new Set(), chapters: null });
+    if (st.byOid.has(want)) return st.byOid.get(want);
+    if (!st.chapters) {
+      const targets = await importTargetsOnce(cr);
+      st.chapters = targets.chapters.filter((c) => c.bid === key);
+    }
+    for (const ch of st.chapters) {
+      if (st.done.has(ch.lid)) continue;
+      const body = await chessableApiFetch(
+        chessableApiUrl(CONFIG.coverage.listPath, { uid: cr.uid, bid: key, lid: ch.lid }),
+        { headers: chessableHeaders(cr) });
+      st.done.add(ch.lid);
+      for (const v of (body && body.list && body.list.data) || []) {
+        const id = v && (v.id != null ? v.id : v.oid);
+        if (id != null) st.byOid.set(String(id), ch.lid);
+      }
+      if (st.byOid.has(want)) return st.byOid.get(want);
+    }
+    return null;
   }
 
   /**
@@ -5047,7 +5158,21 @@
 
   // Which host the panel is currently serving, so a mode change can drop the
   // stale position/placement instead of positioning the new page with it.
-  let topPanelVariationMode = null;
+  // 'review' | 'variation' | 'tree' — a STRING since v0.126.0, when the course
+  // tree (24g) became the third top-document host and a boolean could no longer
+  // say which one was meant.
+  let topPanelHostMode = null;
+
+  /**
+   * The tree host wins wherever it applies, and that is not a priority call: it
+   * only ever applies on a /course/ page with an analysis board open, where
+   * neither of the other two has anything to show — `reviewBrowseReady()` is
+   * false there and `isVariationPath()` is false there.
+   */
+  function topPanelHostNow() {
+    if (courseTreePanelSlot && courseTreePanelSlot()) return 'tree';
+    return isVariationPath() ? 'variation' : 'review';
+  }
 
   /**
    * The poll is also the panel's self-healer, so a throw inside it is the one
@@ -5069,15 +5194,22 @@
   }
 
   function topPanelTickInner() {
-    const variation = isVariationPath();
-    if (variation !== topPanelVariationMode) {
-      topPanelVariationMode = variation;
-      if (state.panel) state.panel.hidden = true;
+    const host = topPanelHostNow();
+    if (host !== topPanelHostMode) {
+      topPanelHostMode = host;
+      if (state.panel) {
+        state.panel.hidden = true;
+        // The tree host is `position: fixed` inside the tree's own window; the
+        // other two are absolute in document coordinates. A class left behind
+        // would place the next host with the wrong scheme entirely.
+        state.panel.classList.toggle('clo-panel--tree', host === 'tree');
+      }
       state.fen = null;          // the new page starts with a fresh fetch
       resetReviewAnchorHold();   // a fresh show must never fight a stale hold
       syncEngine();              // and no search survives the switch
     }
-    if (variation) variationPanelTick();
+    if (host === 'tree') treePanelTick();
+    else if (host === 'variation') variationPanelTick();
     else reviewPanelTick();
     // The analysis board (section 19) goes up and down without the position
     // changing, and that is what decides whether a repertoire chip plays a move.
@@ -5085,8 +5217,49 @@
   }
 
   function positionTopPanel() {
-    if (isVariationPath()) positionVariationPanel();
+    const host = topPanelHostNow();
+    if (host === 'tree') positionTreePanel();
+    else if (host === 'variation') positionVariationPanel();
     else positionReviewPanel();
+  }
+
+  /**
+   * 24g) THE PANEL INSIDE THE COURSE TREE. The tree measures a slot for it, the
+   * same way it measures the two the analysis overlays sit on, and this pins the
+   * panel there — so the database table, the engine and the repertoire badges
+   * come to a /course/ page with no new UI of their own and no second decision
+   * point for the engine.
+   *
+   * Viewport coordinates, not document ones: the tree's window is itself fixed,
+   * so its slots are already viewport rects and adding the scroll offset (as
+   * both other hosts must) would push the panel off screen the moment the page
+   * behind is scrolled.
+   */
+  function positionTreePanel() {
+    if (!state.panel || state.panel.hidden) return;
+    const slot = courseTreePanelSlot && courseTreePanelSlot();
+    if (!slot) return;
+    setInlinePx(state.panel, {
+      left: slot.left, top: slot.top, width: slot.width,
+      maxHeight: Math.max(160, slot.height),
+    });
+  }
+
+  /**
+   * The tree host's tick. Deliberately the shortest of the three: there is no
+   * board of Chessable's to measure, no browse state to gate on and no anchor
+   * hold to fight — `readFen()` already prefers the analysis board's own FEN
+   * (section 19's bridge), and the tree only claims this host while that board
+   * is up.
+   */
+  function treePanelTick() {
+    if (!state.panel || !state.panel.isConnected) mountPanel(); // idempotent self-heal
+    if (!state.panel) return;
+    state.panel.classList.add('clo-panel--tree');
+    state.panel.hidden = false;
+    positionTreePanel();
+    const fen = readFen();
+    if (fen && fen !== state.fen) scheduleRefresh();
   }
 
   function reviewPanelTick() {
@@ -5151,6 +5324,18 @@
     }
     return host;
   }
+
+  /**
+   * () => ?{left, top, width, height} — assigned by initCourseTree (24g).
+   *
+   * The course tree is the panel's FOURTH host. It answers a rect while the
+   * tree has an analysis board open and a slot measured for the database and
+   * the engine beside it, and null the rest of the time — which is every page
+   * that is not a course page, and every moment on a course page when nothing
+   * is being analysed. So this bridge IS the host test: there is no path check
+   * here, because the tree already gates itself on one.
+   */
+  let courseTreePanelSlot = null;
 
   /**
    * () => { lines, queued } — assigned by initContinuationReview (section 18).
@@ -12244,7 +12429,7 @@
         const counts = got.counts;
         if (!Object.keys(counts).length) empty++;
         node.pop = counts;
-        cache[key] = { m: counts, n: got.total, t: Date.now() };
+        cache[key] = popCacheEntry(got);
         dirty = true;
         fetched++;
         if (i < nodes.length - 1) await sleep(CONFIG.chapterSort.popularity.requestGapMs);
@@ -16569,6 +16754,15 @@
   // the same space, and while that mode runs it is the one deciding (v0.87.0).
   let continuationReviewNow = null;
 
+  // { open(given, slot) => boolean, close() } — the analysis board (19) run
+  // INSIDE the course tree's window (24g). `given` is the host descriptor
+  // openAnalysis takes when there is no page of Chessable's to read the answers
+  // off, and `slot` is the tree's own measuring function, called on every
+  // placement. `open` returns false when the board could not be shown, so the
+  // tree can say why in its own status line and put its columns back — the same
+  // contract continuationDrill has, for the same reason.
+  let continuationTreeApi = null;
+
   function initContinuationReview() {
     if (typeof CloSan === 'undefined') {
       warn('continuation review disabled: CloSan (engine/san.js) not loaded');
@@ -16655,6 +16849,12 @@
       // launcher's pass (16d). It is the ONE run that outlives leaving the
       // trainer, so both ticks check it before their teardowns.
       standalone: false,
+      // 24g: () => { board:{left,top,size}, panel:{left,top,width,height} } while
+      // the analysis board is running INSIDE the course tree's window. A
+      // function rather than a rect, because the tree measures its own slots and
+      // they move with the window; null everywhere else, and its presence is
+      // what every placement and teardown branch keys on.
+      treeSlot: null,
       scrim: null,
       // Lines already sent round again by a "didn't know" verdict (section 23
       // on a clickable line), by line key. Per RUN, and the whole of what stops
@@ -16718,6 +16918,25 @@
     // whether either button is SHOWING stays syncButton's business, and the
     // caller checks that separately before applying anything.
     continuationLineCounts = () => ({ lines: freshLines().length, queued: cr.hu.armed.size });
+    // Section 24g: the course tree opens the analysis board on one of its own
+    // positions, inside its own window. Everything the two DOM hosts read off
+    // the page is handed in instead (see openAnalysis's `given`), and the
+    // placement is the tree's to measure.
+    continuationTreeApi = {
+      open(given, slot) {
+        if (cr.active || !given || !given.startFen || typeof slot !== 'function') return false;
+        cr.treeSlot = slot;
+        openAnalysis(given);
+        // openAnalysis refuses on an unreadable position or an unmeasurable
+        // slot; the flag must not outlive a board that never opened, or the
+        // NEXT run on any host would be positioned into the tree.
+        if (!cr.active) { cr.treeSlot = null; return false; }
+        return true;
+      },
+      close() {
+        if (cr.active && cr.treeSlot) closeReview('course tree closed the analysis board');
+      },
+    };
     // Section 6c: a repertoire chip in the panel plays its move on our board.
     // Same guards as onPanelMoveClick — a move landing mid-animation, mid-
     // promotion or on a quiz board would be anything but "show me that line".
@@ -18277,6 +18496,10 @@
      *  the previous one's line, entry move or save status. */
     function blankAnalysis() {
       return {
+        // 24g: the host's own answers, when the host is not a page we can read
+        // (the course tree). Null on both original hosts, which is what makes
+        // every reader below fall through to its DOM path unchanged.
+        given: null,
         startFen: null,   // the position Chessable's board was on when it opened
         moves: [],        // [{ uci, san, fen }] — one line, truncated on a branch
         idx: 0,           // how many of those moves are on the board right now
@@ -18816,6 +19039,27 @@
      *  starting position" (legal here, unlike for a comment) from a move we
      *  could not read. Returns { why } for every refusal, never null. */
     function analysisSource() {
+      // 24g: the course tree walked its way to this position, so it knows which
+      // variations pass through it and at which ply — exactly the two facts the
+      // DOM readers below are inferring. Handed in whole rather than re-derived.
+      if (cr.an.given) {
+        const src = cr.an.given.source;
+        if (!src) {
+          return { why: cr.an.given.sourceWhy ||
+            'No variation of this course reaches this position, so there is nothing to ' +
+            'branch a new one off.' };
+        }
+        // The chapter is read behind the open (24g's resolveChapter) because it
+        // costs a call per chapter until the variation turns up, and almost no
+        // board is opened in order to write. A press that beats it is told to
+        // press again rather than sent with a guessed chapter — `lid` 0 is a
+        // real chapter ("Main Level"), so this tests for ABSENCE, never falsity.
+        if (src.lid === null || src.lid === undefined || src.lid === '') {
+          return { why: 'Still working out which chapter that variation is in — press again ' +
+            'in a moment.' };
+        }
+        return { src };
+      }
       const oid = isVariationPath()
         ? (VARIATION_PATH_RE.exec(location.pathname) || [])[1]
         : readQuickEditOid();
@@ -19570,6 +19814,9 @@
     /** The name of the variation this board was opened from, read off the page
      *  rather than out of a course listing. '' when there is none to read. */
     function analysisSourceTitle() {
+      // 24g: the tree knows the name out of its own index; there is no page
+      // here that shows it.
+      if (cr.an.given) return String(cr.an.given.sourceTitle || '');
       if (isVariationPath()) {
         const el = document.querySelector(SELECTORS.variationTitle);
         return el ? (el.textContent || '').trim() : '';
@@ -20275,10 +20522,28 @@
       return value || null;
     }
 
-    /** Opens the analysis board on the position Chessable's board is showing. */
-    function openAnalysis() {
+    /**
+     * Opens the analysis board on the position Chessable's board is showing.
+     *
+     * `given` (24g) is the THIRD host answering for itself. The two original
+     * hosts read the page — which move is highlighted, which variation the URL
+     * names — and the course tree has none of that markup: it has an INDEX,
+     * which knows the same facts exactly rather than by inference. So instead of
+     * a third branch inside every `isVariationPath()` test, the caller hands the
+     * answers in and the readers below prefer them:
+     *
+     *   { startFen, entry, entryNext, entryWhy, source, sourceTitle, userColor,
+     *     playUci, place, rights }
+     *
+     * Everything past `startFen` is optional, and a host supplying none of it
+     * behaves exactly as a host that never existed: the DOM readers still run.
+     * `playUci` is the ONE thing no other host wants — a first move played into
+     * the line as the board opens, which is what "explore this unanswered move"
+     * means (24g).
+     */
+    function openAnalysis(given) {
       if (cr.active) return;
-      const fen = analysisStartFen();
+      const fen = (given && given.startFen) || analysisStartFen();
       if (!fen || !CloSan.parseFen(fen)) {
         warn('analysis: board position unreadable — not opening');
         return;
@@ -20286,14 +20551,17 @@
       cr.mode = 'analysis';
       clearTimeout(cr.an.waitTimer);
       cr.an = blankAnalysis();
+      cr.an.given = given || null;
       cr.an.startFen = fen;
       // Read BEFORE the overlays go up: the panel covers the comment column,
       // and the move that was shown is what an added line hangs off.
-      const entry = analysisEntryMove();
+      const entry = given
+        ? { move: given.entry || null, next: given.entryNext || null, why: given.entryWhy || '' }
+        : analysisEntryMove();
       cr.an.entry = entry.move || null;
       cr.an.entryNext = entry.next || null;
       cr.an.entryWhy = entry.why || '';
-      if (!showOverlays()) { cr.mode = 'quiz'; return; }
+      if (!showOverlays()) { cr.mode = 'quiz'; cr.an.given = null; return; }
       cr.view = cr.userColor; // start from the course colour, flippable from here
       cr.busy = false;
       cr.line = null;
@@ -20303,6 +20571,15 @@
       cr.boardEl.hidden = false;   // …which is also what hides the board
       buildGrid();
       anGoto(0);
+      // The move the board was opened ON, played as the line's first ply. Not a
+      // different start position: the comment an added line goes into hangs off
+      // the move BEFORE it, so the start must stay where the course's own last
+      // move left off and this one has to be part of the line.
+      if (given && given.playUci) {
+        const mv = cr.pos && CloSan.uciToMove(cr.pos, given.playUci);
+        if (mv) anPlay(mv);
+        else warn('analysis: could not play', given.playUci, 'on', fen);
+      }
       // Where a puzzle would go (19d). Fired on OPEN, unlike the rights probe
       // above it: this is one cached GET and raises no window, and the answer is
       // part of the sentence the arming press prints — so it has to be on screen
@@ -21026,7 +21303,34 @@
       return true;
     }
 
+    /**
+     * 24g) INSIDE THE COURSE TREE'S WINDOW. The tree fills the screen and is
+     * already a modal surface, so this is neither the trainer's "pinned on
+     * Chessable's board" nor the drill's "centred over a scrim": the tree
+     * measures two empty slots in its own layout and this pins the overlays
+     * onto them, exactly the way the trainer host pins onto Chessable's board.
+     *
+     * `position: fixed` like the standalone drill, and for the same reason —
+     * section 11's ban is on anchoring a fixed element to SCROLLING CONTENT,
+     * and the tree window is itself fixed, so its slots are viewport
+     * coordinates by construction. No scrim: the tree is the scrim.
+     */
+    function positionInTree() {
+      const slot = cr.treeSlot();
+      if (!slot) return false;
+      setInlinePx(cr.boardEl, {
+        left: slot.board.left, top: slot.board.top,
+        width: slot.board.size, height: slot.board.size,
+      });
+      setInlinePx(cr.panel, {
+        left: slot.panel.left, top: slot.panel.top,
+        width: slot.panel.width, height: slot.panel.height,
+      });
+      return true;
+    }
+
     function positionOverlays() {
+      if (cr.treeSlot) return positionInTree();
       if (cr.standalone) return positionStandalone();
       const board = getReviewBoard();
       if (!board) return false;
@@ -21329,9 +21633,14 @@
       // A standalone pass has no board to read an orientation off — the CARDS
       // carry one, and startLine applies it per card anyway, so this is only a
       // resting value for the first paint.
-      const userColor = cr.standalone
-        ? ((cr.queue[0] && cr.queue[0].userColor) || cr.userColor || 'w')
-        : trainerUserColor();
+      // 24g's host has no board of Chessable's either, and unlike a drill queue
+      // it has one answer for the whole run: the colour the course is written
+      // for, handed in with everything else.
+      const userColor = cr.treeSlot
+        ? ((cr.an.given && cr.an.given.userColor) || cr.userColor || 'w')
+        : cr.standalone
+          ? ((cr.queue[0] && cr.queue[0].userColor) || cr.userColor || 'w')
+          : trainerUserColor();
       if (userColor) cr.userColor = userColor;
       if (!cr.userColor) { warn('continuation: board orientation unreadable — not opening'); return false; }
       if (!cr.boardEl || !cr.boardEl.isConnected) buildOverlays();
@@ -21647,6 +21956,11 @@
       // Before releaseTrainer, so the scrim cannot outlive the board it dims
       // behind. Nulled FIRST: applyStandaloneChrome reads the flag.
       cr.standalone = false;
+      // 24g: the same discipline. The course tree notices on its own next tick
+      // (continuationActive goes false) and puts its columns back — there is no
+      // callback, deliberately: a teardown that has to remember to tell someone
+      // is a teardown that will one day forget.
+      cr.treeSlot = null;
       applyStandaloneChrome();
       // AFTER the overlays are down, so Chessable's board is visible again as
       // it un-dims. Called on every close, not just the tidy ones: a run torn
@@ -21686,6 +22000,12 @@
       // it — so both ends are covered by one condition.
       if (cr.boardEl) cr.boardEl.classList.toggle('clo-cr-standalone', Boolean(cr.standalone));
       if (cr.panel) cr.panel.classList.toggle('clo-cr-standalone', Boolean(cr.standalone));
+      // 24g takes the same `position: fixed` and NONE of the scrim: the course
+      // tree's own window is what the page behind is already hidden by, and a
+      // second dimming layer over it would darken the columns the board is
+      // being read against.
+      if (cr.boardEl) cr.boardEl.classList.toggle('clo-cr-intree', Boolean(cr.treeSlot));
+      if (cr.panel) cr.panel.classList.toggle('clo-cr-intree', Boolean(cr.treeSlot));
       if (!cr.standalone) { if (cr.scrim) cr.scrim.hidden = true; return; }
       if (!cr.scrim || !cr.scrim.isConnected) {
         const stale = document.getElementById(CR_SCRIM_ID);
@@ -23142,6 +23462,11 @@
       // on, so no path change, variation change or browse-state flip may close
       // it. Only Exit and the last card do.
       if (cr.active && cr.standalone) { positionOverlays(); return; }
+      // 24g's run is the other one that is not about the page underneath: it is
+      // about the COURSE, on a /course/ page none of the branches below know
+      // anything about. The tree owns its lifetime and closes it; this tick's
+      // only job is to keep it on the slots the tree measures.
+      if (cr.active && cr.treeSlot) { positionOverlays(); return; }
       if (isVariationPath()) { variationTick(); return; }
       // The panel element itself SURVIVES the hop from the variation page to a
       // trainer session — chessable.com never reloads the document, and
@@ -23704,7 +24029,7 @@
           }
         }
         slot.data = got;
-        cache[key] = { m: got.counts, n: got.total, t: Date.now() };
+        cache[key] = popCacheEntry(got);
         dirty = true;
         fetched++;
         if (i < entries.length - 1) await sleepMs(C.requestGapMs);
@@ -29460,6 +29785,9 @@
       dbAdd: null,        // …and the entries WE added, merged back on the way out
       dbNote: '',         // one line for the summary while scanning or after a failure
       redrawPending: false, // a redraw is queued — see refreshColumns, which must not be synchronous
+      // --- 24g: analysing inside this window ---------------------------------
+      explore: null,      // { ck, given } while the analysis board is up in here
+      xstageEl: null, xBoardEl: null, xPanelEl: null, xDbEl: null, xBtn: null,
     };
 
     // --- the walk ------------------------------------------------------------
@@ -29818,16 +30146,35 @@
       if (!ct.dbOn) return null;
       const got = ct.db.get(col.ck);
       if (!got || got.error || !col.pos) return null;
-      if (!(got.total >= L.minGames)) return { total: got.total || 0, thin: true, byUci: new Map() };
+      if (!(got.total >= L.minGames)) {
+        return { total: got.total || 0, thin: true, byUci: new Map(), wdlByUci: new Map() };
+      }
       if (!got.byUci) {
         const byUci = new Map();
+        // 24f: the same resolve builds the RESULT split, keyed the same way and
+        // merged the same way. Two spellings of one move (Lichess's
+        // king-takes-rook castling against ours) must add up in both maps or a
+        // bar would describe half of the games its share is drawn from.
+        const wdlByUci = new Map();
         for (const san of Object.keys(got.counts || {})) {
           const uci = sanToUci(col.pos, san);
-          if (uci) byUci.set(uci, (byUci.get(uci) || 0) + (got.counts[san] || 0));
+          if (!uci) continue;
+          byUci.set(uci, (byUci.get(uci) || 0) + (got.counts[san] || 0));
+          const split = popEntryWdl(got.entry, san);
+          if (split) {
+            const at = wdlByUci.get(uci);
+            if (at) { at.w += split.w; at.d += split.d; at.b += split.b; at.total += split.total; }
+            else wdlByUci.set(uci, { w: split.w, d: split.d, b: split.b, total: split.total });
+          }
         }
         got.byUci = byUci;
+        got.wdlByUci = wdlByUci;
       }
-      return { total: got.total, thin: false, byUci: got.byUci };
+      return {
+        total: got.total, thin: false, byUci: got.byUci,
+        wdlByUci: got.wdlByUci || new Map(),
+        score: popEntryScore(got.entry),
+      };
     }
 
     /** Ask about a position, at most once. Called only for a column being DRAWN. */
@@ -29861,8 +30208,17 @@
             : 'scanning Lichess...');
           const key = tag + '||' + ck;
           const hit = ct.dbCache[key];
-          if (hit && hit.m && typeof hit.n === 'number') {
-            ct.db.set(ck, { counts: hit.m, total: hit.n });
+          const usable = hit && hit.m && typeof hit.n === 'number';
+          // A HIT WITH NO RESULT SPLIT IS TREATED AS A MISS, ONCE (24f). `r`
+          // arrived in v0.126.0 and the entries without it are precisely the
+          // EARLY positions — the cache is warmest exactly where a tree opens —
+          // so leaving them alone would mean the win rates never appearing on
+          // the first three columns of any course. Re-asking puts the split
+          // back for every feature that shares this cache, and it happens once
+          // per position ever. The hit is KEPT as the fallback below: if the
+          // re-ask fails, a share with no bar still beats no row.
+          if (usable && hit.r) {
+            ct.db.set(ck, { counts: hit.m, total: hit.n, entry: hit });
             if (!ct.dbQueue.length) refreshColumns();
             continue;
           }
@@ -29883,9 +30239,15 @@
           }
           if (seq !== ct.dbSeq) return;
           if (got) {
-            ct.db.set(ck, { counts: got.counts, total: got.total });
-            ct.dbCache[key] = { m: got.counts, n: got.total, t: Date.now() };
+            ct.dbCache[key] = popCacheEntry(got);
+            ct.db.set(ck, { counts: got.counts, total: got.total, entry: ct.dbCache[key] });
             (ct.dbAdd || (ct.dbAdd = {}))[key] = ct.dbCache[key];
+          } else if (usable) {
+            // The re-ask above failed on a position we already had an answer
+            // for. Use it: shares and the coverage figure are unaffected, only
+            // the win rates are missing, and `recordDbFailure` has already put
+            // the reason in the summary line.
+            ct.db.set(ck, { counts: hit.m, total: hit.n, entry: hit });
           }
           refreshColumns();
           if (ct.dbQueue.length) await sleepMs(L.requestGapMs);
@@ -30013,6 +30375,287 @@
         ? 'Scanning the Lichess database as you browse: every row carries how often real games play it, and the popular moves this course does NOT cover are listed under them.'
         : 'Scan the Lichess database as you browse — how often each of the course’s moves is played, and which popular replies it never answers.') +
         '\nOne request per column on screen, sharing the coverage report’s cache.';
+    }
+
+    // --- 24g) analysing inside this window ------------------------------------
+    //
+    // "Browsing unanswered lines without an engine isn't valuable." Standing on
+    // a move the course never answers, the question is immediately *what should
+    // the answer be* — which needs a board you can play on, an engine, the
+    // database, and a way to write what you work out back into the course. All
+    // four already exist: section 19's analysis board, with its three writes
+    // ("Add as line", 19c and 19d) hanging off it.
+    //
+    // So NONE OF THAT IS REBUILT HERE. The tree measures three empty slots in
+    // its own layout, section 19's two overlays are pinned onto two of them and
+    // the Lichess panel onto the third, and the whole of this block is the
+    // ARGUMENT that names the position: which variation of the course reaches
+    // it, at which ply, and therefore what a new line would branch off.
+    //
+    //  * IT NEVER WRITES EITHER. Every write reachable from here is section
+    //    19's, unchanged and behind its own arming presses. Section 24's "it
+    //    never writes" rule is about the TREE — a row must not grow an "add it"
+    //    button — and it stands: what the user reaches from here is a board, and
+    //    a board has always written.
+    //  * THE POSITION IS THE TREE'S OWN, so it is EXACT — castling and en
+    //    passant included, since every FEN in the index came out of
+    //    `walkVariation`. That is better than either DOM host manages inside a
+    //    comment line, and it is what makes the ply cross-check in
+    //    `prepareAddVariation` meaningful rather than decorative.
+    //  * A GAP MOVE IS PLAYED INTO THE LINE, never made the start position. The
+    //    comment an added line goes into hangs off the move BEFORE it, so the
+    //    board has to open where the course's own last move left off and the
+    //    unanswered move has to be the line's first ply.
+
+    /** Every position one indexed line passes through, or null if it will not
+     *  walk (the index and the line disagreeing, which cannot normally happen). */
+    function lineCks(line) {
+      const cks = [line.startCk];
+      let at = line.startCk;
+      for (const uci of line.ucis) {
+        const m = ct.tree.answers.get(at);
+        const e = m && m.get(uci);
+        if (!e) return null;
+        at = e.afterCk;
+        cks.push(at);
+      }
+      return cks;
+    }
+
+    /**
+     * A variation of the course that reaches this position, and how many plies
+     * it takes to get there — the two facts "Add as variation" needs, and the
+     * two the DOM hosts infer off the page instead.
+     *
+     * `prefer` is the oid the user's own path came through, tried first: several
+     * lines regularly pass through one position, and the one they walked down is
+     * the one they mean. Everything else is a fallback, in index order.
+     *
+     * The FIRST arrival is taken where a line passes through twice (the cycle of
+     * §12.5): a shorter prefix is a smaller claim, and the ply cross-check in
+     * `prepareAddVariation` would refuse the other one anyway.
+     */
+    function sourceLineAt(ck, prefer) {
+      if (!ct.tree || !ct.tree.lines) return null;
+      const ordered = prefer
+        ? ct.tree.lines.filter((l) => l.oid === prefer)
+            .concat(ct.tree.lines.filter((l) => l.oid !== prefer))
+        : ct.tree.lines;
+      for (const line of ordered) {
+        const cks = lineCks(line);
+        if (!cks) continue;
+        const idx = cks.indexOf(ck);
+        if (idx >= 0) return { line, cks, idx };
+      }
+      return null;
+    }
+
+    /** One ply of an indexed line as the quick-edit driver's own descriptor —
+     *  the shape `reviewMoveDescriptor` and `variationMoveDescriptor` produce,
+     *  so the job carrying it needs no branch of its own. */
+    function plyDescriptor(found, i, bid) {
+      const before = found.cks[i];
+      const m = ct.tree.answers.get(before);
+      const move = m && m.get(found.line.ucis[i]);
+      const fen = ct.tree.fens.get(before) || '';
+      if (!move) return null;
+      return {
+        oid: found.line.oid, bid,
+        san: move.san,
+        color: fen.split(' ')[1] === 'b' ? 'b' : 'w',
+        plyIndex: i,
+      };
+    }
+
+    /** The oid of the variation the standing path came through, when there is
+     *  one — the last ply's own first remembered line. */
+    function preferredSourceOid(plies) {
+      const last = plies.length ? plies[plies.length - 1] : null;
+      const m = last && ct.tree.answers.get(last.before);
+      const e = m && m.get(last.uci);
+      return (e && e.lines && e.lines.length) ? e.lines[0].oid : null;
+    }
+
+    /**
+     * Everything section 19 would otherwise read off a page, answered from the
+     * index instead. See `openAnalysis`'s `given`.
+     */
+    function analysisGivenFor(ck, playUci, prefer) {
+      const fen = ct.tree && ct.tree.fens.get(ck);
+      if (!fen) return null;
+      const bid = ct.bid || '';
+      const given = {
+        place: 'tree',
+        startFen: fen,
+        playUci: playUci || '',
+        // The course's own colour, which is the way the board opens. Flip is
+        // section 19's own key and button from there on.
+        userColor: (ct.tree.side === 'b') ? 'b' : 'w',
+        sourceTitle: ct.tree.name || '',
+      };
+      const found = sourceLineAt(ck, prefer);
+      if (!found) {
+        // Reachable in one real case: a position stood on through a GAP move,
+        // i.e. one the course never plays. "Add as puzzle" (19d) still works —
+        // it needs no source variation at all — and saying so is the difference
+        // between a greyed-out button and a greyed-out button with a reason.
+        given.sourceWhy = 'No variation of this course reaches this position by its own ' +
+          'moves, so there is nothing to branch a new one off. "Add as puzzle" still works ' +
+          '— it writes the line on its own, starting from this position.';
+        given.entryWhy = given.sourceWhy;
+        return given;
+      }
+      given.sourceTitle = found.line.name || given.sourceTitle;
+      // `lid` is filled in behind this by resolveChapter — see
+      // fetchVariationChapter for why it cannot be known yet, and analysisSource
+      // for what happens if an arming press beats it.
+      given.source = { oid: found.line.oid, bid, lid: null, atStart: found.idx === 0 };
+      if (found.idx > 0) {
+        given.entry = plyDescriptor(found, found.idx - 1, bid);
+        given.entryNext = found.idx < found.line.ucis.length
+          ? plyDescriptor(found, found.idx, bid) : null;
+        if (!given.entry) {
+          given.entryWhy = 'The move this position follows could not be read from the index.';
+        }
+      } else {
+        given.entryWhy = 'This is the starting position of "' +
+          (found.line.name || found.line.oid) + '", which has no move to comment on. ' +
+          '"Add as variation" still works from here.';
+      }
+      return given;
+    }
+
+    /**
+     * Which chapter the source variation is in, filled in BEHIND the open.
+     *
+     * It costs a network call — several, where fetchVariationChapter has to read
+     * chapters until the oid turns up — and the overwhelming majority of
+     * analysis boards are opened to look at something rather than to write. So
+     * the board opens at once and this lands into the very object section 19 is
+     * holding; `analysisSource` refuses politely if an arming press beats it.
+     */
+    function resolveChapter(given) {
+      const src = given && given.source;
+      if (!src || src.lid !== null) return;
+      const cr0 = chessableCreds();
+      if (!cr0) return;
+      Promise.resolve(fetchVariationChapter(src.bid, src.oid, cr0)).then((lid) => {
+        if (lid === null || lid === undefined) {
+          warn('course tree: variation', src.oid, 'is in no chapter this account can import into');
+          return;
+        }
+        src.lid = String(lid);
+      }).catch((err) => {
+        warn('course tree: could not find the chapter of variation', src.oid, err);
+      });
+    }
+
+    /** The two slots section 19's overlays are pinned onto, in viewport
+     *  coordinates. Null while the explore stage is not laid out. */
+    function exploreSlots() {
+      if (!ct.explore || !ct.xstageEl || ct.xstageEl.hidden) return null;
+      const b = ct.xBoardEl.getBoundingClientRect();
+      const p = ct.xPanelEl.getBoundingClientRect();
+      if (!b.width || !b.height || !p.width) return null;
+      const size = Math.max(160, Math.floor(Math.min(b.width, b.height)));
+      return {
+        board: { left: Math.round(b.left), top: Math.round(b.top), size },
+        panel: {
+          left: Math.round(p.left), top: Math.round(p.top),
+          width: Math.round(p.width), height: Math.round(p.height),
+        },
+      };
+    }
+
+    /** …and the third, for the Lichess panel (database + engine). This IS the
+     *  function `courseTreePanelSlot` is set to, so it also answers "is the tree
+     *  the panel's host right now" — see topPanelHostNow. */
+    function panelSlot() {
+      if (!ct.explore || !ct.xDbEl || !ct.xstageEl || ct.xstageEl.hidden) return null;
+      const r = ct.xDbEl.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      return {
+        left: Math.round(r.left), top: Math.round(r.top),
+        width: Math.round(r.width), height: Math.round(r.height),
+      };
+    }
+
+    /**
+     * Opens the board on a position of the tree's, optionally playing one move
+     * into it — which is what a "no answer" row (24b) does.
+     *
+     * The stage is laid out BEFORE the bridge is called, because the bridge
+     * positions the overlays immediately and an unmeasurable slot is a refusal.
+     * On a refusal everything is put straight back, which is why `ct.explore` is
+     * both set and cleared here rather than by the tick.
+     */
+    function openExplore(ck, playUci) {
+      if (!ct.tree || ct.explore) return;
+      if (!continuationTreeApi) {
+        setStatus('The analysis board is not available in this tab — reload the page.', 'warn');
+        return;
+      }
+      const prefer = preferredSourceOid(standingPlies(columnsFor()));
+      const given = analysisGivenFor(ck, playUci, prefer);
+      if (!given) { setStatus('That position could not be read from the index.', 'warn'); return; }
+      ct.explore = { ck, given };
+      ct.preview = null;
+      applyExploreLayout();
+      if (!continuationTreeApi.open(given, exploreSlots)) {
+        ct.explore = null;
+        applyExploreLayout();
+        setStatus('The analysis board could not be opened here.', 'warn');
+        return;
+      }
+      resolveChapter(given);
+      setStatus('', '');
+      syncExploreButton();
+      // The panel's own poll would put it up (or take it down) up to 500 ms
+      // later, which on the way OUT is a database table left floating over the
+      // course page after the board has gone. `topPanelTick` is a plain
+      // top-level function of this file — the same reach as `fetchCourse` — and
+      // it re-asks `topPanelHostNow()`, so calling it here simply makes the
+      // change happen on the press instead of on the next tick.
+      topPanelTick();
+      log('course tree: analysing', given.startFen, playUci ? ('after ' + playUci) : '');
+    }
+
+    /** Closes it from our side. Idempotent, and safe when the board has already
+     *  gone — which is how the tick uses it. */
+    function exitExplore() {
+      if (!ct.explore) return;
+      ct.explore = null;
+      if (continuationTreeApi) continuationTreeApi.close();
+      applyExploreLayout();
+      syncExploreButton();
+      topPanelTick(); // see openExplore: the panel goes with the board, not a tick later
+
+      // Nothing was redrawn while the stage was hidden, and the board beside the
+      // columns is still showing whatever the last preview left on it.
+      renderTree();
+    }
+
+    /** Which stage is on screen. ONE place, so no exit path can leave the tree
+     *  showing an empty explore stage, or the columns under a live board. */
+    function applyExploreLayout() {
+      const on = Boolean(ct.explore);
+      if (ct.stageEl) ct.stageEl.hidden = on;
+      if (ct.xstageEl) ct.xstageEl.hidden = !on;
+      if (on && ct.rootsEl) ct.rootsEl.hidden = true;
+      if (on && ct.findBoxEl) ct.findBoxEl.hidden = true;
+    }
+
+    function syncExploreButton() {
+      if (!ct.xBtn) return;
+      const on = Boolean(ct.explore);
+      ct.xBtn.textContent = on ? 'Back to the tree' : 'Analyse';
+      ct.xBtn.classList.toggle('clo-ct-toggle--on', on);
+      ct.xBtn.disabled = !ct.tree;
+      ct.xBtn.title = on
+        ? 'Close the analysis board and go back to the columns.'
+        : 'Open the analysis board on the position shown — play it out, with the engine and ' +
+          'the database beside it, and add what you find back to the course.\nA move under ' +
+          '"Played here, not answered" opens it with that move already played.';
     }
 
     // --- the board -----------------------------------------------------------
@@ -30234,6 +30877,59 @@
       return chip;
     }
 
+    /**
+     * 24f) HOW A MOVE SCORES, drawn as the explorer's own three-way bar plus one
+     * number, on the course's own rows and on the gap rows alike.
+     *
+     * The share chip above answers "how often is this played"; this answers "how
+     * well does it go", and the pair is the whole reading the panel exists for:
+     * *the author covers this move and it scores 49%; the reply he never answers
+     * scores 58% against him.* Neither number means much without the other,
+     * which is why they sit on the same row rather than in two views.
+     *
+     * THE PERCENTAGE IS THE MOVER'S, the bar is absolute. A course row and a gap
+     * row in one column are both played by the side to move there, so one
+     * perspective serves the column and the rows stay comparable by eye; the bar
+     * keeps White-left/Black-right because that is what every chess database
+     * draws and re-orienting it per column would make two columns unreadable
+     * against each other.
+     *
+     * The segment COLOURS are the panel's own (.clo-seg-white/-draw/-black),
+     * reused rather than restated: those rules set background and text colour
+     * only, and `.clo-seg` — which carries the 18px height and the labels — is
+     * deliberately not applied, so this stays a 5px strip.
+     */
+    function wdlNode(wdl, mover) {
+      if (!wdl || !wdl.total) return null;
+      const node = el('div', 'clo-ct-wdl');
+      const bar = el('span', 'clo-ct-wdl-bar');
+      const parts = [['clo-seg-white', wdl.w], ['clo-seg-draw', wdl.d], ['clo-seg-black', wdl.b]];
+      for (const [cls, n] of parts) {
+        const pct = (100 * n) / wdl.total;
+        if (pct <= 0) continue;
+        const seg = el('i', 'clo-ct-wdl-seg ' + cls);
+        seg.style.width = pct.toFixed(1) + '%';
+        bar.append(seg);
+      }
+      node.append(bar);
+      const score = moverScorePct(wdl, mover);
+      if (score !== null) {
+        node.append(el('span', 'clo-ct-wdl-pct', Math.round(score) + '%'));
+      }
+      const pc = (n) => Math.round((100 * n) / wdl.total) + '%';
+      node.title = (mover === 'b' ? 'Black' : 'White') + ' scores ' +
+        (score === null ? '?' : score.toFixed(1) + '%') + ' with this move.\n' +
+        'White wins ' + pc(wdl.w) + ' · draws ' + pc(wdl.d) + ' · Black wins ' + pc(wdl.b) +
+        ' over ' + wdl.total.toLocaleString() + ' Lichess games.\n' +
+        'A score is wins plus half the draws, from the point of view of the side playing ' +
+        'the move.';
+      return node;
+    }
+
+    /** The side that plays the moves of this column — whose perspective every
+     *  score in it is written from. */
+    const columnMover = (col) => (col.pos && col.pos.side === 'b') ? 'b' : 'w';
+
     /** "12.4k" / "938" — a games count in the width a column has for one. */
     function shortCount(n) {
       if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
@@ -30289,11 +30985,33 @@
           : 'The course does not play this move here. Which side this course is written ' +
             'for could not be read from these lines, so it is not called a gap.';
       meta.append(tag);
+      // 24g: the one thing a gap row now DOES. The row itself is still not
+      // navigable — there is no subtree behind it, because the author never
+      // wrote one — but "what should the answer be" is exactly the question a
+      // move with no answer raises, and this opens a board on it with the move
+      // already played. Its own button rather than a click on the row: the row
+      // is a statement, and the two readings ("go there" / "work it out") must
+      // not be one gesture.
+      const analyse = el('button', 'clo-ct-gap-analyse', 'analyse');
+      analyse.type = 'button';
+      analyse.title = 'Open the analysis board on this move — engine, database and the ' +
+        'course’s own line behind it, with everything you work out addable back to the course.';
+      analyse.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openExplore(col.ck, gap.uci);
+      });
+      meta.append(analyse);
       if (gap.after) {
         meta.append(lichessLink(gap.after, 'lichess ↗',
           'Open the position after ' + gap.san + ' on Lichess in a new tab'));
       }
       main.append(meta);
+      // 24f: how the move actually goes for the side playing it. On a gap row
+      // this is the half of the answer the share cannot give — a reply played
+      // in 12% of games and scoring 58% is a different problem from one played
+      // in 12% and scoring 44%.
+      const gapWdl = wdlNode(gap.wdl, columnMover(col));
+      if (gapWdl) main.append(gapWdl);
 
       node.append(main);
       // Hover shows it on the board, exactly as a real row does — an arrow from
@@ -30329,7 +31047,11 @@
         if (games / db.total < L.gapMinShare) continue;
         const san = CloSan.moveToSan(col.pos, uci);
         if (!san) continue; // the explorer and our board disagree; never guessed at
-        out.push({ uci, san, games, total: db.total, after: fen ? fenAfterUci(fen, uci) : '' });
+        out.push({
+          uci, san, games, total: db.total,
+          wdl: db.wdlByUci ? db.wdlByUci.get(uci) : null,
+          after: fen ? fenAfterUci(fen, uci) : '',
+        });
       }
       out.sort((a, b) => b.games - a.games);
       return out.slice(0, L.gapMaxRows);
@@ -30412,6 +31134,15 @@
         meta.append(link);
       }
       main.append(meta);
+      // 24f: the same bar the gap rows carry, on the course's own move, so the
+      // two can be read against each other by moving the eye down the column —
+      // which is the comparison the whole scan exists to make possible. The
+      // row's FIRST move only, for the share chip's reason: the rest of a
+      // folded run is forced, so its result split is this one's by construction.
+      if (db && !db.thin) {
+        const rowWdl = wdlNode(db.wdlByUci.get(row.uci), columnMover(col));
+        if (rowWdl) main.append(rowWdl);
+      }
 
       node.append(bar, main);
       node.addEventListener('click', () => goTo(col, row, row.plies.length));
@@ -30823,6 +31554,11 @@
      *  never from the poll, which would fight the user's scroll position. */
     function renderTree() {
       if (!ct.panel) return;
+      // 24g: while the board is up the columns are not on screen, and drawing
+      // them would still cost the walk, the badges and — through renderColumns
+      // — 24b's `wantDb` for columns nobody can see. The crumb and the summary
+      // stay: they name the position the board is standing on.
+      if (ct.explore) { renderCrumb(columnsFor()); renderSummary(); render(); return; }
       // ONE walk per redraw, shared by all three: the crumb, the columns and
       // the board must agree about where the auto-take (columnsFor) has walked
       // to, and re-deriving it three times is how they would drift apart.
@@ -30852,6 +31588,9 @@
       ct.panel.hidden = !ct.open;
       ct.launcher.hidden = ct.open;
       if (!ct.open) return;
+      // 24g: it is disabled until there is a tree to stand in, and `render` is
+      // the only thing that runs after a walk finishes.
+      syncExploreButton();
       const cancellable = ct.busy && Boolean(ct.job);
       ct.runBtn.textContent = cancellable ? 'Cancel' : (ct.tree ? 'Re-read' : 'Read this course');
       ct.runBtn.classList.toggle('clo-ct-btn--cancel', cancellable);
@@ -30943,6 +31682,12 @@
 
     function onKey(e) {
       if (!ct.open || !ct.panel || ct.panel.hidden) return;
+      // 24g: while the analysis board is running in this window, the keyboard is
+      // ITS. Section 18's swallow is a capture listener on `document` too, and
+      // stopPropagation does not silence a second listener on the same node —
+      // so without this the arrows would walk the columns underneath the board
+      // and Escape would close the window out from under it.
+      if (ct.explore || (continuationActive && continuationActive())) return;
       if (e.altKey || e.ctrlKey || e.metaKey) return;
       if (isTypingTarget(e.target)) return;
       let handled = true;
@@ -31066,6 +31811,17 @@
       flipBtn.title = 'Turn the board round (f)';
       flipBtn.addEventListener('click', () => { ct.flip = !ct.flip; renderTree(); });
 
+      // 24g. In the HEADER beside Lichess and Flip, not on a row: it is about
+      // the position the window is standing on, which is what the whole header
+      // is about, and the per-row way in is the gap row's own button.
+      const xBtn = el('button', 'clo-ct-toggle', 'Analyse');
+      xBtn.type = 'button';
+      xBtn.addEventListener('click', () => {
+        if (ct.explore) { exitExplore(); return; }
+        const cols = columnsFor();
+        openExplore(keyOfPlies(standingPlies(cols)));
+      });
+
       const runBtn = el('button', 'clo-ct-btn', 'Read this course');
       runBtn.type = 'button';
       runBtn.addEventListener('click', () => {
@@ -31075,8 +31831,15 @@
       const close = el('button', 'clo-ct-x', '×');
       close.type = 'button';
       close.title = 'Close (Esc)';
-      close.addEventListener('click', () => { ct.open = false; render(); });
-      head.append(findEl, dbBtn, flipBtn, runBtn, close);
+      close.addEventListener('click', () => {
+        // 24g first: the board is pinned to slots inside this window, so hiding
+        // the window without it would leave a board floating over the course
+        // page for as long as it takes the tick to notice.
+        exitExplore();
+        ct.open = false;
+        render();
+      });
+      head.append(findEl, dbBtn, xBtn, flipBtn, runBtn, close);
 
       const body = el('div', 'clo-ct-body');
 
@@ -31114,10 +31877,21 @@
       colsWrapEl.append(tabsEl, colsEl);
       stageEl.append(boardEl, colsWrapEl);
 
+      // 24g's stage: three empty slots, measured and then covered by surfaces
+      // that already exist — section 19's board and panel, and the Lichess
+      // panel. Nothing is drawn into them here, and nothing of ours is put
+      // inside them: they are the layout, and the overlays are the content.
+      const xstageEl = el('div', 'clo-ct-xstage');
+      xstageEl.hidden = true;
+      const xBoardEl = el('div', 'clo-ct-xslot clo-ct-xslot--board');
+      const xPanelEl = el('div', 'clo-ct-xslot clo-ct-xslot--panel');
+      const xDbEl = el('div', 'clo-ct-xslot clo-ct-xslot--db');
+      xstageEl.append(xBoardEl, xPanelEl, xDbEl);
+
       const rootsEl = el('div', 'clo-ct-roots');
       rootsEl.hidden = true;
 
-      body.append(statusEl, findBoxEl, summaryEl, crumbEl, stageEl, rootsEl);
+      body.append(statusEl, findBoxEl, summaryEl, crumbEl, stageEl, xstageEl, rootsEl);
       panel.append(head, body);
       document.body.appendChild(panel);
 
@@ -31125,8 +31899,11 @@
         panel, statusEl, summaryEl, crumbEl, colsEl, tabsEl, rootsEl,
         boardEl, boardGrid, boardLayer, boardShapes, stageEl, runBtn,
         dbBtn, flipBtn, findEl, findBoxEl,
+        xstageEl, xBoardEl, xPanelEl, xDbEl, xBtn,
       });
       syncDbButton();
+      syncExploreButton();
+      applyExploreLayout();
     }
 
     function buildLauncher() {
@@ -31158,15 +31935,28 @@
       const m = CHAPTER_EDIT_RE.test(location.pathname)
         ? null : COURSE_PATH_RE.exec(location.pathname);
       if (!m) {
+        // 24g: an SPA hop off the course page takes the board with it. The
+        // board is ABOUT this course — its source variation, its chapter — so
+        // there is nothing for it to be doing on the page we have moved to.
+        if (ct.explore) exitExplore();
         if (ct.panel) { ct.panel.hidden = true; ct.launcher.hidden = true; }
         return;
       }
+      // 24g: the board is section 19's and can be closed from its own Exit,
+      // Escape, or anything else that tears a run down. Noticed here rather
+      // than through a callback — a teardown that has to remember to tell
+      // someone is a teardown that will one day forget.
+      if (ct.explore && continuationActive && !continuationActive()) exitExplore();
+      // …and the tree's own window closing (× or Escape) takes it too: the
+      // slots it is pinned to are inside that window.
+      if (ct.explore && !ct.open) exitExplore();
       const fresh = !ct.panel || !ct.panel.isConnected || !ct.launcher.isConnected;
       if (ct.bid !== m[1]) {
         // SPA-switched to another course: everything built for the old one is
         // meaningless here. A walk in flight is left to finish and is discarded
         // by its own bid check.
         ct.bid = m[1];
+        if (ct.explore) exitExplore(); // it names a variation of the course being left
         ct.tree = null;
         ct.rootKey = null;
         ct.path = [];
@@ -31215,8 +32005,17 @@
     // reflow: the columns shown are a different SET, not the same set relaid.
     window.addEventListener('resize', () => {
       if (!ct.open || !ct.tree || !ct.panel) return;
-      try { renderTree(); } catch (err) { warn('course tree resize failed:', err); }
+      // 24g: with the board up there are no columns to re-choose — the three
+      // slots simply moved, and the two overlay owners re-place themselves from
+      // their own polls. The panel is the one that has to be told, since its
+      // resize listener asks topPanelHostNow, which is us.
+      try {
+        if (ct.explore) positionTopPanel(); else renderTree();
+      } catch (err) { warn('course tree resize failed:', err); }
     });
+    // 24g: the panel's fourth host (section 11). Answering a rect IS the claim,
+    // so it is assigned once and gates itself on `ct.explore`.
+    courseTreePanelSlot = panelSlot;
     tick();
   }
 
