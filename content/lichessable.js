@@ -21258,8 +21258,14 @@
      * the line as the board opens, which is what "explore this unanswered move"
      * means (24g).
      */
-    function openAnalysis(given) {
+    function openAnalysis(host) {
       if (cr.active) return;
+      // `startFen` is the one field a host MUST supply (continuationTreeApi.open
+      // refuses without it), so it is also what separates a real host from
+      // whatever else may arrive in argument 0 — a MouseEvent, when a click
+      // listener is wired to this function bare. Anything else is nobody, and the
+      // DOM readers below then run exactly as they did before 24g existed.
+      const given = (host && typeof host.startFen === 'string') ? host : null;
       const fen = (given && given.startFen) || analysisStartFen();
       if (!fen || !CloSan.parseFen(fen)) {
         warn('analysis: board position unreadable — not opening');
@@ -22779,7 +22785,11 @@
       analyse.title = 'Play on from this position on our own board: any legal move, ' +
         'both sides, with the Lichess database and the engine following along. ' +
         'Nothing you play here is saved or counted.';
-      analyse.addEventListener('click', openAnalysis);
+      // Wrapped, NEVER passed as the listener itself: openAnalysis's first
+      // argument is 24g's `given`, and a bare reference hands it the MouseEvent
+      // (v0.126.0-v0.129.0 — "Add as line" was then permanently disabled here,
+      // with no reason printed, since an Event carries no `entryWhy` either).
+      analyse.addEventListener('click', () => openAnalysis());
 
       // Section 20. Like Analyse it needs no lines in this variation — its
       // cards come from the session's mistake log, which spans all of them.
@@ -22845,7 +22855,7 @@
       btn.title = 'Play on from this position on our own board: any legal move, ' +
         'both sides, with the Lichess database and the engine following along. ' +
         'Nothing you play here is saved or counted.';
-      btn.addEventListener('click', openAnalysis);
+      btn.addEventListener('click', () => openAnalysis()); // never bare — see the row's
       // Before the cogwheel and Hide, which are the panel's own two controls
       // and stay where the user already knows to look for them.
       header.insertBefore(btn, header.querySelector('.clo-engine-toggle') ||

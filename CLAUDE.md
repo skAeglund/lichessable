@@ -2519,6 +2519,17 @@ Currently working (v0.18.x).
       the line's FIRST PLY rather than made the start position — the comment an
       added line goes into hangs off the move BEFORE it, so the board must open
       where the course's own last move left off.
+      …AND `given` IS NEVER TAKEN ON TRUST: `openAnalysis` keeps only an argument
+      carrying a STRING `startFen`, the one field a host must supply (which is
+      also what `continuationTreeApi.open` already refuses without). Both
+      original hosts wire their Analyse button through `() => openAnalysis()`,
+      NEVER bare — a bare listener hands argument 0 the MouseEvent, and every
+      reader above then takes the `given` path with nothing in it: "Add as line"
+      disabled for want of an `entry`, with NO reason on screen because an Event
+      has no `entryWhy` either, "Add as variation" refusing with 24g's sentence
+      about no variation reaching the position, and a puzzle named ''. Silent on
+      both hosts from v0.126.0 to v0.129.0, since that wiring predates the
+      parameter by ninety versions.
     - THE CHAPTER IS THE ONE THING `getList` DOES NOT SAY, and 19c's body needs
       it (`target.chapterId`). `getList` ALSO TAKES A `lid` and answers that
       chapter alone (ground-truthed 2026-08-22 on course 453453: 16 + 64 = 80),
