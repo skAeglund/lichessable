@@ -208,15 +208,20 @@ body {
             <button type="button" class="clo-toggle" aria-expanded="true">Hide</button>
           </div>
           <div class="clo-body">
-            <div class="clo-engine">
+            <!-- Stockfish with the ChessDB companion beside it (§6.4): the
+                 search keeps the big numbers, the book rides alongside at 11px
+                 in the ramp's colours. The `clo-engine--cdb` class is what
+                 opens the per-line column at all. -->
+            <div class="clo-engine clo-engine--cdb">
               <div class="clo-engine-head">
                 <span class="clo-engine-eval">+0.32</span>
-                <span class="clo-engine-depth">d30</span>
+                <span class="clo-engine-depth">depth 30</span>
+                <span class="clo-engine-cdb"><span class="clo-engine-cdb-tag">ChessDB</span><span class="clo-engine-cdb-eval clo-ev--w1">+0.28</span></span>
                 <span class="clo-engine-note"></span>
               </div>
-              <div class="clo-engine-line"><span class="clo-line-eval">+0.32</span><span class="clo-line-moves">5.Nf3 Nc6 6.Bb5 e6 7.O-O Bd7</span></div>
-              <div class="clo-engine-line"><span class="clo-line-eval">+0.21</span><span class="clo-line-moves">5.Nc3 a6 6.Be3 e5 7.Nb3 Be6</span></div>
-              <div class="clo-engine-line"><span class="clo-line-eval">−0.04</span><span class="clo-line-moves">5.f3 e5 6.Nb3 Be7 7.c4 O-O</span></div>
+              <div class="clo-engine-line"><span class="clo-line-eval">+0.32</span><span class="clo-line-cdb clo-ev--w1">+0.28</span><span class="clo-line-moves">5.Nf3 Nc6 6.Bb5 e6 7.O-O Bd7</span></div>
+              <div class="clo-engine-line"><span class="clo-line-eval">+0.21</span><span class="clo-line-cdb clo-ev--eq">+0.1</span><span class="clo-line-moves">5.Nc3 a6 6.Be3 e5 7.Nb3 Be6</span></div>
+              <div class="clo-engine-line"><span class="clo-line-eval">−0.04</span><span class="clo-line-cdb clo-cdb--est clo-ev--b1">-0.7</span><span class="clo-line-moves">5.f3 e5 6.Nb3 Be7 7.c4 O-O</span></div>
             </div>
             <div class="clo-opening">B22 · Sicilian Defence, Alapin Variation</div>
             <div class="clo-rep">
@@ -237,32 +242,32 @@ body {
               <tbody>
                 <tr class="clo-rep-row clo-rep-row--in">
                   <td class="clo-move" data-san="Nf3">Nf3<span class="clo-rep-badge clo-rep-badge--in" data-kind="in"></span></td>
-                  <td class="clo-cdb">+0.3</td><td class="clo-pct">41%</td><td class="clo-games">498k</td>
+                  <td class="clo-cdb clo-ev--w1">+0.3</td><td class="clo-pct">41%</td><td class="clo-games">498k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="39,33,28"></div></td>
                 </tr>
                 <tr class="clo-rep-row clo-rep-row--transposes">
                   <td class="clo-move" data-san="c3">c3<span class="clo-rep-badge clo-rep-badge--transposes" data-kind="transposes"></span></td>
-                  <td class="clo-cdb">+0.2</td><td class="clo-pct">22%</td><td class="clo-games">266k</td>
+                  <td class="clo-cdb clo-ev--eq">+0.2</td><td class="clo-pct">22%</td><td class="clo-games">266k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="42,31,27"></div></td>
                 </tr>
                 <tr class="clo-rep-row clo-rep-row--risk">
                   <td class="clo-move" data-san="Nc3">Nc3<span class="clo-rep-badge clo-rep-badge--risk" data-kind="risk"></span></td>
-                  <td class="clo-cdb">+0.1</td><td class="clo-pct">18%</td><td class="clo-games">217k</td>
+                  <td class="clo-cdb clo-ev--eq">+0.1</td><td class="clo-pct">18%</td><td class="clo-games">217k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="37,30,33"></div></td>
                 </tr>
                 <tr>
                   <td class="clo-move" data-san="d4">d4</td>
-                  <td class="clo-cdb">+0.4</td><td class="clo-pct">9.4%</td><td class="clo-games">113k</td>
+                  <td class="clo-cdb clo-ev--w1">+0.4</td><td class="clo-pct">9.4%</td><td class="clo-games">113k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="35,34,31"></div></td>
                 </tr>
                 <tr>
                   <td class="clo-move" data-san="Bb5+">Bb5+</td>
-                  <td class="clo-cdb clo-cdb--est">-0.2</td><td class="clo-pct">4.1%</td><td class="clo-games">49k</td>
+                  <td class="clo-cdb clo-cdb--est clo-ev--eq">-0.2</td><td class="clo-pct">4.1%</td><td class="clo-games">49k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="33,38,29"></div></td>
                 </tr>
                 <tr>
                   <td class="clo-move" data-san="g3">g3</td>
-                  <td class="clo-cdb clo-cdb--est">-0.6</td><td class="clo-pct">0.8%</td><td class="clo-games">9.6k</td>
+                  <td class="clo-cdb clo-cdb--est clo-ev--b2">-1.6</td><td class="clo-pct">0.8%</td><td class="clo-games">9.6k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="30,32,38"></div></td>
                 </tr>
               </tbody>

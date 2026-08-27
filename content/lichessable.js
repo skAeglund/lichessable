@@ -316,6 +316,12 @@
       // network the engine already on the machine is the better answer.
       sourceKey: 'cloEngineSource', // storage.local: auto | chessdb | local
       engineLines: 3,               // to match the engine section's MultiPV 3
+      // The green<->red bands, in centipawns from WHITE's side — the same
+      // perspective as the digits they colour, so a tone can never contradict
+      // the sign a reader is looking at. Two boundaries, i.e. a seven-step
+      // ramp counting the decisive ends: b3 b2 b1 eq w1 w2 w3.
+      toneEdge: 50,    // inside this either way: equal, no colour at all
+      toneStrong: 150, // outside this: the full step
     },
 
     // --- Analysis-board overlay placement (positionAnalysisPanel) ----------
@@ -1816,6 +1822,9 @@
     cdbMoves: null,       // Map canonical-uci -> { score, note, san, book }
     engineSource: 'auto',  // 'auto' | 'chessdb' | 'local' (persisted; options page)
     cdbEngineFen: null,   // position the engine section was last filled from ChessDB for
+    enginePvs: null,      // the last engine update's lines, kept ONLY so the ChessDB
+    enginePvsFen: null,   // companion beside them can be repainted when the book lands
+                          // after the search has already finished (§6.4)
     cdbPending: null,     // cacheKey of a ChessDB answer in flight (syncEngine waits on it)
     hidden: false,        // panel body collapsed? (persisted in chrome.storage.local)
     filtersOpen: false,   // settings menu (header cogwheel) open? deliberately NOT persisted
@@ -2442,14 +2451,26 @@
    * position whose explorer data is already cached still gets its evals.
    */
   /**
-   * TWO callers want this answer, and either alone is reason enough to ask:
-   * the eval column (§7) and the engine section when ChessDB is its source
-   * (§6.1). Without the second clause the engine source could never engage
-   * unless the column happened to be switched on too.
+   * WHETHER TO ASK CHESSDB AT ALL — and this is a PRIVACY gate before it is a
+   * budget one. The column is opt-in precisely because it is a second third
+   * party seeing the position, so nothing here may ask on a user who has not
+   * switched something on.
+   *
+   * Two callers, and either alone is reason enough: the eval column (§7), and
+   * the engine section when ChessDB is its SOURCE (§6.1) — the second clause
+   * is what lets 'chessdb' engage with the column switched off, where the
+   * section has no other source to fall back to.
+   *
+   * `'auto'` IS DELIBERATELY NOT IN THAT SECOND CLAUSE ANY MORE (v0.129.0).
+   * It was, and it had to be while 'auto' meant substitution. Now that 'auto'
+   * runs Stockfish either way and the book only ever rides beside it (§6.4),
+   * the companion's own gate is `cdbCurrent()` — which requires the column —
+   * so an 'auto' user with the column off would have had every position sent
+   * to chessdb.cn, twice, for an answer nothing would ever read.
    */
   function cdbWanted() {
-    return Boolean(state.cdbEnabled ||
-      (state.engineEnabled && state.engineSource !== 'local'));
+    if (state.cdbEnabled) return true;
+    return Boolean(state.engineEnabled && state.engineSource === 'chessdb');
   }
 
   async function requestCdb(fen, seq) {
@@ -2490,6 +2511,12 @@
     state.cdbFen = fen;
     state.cdbMoves = answer.moves;
     fillCdbEvals();
+    // …and the engine section's companion, if a search has already drawn its
+    // lines for this position (§6.4). Guarded on the fen the lines were drawn
+    // for, since state.enginePvs outlives the update that carried it.
+    if (state.enginePvsFen && state.enginePvsFen === state.fen) {
+      fillEngineCdbCompanion(state.enginePvs);
+    }
     // The engine section's source decision is only answerable once this has
     // landed — before it, cdbEngineReady() is false for want of data rather
     // than because the book does not know the position.
@@ -2503,11 +2530,19 @@
   }
 
   /**
-   * The eval as the panel should read it.
+   * The eval as the panel should read it: the text, its tooltip, and the
+   * green<->red TONE the colour rules hang off.
    *
    * CDB scores are from the MOVER's perspective; the panel's engine section
    * normalises to White (engine.js does that at its own boundary), and two
    * conventions in one panel is one too many — so this flips on Black's move.
+   *
+   * THE TONE IS COMPUTED HERE, beside the digits, and never by a second
+   * function reading the text back. Both come off the same `signed` value, so
+   * a colour can never disagree with the sign printed next to it — which is
+   * the one failure of a coloured eval that is completely silent. It is
+   * WHITE's perspective for the same reason the digits are: a green "−1.5"
+   * would be two conventions in one cell.
    */
   function cdbEvalText(entry, whiteToMove) {
     const C = CONFIG.chessdb;
@@ -2518,13 +2553,14 @@
     const tb = /\(([WDL])-(\d+)\)/.exec(entry.note || '');
     if (tb) {
       const dtz = Number(tb[2]);
-      if (tb[1] === 'D') return { text: '0.0', title: 'Tablebase draw' };
+      if (tb[1] === 'D') return { text: '0.0', title: 'Tablebase draw', tone: 'eq' };
       const winForMover = tb[1] === 'W';
       const winForWhite = whiteToMove ? winForMover : !winForMover;
       return {
         text: winForWhite ? '+∞' : '−∞',
         title: 'Tablebase ' + (winForMover ? 'win' : 'loss') +
                ' for the side to move (DTZ ' + dtz + ')',
+        tone: winForWhite ? 'w3' : 'b3',
       };
     }
 
@@ -2532,11 +2568,15 @@
     const signed = entry.score * sign;
     if (abs >= C.mateBand) {
       const dist = C.mateBase - abs;
-      return { text: '#' + (signed > 0 ? '' : '-') + dist, title: 'Mate in ' + dist };
+      return {
+        text: '#' + (signed > 0 ? '' : '-') + dist,
+        title: 'Mate in ' + dist,
+        tone: signed > 0 ? 'w3' : 'b3',
+      };
     }
     if (abs >= C.decisiveBand) {
       // Between the two bands: decisive, but not a distance we can name.
-      return { text: signed > 0 ? '+∞' : '−∞', title: 'Decisive' };
+      return { text: signed > 0 ? '+∞' : '−∞', title: 'Decisive', tone: signed > 0 ? 'w3' : 'b3' };
     }
     const pawns = signed / 100;
     // A rounded zero is written "0.0", never "+0.0" and above all never
@@ -2547,8 +2587,29 @@
     const text = (Math.abs(Number(rounded)) < 0.05) ? '0.0'
       : (Number(rounded) > 0 ? '+' + rounded : rounded);
     const exact = (pawns >= 0 ? '+' : '') + pawns.toFixed(2);
-    return { text, title: 'ChessDB ' + exact + ' (White’s perspective)' };
+    return { text, title: 'ChessDB ' + exact + ' (White’s perspective)', tone: cdbTone(signed) };
   }
+
+  /**
+   * Centipawns (White's perspective) -> one of the seven ramp steps. The band
+   * edges are CONFIG's, so the ramp and the CSS that draws it are described in
+   * one place each and neither has to guess at the other's thresholds.
+   */
+  function cdbTone(signed) {
+    const C = CONFIG.chessdb;
+    const abs = Math.abs(signed);
+    if (abs < C.toneEdge) return 'eq';
+    const step = abs >= C.toneStrong ? '2' : '1';
+    return (signed > 0 ? 'w' : 'b') + step;
+  }
+
+  /** Applies a tone to any element, clearing whatever it wore before. */
+  function applyEvalTone(el, tone) {
+    if (!el) return;
+    for (const t of CDB_TONES) el.classList.toggle('clo-ev--' + t, tone === t);
+  }
+
+  const CDB_TONES = ['w3', 'w2', 'w1', 'eq', 'b1', 'b2', 'b3'];
 
   /**
    * Paints every drawn row's eval cell from whatever is currently known.
@@ -2567,6 +2628,7 @@
       cell.textContent = '';
       cell.removeAttribute('title');
       cell.classList.remove('clo-cdb--est');
+      applyEvalTone(cell, null);
       if (!known) continue;
 
       const entry = state.cdbMoves.get(tr.dataset.cdbUci || '');
@@ -2574,6 +2636,7 @@
 
       const shown = cdbEvalText(entry, whiteToMove);
       cell.textContent = shown.text;
+      applyEvalTone(cell, shown.tone);
       if (entry.book) {
         cell.title = shown.title;
       } else {
@@ -3252,11 +3315,12 @@
           <div class="clo-engine-head">
             <span class="clo-engine-eval"></span>
             <span class="clo-engine-depth"></span>
+            <span class="clo-engine-cdb" hidden><span class="clo-engine-cdb-tag">ChessDB</span><span class="clo-engine-cdb-eval"></span></span>
             <span class="clo-engine-note"></span>
           </div>
-          <div class="clo-engine-line"><span class="clo-line-eval"></span><span class="clo-line-moves"></span></div>
-          <div class="clo-engine-line"><span class="clo-line-eval"></span><span class="clo-line-moves"></span></div>
-          <div class="clo-engine-line"><span class="clo-line-eval"></span><span class="clo-line-moves"></span></div>
+          <div class="clo-engine-line"><span class="clo-line-eval"></span><span class="clo-line-cdb"></span><span class="clo-line-moves"></span></div>
+          <div class="clo-engine-line"><span class="clo-line-eval"></span><span class="clo-line-cdb"></span><span class="clo-line-moves"></span></div>
+          <div class="clo-engine-line"><span class="clo-line-eval"></span><span class="clo-line-cdb"></span><span class="clo-line-moves"></span></div>
         </div>
         <div class="clo-opening" hidden></div>
         <div class="clo-rep" hidden></div>
@@ -3325,8 +3389,13 @@
       engineEval:   panel.querySelector('.clo-engine-eval'),
       engineDepth:  panel.querySelector('.clo-engine-depth'),
       engineNote:   panel.querySelector('.clo-engine-note'),
+      // The ChessDB companion (DESIGN-chessdb.md §6.4): a second, quieter set
+      // of numbers RIDING BESIDE Stockfish's rather than replacing them.
+      engineCdb:     panel.querySelector('.clo-engine-cdb'),
+      engineCdbEval: panel.querySelector('.clo-engine-cdb-eval'),
       engineLines:  Array.from(panel.querySelectorAll('.clo-engine-line'), (row) => ({
         evalEl:  row.querySelector('.clo-line-eval'),
+        cdbEl:   row.querySelector('.clo-line-cdb'),
         movesEl: row.querySelector('.clo-line-moves'),
       })),
     };
@@ -4835,18 +4904,25 @@
     const active = state.engineEnabled && !state.hidden && !document.hidden &&
       !state.altCheckBusy &&
       Boolean(state.fen) && (!IS_REVIEW || (state.panel && !state.panel.hidden));
-    // ChessDB may answer instead of Stockfish (DESIGN-chessdb.md §6.1). The
-    // gate is "the book knows this position", never a depth (§3.1). In 'auto'
-    // a position the book does not know falls through to the engine below; in
-    // 'chessdb' nothing is ever booted, which is the point of that state.
-    if (active && state.engineSource !== 'local') {
-      // In flight: say so and boot nothing. Stockfish costs a WASM compile and
-      // a few hundred MB, and paying that for the 400 ms before the book
-      // answers — only to stop it — is the whole reason this hold exists.
+    // ChessDB TAKES THE SECTION OVER only where it was asked to, i.e. under
+    // the 'chessdb' source (DESIGN-chessdb.md §6.1). Under 'auto' — the
+    // default — the two now run SIDE BY SIDE (§6.4): Stockfish below, exactly
+    // as it always has, with the book's numbers painted beside its lines by
+    // renderEngineUpdate. The book is a second opinion, and a second opinion
+    // that silences the first is not one.
+    //
+    // So there is no 'auto' hold here any more: the cdbPending wait existed to
+    // stop 'auto' booting a WASM engine for the ~400 ms before the book could
+    // answer, only to stop it again. In 'auto' Stockfish is now always the
+    // one being started, so there is nothing to wait for.
+    if (active && state.engineSource === 'chessdb') {
+      // In flight: say so and boot nothing. That promise — never a WASM
+      // compile and never the few hundred MB — is the whole of this state.
       if (state.cdbPending && state.cdbPending === cacheKey(state.fen)) {
         if (state.ui && !state.cdbEngineFen) resetEngineDisplay('Asking ChessDB…');
         return;
       }
+      // The gate is "the book knows this position", never a depth (§3.1).
       if (cdbEngineReady()) {
         // Stop any search still running from before the source could answer.
         if (state.engineFen) { state.engineFen = null; engineSend({ type: 'clo-engine-stop' }); }
@@ -4856,17 +4932,15 @@
         }
         return;
       }
-      if (state.engineSource === 'chessdb') {
-        if (state.engineFen) { state.engineFen = null; engineSend({ type: 'clo-engine-stop' }); }
-        state.cdbEngineFen = null;
-        if (state.ui) {
-          state.ui.engine.classList.remove('clo-busy');
-          resetEngineDisplay(cdbCurrent()
-            ? 'Not in ChessDB’s book — switch the engine source to Auto for Stockfish here.'
-            : 'Asking ChessDB…');
-        }
-        return;
+      if (state.engineFen) { state.engineFen = null; engineSend({ type: 'clo-engine-stop' }); }
+      state.cdbEngineFen = null;
+      if (state.ui) {
+        state.ui.engine.classList.remove('clo-busy');
+        resetEngineDisplay(cdbCurrent()
+          ? 'Not in ChessDB’s book — switch the analysis source to Auto for Stockfish here.'
+          : 'Asking ChessDB…');
       }
+      return;
     }
     state.cdbEngineFen = null;
     if (active && state.fen !== state.engineFen) {
@@ -4888,9 +4962,10 @@
     saveEnginePref(state.engineEnabled);
     applyEngineEnabled();
     if (state.engineEnabled) {
-      // The engine section may be about to be answered by ChessDB, which needs
-      // an answer for THIS position — the column may well be switched off.
-      if (state.engineSource !== 'local' && state.fen) requestCdb(state.fen, state.requestSeq);
+      // The engine section may be about to be answered by ChessDB outright
+      // ('chessdb'), which needs an answer for THIS position even with the
+      // column switched off — cdbWanted() is what knows the difference.
+      if (state.fen) requestCdb(state.fen, state.requestSeq); // cdbWanted() decides
       syncEngine();
     } else {
       // Full shutdown (not just stop): closing the offscreen document frees
@@ -5001,9 +5076,17 @@
     // for this panel's whole life, and a number of a different provenance
     // sitting in that slot unlabelled is the one thing this must not do.
     ui.engineNote.textContent = 'ChessDB';
+    // No companion chip in this mode: the section IS the book, and a "ChessDB"
+    // badge beside numbers already labelled ChessDB says nothing twice.
+    if (ui.engineCdb) ui.engineCdb.hidden = true;
+    ui.engine.classList.remove('clo-engine--cdb');
+    state.enginePvs = null;
+    state.enginePvsFen = null;
 
     const best = top[0];
-    ui.engineEval.textContent = best ? cdbEvalText(best.entry, whiteToMove).text : '—';
+    const headShown = best ? cdbEvalText(best.entry, whiteToMove) : null;
+    ui.engineEval.textContent = headShown ? headShown.text : '—';
+    applyEvalTone(ui.engineEval, headShown ? headShown.tone : null);
     // NOT "depth N" — ChessDB has no search depth to report (§3.1), and
     // borrowing that word for the PV length would be a number that means
     // something else in the very slot a reader compares against Stockfish.
@@ -5015,8 +5098,15 @@
     for (let i = 0; i < ui.engineLines.length; i++) {
       const row = ui.engineLines[i];
       const m = top[i];
-      if (!m) { row.evalEl.textContent = ''; row.movesEl.textContent = ''; row.movesEl.title = ''; continue; }
-      row.evalEl.textContent = cdbEvalText(m.entry, whiteToMove).text;
+      if (row.cdbEl) { row.cdbEl.textContent = ''; row.cdbEl.removeAttribute('title'); }
+      if (!m) {
+        row.evalEl.textContent = ''; row.movesEl.textContent = ''; row.movesEl.title = '';
+        applyEvalTone(row.evalEl, null);
+        continue;
+      }
+      const rowShown = cdbEvalText(m.entry, whiteToMove);
+      row.evalEl.textContent = rowShown.text;
+      applyEvalTone(row.evalEl, rowShown.tone);
       const cont = pvs && pvs[i] && Array.isArray(pvs[i].pvSAN) ? pvs[i].pvSAN : [];
       const line = [m.entry.san || m.uci].concat(cont).join(' ');
       row.movesEl.textContent = line;
@@ -5076,12 +5166,24 @@
     if (!ui) return;
     ui.engine.classList.remove('clo-busy');
     ui.engineEval.textContent = '—';
+    applyEvalTone(ui.engineEval, null);
     ui.engineDepth.textContent = '';
     ui.engineNote.textContent = note || '';
+    if (ui.engineCdb) ui.engineCdb.hidden = true;
+    ui.engine.classList.remove('clo-engine--cdb');
+    state.enginePvs = null;
+    state.enginePvsFen = null;
     for (const row of ui.engineLines) {
       row.evalEl.textContent = '';
+      applyEvalTone(row.evalEl, null);
       row.movesEl.textContent = '';
       row.movesEl.title = '';
+      if (row.cdbEl) {
+        row.cdbEl.textContent = '';
+        row.cdbEl.removeAttribute('title');
+        row.cdbEl.classList.remove('clo-cdb--est');
+        applyEvalTone(row.cdbEl, null);
+      }
     }
   }
 
@@ -5145,13 +5247,91 @@
     const pvs = Array.isArray(msg.pvs) ? msg.pvs : [];
     const best = pvs.find((p) => p.multipv === 1);
     ui.engineEval.textContent = best ? formatEval(best) : '—';
+    // Stockfish's own numbers stay UNCOLOURED — the ramp means "this is a
+    // ChessDB figure", so it has to be cleared off a slot the book filled
+    // before this search took the section back over.
+    applyEvalTone(ui.engineEval, null);
     ui.engineDepth.textContent = msg.depth ? 'depth ' + msg.depth + (msg.done ? '' : '…') : '';
     for (let i = 0; i < ui.engineLines.length; i++) {
       const pv = pvs.find((p) => p.multipv === i + 1);
       const row = ui.engineLines[i];
       row.evalEl.textContent = pv ? formatEval(pv) : '';
+      applyEvalTone(row.evalEl, null);
       row.movesEl.textContent = pv ? pv.san : '';
       row.movesEl.title = pv ? pv.san : ''; // long PVs truncate; full line on hover
+    }
+    // Kept so the book can be painted beside these lines when it answers AFTER
+    // the search has finished — which is the ordinary order when the explorer
+    // data was cached and the engine was already running on this position.
+    state.enginePvs = pvs;
+    state.enginePvsFen = msg.fen;
+    fillEngineCdbCompanion(pvs);
+  }
+
+  /**
+   * THE SECOND OPINION, BESIDE THE FIRST (DESIGN-chessdb.md §6.4).
+   *
+   * The book's number for each line Stockfish is showing, and its own best for
+   * the head — smaller and dimmer, because the running search is what this
+   * section has always been about and is what stays in focus. Costs NOTHING:
+   * every figure here comes out of the `queryall` answer already in hand for
+   * the eval column, so there is no second fetch and no querypv (that is the
+   * 'chessdb' source's business, where the book IS the section).
+   *
+   * THE JOIN IS `pv.uci`, NEVER THE PV STRING. `pv.san` is a numbered line
+   * ("5.Nf3 Nc6 …"), so engine.js sends the first move's uci alongside it; both
+   * Stockfish and ChessDB spell castling "e1g1", which is the one spelling
+   * trap this could have walked into (section 6c, v0.48.1 — it is LICHESS that
+   * writes king-takes-rook, and nothing here reads a Lichess uci).
+   */
+  function fillEngineCdbCompanion(pvs) {
+    const ui = state.ui;
+    if (!ui || !ui.engineCdb) return;
+    // Only while the book actually describes the position on screen — and
+    // never under 'local', where the user has asked for no cloud at all.
+    const known = cdbCurrent() && state.engineSource !== 'local';
+    const whiteToMove = String(state.fen || '').split(' ')[1] !== 'b';
+
+    let head = null;
+    for (let i = 0; i < ui.engineLines.length; i++) {
+      const row = ui.engineLines[i];
+      if (!row.cdbEl) continue;
+      row.cdbEl.textContent = '';
+      row.cdbEl.removeAttribute('title');
+      row.cdbEl.classList.remove('clo-cdb--est');
+      applyEvalTone(row.cdbEl, null);
+      const pv = known ? (pvs || []).find((p) => p.multipv === i + 1) : null;
+      const entry = pv && pv.uci ? state.cdbMoves.get(pv.uci) : null;
+      if (!entry) continue;
+      const shown = cdbEvalText(entry, whiteToMove);
+      row.cdbEl.textContent = shown.text;
+      applyEvalTone(row.cdbEl, shown.tone);
+      // Same marking as the column: a number ChessDB computed on the spot is
+      // dimmed and says so, so it can never be read as the equal of a book
+      // eval — least of all with a depth-30 search printed beside it.
+      if (!entry.book) row.cdbEl.classList.add('clo-cdb--est');
+      row.cdbEl.title = shown.title + (entry.book ? ''
+        : ' — estimate, not in ChessDB’s analysed book');
+      if (!head) head = shown;
+    }
+
+    // The head chip is the BOOK's own best, which is not always the move
+    // Stockfish is showing — that disagreement is most of the value of having
+    // both on screen, so it is read off cdbBestMoves rather than off pv 1.
+    const top = known ? cdbBestMoves(1)[0] : null;
+    const chip = top ? cdbEvalText(top.entry, whiteToMove) : head;
+    ui.engineCdb.hidden = !chip;
+    // One class carries the whole per-line column, so an engine section with
+    // no book behind it is byte-identical to the one this feature replaced —
+    // no 2.8em of empty gutter stolen from the moves (the .clo-table--cdb
+    // idiom, one level down).
+    ui.engine.classList.toggle('clo-engine--cdb', Boolean(head));
+    if (chip) {
+      ui.engineCdbEval.textContent = chip.text;
+      applyEvalTone(ui.engineCdbEval, chip.tone);
+      ui.engineCdb.title = top
+        ? 'ChessDB’s own best move here: ' + (top.entry.san || top.uci) + ' ' + chip.text
+        : chip.title;
     }
   }
 

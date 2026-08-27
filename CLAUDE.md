@@ -2751,15 +2751,17 @@ Currently working (v0.18.x).
     section 24's tree (54px), section 21's coverage (16px) and 16d's pin dock
     (16px, every page). A fifth has to solve the cluster rather than add an offset.
 
-- ChessDB eval column (section 26, v0.128.0): a cloud-analysis eval beside every
+- ChessDB eval column (section 26, v0.128.0; side by side with Stockfish and
+  colour-coded since v0.129.0): a cloud-analysis eval beside every
   move in the Lichess panel — where the explorer says how OFTEN a move is
   played, this says how GOOD it is, at book depth, with no WASM and no engine
   running. OPT-IN (`cloChessdbEval`, storage.local, absent = off; checkbox in the
   panel's own cogwheel menu, section 6b, where the panel's other preferences
   live). It is the SECOND host permission this extension has ever had.
   **READ `DESIGN-chessdb.md` BEFORE CHANGING ANYTHING HERE** — §2 is the wire,
-  §3 the three findings the design rests on, §10 what is still unmeasured. What
-  follows is only what an edit ELSEWHERE can break.
+  §3 the three findings the design rests on, §6.4 the side-by-side engine
+  section, §7.1 the colour ramp and the ruling it reverses, §10 what is still
+  unmeasured. What follows is only what an edit ELSEWHERE can break.
   * IT IS TWO REQUESTS PER POSITION AND THAT IS NOT WASTE (§3.2/§3.3). `learn=1`
     scores EVERY legal move but computes the unknown ones on the spot; `learn=0`
     scores only what is really in the distributed book. NOTHING INSIDE A
@@ -2794,15 +2796,58 @@ Currently working (v0.18.x).
     map is keyed by ChessDB's own uci and each Lichess row is resolved with
     `sanToUci` into that spelling (`tr.dataset.cdbUci`). A raw compare misses
     exactly the castling rows, and SUCCEEDS everywhere else.
+  * `cdbWanted()` IS A PRIVACY GATE BEFORE IT IS A BUDGET ONE. The column is
+    opt-in because chessdb.cn is a SECOND third party seeing the position, so
+    nothing may ask on a user who has switched nothing on. Since v0.129.0 the
+    only exception is the `chessdb` SOURCE, which has nothing else to fall back
+    to; `auto` was in that clause and must not go back — the companion's gate is
+    `cdbCurrent()`, which requires the column, so an `auto` user with the column
+    off would have every position sent twice for an answer nothing ever reads.
   * IT NEVER DELAYS THE LICHESS TABLE. `requestCdb` is fired from `refresh()`
     ABOVE the explorer cache short-circuit (so a cached position still gets its
     evals) and is deliberately NOT awaited; the cells are drawn empty and filled
     by `fillCdbEvals()` a round trip later. `state.cdbFen` is what stops a
     previous position's evals painting onto the current rows — never assume it
     equals `state.fen`, which is the whole reason `cdbCurrent()` exists.
-  * COLOUR: PLAIN DIM TEXT, never green. An eval is a VERDICT, and in this table
-    green is the lichess accent while blue/orange/red are the repertoire badges'
-    three answers (6c) — 24f's ruling, for 24f's reason.
+  * COLOUR: A GREEN<->RED RAMP (v0.129.0, §7.1) — which REVERSES v0.128.0's
+    "plain dim text, never green" on the author's instruction. What the old
+    ruling leaves behind are the ramp's constraints, and all four are
+    load-bearing: it is WHITE'S PERSPECTIVE, the same as the digits, so it says
+    which SIDE is favoured and never "this is the good move" (a green "−1.5" is
+    the version 24f's ruling was right about); the tone is computed IN
+    `cdbEvalText` off the same `signed` value as the text, never by a second
+    function reading the text back, because a colour disagreeing with the sign
+    beside it is completely silent; the hues are its own (`--clo-ev-*`), never
+    the accent green or `--clo-rep-risk`, since the repertoire badges are 9px
+    marks one column over; and `eq` sets NOTHING, so an equal position stays
+    plain dim text.
+    A TONE SETS `--clo-ev-tone`, NEVER `color`. Each host reads
+    `color: var(--clo-ev-tone, <its own default>)`, which is what keeps the ramp
+    out of every specificity fight in the stylesheet — no doubled selector, no
+    order dependence, and Stockfish's own numbers stay uncoloured by simply not
+    being given a tone. `applyEvalTone(el, tone)` is the one writer.
+  * IT NO LONGER REPLACES STOCKFISH UNDER `auto` (v0.129.0, §6.4). The two run
+    SIDE BY SIDE: the search keeps the section's big numbers, the book is
+    painted beside its lines at 11px, plus a labelled head chip carrying the
+    book's OWN best (read off `cdbBestMoves(1)`, not off pv 1 — the two
+    disagreeing is most of the value of showing both). `chessdb` is untouched
+    and still owns the section outright; `local` still sees nothing. Four rules:
+    - THE JOIN IS `pv.uci`, which `engine/engine.js` now sends beside `pv.san` —
+      that san is a numbered STRING ("5.Nf3 Nc6 …") and joins onto nothing.
+      Both Stockfish and ChessDB spell castling `e1g1`, so 6c's v0.48.1 trap,
+      which is LICHESS's `e1h1`, is not on this path.
+    - THE `cdbPending` HOLD IS NOW `chessdb`-ONLY. It existed to stop `auto`
+      booting a WASM engine for the ~400 ms before the book answered; under
+      `auto` Stockfish is what is being started, so there is nothing to wait for.
+    - THE BOOK CAN LAND AFTER THE SEARCH (cached explorer data, engine already
+      running). `state.enginePvs`/`enginePvsFen` keep the last update so
+      `applyCdbAnswer` can repaint the companion, and the fen guard is what
+      stops one position's lines being annotated with another's evals.
+    - HIERARCHY IS THE FEATURE: 15px/600 head and 13px lines for the search,
+      11px and dim for the book. A "tidy-up" that equalises them removes the
+      whole point. `.clo-engine--cdb` carries the per-line column, so with no
+      book the section is byte-identical to the pre-v0.129.0 one — measured 0
+      overflow at 300/330/360/420 px, desktop and touch.
   * UNDER `html.clo-touch` THE GAMES COLUMN IS HIDDEN when this column is on,
     and that is a measurement, not a preference: the four-column touch table is
     already at the edge (330px panel: needs 328, has 328) and at the panel's own
@@ -2810,19 +2855,21 @@ Currently working (v0.18.x).
     Games yields because % says the same thing and the exact count is kept in the
     percentage cell's tooltip. Anything added to this table has to re-measure.
   * IT ALSO ANSWERS THE ENGINE SECTION (§6.1, `cloEngineSource`:
-    `auto` | `chessdb` | `local`, options page). `syncEngine` branches BEFORE
-    its ordinary analyze: with the book able to answer it fills the same three
-    lines from `queryall` (already cached) plus one `querypv` per line, and
-    Stockfish is never started. Four rules an edit elsewhere can break:
+    `auto` | `chessdb` | `local`, options page) — under `chessdb` OUTRIGHT, and
+    under `auto` beside Stockfish (the bullet above; §6.4). `syncEngine`
+    branches BEFORE its ordinary analyze: under `chessdb`, with the book able to
+    answer, it fills the same three lines from `queryall` (already cached) plus
+    one `querypv` per line, and Stockfish is never started. Four rules an edit
+    elsewhere can break:
     - THE GATE IS `cdbEngineReady()`, i.e. "at least one move here is in the
-      book", never a depth (§3.1). In `auto` a position the book does not know
-      falls through to Stockfish; in `chessdb` nothing is ever booted, which is
-      that state's whole purpose.
+      book", never a depth (§3.1). Under `chessdb` nothing is ever booted, which
+      is that state's whole purpose, so an unknown position gets a sentence
+      rather than a search.
     - `syncEngine` HOLDS WHILE AN ANSWER IS IN FLIGHT (`state.cdbPending`,
-      compared on `cacheKey`). Without it `auto` boots a WASM engine and a few
-      hundred MB for the ~400 ms before the book replies, then stops it. The
-      hold is released in a `finally`, because a hold that outlives its fetch
-      is an engine section that never starts at all.
+      compared on `cacheKey`) — SCOPED TO `chessdb` since v0.129.0, where it
+      buys the promise that state exists for. The hold is released in a
+      `finally`, because a hold that outlives its fetch is an engine section
+      that never starts at all.
     - `applyCdbAnswer` CALLS `syncEngine()`. The source decision is not
       answerable until the answer lands — before it, `cdbEngineReady()` is
       false for want of data rather than because the book is ignorant.
@@ -2909,8 +2956,8 @@ of those is why the first version of these checks was rewritten: it asserted the
 min was what made the spread additive, and passed against a source where it was
 not.
 
-After touching section 26's ChessDB fold or its score bands — `parseCdbAnswer`,
-`cdbEvalText`:
+After touching section 26's ChessDB fold, its score bands or its colour ramp —
+`parseCdbAnswer`, `cdbEvalText`, `cdbTone`:
 
 ```
 node dev/check-chessdb.js
@@ -2929,6 +2976,15 @@ disabled, and a truthiness test in place of the `typeof score === 'number'`
 check — each failing on exactly its own assertions (4, 4 and 3), the last of
 those including "a score of 0 counts as book", which is the one a truthiness
 bug gets wrong in both directions at once.
+
+Since v0.129.0 it also covers the green<->red RAMP, which fails in the same
+silent way and for the same reason: `cdbEvalText` returns the tone alongside the
+text, so the check asserts the two AGREE across the whole score range and in
+both perspectives rather than case by case — a perspective bug in one band only
+is exactly what a hand-picked list of cases misses. Controls run 2026-08-27:
+`cdbTone(entry.score)` in place of `cdbTone(signed)` (the tone losing the
+perspective flip) fails on 8 assertions, six of them the range sweep; collapsing
+the mate/tablebase steps into the ordinary ramp fails on 6.
 
 After touching `sanToUci` — or `sanToUciRelaxed`, the second pass beside it:
 

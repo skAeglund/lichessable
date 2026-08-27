@@ -630,7 +630,10 @@
 .clo-engine-eval {
   font-weight: 600;
   font-size: 15px;
-  color: #fff;
+  /* White unless a tone claims it — which only happens while ChessDB owns
+     this section outright ('chessdb' source). Stockfish's own numbers are
+     never coloured; the ramp means "this figure came from the book". */
+  color: var(--clo-ev-tone, #fff);
 }
 
 .clo-engine-depth,
@@ -650,8 +653,105 @@
   flex: 0 0 3.2em;
   text-align: right;
   white-space: nowrap;
-  color: var(--clo-text);
+  color: var(--clo-ev-tone, var(--clo-text));
 }
+
+/* --- the ChessDB companion, beside Stockfish (DESIGN-chessdb.md §6.4) -------
+   A second opinion is only a second opinion while the first is still on
+   screen, so under the 'auto' source the book no longer takes this section
+   over: its numbers ride BESIDE the search's, smaller and dimmer. The
+   hierarchy is deliberate and is the whole of the layout rule here — the
+   running search keeps 15px/600 in the head and the section's own 13px on
+   each line; the book gets 11px and the dim text colour, so at a glance the
+   section still reads as Stockfish's with an annotation, not as two engines
+   arguing.
+
+   The per-line column is carried by ONE class on the section, exactly as
+   .clo-table--cdb carries the eval column: with no book behind it the layout
+   is byte-identical to the one this replaced, rather than reserving 2.8em of
+   empty gutter out of the moves. */
+.clo-line-cdb {
+  display: none;
+}
+
+.clo-engine--cdb .clo-line-cdb {
+  display: block;
+  flex: 0 0 2.8em;
+  text-align: right;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--clo-ev-tone, var(--clo-text-dim));
+  font-variant-numeric: tabular-nums;
+}
+
+/* The head chip: the BOOK's own best eval, which is not always the move the
+   search is showing — that disagreement is most of the reason for having both
+   on screen. NAMED, always: a number of a different provenance sitting
+   unlabelled in this section is the one thing the ChessDB work must not do. */
+.clo-engine-cdb {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--clo-text-dim);
+}
+
+.clo-engine-cdb[hidden] {
+  display: none; /* after the rule above, so it wins on later-wins */
+}
+
+.clo-engine-cdb-tag {
+  color: var(--clo-text-faint);
+}
+
+.clo-engine-cdb-eval {
+  font-variant-numeric: tabular-nums;
+  color: var(--clo-ev-tone, var(--clo-text-dim));
+}
+
+/* --- the eval ramp (green <-> red) -----------------------------------------
+   Applied by applyEvalTone() to any element cdbEvalText() produced the text
+   of — the eval column's cells, the companion above, and the head/line evals
+   while ChessDB owns the section outright.
+
+   WHITE'S PERSPECTIVE, because that is what the digits are: cdbEvalText flips
+   a mover-relative CDB score to White's side so the panel has one convention,
+   and the tone is computed in that same function off the same value. A colour
+   that disagreed with the sign printed beside it would be the one failure of
+   a coloured eval that is completely silent.
+
+   Three steps a side plus a neutral middle, and the decisive step also takes
+   weight — a mate or a tablebase result is the loudest thing this column can
+   say and should not have to be read to be seen.
+
+   These tokens live HERE rather than in the :root block, beside the argument
+   for them, like --clo-rep-* and --clo-cr-important. They are deliberately
+   NOT the accent green or --clo-rep-risk: the repertoire badges are 9px marks
+   in the move cell one column over, and the two must not read as one system.
+   (This supersedes the "plain dim text" ruling below, on the author's own
+   instruction — see DESIGN-chessdb.md §7.1.)
+
+   A TONE SETS A VARIABLE, NEVER `color` DIRECTLY, and that is what keeps it
+   out of every specificity fight in this file. Each host declares
+   `color: var(--clo-ev-tone, <its own default>)`, so the ramp needs no
+   doubled selector to outrank `.clo-table .clo-cdb`, no rule about where in
+   the file it sits, and a host that has never heard of it keeps its own
+   colour by simply not reading the variable. */
+:root {
+  --clo-ev-w: #86c85f;      /* clearly better for White */
+  --clo-ev-w-mild: #a9bd8c; /* …a little better */
+  --clo-ev-b-mild: #c9a09a; /* …a little better for Black */
+  --clo-ev-b: #e2705f;      /* clearly better for Black */
+}
+
+.clo-ev--w1 { --clo-ev-tone: var(--clo-ev-w-mild); }
+.clo-ev--w2 { --clo-ev-tone: var(--clo-ev-w); }
+.clo-ev--w3 { --clo-ev-tone: var(--clo-ev-w); font-weight: 600; }
+.clo-ev--b1 { --clo-ev-tone: var(--clo-ev-b-mild); }
+.clo-ev--b2 { --clo-ev-tone: var(--clo-ev-b); }
+.clo-ev--b3 { --clo-ev-tone: var(--clo-ev-b); font-weight: 600; }
+/* .clo-ev--eq deliberately sets nothing: equal is the absence of a claim, so
+   the fallback in each host's own `color` is what says so. */
 
 /* Long PVs truncate instead of wrapping; the full line is in the tooltip. */
 .clo-line-moves {
@@ -5328,17 +5428,29 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
   text-align: right;
 }
 
-/* PLAIN DIM TEXT, and this is load-bearing rather than a style choice. An eval
-   is a VERDICT, and in this table green already means the lichess accent while
-   blue/orange/red are the repertoire badges' three answers (section 6c) — a
-   coloured eval would either collide with one of those or read as "this is the
-   good move", which is the one claim a raw database figure does not make. Same
-   ruling section 24f made for the tree's mover-score, for the same reason. */
+/* COLOURED, green<->red, on the author's own instruction (v0.129.0) — which
+   REVERSES the original ruling here, and the reversal is worth stating rather
+   than deleting. That ruling was: an eval is a VERDICT, and in this table green
+   already means the lichess accent while blue/orange/red are the repertoire
+   badges' three answers (section 6c), so a coloured eval would either collide
+   with one of those or read as "this is the good move" — 24f's ruling for the
+   tree's mover-score, for the same reason.
+   What survives of it, and what any future edit here still has to respect:
+   * the ramp is WHITE'S PERSPECTIVE, the same as the digits it colours, so it
+     never makes the "good move" claim at all — it says which SIDE the position
+     favours, exactly as the sign does. A green "−1.5" would be the version the
+     old rule was right about;
+   * the hues are the ramp's own (--clo-ev-*), never the accent green or
+     --clo-rep-risk, so the eval column and the badge one column over cannot
+     read as one system;
+   * .clo-ev--eq sets nothing, so an equal position is still plain dim text —
+     the colour appears only where there is something to say.
+   See DESIGN-chessdb.md §7.1. */
 .clo-cdb {
   width: 2.8em;
   text-align: right;
   white-space: nowrap;
-  color: var(--clo-text-dim);
+  color: var(--clo-ev-tone, var(--clo-text-dim));
   font-variant-numeric: tabular-nums; /* a column of evals should align on the point */
 }
 
@@ -5537,7 +5649,17 @@ html.clo-touch .clo-engine-eval {
 }
 
 html.clo-touch .clo-engine-depth,
-html.clo-touch .clo-engine-note {
+html.clo-touch .clo-engine-note,
+html.clo-touch .clo-engine-cdb {
+  font-size: 13px;
+}
+
+/* The per-line companion stays a step below the search's own numbers here too
+   — that hierarchy is the point of §6.4 and does not change with the pointer.
+   Touch panels are the narrow ones, so this column is also the first thing
+   that would squeeze the moves: it is kept, and the moves keep truncating into
+   their tooltip exactly as they already do. */
+html.clo-touch .clo-engine--cdb .clo-line-cdb {
   font-size: 13px;
 }
 

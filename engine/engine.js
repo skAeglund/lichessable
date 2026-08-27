@@ -367,6 +367,11 @@ function flush(done) {
     if (entry.mate !== null) pv.mate = blackToMove ? -entry.mate : entry.mate;
     const san = CloSan.pvToSan(currentFen, entry.moves.slice(0, SAN_PLIES));
     pv.san = san || entry.moves.slice(0, SAN_PLIES).join(' '); // raw UCI fallback
+    // The line's FIRST move as plain uci. `san` is a numbered STRING ("5.Nf3
+    // Nc6 …") and cannot be joined onto anything; this is what lets the panel
+    // put a second source's eval for the same move beside this line
+    // (DESIGN-chessdb.md §6.4) without parsing that string back apart.
+    pv.uci = entry.moves[0] || '';
     if (!san) warn('SAN conversion failed for pv', n, 'of', currentFen);
     pvs.push(pv);
   }

@@ -29,11 +29,15 @@ const { sliceDecl, SRC_PATH } = require('./slice-source.js');
 
 // The two functions read CONFIG.chessdb for the band boundaries; the slice is
 // executed against the same numbers the shipped file declares.
-const CONFIG = { chessdb: { mateBand: 29000, mateBase: 30000, decisiveBand: 20000 } };
+const CONFIG = { chessdb: {
+  mateBand: 29000, mateBase: 30000, decisiveBand: 20000,
+  toneEdge: 50, toneStrong: 150,
+} };
 
 const src = [
   sliceDecl('parseCdbAnswer'),
   sliceDecl('cdbEvalText'),
+  sliceDecl('cdbTone'),
   'return { parseCdbAnswer, cdbEvalText };',
 ].join('\n');
 // eslint-disable-next-line no-new-func
@@ -125,6 +129,59 @@ for (const [score, note] of [[29999, '! (00-00)'], [24978, '! (W-0022)'], [-2497
   if (/^[+-]?\d+\.\d$/.test(t) && Math.abs(parseFloat(t)) > 100) {
     fail++; console.log('FAIL a decisive score printed as centipawns: ' + t);
   } else pass++;
+}
+
+// --- 3b) the green<->red ramp (v0.129.0) -----------------------------------
+// The tone is computed in cdbEvalText, off the same `signed` value the digits
+// are, precisely so it cannot disagree with the sign printed beside it. That
+// is the one failure mode of a coloured eval that is entirely silent: a tidy
+// column of numbers, every colour backwards, nothing thrown. It is WHITE's
+// perspective for the same reason the digits are.
+const tone = (score, note, whiteToMove) =>
+  cdbEvalText({ score, note: note || '', san: '', book: true }, whiteToMove).tone;
+
+eq('a clear White edge is green', tone(180, '! (33-06)', true), 'w2');
+eq('a slight White edge is the mild step', tone(80, '! (33-06)', true), 'w1');
+eq('equality has no tone at all', tone(20, '! (33-06)', true), 'eq');
+eq('dead equal has no tone', tone(0, '! (33-06)', true), 'eq');
+eq('a slight Black edge is the mild step', tone(-80, '? (33-06)', true), 'b1');
+eq('a clear Black edge is red', tone(-180, '? (33-06)', true), 'b2');
+// The band edges themselves: toneEdge/toneStrong are inclusive at the top.
+eq('exactly at the edge takes the mild step', tone(50, '! (33-06)', true), 'w1');
+eq('one below the edge is equal', tone(49, '! (33-06)', true), 'eq');
+eq('exactly at the strong edge takes the full step', tone(150, '! (33-06)', true), 'w2');
+
+// THE PERSPECTIVE, asserted directly — the same mover-score colours opposite
+// on Black's move, exactly as its digits flip sign.
+eq('a mover edge for Black is RED', tone(180, '! (33-06)', false), 'b2');
+eq('a mover loss for Black is GREEN', tone(-180, '? (33-06)', false), 'w2');
+
+// The decisive ends: mate and tablebase take the loudest step of the ramp.
+eq('mate for White is the decisive step', tone(29999, '! (00-00)', true), 'w3');
+eq('being mated is the decisive step the other way', tone(-29997, '? (00-00)', true), 'b3');
+eq('mate for Black reads decisive-for-Black', tone(29997, '! (00-00)', false), 'b3');
+eq('a tablebase win for White', tone(24978, '! (W-0022)', true), 'w3');
+eq('a tablebase win for Black', tone(24978, '! (W-0022)', false), 'b3');
+eq('a tablebase draw is equal', tone(0, '! (D-0000)', true), 'eq');
+eq('a decisive score with no distance', tone(22000, '! (00-00)', true), 'w3');
+
+// And the property that makes the whole thing safe: THE SIGN AND THE TONE
+// NEVER DISAGREE. Asserted over the range rather than case by case, since a
+// perspective bug in one band only is exactly what a hand-picked list misses.
+for (const wtm of [true, false]) {
+  for (const score of [-29999, -24978, -22000, -900, -180, -80, -20, 0,
+                       20, 80, 180, 900, 22000, 24978, 29999]) {
+    const shown = cdbEvalText({ score, note: '', san: '', book: true }, wtm);
+    const positive = /^[+#]/.test(shown.text) && !/^#-/.test(shown.text);
+    const negative = /^[-−]/.test(shown.text) || /^#-/.test(shown.text);
+    const bad = (positive && shown.tone[0] === 'b') || (negative && shown.tone[0] === 'w') ||
+      (shown.tone === 'eq' && Math.abs(score) >= CONFIG.chessdb.toneEdge);
+    if (bad) {
+      fail++;
+      console.log('FAIL tone disagrees with the digits: score ' + score +
+        ' wtm=' + wtm + ' -> "' + shown.text + '" tone ' + shown.tone);
+    } else pass++;
+  }
 }
 
 // --- 4) the estimate tooltip ----------------------------------------------

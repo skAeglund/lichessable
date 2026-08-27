@@ -30,7 +30,7 @@
 
   <label for="engineSource">Analysis source</label>
   <select id="engineSource">
-    <option value="auto">Auto — ChessDB where it knows the position (recommended)</option>
+    <option value="auto">Auto — Stockfish, with ChessDB beside it (recommended)</option>
     <option value="chessdb">ChessDB only — never start Stockfish</option>
     <option value="local">Stockfish only</option>
   </select>
@@ -38,11 +38,14 @@
   <p class="fineprint">
     ChessDB (<code>chessdb.cn</code>) is a cloud analysis book: for opening
     positions it answers deeper than a local search, in about 400&nbsp;ms, with
-    no engine running at all. Auto uses it only where the position is genuinely
-    in its book and falls back to Stockfish everywhere else — off the beaten
-    track, and for most tactics courses' custom starting positions, that is
-    nearly always. Choose Stockfish only on a slow or filtered network, or to
-    keep every position on this machine.
+    no engine running at all. Auto runs Stockfish as before and shows the
+    book's own numbers <em>beside</em> its lines wherever the position is
+    genuinely in the book — the engine stays the section's main figures, the
+    book is a second opinion. ChessDB only never starts the engine at all, and
+    accepts no answer where the book has none — off the beaten track, and for
+    most tactics courses' custom starting positions, that is often. Choose
+    Stockfish only on a slow or filtered network, or to keep every position on
+    this machine.
   </p>
 
   <label for="engineBuild">Engine build</label>

@@ -303,6 +303,85 @@ In practice "prefer chessdb" reads: *the panel and the analysis board use the
 cloud database; the alt check still boots Stockfish.* The options page should say
 so rather than promise a swap it does not perform.
 
+### 6.4 SIDE BY SIDE, not instead of (v0.129.0)
+
+§6.1 as shipped in v0.128.0 had `auto` **substitute**: where the book knew the
+position, Stockfish was never started and the section was the book's. On the
+author's own instruction that is now reversed for `auto`, and the argument is one
+sentence long — *a second opinion that silences the first is not a second
+opinion.* The two disagree often enough to be interesting (the book's best move
+is regularly not the search's third-ranked one), and that disagreement is
+invisible when only one of them is on screen.
+
+So the three states now read:
+
+| | Stockfish | ChessDB |
+|---|---|---|
+| `auto` (default) | runs, as it always did | painted **beside** its lines |
+| `chessdb` | **never booted** | owns the section (unchanged) |
+| `local` | runs | nothing (unchanged) |
+
+`chessdb` is untouched on purpose: never a WASM compile and never the few
+hundred MB is the whole of that state's promise, and it is the only one that
+keeps it.
+
+What it costs: **nothing.** Every figure in the companion comes out of the
+`queryall` answer already fetched for the eval column (§7) — no second request,
+and in particular no `querypv`, which stays the `chessdb` source's business
+because only there is a continuation being *shown*.
+
+Five things that had to be got right:
+
+1. **The join is `pv.uci`.** An engine update's `san` is a numbered STRING
+   ("5.Nf3 Nc6 …") and cannot be joined onto a uci-keyed map, so `engine.js`
+   now sends the line's first move as plain uci alongside it. Parsing the SAN
+   back apart was the alternative and is strictly worse: it would have to be
+   resolved through CloSan anyway to reach a canonical spelling. Both Stockfish
+   and ChessDB write castling `e1g1`, so §5's spelling trap — which is
+   LICHESS's `e1h1` — is not on this path at all.
+2. **The hold goes.** `state.cdbPending` existed to stop `auto` booting a WASM
+   engine for the ~400 ms before the book could answer, only to stop it again.
+   Under `auto` Stockfish is now always the one being started, so there is
+   nothing to wait for; the hold survives, scoped to `chessdb`, where it is
+   still exactly right.
+3. **The book can land after the search.** With the explorer data cached and a
+   search already running, the ordinary order is engine lines first, book
+   second. `state.enginePvs`/`enginePvsFen` keep the last update so
+   `applyCdbAnswer` can repaint the companion; the fen guard is what stops a
+   previous position's lines being annotated with the current one's evals.
+4. **The head chip is the book's OWN best**, read off `cdbBestMoves(1)` rather
+   than off pv 1 — see the disagreement argument above. It is labelled
+   "ChessDB", always: an unlabelled number of a different provenance in this
+   section is the one thing all of §6 exists to prevent.
+5. **One class carries the per-line column** (`.clo-engine--cdb`, the
+   `.clo-table--cdb` idiom one level down). With no book behind it the section
+   is byte-identical to the one this replaced, rather than reserving 2.8em of
+   empty gutter out of the moves.
+
+Measured in `dev/harness.html` at panel widths 300/330/360/420, desktop and
+`html.clo-touch`: the engine head and every line overflow by **0** at all eight,
+and the body's own overflow at 300px is **identical with the companion and
+without it** (28px desktop, 13px touch — the table's, pre-existing and already
+documented). What the column costs is moves-column width, which truncates into
+its existing tooltip: 282→ at 420px the moves keep 282px desktop, 192px at 330.
+
+**One thing this reversal exposed.** `cdbWanted()` used to read
+`state.cdbEnabled || (engineEnabled && source !== 'local')`, which was right
+while `auto` meant substitution. It is not right now: the companion's own gate
+is `cdbCurrent()`, which requires the column, so an `auto` user with the eval
+column switched OFF had every position sent to chessdb.cn — twice, for the
+learn=1/learn=0 pair — for an answer nothing would ever read. That is a privacy
+gate before it is a budget one, since the column is opt-in precisely because
+chessdb.cn is a second third party seeing what the user is studying. The clause
+is now `chessdb`-only, that being the one state with no other source to fall
+back to.
+
+**HIERARCHY IS THE FEATURE.** The search keeps 15px/600 in the head and the
+section's own 13px per line; the book gets 11px and the dim text colour. At a
+glance the section still reads as Stockfish's with an annotation, not as two
+engines arguing — which is what "the engine numbers can still be in focus" asks
+for and is the thing a later "tidy-up" is most likely to flatten.
+
 ---
 
 ## 7. The eval column in the Lichess panel
@@ -331,6 +410,46 @@ Three constraints it inherits:
   "the database's top move would name the answer" (section 20). An eval column
   makes the panel a stronger answer key — the existing gates still cover it, but
   they stop being incidental and become load-bearing.
+
+### 7.1 THE COLOUR RULING, REVERSED (v0.129.0)
+
+The first constraint above is now overridden on the author's own instruction:
+the evals are **colour-coded green↔red**, a seven-step ramp
+(`b3 b2 b1 eq w1 w2 w3`) applied everywhere `cdbEvalText` produced the digits —
+the eval column, §6.4's companion, and the head and line evals while ChessDB
+owns the section outright.
+
+The reversal is worth writing down rather than deleting, because most of the old
+argument survives as *constraints on the ramp*:
+
+* **WHITE'S PERSPECTIVE, the same as the digits.** This is what defuses the
+  original objection. The old rule was right that green reading as "this is the
+  good move" is a claim a raw database figure cannot make — but the ramp does not
+  make it: it says which *side* the position favours, exactly as the sign already
+  does. A green "−1.5" would be the version the old rule was right about, and is
+  precisely what a mover-perspective ramp would print for every good Black move.
+* **THE TONE IS COMPUTED IN `cdbEvalText`,** off the same `signed` value as the
+  text, and never by a second function reading the text back. A colour that
+  disagrees with the sign beside it is the one failure mode here that is
+  completely silent — a tidy column of numbers, every one of them backwards,
+  nothing thrown. `dev/check-chessdb.js` asserts the agreement over the whole
+  range and in both bands, not case by case, since a perspective bug in one band
+  only is exactly what a hand-picked list misses.
+* **ITS OWN HUES** (`--clo-ev-*`), never the accent green and never
+  `--clo-rep-risk`. The repertoire badges are 9px marks in the move cell one
+  column over; the two must not read as one system.
+* **`eq` SETS NOTHING.** An equal position stays plain dim text, so the colour
+  appears only where there is something to say — which also keeps a whole column
+  of near-zero opening evals from turning into a wall of pastel.
+* **A TONE SETS A CSS VARIABLE** (`--clo-ev-tone`), never `color` directly. Each
+  host declares `color: var(--clo-ev-tone, <its own default>)`, so the ramp needs
+  no doubled selector to outrank `.clo-table .clo-cdb`, is not order-dependent
+  within the stylesheet, and a host that has never heard of it keeps its own
+  colour by simply not reading the variable. Stockfish's own numbers therefore
+  stay uncoloured: the ramp means "this figure came from the book".
+* The decisive step (`w3`/`b3` — mate, tablebase, or a score between the bands)
+  also takes weight. It is the loudest thing this column can say and should not
+  have to be read to be seen.
 
 ---
 
