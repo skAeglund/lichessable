@@ -16,6 +16,20 @@
  * grid of what each setting would yield and how many positions each individual
  * rule eliminates.
  *
+ * TWO BLOCKS EXIST FOR A DECISION RATHER THAN FOR TUNING (2026-08-28):
+ *
+ *   - the `minScored` DISPUTE DUMP. §12.7b measured 6 -> 5 at 11 -> 27
+ *     survivors and left the setting alone pending "twenty FENs and a human".
+ *     The dump prints exactly those FENs — admitted at 5, rejected at 6, every
+ *     other band shipped — so the look can be taken from the report. The
+ *     "sample survivors" block prints positions that are NOT in dispute.
+ *   - the WIN-PROBABILITY columns (§16.5). The grade moved to win probability
+ *     lost in v0.141.0; the PICK rules are still centipawns, so `spreadMinCp`
+ *     demands measurably less of a one-sided position than of a level one. The
+ *     spread distributions and the tuning grid are both printed a second time
+ *     in wp, over the SAME candidates, so the two can be read against each
+ *     other. `stormWinPct`/`stormWpLoss` are sliced out of the shipped file.
+ *
  * Not part of the extension; not referenced by the manifest.
  *
  * NEEDS: dev/tmp-courses.json (gitignored — the recipe for remaking it is in
@@ -37,9 +51,15 @@ const cacheKey = (fen) => fen.split(' ').slice(0, 4).join(' ');
 const NL = String.fromCharCode(10);
 
 // The shipped resolver, sliced out so this cannot drift from the source.
-const { sanToUci } = new Function('CloSan', 'squareName', [
+// `stormWinPct`/`stormWpLoss` ride along for the same reason (§16): the grade
+// moved to win probability in v0.141.0 while the PICK rules stayed in
+// centipawns, and §16.5 is the open question of whether `spreadMinCp` 60 is
+// therefore a different filter at +200 than it is at equality. Answering that
+// with a transcription of the curve would answer it about a different curve.
+const { sanToUci, stormWinPct, stormWpLoss } = new Function('CloSan', 'squareName', [
   sliceDecl('RELAXED_SAN_RE'), sliceDecl('sanToUciRelaxed'), sliceDecl('sanToUci'),
-  'return { sanToUci };',
+  sliceDecl('stormWinPct'), sliceDecl('stormWpLoss'),
+  'return { sanToUci, stormWinPct, stormWpLoss };',
 ].join(NL))(CloSan, squareName);
 
 function fenAfterUci(preFen, uci) {
@@ -80,7 +100,36 @@ const C = {
   spreadMinCp: 60,     // best - 5th: there must be something to get wrong
   spreadMaxCp: 200,    // best - 2nd: beyond this it is a tactic, not intuition
   minScored: 6,        // ChessDB must grade enough moves to rank an answer
+  // §16's curve, read out of the shipped CONFIG.storm rather than transcribed:
+  // `wpK` is Lichess's own fit and is not a dial, so a copy of it here that had
+  // drifted would answer §16.5 about a curve the extension does not use.
+  wpK: 0, wpClampCp: 0,
 };
+
+// THE SHIPPED BANDS, for the blocks that ask what the EXTENSION would do rather
+// than what this probe's own config does. `C` above is the config UNDER TEST and
+// §6's numbers were produced with it; these are read from CONFIG.storm so the
+// minScored dump and the wp grid cannot quietly describe a build that is gone.
+const SHIPPED = { spreadMinCp: 60, spreadMaxCp: 300, minScored: 6 };
+(() => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'content', 'lichessable.js'), 'utf8');
+  const start = src.indexOf('storm: {');
+  const body = src.slice(start, src.indexOf(String.fromCharCode(10) + '    },', start));
+  // THROWS rather than falling back. A default quietly standing in for a
+  // number that could not be read is the drift this block exists to prevent —
+  // and it would be invisible, since every default here is today's value.
+  const num = (name) => {
+    const m = new RegExp('\\b' + name + ':\\s*(-?[0-9.]+)').exec(body);
+    if (!m) throw new Error('CONFIG.storm.' + name + ' not readable from the shipped file');
+    return Number(m[1]);
+  };
+  C.wpK = num('wpK');
+  C.wpClampCp = num('wpClampCp');
+  SHIPPED.spreadMinCp = num('spreadMinCp');
+  SHIPPED.spreadMaxCp = num('spreadMaxCp');
+  SHIPPED.minScored = num('minScored');
+})();
 
 // --- tiny http -------------------------------------------------------------
 const TOKEN = (() => {
@@ -215,6 +264,15 @@ async function walkGame(frontierFen, userSide, sans) {
         nScored: scored.length,
         spread2: best - second,
         spread5: best - fifth,
+        // §16.5: the same two spreads in the units the GRADE now uses. A
+        // centipawn is not worth the same at +200 as at equality, so "there
+        // must be something to get wrong" is a weaker demand on a one-sided
+        // position than on a level one — and how much weaker is a number, not
+        // an argument. Computed through the shipped curve, from the mover's
+        // own scores, which is the perspective both of these already are in.
+        wp2: stormWpLoss(best, second, C),
+        wp5: stormWpLoss(best, fifth, C),
+        bestScore: best,
         inCheck: lastMoveGaveCheck,
         recapture: prevCapSq !== null && scored[0].uci.slice(2, 4) === prevCapSq,
         best: scored.slice(0, 5).map(
@@ -275,6 +333,24 @@ function rejectAt(c, lo, hi, ms) {
   if (c.nScored < minScored) return true;
   if (c.inCheck || c.recapture) return true;
   return c.spread5 < lo || c.spread2 > hi;
+}
+
+/**
+ * `rejectAt` with the best-5th rule stated in WIN PROBABILITY rather than
+ * centipawns (§16.5). Everything else is unchanged, so the two grids differ in
+ * exactly one term and the comparison means something.
+ *
+ * A candidate whose wp spread could not be computed is REJECTED rather than
+ * admitted: an unmeasurable spread is not evidence that there is something to
+ * get wrong, and admitting it would flatter the rule this exists to test.
+ */
+function rejectAtWp(c, loWp, hi, ms) {
+  const minScored = (ms === undefined) ? C.minScored : ms;
+  if (c.evalUser < C.userLoCp || c.evalUser > C.userHiCp) return true;
+  if (c.nScored < minScored) return true;
+  if (c.inCheck || c.recapture) return true;
+  if (typeof c.wp5 !== 'number') return true;
+  return c.wp5 < loWp || c.spread2 > hi;
 }
 
 // --- main ------------------------------------------------------------------
@@ -412,8 +488,12 @@ async function main() {
         const walked = await walkGame(f.fen, f.side, sans);
         if (!walked.found) { notFound++; continue; }
         for (const c of walked.out) {
-          cands.push(c);
-          if (!c.reject) survivors.push(Object.assign({ from: label, game: g.id }, c));
+          // Provenance on EVERY candidate, not only on the survivors: part 1(a)
+          // of TODO-storm.md prints the positions the two `minScored` settings
+          // DISAGREE about, and those are by definition not survivors today.
+          const withSrc = Object.assign({ from: label, game: g.id }, c);
+          cands.push(withSrc);
+          if (!c.reject) survivors.push(withSrc);
         }
         const strip = walked.out.map((c) => (c.reject ? '.' : '#')).join('');
         console.log('      ' + g.id + ' ' + String(g.white.rating).padStart(4) + '/' +
@@ -451,6 +531,28 @@ async function main() {
       '  median ' + q(s2, .5) + '  p75 ' + q(s2, .75) + '  p90 ' + q(s2, .9));
     console.log('    best-5th : p10 ' + q(s5, .1) + '  p25 ' + q(s5, .25) +
       '  median ' + q(s5, .5) + '  p75 ' + q(s5, .75) + '  p90 ' + q(s5, .9));
+    // §16.5. The SAME candidates, the same two spreads, in points of win
+    // probability. Read the two blocks against each other: if the cp and wp
+    // orderings agree, `spreadMinCp` is measuring what the grade measures and
+    // the open question closes; where they disagree, the cp rule is admitting
+    // one-sided positions that are flat in the terms the verdict is stated in.
+    const w2 = cands.map((c) => c.wp2).filter((x) => typeof x === 'number');
+    const w5 = cands.map((c) => c.wp5).filter((x) => typeof x === 'number');
+    const q1 = (arr, p) => q(arr, p).toFixed(2);
+    console.log('  the same spreads as WIN PROBABILITY given up (points, §16):');
+    console.log('    best-2nd : p10 ' + q1(w2, .1) + '  p25 ' + q1(w2, .25) +
+      '  median ' + q1(w2, .5) + '  p75 ' + q1(w2, .75) + '  p90 ' + q1(w2, .9));
+    console.log('    best-5th : p10 ' + q1(w5, .1) + '  p25 ' + q1(w5, .25) +
+      '  median ' + q1(w5, .5) + '  p75 ' + q1(w5, .75) + '  p90 ' + q1(w5, .9));
+    // What one cp threshold is worth depends on where the position sits, which
+    // is the whole of §16.5 — so print the conversion at the band's two ends
+    // rather than leaving it to be recomputed by hand.
+    const at = (base, cp) => stormWpLoss(base + cp, base, C).toFixed(2);
+    console.log('    spreadMinCp ' + SHIPPED.spreadMinCp + ' is ' +
+      at(0, SHIPPED.spreadMinCp) + ' wp at 0.00, ' +
+      at(C.userHiCp, SHIPPED.spreadMinCp) + ' wp at +' + (C.userHiCp / 100).toFixed(2) +
+      ' — i.e. ' + (100 * (1 - Number(at(C.userHiCp, SHIPPED.spreadMinCp)) /
+        Number(at(0, SHIPPED.spreadMinCp)))).toFixed(0) + '% less demanded at the band top');
     // How many moves ChessDB will actually grade here. The ceiling this shows
     // is what `minScored` has to be set against — see rejectAt's note.
     const nsDist = {};
@@ -475,6 +577,54 @@ async function main() {
         console.log('    min5=' + String(lo).padStart(3) + '   ' + row.join('   '));
       }
     }
+
+    // A WP-BASED `spreadMin`, on the same candidates, so the yield effect of
+    // restating the rule in the grade's own units is visible rather than
+    // argued. The three rows are the wp equivalents AT EQUALITY of the three
+    // cp rows above (30 -> 2.76, 60 -> 5.50, 100 -> 9.10), so a row here and
+    // the row above it ask the same question of a level position and diverge
+    // only on the one-sided ones — which is exactly §16.5.
+    const wpAtEq = (cp) => stormWpLoss(cp, 0, C);
+    for (const ms of [SHIPPED.minScored, 5]) {
+      console.log(NL + '  survivors with a WP spreadMin at minScored=' + ms +
+        ' (rows = min best-5th in wp, cols = max best-2nd in cp):');
+      for (const cp of [30, 60, 100]) {
+        const loWp = wpAtEq(cp);
+        const row = [150, 200, 300, Infinity].map((hi) => {
+          let n = 0;
+          for (const c of cands) if (!rejectAtWp(c, loWp, hi, ms)) n++;
+          const head = hi === Infinity ? 'inf' : String(hi);
+          return head.padStart(4) + ':' + String(n).padStart(4);
+        });
+        console.log('    min5wp=' + loWp.toFixed(2).padStart(5) +
+          ' (=' + String(cp).padStart(3) + 'cp at 0.00)   ' + row.join('   '));
+      }
+    }
+
+    // --- part 1(a): the positions the two `minScored` settings DISAGREE about.
+    // §12.7b measured 11 -> 27 survivors at the shipped bands and deliberately
+    // did not change the setting, pending "twenty FENs and a human". These are
+    // those FENs: admitted at 5, rejected at 6, everything else shipped. The
+    // "sample survivors" block below prints positions that are NOT in dispute.
+    const disputed = cands.filter((c) =>
+      !rejectAt(c, SHIPPED.spreadMinCp, SHIPPED.spreadMaxCp, 5) &&
+      rejectAt(c, SHIPPED.spreadMinCp, SHIPPED.spreadMaxCp, SHIPPED.minScored));
+    console.log(NL + '  ' + '='.repeat(70));
+    console.log('  minScored ' + SHIPPED.minScored + ' -> 5: ' + disputed.length +
+      ' positions in dispute (admitted at 5, rejected at ' + SHIPPED.minScored + '),' +
+      ' at the shipped bands (min5=' + SHIPPED.spreadMinCp +
+      ', max2=' + SHIPPED.spreadMaxCp + ')');
+    console.log('  These are the FENs the decision is about. Every one is a position' +
+      ' whose FIFTH-best move is the last one ChessDB will name.');
+    for (const d of disputed.slice(0, 40)) {
+      console.log('    ply +' + d.ply + '  eval ' + (d.evalUser / 100).toFixed(2) +
+        '  spread2 ' + d.spread2 + ' spread5 ' + d.spread5 +
+        '  (wp2 ' + d.wp2.toFixed(2) + ' wp5 ' + d.wp5.toFixed(2) + ')' +
+        '  ' + d.nScored + ' scored');
+      console.log('      ' + d.fen);
+      console.log('      top: ' + d.best.join('  ') + '   [' + d.from + ' / ' + d.game + ']');
+    }
+    if (disputed.length > 40) console.log('    …and ' + (disputed.length - 40) + ' more');
 
     console.log(NL + '  sample survivors:');
     for (const s of survivors.slice(0, 8)) {

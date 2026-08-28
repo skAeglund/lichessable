@@ -792,7 +792,11 @@ What it must look like:
 ## 12. Open — what was NOT measured
 
 1. **Whether `spreadMinCp` 30 produces *good* positions or merely more of them**
-   (§6.3). Twenty FENs and a human. The probe already prints them.
+   (§6.3). Twenty FENs and a human. The probe already prints them — and since
+   2026-08-29 it prints the `minScored` ones too, which is the same shape of
+   question with a larger prize; see §12.7c, where those twenty are recorded in
+   this document so the look does not need a re-run. This entry is the one
+   still outstanding.
 2. **Where the §7 stage-0 cap goes** — +100 or +200. Not a measurement; a
    decision about which exercise is wanted. Option 3 is now closed (§6.5).
 3. **Whether a `learn=1` fill-in score is good enough to grade a move.** This is
@@ -959,6 +963,204 @@ What it must look like:
    gather → queue → sleep → re-gather — are moot: there is nothing worth
    scheduling. They are left out rather than left in, so nobody builds the
    plumbing for a lever that does not move.
+7c. **The twenty FENs, set up so the decision can be taken from this document**
+   (2026-08-29). §12.7b ends on "still a human judgement, and it wants twenty
+   FENs and a human". `dev/probe-storm.js` now prints exactly those FENs, and
+   this section is the run. **`CONFIG.storm.minScored` is UNCHANGED at 6** —
+   nothing here is a decision, it is the material for one.
+
+   Same seeds and parameters as §6.1, so the numbers are comparable:
+
+   ```
+   node dev/probe-storm.js --bid 291847 --n 14 --maxply 16 --seed 7
+   node dev/probe-storm.js --bid 453453 --n 12 --maxply 16 --seed 3
+   ```
+
+   **The headline, at the shipped bands (`spreadMinCp` 60, `spreadMaxCp` 300):**
+
+   ```
+   course    candidates   minScored 6   minScored 5   in dispute
+   291847        71           10            25            15
+   453453        73           23            29             6
+                                                          --
+                                                          21
+   ```
+
+   291847 is §12.7b's 2.45x again (2.5x here; the database has moved and the
+   absolute counts are 10/25 rather than 11/27). **453453 is not** — 1.26x —
+   and that is the first thing this run adds. The multiplier is a property of
+   the course, not of the setting, so "2.45x for nothing" is the best case
+   rather than the expected one.
+
+   The scored-move distributions say why:
+
+   ```
+   291847  1:3  3:1  5:31  6:3  7:5  8:5  9:7 10:2 11:4 13:1 14:3 15:1 ...
+   453453  1:6  4:1  5:20  6:7  7:3  8:4  9:4 10:1 11:2 12:1 13:2 14:2 16:3 17:5 ...
+   ```
+
+   §12.7b's "there is no 2, 3 or 4" survives with one instance each (a 3 and a
+   4 across 144 candidates). **The pile on exactly 5 is still the whole story**
+   — 31 of 71 and 20 of 73 — and it is still sitting one below the filter.
+
+   **Where the disputed positions sit is course-shaped, and this is the second
+   thing the run adds.** On 291847 the fifteen are markedly DEEPER than the
+   ones already admitted (plies past the line: 4, 4, 4, 5, 10, 10, 12, 12, 12,
+   12, 14, 14, 14, 16, 16 — median 12, against a survivor sample clustered at
+   2-6). On 453453 the six are SHALLOWER than its survivors (2, 2, 4, 4, 6, 12
+   against 4-12). So `minScored` 6 is *not* reliably a disguised depth filter,
+   which was the tidy explanation to expect from §3.3's thinning scored set. It
+   behaves that way on the bought course and the other way on the repertoire.
+
+   **What each answer costs and buys.** Keeping 6 buys one thing: every
+   position offered has a scored list with at least one move BELOW the fifth,
+   so `spread5` is a cut through a list that has not run out — the "there must
+   be something to get wrong" claim is made about a ranking with a floor under
+   it. Moving to 5 buys 2.5x the material on a course like 291847 and about a
+   quarter more on one like 453453, for no requests, no writes and no third
+   party, and it costs that floor: on every one of the 21 positions below, the
+   fifth-best move is the last one ChessDB will name, so what lies beneath it
+   is unknown rather than bad. Grading is unaffected either way — §3.4 makes it
+   total, and a move outside a five-long list falls to tier 2 or tier 3 exactly
+   as it does outside a twenty-long one.
+
+   **The twenty-one FENs.** Each entry is: plies past the course's own line,
+   the eval from the user's side, `spread2`/`spread5` in centipawns and then in
+   points of win probability, the source line and game, and ChessDB's five
+   scored moves.
+
+   *291847 — Intermediate Starter Kit (White to prepare in all fifteen):*
+
+   ```
+   +14  +1.85  s2  31  s5  63  (wp 2.59 / 5.36)   Scotch 4...Bc5 #2  6NbEYaOE
+        r2qr2k/1pp2ppp/2np4/p1n3P1/4P3/PPN1QP2/1PK4P/3R1B1R w - - 3 17
+        h4 +1.85   Kb1 +1.54   Bb5 +1.54   Be2 +1.42   Nb5 +1.22
+   +12  +0.97  s2  54  s5  97  (wp 4.89 / 8.84)   Scotch 4...Bc5 #2  9AQmidus
+        r2qr1k1/1pp2ppp/3pb3/p3n3/3RP1PP/2N2P2/PPP1Q3/2K2B1R w - - 1 16
+        g5 +0.97   Qe3 +0.43   Qd1 +0.33   f4 +0.15   Qf2 +0.00
+   +14  +1.35  s2  40  s5  76  (wp 3.52 / 6.77)   Scotch 4...Bc5 #2  9AQmidus
+        r3r1k1/1pp1qppp/3pb3/p3n1P1/3RP2P/2N2P2/PPP1Q3/2K2B1R w - - 1 17
+        f4 +1.35   a3 +0.95   Qg2 +0.89   Qe3 +0.67   Qd1 +0.59
+   + 4  +1.74  s2  12  s5 323  (wp 1.01 / 28.87)  Scotch 4...Qh4?!   PvKZjLxd
+        r1bk2nr/1ppp1ppp/p1n5/1N2q3/8/2P2B2/P1P2PPP/R1BQ1RK1 w - - 2 11
+        Bxc6 +1.74   Nd4 +1.62   Na3 -0.03   Re1 -1.14   Nxc7 -1.49
+   +12  +0.00  s2  96  s5 115  (wp 8.75 / 10.43)  Scotch 4...Qh4?!   PvKZjLxd
+        r1bk3r/1pp1nppp/p2p1q2/4n3/3N4/B1P2B2/P1P1QPPP/R3R1K1 w - - 2 15
+        Be4 +0.00   Rad1 -0.96   Rab1 -1.01   Qd2 -1.01   h3 -1.15
+   +14  +0.00  s2  26  s5  82  (wp 2.39 / 7.49)   Scotch 4...Qh4?!   PvKZjLxd
+        r1bkr3/1pp1nppp/p2p1q2/4n3/3NB3/B1P5/P1P1QPPP/R3R1K1 w - - 4 16
+        Rad1 +0.00   c4 -0.26   Bb2 -0.47   Rab1 -0.53   h3 -0.82
+   +16  +1.14  s2 139  s5 170  (wp 12.64 / 15.48) Scotch 4...Qh4?!   PvKZjLxd
+        r2kr3/1ppbnppp/p2p1q2/4n3/3NB3/B1P5/P1P1QPPP/3RR1K1 w - - 6 17
+        Bxb7 +1.14   c4 -0.25   Rb1 -0.39   g3 -0.48   Bc1 -0.56
+   + 5  -0.36  s2 104  s5 343  (wp 9.30 / 26.84)  Mamedov-Salimova Intro  zPgoJ0kl
+        2rqr1k1/pb2bppp/1p2pn2/2P5/3P4/PnN2NP1/1B2QPBP/2RR2K1 w - - 1 18
+        Rc2 -0.36   Rb1 -1.40   Nb5 -3.21   Qc2 -3.37   Qb5 -3.79
+   +10  +0.75  s2  50  s5 166  (wp 4.56 / 15.16)  Scotch 4...Bc5 #7  GbIH0Ell
+        r2q1rk1/1p3p2/1b2b2p/p2Q2p1/P7/1P4B1/1P3PPP/2KR1B1R w - - 1 18
+        Qe4 +0.75   Qb5 +0.25   Qf3 +0.00   Qxd8 -0.10   Qxb7 -0.91
+   +12  +0.00  s2   8  s5 229  (wp 0.74 / 19.91)  Scotch 4...Bc5 #7  GbIH0Ell
+        r2r2k1/1p3p2/1b2b2p/p5p1/P7/1P4B1/1P3PPP/2KR1B1R w - - 0 19
+        Bc4 +0.00   Rxd8+ -0.08   Be2 -1.02   Bb5 -1.75   h4 -2.29
+   + 4  +0.62  s2  62  s5 542  (wp 5.68 / 41.10)  Scotch 4...Bc5 #5  m3spn1A1
+        r2qr2k/ppp2p1p/1bnp1p2/3b4/4P1Q1/1N6/PPP2PPP/2KR1B1R w - - 2 14
+        exd5 +0.62   Rxd5 +0.00   f4 -4.06   Qh4 -4.40   Nd4 -4.80
+   + 4  +1.50  s2  21  s5 127  (wp 1.81 / 11.35)  Scotch 4...Bc5 #5  JqQuOcnq
+        r2q2k1/ppp2p1p/1bnp1p2/3Pr2Q/8/1N6/PPP2PPP/2KR1B1R w - - 1 14
+        Qg4+ +1.50   Qf3 +1.29   Qh3 +1.27   Qh4 +0.48   Qh6 +0.23
+   +10  -0.05  s2  99  s5 198  (wp 9.00 / 17.40)  Scotch 4...Bc5 #8  Mb5v6ewY
+        r3r1k1/bpp1qpp1/3pbn1p/p3n3/N3P1PB/1N3P2/PPP4P/1K1RQB1R w - - 3 16
+        Be2 -0.05   f4 -1.04   Bg2 -1.22   Nd2 -1.29   Qe2 -2.03
+   +12  +0.01  s2  42  s5 225  (wp 3.86 / 19.62)  Scotch 4...Bc5 #8  Mb5v6ewY
+        r3r1k1/bpp1qpp1/3pbnnp/p7/N3P1PB/1N3P2/PPP1B2P/1K1RQ2R w - - 5 17
+        Bg3 +0.01   Bf2 -0.41   Bxf6 -0.90   g5 -1.72   Nd4 -2.24
+   +16  +1.26  s2   2  s5  90  (wp 0.17 / 8.09)   Scotch 4...Bc5 #8  Mb5v6ewY
+        r3r1k1/bpp1qpp1/3pb1np/p3n3/N3P1PP/1N3PB1/PPP1B3/1K1RQ2R w - - 1 19
+        Nd4 +1.26   h5 +1.24   Nc3 +1.01   Qf1 +0.75   Qd2 +0.36
+   ```
+
+   *453453 — Testing course (Black to prepare in all six):*
+
+   ```
+   +12  -0.26  s2  12  s5 110  (wp 1.10 / 9.87)   Introduction - Why Godiva  PSF77OhP
+        r1b1k2r/ppqpppbp/2n2np1/8/4PP2/1NP1BB2/PP1N2PP/R2QK2R b KQkq - 4 11
+        d6 -0.26   O-O -0.38   h5 -0.86   e5 -0.97   e6 -1.36
+   + 2  +1.10  s2   8  s5 184  (wp 0.71 / 16.76)  1) 6.Be3 Mainline 8.Qd  3EGDxvPY
+        r1b1k1nr/pp1ppp1p/2n3p1/8/8/1NP1B2q/P1PQBP1P/2KR2R1 b kq - 3 12
+        d6 +1.10   Nf6 +1.02   h5 -0.33   Qxh2 -0.34   Qe6 -0.74
+   + 2  (the SAME position, reached from a second game DcDiB4SH — a session's
+        own `st.seen` would offer it once; it is listed twice here only because
+        the probe reports per walk)
+   + 4  -0.13  s2   5  s5 100  (wp 0.46 / 9.06)   1) 6.Be3 Mainline 8.Qd  B7spQPYu
+        r1b1k2r/pp1ppp1p/2n2npB/8/q7/1NP2P2/P1PQ2PP/3RKB1R b Kkq - 2 12
+        Nd8 -0.13   Rg8 -0.18   d5 -0.53   Qh4+ -1.11   Ne5 -1.13
+   + 6  +1.06  s2  61  s5  72  (wp 5.50 / 6.51)   Quickstarter Odds & Ends  R36g0H6o
+        r2q1rk1/1p2ppbp/p1npbnp1/8/3BP3/N1PBN3/PP3PPP/R2Q1RK1 b - - 1 15
+        Nxd4 +1.06   Rc8 +0.45   Rb8 +0.39   Bc8 +0.37   b5 +0.34
+   + 4  +1.16  s2  41  s5  68  (wp 3.66 / 6.11)   Quickstarter Rossolimo   DrKUYYHx
+        r1b2rk1/1pq2ppp/p2bpn2/2p1N3/3P1B2/2P3N1/PP3PPP/R2Q1RK1 b - - 2 13
+        Nd5 +1.16   cxd4 +0.75   c4 +0.63   b5 +0.60   a5 +0.48
+   ```
+
+   Reading them without a board, two patterns stand out and both argue the same
+   way. Several have an enormous `spread5` (323, 343, 542) — the fifth-best
+   move is a plain error and the choice is unambiguously real. The rest sit at
+   63-230, which is the band the shipped setting was chosen for. **Not one of
+   the 21 is a position where the five scored moves are indistinguishable**;
+   that failure shape is caught by `spreadMinCp`, which runs before `minScored`
+   has anything to say. The question left for a human is narrower than §12.7b
+   implied: not "are these good positions" but "is a five-move ranking enough
+   to be asked to beat".
+7d. **§16.5, answered off the same run: `spreadMinCp` in win probability.**
+   The grade moved to win-probability lost in v0.141.0 and the pick rules
+   stayed in centipawns, so the open question was whether "there must be
+   something to get wrong" is a weaker demand on a one-sided position than on a
+   level one. **It is, and the effect is real but small.**
+
+   ```
+   spreadMinCp 60  =  5.50 wp at 0.00
+                   =  4.64 wp at +2.00   - 16% less demanded at the band top
+   ```
+
+   The two spreads over every candidate, in both units:
+
+   ```
+                     p10    p25   median   p75    p90
+   291847  s5 cp      19     46      86    198    487
+           s5 wp    1.74   3.96    7.52  17.40  35.37
+   453453  s5 cp      16     31      68    112    253
+           s5 wp    1.47   2.85    6.11   9.87  19.26
+   ```
+
+   And the yield, restating the rule in wp at the equivalent-at-equality
+   thresholds (30cp = 2.76 wp, 60cp = 5.50 wp, 100cp = 9.10 wp), same
+   candidates, `spreadMaxCp` 300:
+
+   ```
+                   minScored 6            minScored 5
+                  cp     wp              cp     wp
+   291847  30     22     22              40     38
+           60     10     10              25     24
+          100      6      5              16     15
+   453453  30     31     31              44     44
+           60     23     23              29     29
+          100     12     12              16     15
+   ```
+
+   **At the shipped threshold the two rules are identical on both courses** (10
+   and 10, 23 and 23), and the largest divergence anywhere in the grid is two
+   positions out of 71. So the objection is sound — the cp rule really does ask
+   less at +2.00 — and the yield consequence at the settings in use is nil.
+   Restating `spreadMinCp` in wp is therefore a change worth making for saying
+   what is meant, not for what it does, and it should not be bundled with a
+   `minScored` change whose effect is an order of magnitude larger.
+   `blunderCp` and `decidedCp` stay in centipawns for §16.5's own reason: they
+   are about whether the game is still a game, not about what a move is worth.
+
+   Caveats on both entries: one run each, two courses, and the candidate sets
+   are the same walks §6.1 measured — so this says nothing about a course
+   shaped unlike either of these. Neither entry changed a single line of the
+   extension.
 8. **CLAUDE.md's contract surface.** When this is built it takes a section number
    and a bullet, and `py dev/check-contracts.py` will want every bridge named.
    None exist yet, so there is nothing to add — but the storm will almost
@@ -2245,9 +2447,18 @@ But the same objection does apply to one of them, and it should be recorded
 rather than discovered: **`spreadMinCp` (best − 5th ≥ 60cp) is the rule that
 says "there must be something to get wrong"**, and 60cp buys less at +200 than
 it does at equality — by the table above, about 15% less. So the filter admits
-positions that are, in the terms the grade now uses, flatter than intended. It
-is bounded (the frontier band stops at +200, where the effect is small) and
-fixing it means re-running the probe to see what the yield does. Not done.
+positions that are, in the terms the grade now uses, flatter than intended.
+
+**MEASURED 2026-08-29, and the answer is §12.7d.** `dev/probe-storm.js` now
+prints both spreads in win probability as well as centipawns, and a second
+tuning grid with the rule restated in wp. The conversion is 60cp = 5.50 wp at
+equality and 4.64 wp at +2.00, i.e. **16% less demanded at the band top** — so
+the objection above is exactly right. The yield consequence is nil: at the
+shipped threshold the two rules admit the identical number of positions on both
+courses (10 and 10, 23 and 23), and the largest divergence anywhere in the grid
+is two positions out of 71. Restating the rule in wp is therefore worth doing
+for saying what is meant, and is not a tuning change; it should not be bundled
+with a `minScored` change, whose effect is an order of magnitude larger.
 
 **Nothing is re-graded.** The record stores the verdict the session produced, so
 rows written before this change are a different claim from rows written after.
