@@ -1570,6 +1570,222 @@ failure count records something the other device learned and cannot be
 regenerated, while one fresh position is interchangeable with any other. Do not
 "align" the two — they are asking different things of the same field.
 
+### 14.16 A position answered well does not come back (v0.142.0)
+
+Reported live: *the same positions keep turning up in session after session,
+including ones I have already got right.*
+
+§14.15 says the retention rule already handles this — "a position answered well
+**leaves the store**". It does. **Leaving the store is not the same thing as not
+coming back**, and that gap is the whole of this bug.
+
+#### 14.16.1 Why it came back — the producer is deterministic
+
+A session's cards come from two places, and the store is only one of them.
+When the store cannot fill the queue, `produce` walks frontiers, and that walk
+has **no randomness in it at all** past the frontier draw:
+
+* `stormDrawFrontier` is random-weighted, but it draws from the *whole* pool
+  and a gather pass drains it — so over a course, every frontier is walked;
+* `askGames` returns the explorer's four **top** games (rating order, stable
+  for months) followed by four recent ones, and `harvestFrontier` took
+  `games.slice(0, gamesPerFrontier)` — **always the same two**;
+* `stormWalkGame` is a pure function of the frontier, the game and ChessDB's
+  answers. Same inputs, same positions;
+* `stormCandidate` and the pick rules are likewise pure.
+
+So the question *"is it low-likelihood that a completed position is found again
+by the next gather?"* has the opposite answer to the one it invites: **it is
+close to certain**. The same frontier plus the same two games reproduces the
+same candidate list exactly. `storeAdd` refused a position the store already
+held — which is precisely the check that stops working the moment the retention
+rule removes it.
+
+Worse, nothing downstream noticed: `st.seen` is per SESSION, so it deduplicates
+within a run and says nothing about the last one.
+
+#### 14.16.2 The guarantee: the tombstone list is the DONE list
+
+The record needed already existed. `storeNote` writes a **tombstone**
+(`st.gone[ck] = Date.now()`) for every position the retention rule drops, and it
+does so whether or not syncing is on. Until now that list was read in exactly
+one place — §14.12's union merge, to stop the other device resurrecting the
+position. It is the same fact, and it answers the same question, so it is now
+asked wherever a position can enter a session:
+
+* **`storeAdd`** — the one write into the store, so the rule's home;
+* **`harvestCandidates`** — the offer, which is a different question from the
+  write and is the one place a fresh walk can put a retired position on a board;
+* **`produceFromStore`** — defensively, for a store written before this change
+  or merged from a device that had not yet heard about the answer. It **deletes**
+  rather than skips: the slot is worth more to a position nobody has answered.
+
+`stormDone(gone, ck, C, now)` is the predicate, pure so `dev/check-storm.js` can
+execute it — and it must be, because the failing case needs a position answered
+*well* in one session and the same frontier drawn in the *next*, which is close
+to unreachable from a live sitting.
+
+**It ages the tombstone itself** rather than trusting the list to have been
+pruned: `loadSyncMeta` reads back whatever storage holds and only `saveSyncMeta`
+prunes, so a session that never wrote would otherwise retire positions against a
+list with no bound on its age.
+
+**A retirement, not a deletion.** `goneDays` (60) stops being pure housekeeping
+and becomes the horizon: long enough that the position is a genuinely fresh
+question when it returns, short enough that a frontier's material is not spent
+for ever. A zero timestamp reads as *no record*, not as "retired at the epoch" —
+the truthiness trap DESIGN-key-moves.md §9.2 is about, which here would retire a
+position permanently instead of never.
+
+#### 14.16.3 The tombstone had to start surviving the tab
+
+`saveSyncMeta` was called from **`syncStore` and nowhere else**. On a device
+with no carrier course — or simply one whose pull was not due — every tombstone
+died with the page. That was survivable while the list only fed a merge that
+would not happen anyway; it is not survivable now that the list is what retires
+a position. It is written at `endSession`, beside `saveStore`, on the same
+argument and at the same moment.
+
+It also gained a **local cap**, `goneMaxLocal` (6000, oldest out). The wire's
+`goneMax` is 400 and is a *payload* bound; as a retirement horizon it would
+cover barely twenty sessions of answers, which is exactly the span the guarantee
+has to outlive. 6000 tombstones is ~270 KB, against a 10 MB quota shared with
+every other feature here — and what the cap drops is the oldest retirement,
+which is the one nearest to being worth asking again anyway.
+
+#### 14.16.4 The random factor, and what it is not
+
+The second half of the request, and it is worth being exact about which problem
+it solves. **It is not the guarantee** — `stormPickGames(games, n, rnd)` can
+only make a repeat less likely, and "less likely" is not an answer to "this
+should not come back". `stormDone` is the answer.
+
+What it buys is **depth**. With the first two games walked for ever, a frontier
+had one fixed set of candidates; once those were retired the frontier was spent,
+and a second gather over the course reported *"nothing new to store"* — which
+read as the course being exhausted when in truth nothing had asked it anything
+else. Eight games taken two at a time is 28 pairs, so the same pool goes on
+yielding material well past the first pass.
+
+A partial Fisher-Yates over a **copy** (the caller's array is untouched, and no
+game is walked twice in one pass), rnd-injected in `stormDrawFrontier`'s shape
+and for its reason. It clamps the index rather than trusting `rnd()` to be in
+`[0,1)`: an out-of-range pick would put `undefined` into the walk, which fails
+three steps later inside `askPgn` with a message about the explorer.
+
+**Cost**: a frontier whose material is now entirely retired still spends its
+~11 ChessDB lookups discovering that. That is bounded (`storeAdd` refuses, so
+nothing is stored and the gather says so) and it is the price of the walk being
+stateless; the random pick is what makes it rare, since a different pair of
+games usually reaches somewhere new.
+
+#### 14.16.5 What was NOT done
+
+* **The store is not consulted before a frontier is walked.** Skipping a
+  frontier whose candidates are all retired would need the candidate list before
+  the walk, which is the walk. Measured cost is one wasted frontier's requests,
+  occasionally.
+* **`sampleFrontiers: 30` is still dead config**, unread since the pool became
+  the whole frontier list. Left alone rather than removed in the same change as
+  a behavioural fix.
+* **No per-position "asked N times" counter beyond `k`.** `k` counts failures,
+  which is what the draw order needs; how often a position has been *seen* is a
+  different question and nothing asks it yet.
+
+### 14.17 What a pass actually did (v0.143.0)
+
+Reported live, one exchange after §14.16: *"Stored 2 new position(s) — 41 ready
+on this course"*, and the expectation behind it was roughly one new position per
+viable line. Answering *"is that working?"* took a source read, which is the
+defect.
+
+**The number reported was the one least able to answer the question.** `st.gathered`
+counts positions **newly stored**, and three completely different passes produce
+the same "2":
+
+* a course whose store is already full — the pass worked perfectly and had
+  nothing to add;
+* a course ChessDB barely knows — 27 of 54 rejections and 11 of 18 walk stops
+  were the database running out (§6.2), and none of that was visible;
+* a pass that genuinely had almost nothing to walk — every line paused, or the
+  stage-0 eval band dropping them.
+
+#### 14.17.1 The funnel
+
+Every branch that discards something now counts it. `stormFunnelBlank()` holds
+frontier-level counters (`frontiers`, `unscored`, `offBand`, `noGames`, `games`,
+`gamesFailed`), candidate-level ones (`examined`, `rejected`, `retired`, `dup`,
+`stored`) and two reason tables — `why` (first failing pick rule) and `stops`
+(where each walk ended), which are the two tables `dev/probe-storm.js` prints
+and which nothing inside the extension had.
+
+**The four candidate outcomes are exhaustive**: `examined === rejected + retired
++ dup + stored`. That conservation is the property `dev/check-storm.js` asserts,
+and it is why that file now executes two *impure* functions (`harvestCandidates`
+and `storeAdd`, with `st` and `C` injected through `__setEnv`) — the invariant
+lives in that function's control flow and nowhere else. The way it drifts is a
+fifth `continue` added there and counted nowhere, after which the totals stop
+adding up while every individual number still looks entirely plausible. The
+control — exactly that omission — fails on 3 assertions, one of them the sum
+(2026-08-28).
+
+`stormFunnelBump` and `stormFunnelWhy` are **null-safe**, because the producer
+runs with no funnel at all: a session's `harvestFrontier` calls go through the
+same code and count nothing. Without that, every call site needs a guard.
+
+#### 14.17.2 Where it is reported
+
+* **While running** — `setGatherNote` gained the examined count: *"2 stored of
+  210 examined"*. "0 stored" over a growing examined count is a pass working on
+  a full store; "0 stored, 0 examined" is a pass finding nothing, and those two
+  used to read identically.
+* **At the end** — the status line keeps the store as its headline (that is what
+  a session draws on) and adds two sentences: what was walked, and where the
+  positions went. Measured in `dev/harness.html` at 13px: **1851x19 (one line)**
+  at the panel's real full-window width of 1873px, 858x34 at the harness's 880,
+  538x49 at 560, and 358x79 at 380 — with `html.clo-touch` at 15px, 1851x21 /
+  858x55 / 538x72 / 358x106. No horizontal overflow at any width and no vertical
+  overflow of the body. The worst case, a phone in portrait, is five lines of a
+  status that is only ever on screen with the stage empty and no clock running.
+* **The reason tables go to the console**, not the status line — a dozen lines,
+  sorted biggest first, so the binding constraint is the first one read. The
+  status line has to fit; this is what you look at when it says something
+  surprising.
+
+#### 14.17.3 …and a gather now walks more games
+
+`gamesPerFrontier: 2` was one number doing two jobs. A **session** spends the
+user's own waiting time — ~11 ChessDB lookups per usable position, while a card
+is wanted — so it takes the cheapest sample that works. A **gather** is the burst
+nobody is waiting for, with `gatherMaxCdb` an order of magnitude larger, and its
+whole job is to leave the store deep enough that sessions never walk anything.
+
+So `gatherGamesPerFrontier: 4`, chosen in `harvestFrontier` off `st.gathering`.
+**Four of the eight** the explorer returns (4 top + 4 recent), deliberately not
+all of them: taking half leaves genuinely different draws for the next pass,
+which is what §14.16's `stormPickGames` is for. On the masters fallback there
+are only 4 to begin with, so a gather takes them all — correct, since that path
+has no deeper pool to save.
+
+**Cost**: §6.1's 14-frontier run spent 137 ChessDB requests at two games, ~9.8
+per frontier, so ~20 at four. A 50-frontier course is ~1000 against
+`gatherMaxCdb`'s 4000, and `gatherTarget` (200 positions) is what actually stops
+a large course first. Nothing needed raising, which is the check worth recording
+— the reason to leave a budget alone is that it was measured, not that nothing
+complained.
+
+#### 14.17.4 What was NOT done
+
+* **No per-frontier detail in the UI.** Which *lines* were unscored or off-band
+  is a per-line question and would be a table; the console already names each
+  one as it is skipped (`storm: skipping <line> — frontier eval …`).
+* **The funnel is not kept.** It belongs to the pass, is reported at its end and
+  is nulled there — a record of gathering over time is a different feature, and
+  §15's is the record that was worth building.
+* **The producer does not report one.** A session's walks count nothing: the
+  user is looking at a card, and the one thing they might want to know — that
+  the store is empty and it is walking — the note already says.
+
 ## 15. The performance record (v0.140.0)
 
 A storm ends with a score, and a score is forgotten by the next one. The

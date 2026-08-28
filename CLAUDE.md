@@ -3141,6 +3141,62 @@ Currently working (v0.18.x).
       position answered WELL leaves, one MISSED stays and comes round again, and
       an UNGRADEABLE one stays too — it taught nothing either way, and dropping
       it spends eleven requests to meet the same silence twice.
+    - …AND LEAVING THE STORE IS NOT THE SAME AS NOT COMING BACK (§14.16,
+      v0.142.0). THE PRODUCER'S WALK IS DETERMINISTIC — same frontier, same
+      games, same ChessDB answers, same positions — so a position dropped by the
+      rule above was re-harvested by the very next pass, re-stored (the store no
+      longer held it, which is the only thing `storeAdd` was checking) and
+      offered again. "It is unlikely to be found again" is the exact opposite of
+      true here. `stormDone(gone, ck, C, now)` is the guarantee and the
+      TOMBSTONE LIST is what it reads — the same `st.gone` §14.12's merge
+      already kept, asked at all THREE points a position can enter a session:
+      `storeAdd` (the write), `harvestCandidates` (the offer — the one place a
+      fresh walk reaches a board) and `produceFromStore` (defensively, deleting
+      rather than skipping). It AGES the tombstone itself, since only
+      `saveSyncMeta` prunes; a zero timestamp is "no record", never "retired at
+      the epoch". `goneDays` (60) is therefore a RETIREMENT HORIZON now, not
+      housekeeping.
+    - THE TOMBSTONE MUST SURVIVE THE TAB. `saveSyncMeta` was called from
+      `syncStore` AND NOWHERE ELSE, so on a device with no carrier course — or
+      one whose pull was not due — every retirement died with the page. It is
+      written at `endSession` beside `saveStore`, and capped locally at
+      `goneMaxLocal` (6000, oldest out): the wire's `goneMax` is 400 and is a
+      PAYLOAD bound, which as a horizon would cover about twenty sessions.
+    - THE RANDOM FACTOR IS `stormPickGames`, AND IT IS NOT THE GUARANTEE.
+      `harvestFrontier` took `games.slice(0, gamesPerFrontier)` and the
+      explorer's answer is stable (four top games in rating order, four recent
+      behind), so every frontier was asked the SAME question for ever and a
+      second gather's "nothing new to store" read as the course being exhausted.
+      Eight games two at a time is 28 pairs. Pure and rnd-injected,
+      `stormDrawFrontier`'s shape; a partial Fisher-Yates over a COPY, index
+      CLAMPED — an out-of-range pick puts `undefined` into the walk and fails
+      three steps later inside `askPgn`, complaining about the explorer.
+    - A GATHER WALKS MORE OF THEM (`gatherGamesPerFrontier`, 4, chosen off
+      `st.gathering` in `harvestFrontier`; §14.17.3). The two numbers exist
+      because the two passes pay with different things: a SESSION spends the
+      user's own waiting time, a GATHER has ten times the budget and nobody
+      waiting. Four of the EIGHT the explorer returns, not all — half is what
+      leaves a different draw for the next pass, which is the point above. It
+      needed no budget change and that is a MEASUREMENT (§6.1's ~9.8 ChessDB
+      requests per frontier at two games, so ~20 at four; a 50-frontier course
+      is ~1000 against `gatherMaxCdb`'s 4000, and `gatherTarget` stops a big one
+      first).
+    - A PASS REPORTS ITS FUNNEL, NOT JUST WHAT IT KEPT (§14.17, v0.143.0).
+      `st.gathered` counts NEW stores, and three completely different passes
+      produce the same "2 new" — a store already full, a course ChessDB does not
+      know, and a pass with nothing to walk. So every branch that discards
+      something counts it (`stormFunnelBlank`/`Bump`/`Why`, reported by
+      `stormFunnelNote` in the status line and `stormFunnelLines` in the
+      console). THE FOUR CANDIDATE OUTCOMES ARE EXHAUSTIVE —
+      `examined === rejected + retired + dup + stored` — and that conservation
+      is what `dev/check-storm.js` asserts, which is why it now executes two
+      IMPURE functions (`harvestCandidates`, `storeAdd`, with `st`/`C` injected
+      through `__setEnv`): the invariant lives in that function's control flow
+      and nowhere else, and a fifth `continue` added there and counted nowhere
+      leaves every individual number still looking plausible. `stormFunnelBump`
+      and `stormFunnelWhy` are NULL-SAFE because the producer runs with no
+      funnel at all. The funnel belongs to the PASS and is nulled when it
+      reports, or a session's own walks would go on adding to it.
     - …AND A MISS COMES BACK AT THE **BACK** OF THE QUEUE (§14.15, v0.137.0).
       `stormStoreDraw` sorts `k` ASCENDING — unseen first, most-missed last —
       which REVERSES v0.130.0's hardest-first order; do not restore it. Because
@@ -3447,7 +3503,13 @@ or the PERFORMANCE RECORD (§15:
 `stormStatsWirePack`, `stormStatsWireUnpack`), every one of whose failure modes
 is a plausible percentage — or the STORE'S DRAW ORDER (`stormStoreDraw`, §14.15: a
 reversed comparator returns every position in a plausible-looking sequence and
-is otherwise undetectable from the outside) — or the PAUSED filter in
+is otherwise undetectable from the outside) — or the RETIREMENT rule
+(`stormDone`) and the random game pick (`stormPickGames`), §14.16, whose failing
+case needs a position answered WELL in one session and the same frontier drawn
+in the NEXT and so is close to unreachable from a live sitting — or the FUNNEL
+(`stormFunnelBlank`/`Bump`/`Why`/`Note`/`Lines`, and `harvestCandidates`'s own
+control flow, §14.17), whose invariant is that the four candidate outcomes
+account for every examined position — or the PAUSED filter in
 `stormFrontiers`
 (§14.14, whose whole failure mode is silence: a course with nothing paused
 answers identically either way) — or the ENGINE TIER's `CONFIG.storm`
@@ -3544,6 +3606,20 @@ v0.137.0, restoring v0.130.0's hardest-first draw order fails on exactly the 5
 assertions that cover it (control run 2026-08-28). That last
 one is a bug a live session found: playing the TOP move printed it twice ("best
 Nxf3+ -0.89   Nxf3+ -0.89"), which reads as a defect rather than as agreement.
+Since v0.142.0 it also covers §14.16. Controls run 2026-08-28, each failing on
+exactly its own assertions and no others: `stormDone` returning false always
+(the guard removed) → 2; `stormDone` ignoring the horizon, i.e. a deletion
+rather than a retirement → 1; `stormPickGames` returning the first `n` again
+→ 1. That last assertion is written as a CONCRETE sequence rather than as "not
+the first two", so a pick that ignored `rnd` entirely cannot pass it by
+returning something else.
+Since v0.143.0 it also covers §14.17, and that section is the one place this
+file executes IMPURE code — `harvestCandidates` and `storeAdd`, with `st` and
+`C` injected through `__setEnv` — because the conservation invariant lives in
+that function's control flow. Controls run 2026-08-28, each failing on exactly
+its own assertions: a fifth `continue` counted nowhere → 3 (one of them the sum
+itself); the retired arm folded into the reject count → 4; the note losing its
+"where the positions went" half → 1.
 
 §0 of that file asserts something no assertion below it could: that the three
 verdict-line helpers are declared at TOP LEVEL. Slicing flattens every scope

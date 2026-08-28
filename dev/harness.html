@@ -3490,6 +3490,79 @@ body {
       </div>
     </div>
     <div class="hx-card" style="flex:1 1 100%">
+      <h3>Gathering &mdash; the funnel (&sect;14.17)</h3>
+      <p>A pass used to report ONE number, how many positions it stored &mdash; which is the
+        single number least able to say whether it worked. A course whose store is already
+        full reports the same &ldquo;2 new&rdquo; as one where ChessDB answers nothing.
+        So the status line now carries the funnel: what was walked, what was examined, and
+        where it went. Two states here, and the second is the long one &mdash;
+        <code>.clo-st-status</code> has no <code>nowrap</code> and this is the measurement
+        that says the wrap is acceptable rather than the assertion.</p>
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:150px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Intermediate Starter Kit</span>
+            <span class="clo-st-clock clo-st-clock--off">3:00</span>
+            <span class="clo-st-stat">0 pts</span>
+            <span class="clo-st-stat">streak 0</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <!-- RUNNING. `setGatherNote`: what it has looked AT beside what it has
+                 kept, so "0 stored" over a growing examined count reads as a pass
+                 working on a full store rather than as one finding nothing. -->
+            <div class="clo-st-note">Gathering&hellip; 2 stored of 210 examined, 12 line ends left, 486 ChessDB lookups</div>
+            <div class="clo-st-settings">
+              <span class="clo-st-set-label">Offer positions</span>
+              <select class="clo-st-sel"><option>1</option></select>
+              <span class="clo-st-set-label">to</span>
+              <select class="clo-st-sel"><option>16</option></select>
+              <span class="clo-st-set-label">moves past the end of a line</span>
+              <span class="clo-st-set-spacer"></span>
+              <span class="clo-st-ready">41 position(s) ready</span>
+              <button type="button" class="clo-st-start" disabled>Finding a position&hellip;</button>
+              <!-- It fills only while RUNNING, which is the one moment it IS the
+                   thing happening. -->
+              <button type="button" class="clo-st-gather clo-st-gather--on">Stop gathering</button>
+              <button type="button" class="clo-st-sync">Sync</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:170px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Intermediate Starter Kit</span>
+            <span class="clo-st-clock clo-st-clock--off">3:00</span>
+            <span class="clo-st-stat">0 pts</span>
+            <span class="clo-st-stat">streak 0</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <!-- FINISHED. Headline is still the STORE (that is what a session draws
+                 on); the funnel says how it was arrived at. The reason tables are
+                 deliberately NOT here &mdash; a dozen lines, and they go to the console
+                 via `stormFunnelLines`. -->
+            <div class="clo-st-status">Stored 2 new position(s) &mdash; 41 ready on this course. Walked 47 line end(s) (6 unscored, 5 off-band, 9 with no games) and 108 game(s). 210 position(s) examined: 121 rejected, 18 already answered, 69 already stored, 2 new. 2 paused or skipped variation(s) are not walked.</div>
+            <div class="clo-st-settings">
+              <span class="clo-st-set-label">Offer positions</span>
+              <select class="clo-st-sel"><option>1</option></select>
+              <span class="clo-st-set-label">to</span>
+              <select class="clo-st-sel"><option>16</option></select>
+              <span class="clo-st-set-label">moves past the end of a line</span>
+              <span class="clo-st-set-spacer"></span>
+              <span class="clo-st-ready">41 position(s) ready</span>
+              <button type="button" class="clo-st-start">Start</button>
+              <button type="button" class="clo-st-gather">Gather positions</button>
+              <button type="button" class="clo-st-sync">Sync</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="hx-card" style="flex:1 1 100%">
       <h3>Mid-session — the window and its two slots</h3>
       <div class="hx-stage">
         <div class="clo-st hx-pos" style="width:min(880px,100%);height:440px">

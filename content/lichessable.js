@@ -1589,6 +1589,26 @@
 
       // --- stage 1: the games --------------------------------------------
       gamesPerFrontier: 2,
+      // …AND MORE OF THEM ON A GATHER PASS (v0.143.0). The two numbers exist
+      // because the two passes are paying with different things. A SESSION
+      // spends the user's own waiting time — the ~11 ChessDB lookups a usable
+      // position costs (§6.1) happen while a card is wanted — so it takes the
+      // cheapest sample that works. A GATHER is the burst nobody is waiting
+      // for, with a budget an order of magnitude larger (`gatherMaxCdb`), and
+      // its whole job is to leave the store deep enough that sessions never
+      // walk anything.
+      //
+      // FOUR OF THE EIGHT the explorer returns (4 top + 4 recent), deliberately
+      // not all of them: taking half leaves genuinely different draws for the
+      // next pass, which is what `stormPickGames` is for (§14.16). On the
+      // masters fallback there are only 4 to begin with, so a gather takes them
+      // all — correct, since that path has no deeper pool to save.
+      //
+      // Cost, from §6.1's 14-frontier run: ~9.8 ChessDB requests per frontier
+      // at two games, so ~20 at four. A 50-frontier course is ~1000 against
+      // `gatherMaxCdb`'s 4000, and `gatherTarget` (200) is what actually stops
+      // a big course first. Nothing here needed raising.
+      gatherGamesPerFrontier: 4,
       // THE STORM RELAXES THE USER'S OWN EXPLORER FILTERS, and this is the one
       // place in the extension where "any human game at all" is the better
       // question than "a game at my rating" (§6.4): 5 of 14 sampled frontiers
@@ -1845,7 +1865,28 @@
       // snapshot: without it a position dropped by the retention rule comes
       // back from the other device's copy for ever. Section 16e's `pinGoneKey`,
       // one payload in.
-      goneMax:  400,
+      //
+      // IT IS ALSO THE **DONE** LIST (§14.16, v0.142.0), and that is the second
+      // job it was always doing without being asked to: the retention rule
+      // removes an answered position from the store, but nothing stopped the
+      // producer walking the same frontier again and re-harvesting it. The walk
+      // is DETERMINISTIC given a frontier and a game, so "it probably will not
+      // come back" was the opposite of true — it came back with near-certainty,
+      // which is what a user saw as the same position every session. `stormDone`
+      // is the guard, and it is asked at every point a position can enter a
+      // session.
+      //
+      // `goneDays` is therefore no longer only a housekeeping figure: it is how
+      // long a position stays retired before it is worth asking again. Sixty
+      // days is long enough to be a genuinely fresh question and short enough
+      // that a frontier's material is not spent for ever.
+      goneMax:  400,   // …carried on the WIRE, newest first
+      // …and kept LOCALLY, where the cap is a storage bound rather than a
+      // payload one: a tombstone is ~45 bytes and the wire's 400 would retire
+      // barely twenty sessions' worth of answers, which is exactly the horizon
+      // the guarantee has to outlive. Oldest out — a position retired long ago
+      // is the one nearest to being worth asking again anyway.
+      goneMaxLocal: 6000,
       goneDays: 60,
       // The payload ceiling, in base32 characters. Section 16e's own is 120000,
       // stopping short of the 128 KB its §4.3 proved with a ladder; this one is
@@ -34209,6 +34250,10 @@
       syncNote: '',       // one line: what the exchange did, or why it could not
       lastPull: 0,
       gathered: 0,        // positions it has added
+      // §14.17: what the pass DID, not just what it kept. Null outside a pass —
+      // every counter goes through `stormFunnelBump`, which is null-safe, so
+      // the producer needs no branch of its own.
+      funnel: null,
       // --- the performance record (§15) -------------------------------------
       // EVERY course, not only this one: the stats view answers "which of my
       // repertoires do I read worst", which is a question about all of them,
@@ -34832,6 +34877,150 @@
     }
 
     /**
+     * §14.17) WHAT A PASS ACTUALLY DID, counted.
+     *
+     * A gather reported ONE number — how many positions it stored — and that is
+     * the single number least able to say whether the pass worked: a course
+     * whose store is already full reports the same "2 new" as a course where
+     * ChessDB answers nothing and the eval band drops every line. Reported
+     * live, and the question took a source read to answer.
+     *
+     * So every branch that discards something counts it, and the four
+     * candidate outcomes are EXHAUSTIVE — `examined` is exactly
+     * `rejected + retired + dup + stored`. That conservation is the property
+     * worth asserting (`dev/check-storm.js`), because the way this drifts is a
+     * `continue` added to `harvestCandidates` for a fifth reason and counted
+     * nowhere: the totals then quietly stop adding up while every individual
+     * number still looks plausible.
+     */
+    function stormFunnelBlank() {
+      return {
+        frontiers: 0,     // drawn from the pool and walked
+        unscored: 0,      // …ChessDB could not score the line end at all
+        offBand: 0,       // …outside the stage-0 eval band (§7)
+        noGames: 0,       // …the explorer had none, so a line was invented
+        games: 0,         // real games walked
+        gamesFailed: 0,   // …a PGN unreadable, or one that never reached the end
+        examined: 0,      // candidate positions considered
+        rejected: 0,      // …by a pick rule (§5.2)
+        retired: 0,       // …already answered well (§14.16)
+        dup: 0,           // …already in the store
+        stored: 0,        // …new
+        why: {},          // first failing pick rule -> count
+        stops: {},        // where a walk stopped -> count
+      };
+    }
+
+    /** One counter, on a funnel that may not exist (the producer runs without
+     *  one). Null-safe so no call site needs a guard of its own. */
+    function stormFunnelBump(f, key, by) {
+      if (!f) return;
+      f[key] = (f[key] || 0) + (by === undefined ? 1 : by);
+    }
+
+    /** …and one of the two reason tables. */
+    function stormFunnelWhy(f, table, reason) {
+      if (!f || !reason) return;
+      const t = f[table] || (f[table] = {});
+      t[reason] = (t[reason] || 0) + 1;
+    }
+
+    /**
+     * The funnel as ONE sentence for the status line — the four numbers that
+     * answer "why so few", in the order the pass loses things.
+     *
+     * Deliberately not the reason tables: those are a dozen lines and belong in
+     * the console, where `stormFunnelLines` puts them. What has to fit here is
+     * enough to tell the three cases apart — a store already full (`dup` high),
+     * a course ChessDB does not know (`unscored`/`rejected` high), and a pass
+     * that genuinely had nothing to walk (`frontiers` low).
+     */
+    function stormFunnelNote(f) {
+      if (!f || !f.frontiers) return '';
+      const skipped = [];
+      if (f.unscored) skipped.push(f.unscored + ' unscored');
+      if (f.offBand) skipped.push(f.offBand + ' off-band');
+      if (f.noGames) skipped.push(f.noGames + ' with no games');
+      const out = ['Walked ' + f.frontiers + ' line end(s)' +
+        (skipped.length ? ' (' + skipped.join(', ') + ')' : '') +
+        ' and ' + f.games + ' game(s).'];
+      if (f.examined) {
+        out.push(f.examined + ' position(s) examined: ' + f.rejected +
+          ' rejected, ' + f.retired + ' already answered, ' + f.dup +
+          ' already stored, ' + f.stored + ' new.');
+      } else {
+        out.push('No candidate position was reached.');
+      }
+      return out.join(' ');
+    }
+
+    /**
+     * …and the full breakdown, as console lines. The reason tables are the half
+     * that actually tells you what to change: §6.2 measured 27 of 54 rejections
+     * and 11 of 18 walk stops as ChessDB running out rather than as anything
+     * about chess, and that is a fact about a COURSE — a repertoire deep enough
+     * to leave the book behind will read differently.
+     *
+     * Sorted by count, so the binding constraint is the first line.
+     */
+    function stormFunnelLines(f) {
+      if (!f) return [];
+      const table = (t) => Object.keys(t || {})
+        .sort((a, b) => t[b] - t[a])
+        .map((k) => '    ' + String(t[k]).padStart(4) + '  ' + k);
+      const out = [
+        'line ends walked : ' + f.frontiers +
+          '  (unscored ' + f.unscored + ', off-band ' + f.offBand +
+          ', no games ' + f.noGames + ')',
+        'games walked     : ' + f.games + '  (unusable ' + f.gamesFailed + ')',
+        'positions        : ' + f.examined + ' examined -> ' + f.stored + ' stored' +
+          '  (rejected ' + f.rejected + ', retired ' + f.retired +
+          ', already stored ' + f.dup + ')',
+      ];
+      const why = table(f.why);
+      if (why.length) out.push('  rejected because:', ...why);
+      const stops = table(f.stops);
+      if (stops.length) out.push('  walks stopped on:', ...stops);
+      return out;
+    }
+
+    /**
+     * §14.16) WHICH GAMES OF A FRONTIER TO WALK — `n` of them, chosen at
+     * RANDOM rather than the first `n`.
+     *
+     * This is the "random factor", and it exists because everything downstream
+     * of it is DETERMINISTIC: the same frontier walked down the same game with
+     * the same ChessDB answers yields exactly the same positions, every time.
+     * The explorer returns its four top games in rating order and four recent
+     * ones behind them, so `slice(0, gamesPerFrontier)` asked every frontier
+     * the SAME question on every pass over a course, for ever — a second gather
+     * finding "nothing new" was not the frontier being exhausted, it was
+     * nothing having asked it anything else.
+     *
+     * IT IS NOT THE GUARANTEE. `stormDone` is that; a random pick can only ever
+     * make a repeat less likely, and "less likely" is not what the user asked
+     * for. What this buys is DEPTH — eight games taken two at a time is 28
+     * pairs, so a course goes on yielding new material long after the
+     * tombstones have retired the first pass's positions.
+     *
+     * Pure and rnd-injected, `stormDrawFrontier`'s shape and for its reason. A
+     * partial Fisher-Yates over a COPY, so the caller's array is untouched and
+     * no game can be walked twice in one pass.
+     */
+    function stormPickGames(games, n, rnd) {
+      const pool = (games || []).slice();
+      const take = Math.max(0, Math.min(n, pool.length));
+      for (let i = 0; i < take; i++) {
+        // `rnd()` is [0,1) by contract, but a caller's stub need not be — and
+        // an out-of-range index here would swap in `undefined` and be walked as
+        // a game with no id.
+        const j = Math.min(pool.length - 1, i + Math.floor(rnd() * (pool.length - i)));
+        const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+      }
+      return pool.slice(0, take);
+    }
+
+    /**
      * A ChessDB score, which is the MOVER's, read from the USER's side.
      *
      * WHETHER TO FLIP DEPENDS ON WHOSE MOVE IT IS IN THE POSITION, never on
@@ -35350,11 +35539,15 @@
       }
     }
 
-    /** Adds a harvested candidate, unless the store already holds it. */
+    /** Adds a harvested candidate, unless the store already holds it — or the
+     *  user has already answered it well (§14.16). This is the one write into
+     *  the store, so it is where the retirement rule belongs; `harvestCandidates`
+     *  asks the same question again about OFFERING, which is a different one. */
     function storeAdd(cand, f) {
       if (!st.store) return false;
       const ck = cacheKey(cand.fen);
       if (st.store[ck]) return false;
+      if (stormDone(st.gone, ck, C, Date.now())) return false;
       st.store[ck] = stormPack(cand, f);
       st.storeDirty = true;
       return true;
@@ -35381,6 +35574,12 @@
       if (had && !st.store[ck]) {
         if (!st.gone) st.gone = {};
         st.gone[ck] = Date.now();
+        // …AND IT HAS TO BE WRITTEN (§14.16). Until v0.142.0 `saveSyncMeta` was
+        // called from the sync exchange and nowhere else, so on a device with
+        // no carrier course — or simply one whose pull was not yet due — every
+        // tombstone died with the tab. That was survivable while the list only
+        // fed a merge; it is not, now that it is what retires a position.
+        st.goneDirty = true;
       }
     }
 
@@ -35398,6 +35597,33 @@
       if (C.storeDropOn.indexOf(verdict) >= 0) { delete store[ck]; return true; }
       e.k = (e.k || 0) + 1;
       return true;
+    }
+
+    /**
+     * §14.16) IS THIS POSITION RETIRED? — the other half of the rule above, and
+     * the half that was missing until v0.142.0.
+     *
+     * `stormRetain` removes an answered position from the STORE, and leaving
+     * the store is not the same thing as not coming back: the producer re-walks
+     * frontiers on every session and `stormWalkGame` is deterministic, so the
+     * very next pass re-harvested the same position, re-stored it and offered
+     * it again. The tombstone list — which already existed, for the wire merge —
+     * is the record of what has been answered well, so this asks it at every
+     * point a position can enter a session.
+     *
+     * IT AGES THE TOMBSTONE ITSELF rather than trusting the list to have been
+     * pruned. `loadSyncMeta` reads back whatever storage holds and only
+     * `saveSyncMeta` prunes, so a session that never writes would otherwise
+     * retire positions on a list with no upper bound on its age.
+     *
+     * Pure, so `dev/check-storm.js` can execute both halves — and the half that
+     * matters is nearly impossible to see live: it needs a position answered
+     * WELL in one session and the same frontier drawn again in the next.
+     */
+    function stormDone(gone, ck, C, now) {
+      const t = gone && gone[ck];
+      if (typeof t !== 'number' || !(t > 0)) return false;
+      return (now - t) < C.goneDays * 24 * 60 * 60 * 1000;
     }
 
     /**
@@ -35742,17 +35968,20 @@
       // it rejects a whole LINE for one request instead of discovering the same
       // fact 11-29 requests later, and a course variation ends where the author
       // has ACHIEVED something, so this is the rule that actually bites.
+      const fn = st.funnel;
+      stormFunnelBump(fn, 'frontiers');
       const scored = await askCdb(f.fen);
       if (!scored) {
         // A frontier ChessDB cannot score is skipped rather than offered
         // unfiltered: the walk's own `unknown` stop would kill it on ply 1
         // anyway, after an explorer call and two game fetches spent to learn
         // nothing.
-        if (C.skipUnknownFrontiers) return [];
+        if (C.skipUnknownFrontiers) { stormFunnelBump(fn, 'unscored'); return []; }
       } else {
         const stm = String(f.fen).split(' ')[1] === 'b' ? 'b' : 'w';
         const evalUser = stormUserEval(scored[0].score, stm, f.side);
         if (evalUser < C.userLoCp || evalUser > C.userHiCp) {
+          stormFunnelBump(fn, 'offBand');
           log('storm: skipping', f.names[0], '— frontier eval', (evalUser / 100).toFixed(2));
           return [];
         }
@@ -35770,22 +35999,38 @@
       // ChessDB's own best moves — a fallback and never a preference, since a
       // position somebody actually reached is what this feature is about.
       if (!games.length) {
+        stormFunnelBump(fn, 'noGames');
         if (!C.randomFallback) return [];
         const walked = await stormRandomLine(
           f.fen, f.side, askCdb, cfg(), Math.random,
           f.lastUci ? { san: f.lastSan || '', uci: f.lastUci } : null);
+        stormFunnelWhy(fn, 'stops', walked.stop);
         log('storm: no games at', f.names[0], '— invented a line,', walked.out.length,
           'position(s) considered (' + walked.stop + ')');
         return harvestCandidates(walked.out, f);
       }
 
       const cards = [];
-      for (const g of games.slice(0, C.gamesPerFrontier)) {
+      // §14.16: AT RANDOM, not the first two. The explorer's answer is stable —
+      // four top games in rating order, four recent behind them — so the old
+      // slice asked every frontier the same question on every pass, and the
+      // walk below it is deterministic. See `stormPickGames`.
+      //
+      // …and MORE of them on a gather pass (v0.143.0): that pass has ten times
+      // the request budget and nobody waiting on it, which is the whole
+      // difference between the two numbers.
+      const want = st.gathering ? C.gatherGamesPerFrontier : C.gamesPerFrontier;
+      for (const g of stormPickGames(games, want, Math.random)) {
         if (!st.running || st.over) break;
         const sans = await askPgn(g.id, st.mastersOnly);
-        if (!sans) continue;
+        if (!sans) { stormFunnelBump(fn, 'gamesFailed'); continue; }
         const walked = await stormWalkGame(f.fen, f.side, sans, askCdb, cfg());
-        if (!walked.found) continue;
+        // A game the explorer named for this position but whose moves do not
+        // pass through it — the walk's own `found` — is not a walk, so it is
+        // counted as unusable rather than as one that found nothing.
+        if (!walked.found) { stormFunnelBump(fn, 'gamesFailed'); continue; }
+        stormFunnelBump(fn, 'games');
+        stormFunnelWhy(fn, 'stops', walked.stop);
         for (const card of harvestCandidates(walked.out, f)) cards.push(card);
       }
       return cards;
@@ -35797,9 +36042,34 @@
      *  reads the cards back. */
     function harvestCandidates(cands, f) {
       const cards = [];
+      const fn = st.funnel;
       for (const cand of cands) {
-        if (cand.reject) continue;
-        if (storeAdd(cand, f)) st.gathered++;
+        // §14.17: EXHAUSTIVE — every examined candidate is counted in exactly
+        // one of rejected / retired / dup / stored, and `dev/check-storm.js`
+        // asserts the four add up. A fifth `continue` added here without a
+        // counter is how that stops being true, silently.
+        stormFunnelBump(fn, 'examined');
+        if (cand.reject) {
+          stormFunnelBump(fn, 'rejected');
+          stormFunnelWhy(fn, 'why', cand.reject);
+          continue;
+        }
+        const ck = cacheKey(cand.fen);
+        // §14.16: A POSITION ALREADY ANSWERED WELL IS NOT OFFERED AGAIN. This
+        // is the one place a fresh walk can put a retired position back into a
+        // session, and it really does find it again — the walk is deterministic
+        // given a frontier and a game, so "it is unlikely to come back" was the
+        // exact opposite of true.
+        if (stormDone(st.gone, ck, C, Date.now())) {
+          stormFunnelBump(fn, 'retired');
+          continue;
+        }
+        if (storeAdd(cand, f)) {
+          st.gathered++;
+          stormFunnelBump(fn, 'stored');
+        } else {
+          stormFunnelBump(fn, 'dup');
+        }
         // DEDUPE BY POSITION (§6.4): the same position really does arrive from
         // two different games in one run, and a storm that shows a position
         // twice is a storm that looks broken. `st.seen` is per SESSION and
@@ -35810,7 +36080,6 @@
         // Note the order: storing happens ABOVE this, so a position already
         // seen is still WRITTEN. It cost the same requests either way, and the
         // next session is the one that benefits.
-        const ck = cacheKey(cand.fen);
         if (st.seen.has(ck)) continue;
         const card = stormCard(cand, f);
         if (!card) continue;
@@ -35833,6 +36102,15 @@
              st.shown + st.queue.length < C.maxPositions) {
         const item = st.storeQueue.shift();
         if (st.seen.has(item.ck)) continue;
+        // §14.16, defensively: a store written before v0.142.0 — or merged in
+        // from a device that had not yet heard about the answer — can still
+        // hold a retired position. DROPPED rather than skipped: the slot is
+        // worth more to a position nobody has answered.
+        if (stormDone(st.gone, item.ck, C, Date.now())) {
+          delete st.store[item.ck];
+          st.storeDirty = true;
+          continue;
+        }
         const card = stormCard(item.cand, { names: [item.name], oids: [item.oid] });
         if (!card) { delete st.store[item.ck]; st.storeDirty = true; continue; }
         st.seen.add(item.ck);
@@ -35900,6 +36178,8 @@
     }
 
     async function saveSyncMeta() {
+      if (!st.bid) return;
+      st.goneDirty = false;
       try {
         const got = await chrome.storage.local.get(C.syncKey);
         const all = (got && got[C.syncKey]) || {};
@@ -35907,14 +36187,25 @@
         // every device has long since agreed about, and keeping it for ever
         // would eventually crowd the card.
         const cutoff = Date.now() - C.goneDays * 24 * 60 * 60 * 1000;
-        const gone = {};
-        for (const ck of Object.keys(st.gone || {})) {
-          if (st.gone[ck] > cutoff) gone[ck] = st.gone[ck];
+        let keys = Object.keys(st.gone || {}).filter((ck) => st.gone[ck] > cutoff);
+        // …and capped, NEWEST first (§14.16). The wire's own `goneMax` is a
+        // payload bound and far too small to be a retirement horizon; this one
+        // is a storage bound, and what it drops is the oldest retirement, which
+        // is the one nearest to being worth asking again anyway.
+        if (keys.length > C.goneMaxLocal) {
+          keys.sort((a, b) => st.gone[b] - st.gone[a]);
+          keys = keys.slice(0, C.goneMaxLocal);
         }
+        const gone = {};
+        for (const ck of keys) gone[ck] = st.gone[ck];
         st.gone = gone;
         all[st.bid] = { gone, at: st.lastPull };
         await chrome.storage.local.set({ [C.syncKey]: all });
-      } catch (err) { /* the exchange runs on what it has */ }
+      } catch (err) {
+        // Not fatal, and it fails the safe way: an unwritten tombstone costs a
+        // position being asked again, never a wrong answer.
+        st.goneDirty = true;
+      }
     }
 
     /**
@@ -36333,6 +36624,7 @@
       }
       st.gathering = true;
       st.gathered = 0;
+      st.funnel = stormFunnelBlank();   // §14.17
       st.exhausted = false;
       // Its own ceiling, far above a session's: this IS the long burst, and it
       // is the one the user asked for by name.
@@ -36340,6 +36632,10 @@
       render();
       try {
         if (!st.store) await loadStore();
+        // §14.16: a gather harvests through the same `harvestCandidates`, so it
+        // needs the retirement list or it will spend its whole budget storing
+        // positions the user has already answered.
+        if (!st.gone) await loadSyncMeta();
         if (!st.pool || !st.pool.length) {
           const creds = chessableCreds();
           if (!creds) throw new Error('not signed in to Chessable in this tab');
@@ -36375,18 +36671,27 @@
         setNote('');
         log('storm: gathered', st.gathered, 'position(s) in',
           st.cdbCount, 'ChessDB requests;', Object.keys(st.store || {}).length, 'in store');
+        // §14.17: the breakdown, and the reason tables with it — which is the
+        // half that says what to change. One line each so a console filtered on
+        // [CLO] reads as a block.
+        for (const line of stormFunnelLines(st.funnel)) log('storm:  ' + line);
         // The paused count rides along on the pool the same way it does in
         // `startSession`: with every line paused this pass has nothing to walk,
         // and "every line has been walked" would be the wrong explanation.
         const skipped = (st.pool && st.pool.paused) || 0;
-        setStatus(st.gathered
-          ? 'Stored ' + st.gathered + ' new position(s) — ' +
-            Object.keys(st.store || {}).length + ' ready on this course.' +
-            (skipped ? ' ' + skipped + ' paused line(s) were skipped.' : '')
-          : (skipped
-              ? 'Nothing new to store. ' + skipped + ' paused or skipped variation(s) ' +
-                'are not walked; every other line here has been.'
-              : 'Nothing new to store: every line this course ends on has been walked.'), '');
+        // §14.17: THE HEADLINE IS STILL THE STORE — that is what a session
+        // will draw on — but the funnel now says how it was arrived at, which
+        // is the question "2 new" could never answer on its own.
+        const funnelNote = stormFunnelNote(st.funnel);
+        setStatus([
+          st.gathered
+            ? 'Stored ' + st.gathered + ' new position(s) — ' +
+              Object.keys(st.store || {}).length + ' ready on this course.'
+            : 'Nothing new to store — ' +
+              Object.keys(st.store || {}).length + ' ready on this course.',
+          funnelNote,
+          skipped ? skipped + ' paused or skipped variation(s) are not walked.' : '',
+        ].filter(Boolean).join(' '), '');
         // THE QUEUE THIS PASS EMPTIED IS REFILLED FROM WHAT IT STORED. Gathering
         // during the pre-roll clears the queue (it owns the pool), so without
         // this the session it interrupted is left with nothing ready and
@@ -36403,6 +36708,12 @@
         if (st.gathered && pinSyncApi && pinSyncApi.carrier && pinSyncApi.carrier.course()) {
           syncStore('after gathering');
         }
+        // §14.17: the funnel belongs to the PASS, and it has been reported.
+        // Left alive, the producer's own `harvestFrontier` calls would go on
+        // adding to it for the rest of the session — into a total nothing reads
+        // and which the next gather would reset anyway, but the counters would
+        // be describing two different things at once.
+        st.funnel = null;
       }
     }
 
@@ -36413,7 +36724,13 @@
     }
 
     function setGatherNote() {
-      setNote('Gathering… ' + st.gathered + ' stored, ' +
+      // §14.17: what it has LOOKED AT, beside what it has kept. "0 stored" over
+      // a growing examined count is a pass working perfectly on a course whose
+      // store is already full; "0 stored, 0 examined" is a pass finding
+      // nothing, and those two used to read identically.
+      const f = st.funnel;
+      setNote('Gathering… ' + st.gathered + ' stored of ' +
+        ((f && f.examined) || 0) + ' examined, ' +
         (st.pool ? st.pool.length : 0) + ' line ends left, ' +
         st.cdbCount + ' ChessDB lookups');
     }
@@ -36477,6 +36794,8 @@
       st.bestStreak = 0;
       st.exhausted = false;
       st.boardUp = false;
+      st.funnel = null;   // §14.17: the producer counts nothing; a gather does
+      st.goneDirty = false;
       st.mastersOnly = false;
       st.cdb = new Map();
       st.cdbCount = 0;
@@ -36916,6 +37235,11 @@
       // …and the store, whose whole value is that it outlives this session.
       // Fire and forget: nothing after this reads it back.
       saveStore();
+      // §14.16: and the RETIREMENTS beside it, on the same argument and at the
+      // same moment — a tombstone that does not survive the tab is a position
+      // that comes back next session, which is the whole of what this session's
+      // good answers were supposed to have settled.
+      if (st.goneDirty) saveSyncMeta();
       saveStats();   // §15, and for the same reason
       // Section 18's board first: the summary belongs on the window, and a
       // board still pinned over its slot would cover half of it.

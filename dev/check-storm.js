@@ -87,6 +87,24 @@ const src = [
   sliceDecl('stormPack'),
   sliceDecl('stormUnpack'),
   sliceDecl('stormRetain'),
+  sliceDecl('stormDone'),
+  sliceDecl('stormPickGames'),
+  // §14.17's funnel. `harvestCandidates` and `storeAdd` are the only IMPURE
+  // things this file executes, and they are here for one reason: the property
+  // worth asserting — that the four candidate outcomes account for every
+  // examined position — lives in `harvestCandidates`'s control flow and nowhere
+  // else. `__setEnv` supplies the two module-level bindings they close over
+  // (`st` and `C`), which is what makes them reachable without reordering the
+  // harness below.
+  sliceDecl('stormFunnelBlank'),
+  sliceDecl('stormFunnelBump'),
+  sliceDecl('stormFunnelWhy'),
+  sliceDecl('stormFunnelNote'),
+  sliceDecl('stormFunnelLines'),
+  sliceDecl('storeAdd'),
+  sliceDecl('harvestCandidates'),
+  'let st = null; let C = null;',
+  'function __setEnv(a, b) { st = a; C = b; }',
   sliceDecl('stormStoreDraw'),
   sliceDecl('stormWirePack'),
   sliceDecl('stormWireUnpack'),
@@ -120,6 +138,10 @@ const src = [
   '         stormPickReject, stormMoveLoss, stormGrade, stormPoints,' +
   '         stormWalkGame, stormRandomLine, stormCandidate, stormAdvance,' +
   '         stormCard, stormPack, stormUnpack, stormRetain, stormStoreDraw,' +
+  '         stormDone, stormPickGames,' +
+  '         stormFunnelBlank, stormFunnelBump, stormFunnelWhy,' +
+  '         stormFunnelNote, stormFunnelLines,' +
+  '         storeAdd, harvestCandidates, __setEnv,' +
   '         stormWirePack, stormWireUnpack, stormWireMerge,' +
   '         stormStatBlank, stormStatApply, stormStatPlus, stormStatSum,' +
   '         stormStatGraded,' +
@@ -1105,6 +1127,165 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   // refusal `stormUnpack` makes, reached through the draw.
   eq('an entry that will not unpack is left out',
     S.stormStoreDraw({ bad: { f: fFen, m: [] } }, () => 0.5).length, 0);
+
+  // --- RETIREMENT (§14.16, v0.142.0) --------------------------------------
+  // The half of the retention rule that was missing. `stormRetain` takes an
+  // answered position OUT of the store; leaving the store is not the same as
+  // not coming back, because the producer re-walks frontiers every session and
+  // `stormWalkGame` is deterministic. So the tombstone list is asked at every
+  // point a position can enter a session, and THIS is the assertion that a
+  // "tidy-up" removing that question would fail — live, it needs a position
+  // answered well in one session and the same frontier drawn in the next.
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = 1e12;
+  eq('a position never answered is not retired',
+    S.stormDone({}, 'ck1', C, NOW), false);
+  eq('one answered just now IS retired',
+    S.stormDone({ ck1: NOW - 1000 }, 'ck1', C, NOW), true);
+  eq('…and stays retired the day before the horizon',
+    S.stormDone({ ck1: NOW - (C.goneDays - 1) * DAY }, 'ck1', C, NOW), true);
+  // The horizon is what makes this a RETIREMENT and not a deletion: the
+  // position is worth asking again eventually, and `goneDays` is how long
+  // "eventually" is.
+  eq('one answered longer ago than the horizon comes back',
+    S.stormDone({ ck1: NOW - (C.goneDays + 1) * DAY }, 'ck1', C, NOW), false);
+  eq('a tombstone for another position says nothing about this one',
+    S.stormDone({ ck2: NOW - 1000 }, 'ck1', C, NOW), false);
+  eq('no list at all retires nothing', S.stormDone(null, 'ck1', C, NOW), false);
+  // A 0 is "no record", not "retired at the epoch" — the truthiness trap
+  // DESIGN-key-moves.md §9.2 is about, and it would retire the position for
+  // ever rather than never.
+  eq('a zero timestamp is no record', S.stormDone({ ck1: 0 }, 'ck1', C, NOW), false);
+  eq('…and so is a non-number', S.stormDone({ ck1: 'yes' }, 'ck1', C, NOW), false);
+
+  // --- THE RANDOM FACTOR (§14.16) -----------------------------------------
+  // Not the guarantee — `stormDone` is that — but what keeps a course yielding
+  // new material: eight games taken two at a time is 28 pairs, where the old
+  // `slice(0, 2)` asked every frontier the same question for ever.
+  const gs = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((id) => ({ id }));
+  const ids = (arr) => arr.map((g) => g.id).join('');
+  eq('it takes exactly as many games as asked',
+    S.stormPickGames(gs, 2, () => 0).length, 2);
+  eq('an rnd of 0 is the identity, which is what pins the shuffle',
+    ids(S.stormPickGames(gs, 2, () => 0)), 'ab');
+  // THE POINT: a different roll walks different games. Asserted as a concrete
+  // sequence rather than as "not ab", so a pick that ignored `rnd` entirely
+  // cannot pass by returning something else.
+  eq('…and a high roll does NOT walk the first two',
+    ids(S.stormPickGames(gs, 2, () => 0.999)), 'ha');
+  const picked = S.stormPickGames(gs, 3, () => 0.5);
+  eq('no game is walked twice in one pass',
+    new Set(picked.map((g) => g.id)).size, 3);
+  eq('every game picked is a real one',
+    picked.every((g) => g && g.id), true);
+  eq('asking for more than there are yields all of them',
+    S.stormPickGames(gs, 20, () => 0.5).length, 8);
+  eq('the source list is left alone', ids(gs), 'abcdefgh');
+  eq('no games at all is not an error', S.stormPickGames([], 2, () => 0.5).length, 0);
+  eq('…and neither is nothing at all', S.stormPickGames(null, 2, () => 0.5).length, 0);
+  // An out-of-contract rnd must not index past the end and walk `undefined` as
+  // a game with no id — the shape that would fail three walks later, in
+  // `askPgn`, with a message about the explorer.
+  eq('an rnd of 1 still returns real games',
+    S.stormPickGames(gs, 2, () => 1).every((g) => g && g.id), true);
+
+  // --- THE FUNNEL (§14.17, v0.143.0) --------------------------------------
+  // A gather used to report ONE number — positions stored — which is the single
+  // number least able to say whether the pass worked: a course whose store is
+  // already full reports the same "2 new" as one ChessDB knows nothing about.
+  //
+  // THE PROPERTY WORTH ASSERTING IS CONSERVATION: every examined candidate is
+  // counted in exactly one of rejected / retired / dup / stored. That lives in
+  // `harvestCandidates`'s control flow, so this is the one place in this file
+  // that executes an IMPURE function — `__setEnv` supplies `st` and `C`. The
+  // way it drifts is a fifth `continue` added there and counted nowhere, after
+  // which the totals stop adding up while every individual number still looks
+  // right.
+  const blank = S.stormFunnelBlank();
+  eq('a fresh funnel counts nothing', blank.examined + blank.stored + blank.rejected +
+    blank.retired + blank.dup + blank.frontiers + blank.games, 0);
+  eq('…and has both reason tables', typeof blank.why + ' ' + typeof blank.stops,
+    'object object');
+  // Four candidates with four known fates, plus a fifth that repeats the
+  // fourth's position — which is how a `dup` arises inside a single walk.
+  // Each candidate needs a best move LEGAL on its own position: `stormCard`
+  // resolves it through CloSan and answers null otherwise, which would read as
+  // "the card could not be built" rather than as the fate under test.
+  const cand = (fen, uci, san, reject) => ({
+    fen, ply: 3, userColor: 'w', arrived: null, invented: false, reject: reject || null,
+    scored: [{ uci, san, score: 20 }, { uci, san, score: 6 }],
+  });
+  const FEN_A = 'rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2';
+  const FEN_B = 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2';
+  const FEN_C = 'rnbqkbnr/pp2pppp/3p4/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 3';
+  const FEN_D = 'rnbqkbnr/pp2pppp/3p4/8/3pP3/5N2/PPP2PPP/RNBQKB1R w KQkq - 0 4';
+  const held = cacheKey(FEN_C);
+  const fakeSt = {
+    store: { [held]: { f: FEN_C, m: [['g1f3', 'Nf3', 20]], k: 0 } },
+    gone: { [cacheKey(FEN_B)]: Date.now() },
+    seen: new Set(),
+    gathered: 0,
+    funnel: S.stormFunnelBlank(),
+  };
+  S.__setEnv(fakeSt, C);
+  const got = S.harvestCandidates([
+    cand(FEN_A, 'g1f3', 'Nf3', 'flat — nothing to get wrong'), // rejected
+    cand(FEN_B, 'b8c6', 'Nc6'),                                // retired (§14.16)
+    cand(FEN_C, 'g1f3', 'Nf3'),                                // already in the store
+    cand(FEN_D, 'f3d4', 'Nxd4'),                               // new
+    cand(FEN_D, 'f3d4', 'Nxd4'),                               // …and now a duplicate
+  ], { names: ['A line'], oids: ['1'] });
+  const fn = fakeSt.funnel;
+  eq('every candidate is examined', fn.examined, 5);
+  eq('a pick rule counts as rejected', fn.rejected, 1);
+  eq('…and names itself in the reason table',
+    fn.why['flat — nothing to get wrong'], 1);
+  eq('a retired position counts as retired', fn.retired, 1);
+  eq('one the store already holds counts as a duplicate', fn.dup, 2);
+  eq('…and only the unseen one is stored', fn.stored, 1);
+  // THE INVARIANT. Written as the sum rather than as the four numbers above, so
+  // it keeps holding when the fixture changes and fails when the code grows a
+  // fate nobody counted.
+  eq('the four outcomes account for every examined position',
+    fn.rejected + fn.retired + fn.dup + fn.stored, fn.examined);
+  eq('the reason table adds up to the rejections',
+    Object.values(fn.why).reduce((a, b) => a + b, 0), fn.rejected);
+  // …and the two things the pass actually keeps.
+  eq('only the stored position becomes a card', got.length, 1);
+  eq('a retired position is never put on a board',
+    got.some((c) => c.startFen === FEN_B), false);
+  eq('the store gained exactly one entry', Object.keys(fakeSt.store).length, 2);
+  eq('the gathered count is the stored count', fakeSt.gathered, 1);
+
+  // The status line has to tell the three cases apart — a full store, a course
+  // ChessDB does not know, and a pass with nothing to walk.
+  const note = S.stormFunnelNote(fn.frontiers ? fn : Object.assign({}, fn,
+    { frontiers: 47, unscored: 6, offBand: 5, noGames: 9, games: 108 }));
+  eq('the note says what was walked', /47 line end\(s\)/.test(note), true);
+  eq('…and why line ends were skipped', /6 unscored, 5 off-band, 9 with no games/.test(note), true);
+  eq('…and where the positions went',
+    /5 position\(s\) examined: 1 rejected, 1 already answered, 2 already stored, 1 new/.test(note),
+    true);
+  eq('a pass that walked nothing says nothing', S.stormFunnelNote(blank), '');
+  eq('no funnel at all says nothing', S.stormFunnelNote(null), '');
+  eq('a pass that reached no candidate says so',
+    /No candidate position was reached/.test(
+      S.stormFunnelNote(Object.assign(S.stormFunnelBlank(), { frontiers: 3 }))), true);
+  // The console breakdown is where the reason tables go, biggest first — §6.2
+  // measured the binding constraint as ChessDB running out rather than as
+  // anything about chess, and that is a fact about a COURSE.
+  const lines = S.stormFunnelLines(Object.assign({}, fn, { frontiers: 4, games: 8,
+    stops: { 'ChessDB has no score here': 11, 'the opponent erred here': 3 } }));
+  eq('the breakdown leads with the line ends', /^line ends walked/.test(lines[0]), true);
+  eq('…and sorts a reason table biggest first',
+    lines.findIndex((l) => /ChessDB has no score here/.test(l)) <
+    lines.findIndex((l) => /the opponent erred here/.test(l)), true);
+  eq('no funnel breaks nothing', S.stormFunnelLines(null).length, 0);
+  // `stormFunnelBump` is null-safe because the PRODUCER runs with no funnel at
+  // all — every call site would otherwise need a guard of its own.
+  eq('bumping nothing is not an error',
+    (() => { S.stormFunnelBump(null, 'examined'); S.stormFunnelWhy(null, 'why', 'x'); return true; })(),
+    true);
 
   // ===========================================================================
   // 16) THE WIRE (§14.12) — pack, unpack, merge
