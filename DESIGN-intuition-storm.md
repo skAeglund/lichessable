@@ -2386,6 +2386,129 @@ than that in its own window, where every label is on one line.)
   now says which tier produced each verdict.
 
 
+### 14.21 Storm one chapter (v0.148.0)
+
+§15 built the answer to *which part of my repertoire do I not understand one move
+past the book* — and left nothing to do with it. The stats table names the worst
+chapter and the only available response was another whole-course storm.
+
+**It is a filter, not a producer.** Nothing about how a position is found,
+graded, stored or counted changes; two pure functions narrow what the session
+draws on, and everything downstream is untouched.
+
+#### 14.21.1 Where the scope is applied
+
+Two places, and the first is the one that matters:
+
+* **the STORE**, because §14.11 is why a session opens at once. `storeDraw`
+  hands `stormStoreDraw` a smaller store rather than a new sort key —
+  **filter the input, keep the order.** §14.15 is explicit that a re-weighted
+  comparator there is silent from the outside, and "positions from this
+  chapter first" is exactly the kind of term that would look like it was
+  working.
+* **the frontier POOL**, after `stormFrontiers` has walked the whole course.
+  Filtering its INPUT would be wrong twice over: the walk is what knows which
+  lines end where, and it is also what §14.18's stub index is built from, so a
+  narrowed input would change what *"the course answers this position"* means.
+
+A gather pass started inside a scoped session inherits the scope, for free —
+both producers draw from `st.pool` — and that is the right reading anyway.
+
+#### 14.21.2 Three things the filters had to get right
+
+**Every oid, not the first three.** `stormFrontiers` pushed `oids` alongside
+`names` under a cap of three. That cap was always a DISPLAY cap — three names is
+what a card can print — and the scope asks *"does any line ending here belong to
+that chapter"*, which a capped list answers **wrongly and silently** for a
+frontier four lines converge on. The two are now pushed separately; `oids[0]`,
+which §15 counts against, is unchanged.
+
+**The pool array's own properties are carried across.** A plain `.filter()`
+returns a bare array, and `stormFrontiers` hangs three things off its result:
+`paused` and `covered` word the refusals (§14.14, §14.18), and **`cont` is what
+`frontierCovered` reads for §14.18.4's walk stop**. So the obvious one-liner
+would have switched that stop off for every chapter-scoped session, invisibly,
+three days after it was written. `stormFilterPool` copies all three and adds
+`dropped`.
+
+**A stored position with no oid is EXCLUDED.** Those are entries written before
+v0.140.0 whose `backfillStoreOids` name matched two variations or none — they
+could be from anywhere, and offering them under a heading naming a chapter is a
+claim the session cannot support. They are counted (`unattributed`) so the note
+can say where they went, rather than leaving the user with a short session and
+no reason.
+
+#### 14.21.3 A narrow filter can starve, and that is SAID
+
+The failure this feature can produce is a session that looks like a slow
+producer and is actually a scope with nothing in it — a chapter whose three
+lines' positions have all been retired (§14.16), or whose line ends were all
+dropped by the ordinary rules.
+
+`stormScopeNote` is `stormFunnelNote`'s vocabulary (§14.17.2) applied to that:
+it tells apart a chapter whose line ends were excluded, one whose stored
+positions belong elsewhere, and one whose positions cannot be attributed at all.
+It is checked **before** the existing refusals in `startSession`, because a
+scope is the only cause there that the user chose one press ago — the sentences
+below it would otherwise tell them their course is unsuitable.
+
+One case falls back rather than refusing: a `lid` that resolves to no lines at
+all (possible after `stormStatsPrune` has aged the record out under a
+`stormAgain`) drops the scope, says so, and storms the whole course. A session
+with an empty filter would look like a slow producer for ever.
+
+#### 14.21.4 The surface
+
+* **Under an OPEN chapter group in the stats view**, never on its head row. The
+  head is itself a `<button>` and a button inside a button is not markup — and
+  restarting a session is not something to hang off a fold.
+* **A group with no `lid`** ("Not in a chapter") cannot be scoped to, since the
+  scope *is* a lid.
+* **The way out is a row of its own** above the chapters, shown only while a
+  scope is active — widest scope first, the same order as "Your repertoires"
+  above "This course".
+* **`stormAgain` keeps the scope** unless one is handed in. "Storm again" after
+  a chapter storm means the same chapter; the stats rows are where a different
+  one, the whole course included, is chosen. Both existing Again buttons were
+  rewired to `() => stormAgain()`: it now takes an optional argument, and a bare
+  listener would hand argument 0 the MouseEvent — 24g's own trap, which was
+  silent on both analysis hosts for ninety versions.
+* **The window's subtitle names it** (`Intermediate Starter Kit › The Scotch`),
+  because the scope is part of what the session *is* rather than a status
+  another message overwrites.
+
+Neutral outline (`.clo-st-scope`), deliberately not `.clo-st-gather`'s green:
+DESIGN-ui-inventory §3's rule is that green outline is an ordinary action, and
+the green in this window is spent on *storm* and *gather*, which are what the
+window is for. There is one of these under every open chapter, so a green row of
+them would shout over the table they are read against. Its metrics are
+`.clo-st-sync`'s to the pixel — two controls that look the same and measure 22px
+against 24px read as a mistake.
+
+Measured in `dev/harness.html` at panel widths 880 / 560 / 360, desktop and
+`html.clo-touch`:
+
+| | desktop | touch |
+|---|---|---|
+| scope button | 152×24 (whole course) · 123×24 (chapter) | 177×32 · 144×32 |
+| `.clo-st-sync` beside it | 53×24 | 61×32 |
+| scope rows | 36 / 26 / 36 px | 44 / 27 / 44 px, 67 at 360 (the wide row wraps) |
+| body overflow-x | 0 at every width | 0 at every width |
+| head overflow-x with the chapter in the subtitle | 0 | 0 |
+
+#### 14.21.5 What it does NOT do
+
+* **It does not touch the record.** `statNote` counts against the line, as
+  before; a chapter total is still a roll-up of its lines (§15.1).
+* **It does not re-weight anything.** §14.15's draw order is untouched and
+  §14.19's reachability term is untouched; the scope only removes candidates.
+* **It cannot answer for a bought course.** Chapters come from `getImportData`
+  and bought courses are absent from it (§15.4), so those courses list flat and
+  have no scope buttons at all. That refusal was already stated in words.
+* **It has no live verification.** Everything here is the harness and
+  `dev/check-storm.js`; a real chapter-scoped session needs a signed-in tab.
+
+
 ## 15. The performance record (v0.140.0)
 
 A storm ends with a score, and a score is forgotten by the next one. The

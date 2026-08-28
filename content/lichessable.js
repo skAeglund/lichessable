@@ -34981,10 +34981,14 @@
         }
         e.n++;
         if (side === 'w') e.w++; else e.b++;
-        if (e.names.length < 3) {
-          e.names.push(v.name || String(v.oid));
-          e.oids.push(String(v.oid));
-        }
+        // EVERY oid, and only the first three NAMES. The cap was always a
+        // DISPLAY cap — three names is what a card can print — and `oids[0]`
+        // is what §15 counts against, unchanged. §14.21's chapter filter asks
+        // "does any line ending here belong to that chapter", which a capped
+        // list answers wrongly and silently for a frontier four lines converge
+        // on. A course's worth of oid strings is a few kilobytes.
+        e.oids.push(String(v.oid));
+        if (e.names.length < 3) e.names.push(v.name || String(v.oid));
       }
       const out = [];
       for (const e of byEnd.values()) {
@@ -35011,6 +35015,58 @@
       // than changing the return type — every caller wants the pool, and two
       // want this.
       out.cont = cont;
+      return out;
+    }
+
+    /**
+     * §14.21) The frontier pool, narrowed to the lines of one chapter.
+     *
+     * PURE, and it takes the pool rather than reaching for `st.pool`, so
+     * `dev/check-storm.js` can execute it — this is a filter that silently
+     * yields FEWER positions when it is wrong, which is the shape of failure
+     * every rule in this feature is checked for.
+     *
+     * IT CARRIES THE ARRAY'S OWN PROPERTIES ACROSS, and that is not tidiness:
+     * `paused` and `covered` word the refusals (§14.14, §14.18) and `cont` is
+     * what `frontierCovered` reads for §14.18.4's walk stop, so a plain
+     * `.filter()` would quietly switch that rule off for every chapter-scoped
+     * session. `dropped` is added, for the note.
+     */
+    function stormFilterPool(pool, oids) {
+      if (!pool || !oids) return pool;
+      const out = pool.filter((f) =>
+        (f.oids || []).some((o) => oids.has(String(o))));
+      out.cont = pool.cont;
+      out.paused = pool.paused;
+      out.covered = pool.covered;
+      out.dropped = pool.length - out.length;
+      return out;
+    }
+
+    /**
+     * …and the STORE, narrowed the same way — which is the half that matters,
+     * since §14.11 is why a session opens at once.
+     *
+     * FILTER THE INPUT, NEVER THE ORDER. §14.15 is explicit that
+     * `stormStoreDraw`'s comparator is silent when it is wrong, so a chapter
+     * scope must not become a term in it: this hands that function a smaller
+     * store and the draw is the draw.
+     *
+     * A POSITION WITH NO OID IS EXCLUDED, not included on the benefit of the
+     * doubt. Those are entries written before v0.140.0 whose `backfillStoreOids`
+     * name matched two variations or none — they could be from anywhere, and
+     * offering them under a heading naming a chapter is a claim the session
+     * cannot support. `unattributed` counts them so the note can say so rather
+     * than leaving the user with a short session and no reason.
+     */
+    function stormFilterStore(store, oids) {
+      const out = { kept: {}, dropped: 0, unattributed: 0 };
+      for (const ck of Object.keys(store || {})) {
+        const oid = String((store[ck] && store[ck].o) || '');
+        if (!oid) { out.unattributed++; continue; }
+        if (!oids.has(oid)) { out.dropped++; continue; }
+        out.kept[ck] = store[ck];
+      }
       return out;
     }
 
@@ -35937,7 +35993,19 @@
       return out;
     }
 
-    function storeDraw() { return stormStoreDraw(st.store, Math.random, C); }
+    /**
+     * §14.11's fast path, §14.21's scope applied to its INPUT.
+     *
+     * The narrowing is done to the store handed in and NEVER to the order —
+     * §14.15's rule, and the reason `stormFilterStore` exists as its own pure
+     * function rather than as a clause in the comparator.
+     */
+    function storeDraw() {
+      if (!st.oidFilter) return stormStoreDraw(st.store, Math.random, C);
+      const cut = stormFilterStore(st.store, st.oidFilter);
+      st.storeCut = cut;
+      return stormStoreDraw(cut.kept, Math.random, C);
+    }
 
     // ----------------------------------------------------------------------
     // The wire. Three services, all read-only, all paced.
@@ -36276,6 +36344,46 @@
     function frontierCovered(f) {
       const cont = st.pool && st.pool.cont;
       return (cont && f && cont[f.side]) || null;
+    }
+
+    /**
+     * §14.21) A pool narrowed to this session's chapter, or the pool as it is.
+     *
+     * The impure half of `stormFilterPool`, kept to one line so the rule lives
+     * in the pure function the checks execute.
+     */
+    function stormScope(pool) {
+      return st.oidFilter ? stormFilterPool(pool, st.oidFilter) : pool;
+    }
+
+    /**
+     * …and why a chapter-scoped session found nothing, in `stormFunnelNote`'s
+     * vocabulary (§14.17.2): the point is to tell the three cases apart — a
+     * chapter whose line ends were all excluded by the ordinary rules, one
+     * whose stored positions have all been answered, and one whose positions
+     * predate §15 and cannot be attributed at all.
+     */
+    function stormScopeNote(pool) {
+      if (!st.lid) return '';
+      const where = st.lidName || 'this chapter';
+      const cut = st.storeCut;
+      const bits = ['Nothing to storm in ' + where + '.'];
+      if (pool && pool.dropped) {
+        bits.push(pool.dropped + ' line end(s) elsewhere in the course were left out ' +
+          'because you asked for one chapter.');
+      }
+      if (cut && cut.dropped) {
+        bits.push(cut.dropped + ' stored position(s) belong to other chapters.');
+      }
+      if (cut && cut.unattributed) {
+        // §15's own gap, surfacing where it actually costs something: a
+        // position stored before v0.140.0 whose name matched two variations or
+        // none has no line, so it cannot be attributed to a chapter either.
+        bits.push(cut.unattributed + ' stored position(s) predate the performance ' +
+          'record and cannot be placed in a chapter — storm the whole course to ' +
+          'see those.');
+      }
+      return bits.join(' ');
     }
 
     /** Everything one frontier yields, or [] when it yields nothing. */
@@ -36967,7 +37075,11 @@
           if (!creds) throw new Error('not signed in to Chessable in this tab');
           const course = await fetchCourse(st.bid, creds, true);
           if (!st.gathering) return;
-          st.pool = await stormFrontiers(course.vars, C);
+          // §14.21: a gather inherits the session's scope, which is the
+          // reading that costs nothing and is also the right one — a pass
+          // started from inside a chapter-scoped session is a pass for that
+          // chapter.
+          st.pool = stormScope(await stormFrontiers(course.vars, C));
           st.poolSize = st.pool.length;
           st.name = course.name || st.name;
         }
@@ -37098,6 +37210,18 @@
     async function startSession(spec) {
       st.bid = String(spec.bid);
       st.name = spec.name || '';
+      // §14.21) A CHAPTER SCOPE, or none. `lid` is Chessable's own chapter id
+      // and `oidFilter` is the set of that chapter's recorded lines, resolved
+      // below from the SAME `st.chapters.ch` map §15.4's grouping is built on —
+      // so a chapter can only be stormed once it has been grouped, which is
+      // also the only state the button exists in.
+      st.lid = spec.lid ? String(spec.lid) : '';
+      st.lidName = spec.lidName || '';
+      st.oidFilter = null;
+      st.filterNote = '';
+      // What `storeDraw` left out, for `stormScopeNote` — reset here with the
+      // rest, or a scoped session would report the previous one's counts.
+      st.storeCut = null;
       st.running = true;
       st.over = false;
       // §14.13: NOTHING IS SHOWN UNTIL "Start" IS PRESSED. The pre-roll is
@@ -37159,12 +37283,31 @@
         // that is safe.
         syncStore('opening a session').then(() => syncStats('opening a session'));
       }
+      // §14.21: the chapter's lines, from the map the stats view already
+      // built. AFTER `loadStats`, which is what reads it.
+      if (st.lid) {
+        const ch = (st.chapters && st.chapters.ch) || {};
+        st.oidFilter = new Set(
+          Object.keys(ch).filter((oid) => String(ch[oid]) === st.lid));
+        if (!st.oidFilter.size) {
+          // Nothing recorded in that chapter — which cannot happen from the
+          // button, since the button is drawn off the same map, but can from a
+          // `stormAgain` after the record was pruned. SAID, and the session
+          // falls back to the whole course rather than refusing: a storm with
+          // an empty filter would look like a slow producer for ever.
+          st.oidFilter = null;
+          st.lid = '';
+          st.filterNote = 'No lines are recorded in that chapter any more — ' +
+            'storming the whole course instead.';
+        }
+      }
       st.storeQueue = storeDraw();
       if (st.storeQueue.length) {
         setStatus('', '');
         produceFromStore();
         render();
       }
+      if (st.filterNote) setNote(st.filterNote);
 
       let course = null;
       try {
@@ -37190,7 +37333,11 @@
       // it belongs to.
       backfillStoreOids(course);
 
-      const frontiers = await stormFrontiers(course.vars, C);
+      // §14.21: narrowed to the chapter, if there is one. AFTER the whole
+      // course has been walked — the walk is what knows which lines end where,
+      // and it is also what §14.18's stub index is built from, so filtering the
+      // input to it would change what "the course answers this position" means.
+      const frontiers = stormScope(await stormFrontiers(course.vars, C));
       if (!st.running) return;
       if (!frontiers.length) {
         // NAME THE PAUSE WHERE IT IS THE REASON. Every other cause here is a
@@ -37202,6 +37349,17 @@
         // a chapter written as transposition stubs is a property of the course
         // the user can see for themselves once they are told to look.
         const covered = frontiers.covered || 0;
+        // §14.21: A NARROW FILTER CAN STARVE, and that must be SAID rather
+        // than left looking like a slow producer. It is checked FIRST because
+        // it is the only cause here the user chose one press ago, and the
+        // sentences below would otherwise tell them their course is unsuitable.
+        if (st.lid) {
+          endSession('no frontiers in chapter', stormScopeNote(frontiers) ||
+            ('No line in ' + (st.lidName || 'that chapter') + ' ends on a position ' +
+             'a real game passes through, so there is nothing to storm there. ' +
+             'The rest of the course may still have plenty.'));
+          return;
+        }
         endSession('no frontiers', paused
           ? (course.allPaused
               ? 'Every variation in this course is paused, so there is nothing to storm. ' +
@@ -37869,7 +38027,10 @@
       revAnalyse.addEventListener('click', toggleAnalyse);
       const revAgain = el('button', 'clo-st-again', 'Storm again');
       revAgain.type = 'button';
-      revAgain.addEventListener('click', stormAgain);
+      // NEVER BARE: `stormAgain` takes an optional spec now, and a bare
+      // listener would hand argument 0 the MouseEvent — 24g's own trap,
+      // which was silent on both analysis hosts for ninety versions.
+      revAgain.addEventListener('click', () => stormAgain());
       const revDone = el('button', 'clo-st-done', 'Close');
       revDone.type = 'button';
       revDone.addEventListener('click', closeStorm);
@@ -37985,7 +38146,11 @@
       if (!st.panel) return;
       st.panel.hidden = !st.running;
       if (!st.running || !st.ui) return;
-      st.ui.sub.textContent = st.name || '';
+      // §14.21: the scope is part of what the session IS, so it belongs beside
+      // the course name rather than in a status line that other things
+      // overwrite.
+      st.ui.sub.textContent = (st.name || '') +
+        (st.lid && st.lidName ? ' › ' + st.lidName : '');
       paintClock();
       st.ui.score.textContent = st.score + (st.score === 1 ? ' pt' : ' pts');
       const mult = multiplier();
@@ -38046,7 +38211,7 @@
         (st.poolSize - st.pool.length) + ' of ' + st.poolSize + ' line ends'));
       const again = el('button', 'clo-st-again', 'Storm again');
       again.type = 'button';
-      again.addEventListener('click', stormAgain);
+      again.addEventListener('click', () => stormAgain());
       const done = el('button', 'clo-st-done', 'Close');
       done.type = 'button';
       done.addEventListener('click', closeStorm);
@@ -38230,6 +38395,18 @@
       if (!groups.length) return;
       body.append(el('div', 'clo-st-sthead',
         grouped ? 'This course, by chapter' : 'This course, line by line'));
+      // §14.21: the way OUT of a chapter scope, and only where there is one to
+      // leave. It sits above the chapters for the same reason "Your
+      // repertoires" sits above "This course": widest scope first.
+      if (st.lid) {
+        const wide = el('div', 'clo-st-scoperow');
+        wide.append(el('span', 'clo-st-scopenote',
+          'Storming ' + (st.lidName || 'one chapter') + ' only.'));
+        wide.append(stormScopeButton('Storm the whole course',
+          { bid: st.bid, name: st.name },
+          'Start again with every chapter of this course'));
+        body.append(wide);
+      }
       body.append(statHeader(grouped ? 'Chapter' : 'Line end'));
       for (const g of groups) {
         if (!grouped && !g.lid) {
@@ -38250,6 +38427,26 @@
         body.append(head);
         if (!open) continue;
         for (const row of g.rows) body.append(statRow('div', 'clo-st-strow--sub', row.name, row.agg));
+        // §14.21: THE ANSWER TO THE QUESTION THE TABLE ASKS. §15 built "which
+        // part of my repertoire do I not understand one move past the book" and
+        // left the only available response a whole-course storm.
+        //
+        // Under the OPEN group and not on its head row, for two reasons: the
+        // head is itself a <button> and a button inside a button is not markup,
+        // and restarting a session is not something to hang off a fold. A
+        // chapter with no lid — "Not in a chapter" — cannot be scoped to, since
+        // the scope IS a lid.
+        if (!g.lid) continue;
+        const act = el('div', 'clo-st-scoperow clo-st-scoperow--sub');
+        if (String(g.lid) === String(st.lid)) {
+          act.append(el('span', 'clo-st-scopenote', 'This is the chapter you are storming.'));
+        } else {
+          act.append(stormScopeButton('Storm this chapter',
+            { bid: st.bid, name: st.name, lid: g.lid, lidName: g.name },
+            'Start again, drawing only on the ' + g.rows.length +
+            ' line end(s) recorded in ' + (g.name || 'this chapter')));
+        }
+        body.append(act);
       }
     }
 
@@ -38270,10 +38467,27 @@
       render();
     }
 
-    function stormAgain() {
-      const spec = { bid: st.bid, name: st.name };
+    /**
+     * §14.21: A RESTART KEEPS THE SCOPE unless one is handed in. "Storm again"
+     * after a chapter storm means the same chapter — that is what the user was
+     * doing — and the stats view's own rows are where a different scope, the
+     * whole course included, is chosen.
+     */
+    function stormAgain(spec) {
+      const next = spec && spec.bid ? spec : { bid: st.bid, name: st.name,
+        lid: st.lid, lidName: st.lidName };
       closeStorm();
-      startSession(spec);
+      startSession(next);
+    }
+
+    /** …and the two launchers the stats view draws, which is the one surface
+     *  that knows what the chapters are. */
+    function stormScopeButton(label, spec, title) {
+      const b = el('button', 'clo-st-scope', label);
+      b.type = 'button';
+      b.title = title;
+      b.addEventListener('click', () => { stormAgain(spec); });
+      return b;
     }
 
     // ----------------------------------------------------------------------

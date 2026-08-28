@@ -60,6 +60,12 @@
  *   * …only the ENGINE named, the two ChessDB tiers silent → 4 fail
  *   * …the label put back on the VERDICT line             → 4 fail
  *   * …the engine depth dropped from the label            → 1 fail
+ *   * §14.21's oid cap put back on a frontier              → 3 fail (a frontier
+ *     four lines converge on then answers the chapter question wrongly, and
+ *     silently)
+ *   * …its pool filter written as a plain `.filter()`      → 4 fail (which
+ *     drops §14.18.4's walk stop along with both refusal counts)
+ *   * …an unattributed stored position kept anyway         → 3 fail
  *   * …with its `pos.side !== userSide` guard removed    → 3 fail (the "tidy":
  *     it still stops walks and still looks plausible, and silently discards
  *     every position where the OPPONENT left the book first)
@@ -92,6 +98,8 @@ const src = [
   // The pipeline under test.
   sliceDecl('stormFrontiers'),
   sliceDecl('stormDrawFrontier'),
+  sliceDecl('stormFilterPool'),
+  sliceDecl('stormFilterStore'),
   sliceDecl('stormUserEval'),
   sliceDecl('PGN_COMMENT_RE'),
   sliceDecl('stormPgnMoves'),
@@ -165,6 +173,7 @@ const src = [
 '         stormReentered,' +
   '         stormCard, stormPack, stormUnpack, stormRetain, stormStoreDraw,' +
   '         stormDone, stormPickGames,' +
+'         stormFilterPool, stormFilterStore,' +
 '         stormReachBucket, stormReachLabel,' +
   '         stormFunnelBlank, stormFunnelBump, stormFunnelWhy,' +
   '         stormFunnelNote, stormFunnelLines,' +
@@ -723,6 +732,66 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('the weight orders the draw', S.stormDrawFrontier(weighted, () => 0.99).tag, 'thin');
 
   const fFen = frontiers[0].fen;
+
+  // --- §14.21: A CHAPTER SCOPE (v0.148.0) ---------------------------------
+  // §15 built "which part of my repertoire do I not understand one move past
+  // the book" and left the only available response a whole-course storm. The
+  // scope is a FILTER on the frontier pool and on the store, never a term in
+  // `stormStoreDraw`'s comparator — §14.15's rule, and the reason both filters
+  // are pure functions this file can execute.
+  eq('every line ending at a frontier is recorded, not just the first three',
+    frontiers[0].oids.length, 2);
+  eq('…while the NAMES stay capped, which is what that cap was for',
+    frontiers[0].names.length <= 3, true);
+  // The cap mattered: a frontier four lines converge on answered the chapter
+  // question wrongly and silently while only three oids were kept.
+  const manyEnd = await S.stormFrontiers([
+    { oid: 11, name: 'A', color: 'white', sans: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5'] },
+    { oid: 12, name: 'B', color: 'white', sans: ['Nf3', 'Nc6', 'e4', 'e5', 'Bb5'] },
+    { oid: 13, name: 'C', color: 'white', sans: ['e4', 'Nc6', 'Nf3', 'e5', 'Bb5'] },
+    { oid: 14, name: 'D', color: 'white', sans: ['Nf3', 'e5', 'e4', 'Nc6', 'Bb5'] },
+  ], C);
+  eq('four lines converging on one frontier record four oids',
+    manyEnd.length === 1 && manyEnd[0].oids.length, 4);
+  eq('…and still name only three', manyEnd[0].names.length, 3);
+  eq('a chapter holding only the FOURTH of them still finds the frontier',
+    S.stormFilterPool(manyEnd, new Set(['14'])).length, 1);
+
+  // The pool filter, and the properties it MUST carry across: `cont` is
+  // §14.18.4's walk stop, `paused` and `covered` word the refusals. A plain
+  // `.filter()` drops all three and switches that stop off, silently, for
+  // every chapter-scoped session.
+  const scoped = S.stormFilterPool(frontiers, new Set(['1']));
+  eq('a chapter the frontier belongs to keeps it', scoped.length, 1);
+  eq('…and one it does not, drops it',
+    S.stormFilterPool(frontiers, new Set(['999'])).length, 0);
+  eq('the continuation index survives the filter', scoped.cont, frontiers.cont);
+  eq('…and so does the paused count', scoped.paused, frontiers.paused);
+  eq('…and the covered one', scoped.covered, frontiers.covered);
+  eq('what was left out is counted, for the note',
+    S.stormFilterPool(manyEnd, new Set(['14'])).dropped, 0);
+  eq('no filter at all is the pool itself',
+    S.stormFilterPool(frontiers, null), frontiers);
+
+  // The store filter — the half that matters, since §14.11 is why a session
+  // opens at once.
+  const scopeStore = {
+    mine:   { f: fFen, o: '1', m: [['g1f3', 'Nf3', 12]], k: 0 },
+    theirs: { f: fFen, o: '2', m: [['g1f3', 'Nf3', 12]], k: 0 },
+    old:    { f: fFen, m: [['g1f3', 'Nf3', 12]], k: 0 },   // pre-v0.140.0: no oid
+  };
+  const scopeCut = S.stormFilterStore(scopeStore, new Set(['1']));
+  eq('the chapter’s own stored positions are kept', Object.keys(scopeCut.kept), ['mine']);
+  eq('…another chapter’s are dropped and counted', scopeCut.dropped, 1);
+  // A POSITION WITH NO OID IS EXCLUDED, not included on the benefit of the
+  // doubt: it could be from anywhere, and offering it under a heading naming a
+  // chapter is a claim the session cannot support.
+  eq('…and one that cannot be attributed at all is excluded', scopeCut.unattributed, 1);
+  eq('…and is NOT quietly counted as another chapter’s', scopeCut.dropped, 1);
+  eq('the filtered store still draws in the ordinary order',
+    S.stormStoreDraw(scopeCut.kept, () => 0.5, C).map((x) => x.ck), ['mine']);
+  eq('an empty store filters to nothing without complaint',
+    Object.keys(S.stormFilterStore({}, new Set(['1'])).kept).length, 0);
 
   // --- an ordinary walk ---------------------------------------------------
   const ordinary = await S.stormWalkGame(fFen, 'w', gameSans, book(20), C);

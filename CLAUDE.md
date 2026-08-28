@@ -3435,6 +3435,35 @@ Currently working (v0.18.x).
       place the same objection does apply — `spreadMinCp` buys ~15% less at +200
       than at equality — and why fixing it needs the probe re-run rather than an
       argument.
+  * A SESSION CAN BE SCOPED TO ONE CHAPTER (§14.21, v0.148.0) — §15 named the
+    worst chapter and left a whole-course storm as the only response. It is a
+    FILTER, not a producer: `stormFilterStore` narrows the store and
+    `stormFilterPool` the frontier pool, and nothing about how a position is
+    found, graded, stored or counted changes. FOUR things an edit elsewhere can
+    break:
+    - FILTER THE INPUT, NEVER THE ORDER. The scope must not become a term in
+      `stormStoreDraw`'s comparator — §14.15's rule, whose whole point is that a
+      re-weighted comparator there is silent from the outside. `storeDraw` hands
+      that function a smaller store; §14.19's reachability term is untouched.
+    - `stormFilterPool` COPIES THE ARRAY'S OWN PROPERTIES, and a plain
+      `.filter()` is the bug waiting there: `stormFrontiers` hangs `paused` and
+      `covered` (the refusals) AND `cont` off its result, and `cont` is what
+      `frontierCovered` reads for §14.18.4's walk stop — so the one-liner
+      switches that stop off for every scoped session, invisibly.
+    - THE POOL IS FILTERED AFTER THE WALK, never before it. The walk is what
+      knows which lines end where and is also what §14.18's stub index is built
+      from, so narrowing its input would change what "the course answers this
+      position" means. It is also why `stormFrontiers` now records EVERY oid on
+      a frontier and caps only the NAMES — that cap was always a display cap,
+      and a capped oid list answers the chapter question wrongly for a frontier
+      four lines converge on.
+    - A NARROW FILTER CAN STARVE AND IT MUST BE SAID (`stormScopeNote`, checked
+      BEFORE the existing refusals, since a scope is the only cause there the
+      user chose one press ago). A stored position with no oid is EXCLUDED and
+      counted, never included on the benefit of the doubt: it could be from
+      anywhere. `stormAgain` KEEPS the scope and now takes an optional spec, so
+      both Again listeners are wired `() => stormAgain()` — 24g's bare-listener
+      trap.
   * THE PERFORMANCE RECORD (§15, v0.140.0): every graded answer counted against
     the LINE whose frontier the position came from, rolled up per CHAPTER and
     per COURSE, and carried between devices on 16e's transport. **READ
@@ -3598,7 +3627,10 @@ or the PERFORMANCE RECORD (§15:
 `stormStatApply`, `stormStatPlus`, `stormStatSum`, `stormStatRoll`,
 `stormStatRate`, `stormStatLoss`, `stormStatsMerge`, `stormStatsPrune`,
 `stormStatsWirePack`, `stormStatsWireUnpack`), every one of whose failure modes
-is a plausible percentage — or the STORE'S DRAW ORDER (`stormStoreDraw`, §14.15: a
+is a plausible percentage — or the CHAPTER SCOPE's two filters (`stormFilterPool`,
+`stormFilterStore`, §14.21, whose pool filter written as a plain `.filter()`
+silently switches §14.18.4's walk stop off) — or the STORE'S DRAW ORDER
+(`stormStoreDraw`, §14.15: a
 reversed comparator returns every position in a plausible-looking sequence and
 is otherwise undetectable from the outside) — or the REACHABILITY term beside it
 (`stormReachBucket`, `stormReachLabel`, §14.19, whose UNKNOWN arm decides

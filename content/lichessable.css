@@ -6836,6 +6836,47 @@ button.clo-st-strow:hover { background: var(--clo-bg-raised); }
 .clo-st-strow--grp { font-weight: 600; }
 .clo-st-strow--sub .clo-st-stname { padding-left: 16px; color: var(--clo-text-dim); }
 
+/* §14.21) The scope launchers. NOT a row of the table: it is an action, and
+   giving it the table's grid would put a button where a percentage belongs and
+   make the numbers above it hard to read down. Indented under the group it
+   belongs to, so the fold still reads as one block. */
+.clo-st-scoperow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 6px 8px;
+}
+.clo-st-scoperow--sub { padding-left: 22px; }
+
+.clo-st-scopenote {
+  color: var(--clo-text-faint);
+  font-size: 12px;
+}
+
+/* Neutral OUTLINE, `.clo-st-sync`'s vocabulary and deliberately not
+   `.clo-st-gather`'s green: DESIGN-ui-inventory §3's rule is that green outline
+   is an ordinary action and the green in THIS window is spent on "storm" and
+   "gather", which are the two things the window is for. Narrowing a storm to a
+   chapter is a change of scope, which is a setting-shaped act — and there is
+   one of these under every open chapter, so a green row of them would shout
+   over the table they are read against. */
+.clo-st-scope {
+  border: 1px solid var(--clo-bg-raised);
+  background: transparent;
+  color: var(--clo-text-dim);
+  /* `.clo-st-sync`'s metrics to the pixel, not merely its colours: two controls
+     that look the same and measure 22px against 24px read as a mistake. */
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.clo-st-scope:hover { color: var(--clo-text-bright); border-color: var(--clo-accent); }
+
 .clo-st-stname {
   flex: 1;
   min-width: 0;
@@ -6934,6 +6975,8 @@ html.clo-touch .clo-st { font-size: 15px; }
 html.clo-touch .clo-st-strow { padding: 7px 6px; }
 html.clo-touch .clo-st-strow--head { font-size: 12px; }
 html.clo-touch .clo-st-sthead { font-size: 13px; }
+html.clo-touch .clo-st-scope { font-size: 14px; padding: 7px 14px; }
+html.clo-touch .clo-st-scopenote { font-size: 13px; }
 html.clo-touch .clo-st-x { font-size: 22px; padding: 0 6px; }
 html.clo-touch .clo-st-clock { font-size: 24px; }
 html.clo-touch .clo-st-note { font-size: 13px; }

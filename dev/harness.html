@@ -3871,7 +3871,7 @@ body {
         <div class="clo-st hx-pos" style="width:min(880px,100%);height:430px">
           <div class="clo-st-head">
             <span class="clo-st-title">Intuition storm</span>
-            <span class="clo-st-sub">Intermediate Starter Kit</span>
+            <span class="clo-st-sub">Intermediate Starter Kit &rsaquo; The Scotch</span>
             <span class="clo-st-clock clo-st-clock--off">0:00</span>
             <span class="clo-st-stat">31 pts</span>
             <span class="clo-st-stat">streak 0</span>
@@ -3901,6 +3901,9 @@ body {
                 <button type="button" class="clo-st-analyse">Back</button>
               </div>
               <div class="clo-st-note clo-st-statsnote">6 chapter(s) read &mdash; 23 line(s) placed.</div>
+              <!-- &sect;14.21: a chapter-scoped storm names its scope in the window's
+                   own subtitle, beside the course, because the scope is part of what
+                   the session IS rather than a status another message overwrites. -->
               <div class="clo-st-stats-body">
                 <div class="clo-st-sthead">Your repertoires</div>
                 <div class="clo-st-strow clo-st-strow--head">
@@ -3933,6 +3936,13 @@ body {
                 </div>
 
                 <div class="clo-st-sthead">This course, by chapter</div>
+                <!-- &sect;14.21 (v0.148.0): the way OUT of a chapter scope, shown only
+                     while there is one to leave. Above the chapters for the same reason
+                     "Your repertoires" is above "This course": widest scope first. -->
+                <div class="clo-st-scoperow">
+                  <span class="clo-st-scopenote">Storming The Scotch only.</span>
+                  <button type="button" class="clo-st-scope">Storm the whole course</button>
+                </div>
                 <div class="clo-st-strow clo-st-strow--head">
                   <span class="clo-st-stname">Chapter</span>
                   <span class="clo-st-bar"></span>
@@ -3964,13 +3974,35 @@ body {
                   <span class="clo-st-stnum">6.4%</span>
                   <span class="clo-st-stnum clo-st-stnum--faint">8</span>
                 </div>
+                <!-- &sect;14.21: the answer to the question the table asks, under the
+                     OPEN group and not on its head row &mdash; the head is itself a
+                     &lt;button&gt; and a button inside a button is not markup, and
+                     restarting a session is not something to hang off a fold. This is
+                     the chapter being stormed, so it says so instead. -->
+                <div class="clo-st-scoperow clo-st-scoperow--sub">
+                  <span class="clo-st-scopenote">This is the chapter you are storming.</span>
+                </div>
                 <button type="button" class="clo-st-strow clo-st-strow--grp">
-                  <span class="clo-st-stname">&#9656; Anti-Sicilians</span>
+                  <span class="clo-st-stname">&#9662; Anti-Sicilians</span>
                   <span class="clo-st-bar"><span class="clo-st-bar-seg clo-st-bar-a" style="width:40%"></span><span class="clo-st-bar-seg clo-st-bar-g" style="width:34%"></span><span class="clo-st-bar-seg clo-st-bar-o" style="width:14%"></span><span class="clo-st-bar-seg clo-st-bar-b" style="width:12%"></span></span>
                   <span class="clo-st-stnum">74%</span>
                   <span class="clo-st-stnum">3.2%</span>
                   <span class="clo-st-stnum clo-st-stnum--faint">27</span>
                 </button>
+                <div class="clo-st-strow clo-st-strow--sub">
+                  <span class="clo-st-stname">Rossolimo 3&hellip;g6</span>
+                  <span class="clo-st-bar"><span class="clo-st-bar-seg clo-st-bar-a" style="width:44%"></span><span class="clo-st-bar-seg clo-st-bar-g" style="width:30%"></span><span class="clo-st-bar-seg clo-st-bar-o" style="width:16%"></span><span class="clo-st-bar-seg clo-st-bar-b" style="width:10%"></span></span>
+                  <span class="clo-st-stnum">74%</span>
+                  <span class="clo-st-stnum">3.2%</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">27</span>
+                </div>
+                <!-- NEUTRAL outline, `.clo-st-sync`'s vocabulary and deliberately not
+                     `.clo-st-gather`'s green: the green in this window is spent on
+                     "storm" and "gather", and there is one of these under every open
+                     chapter. -->
+                <div class="clo-st-scoperow clo-st-scoperow--sub">
+                  <button type="button" class="clo-st-scope">Storm this chapter</button>
+                </div>
                 <!-- The chapters could not be read, or this line was answered before
                      v0.140.0 taught the store which variation it came from. Named
                      rather than filed under a guess. -->
