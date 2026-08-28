@@ -1786,6 +1786,75 @@ complained.
   user is looking at a card, and the one thing they might want to know — that
   the store is empty and it is walking — the note already says.
 
+### 14.18 A line that ends where another one carries on (v0.144.0)
+
+Reported by the author: *some variations exist only to show a transposition and
+end early, at a position other variations continue from.* Storm one of those and
+the walk carries it forward with somebody's real game — which is free to leave
+the repertoire at the very first move the repertoire had an answer for. The user
+is then asked to improvise in a position their own course covers, having been
+shown a continuation it never plays. It is the one failure of stage 0 that
+produces a card looking exactly like a good one.
+
+#### 14.18.1 It is common, and it is two different shapes
+
+Measured over the account's three courses (`dev/tmp-courses.json`, 2026-08-28):
+
+| course | frontiers before | line ends that sit inside another line |
+|---|---|---|
+| 291847 Intermediate Starter Kit | 33 | **8** |
+| 453453 Testing course | 72 | **8** |
+| 455941 Testing Repertoire | 6 | **1** |
+
+A quarter of the first course's frontiers, and every one of those eight is the
+same publisher idiom: an `… - Introduction` card ending on the position where
+both the `… - Improving Our Position` card (whose custom start FEN *is* that
+position) and the full annotated game pick the play up. 453453's eight are the
+plain repertoire shape — `Sicilian: 2...Nc6 3.d4` stopping on 6...Bg7 while
+three other cards play 7.Be3 there.
+
+#### 14.18.2 The rule
+
+`stormFrontiers` now builds a second index as it walks: `cont`, the positions
+each side's lines play a move **from** — every position of every line except the
+one it ends on. A frontier whose own `cacheKey` is in `cont[side]` is dropped and
+counted (`out.covered`, reported the way `out.paused` is, §14.14).
+
+Three decisions, and the two asymmetries are the interesting ones:
+
+* **Scoped to the frontier's own side.** A Black line playing a move in that
+  position says nothing about whether the WHITE repertoire continues there — it
+  is the same board met from the other end. On these courses side-scoping,
+  colour-agnostic and source-only all answer identically (8/8/1 each), so this
+  costs nothing measurable and is chosen for being the statement that is true.
+* **A custom-FEN line cannot be a SOURCE but can be a CONTINUER**, and a
+  **paused** one can too. The exclusions above answer "is this line a usable
+  frontier"; this index answers "does this course say anything else here", which
+  is a different question. The user paused a line; they did not say their
+  repertoire stops there. (On 291847 the eight stubs are caught either way — the
+  full game continues past them as well as the puzzle card — so this is
+  reasoning, not a measurement.)
+* **One walk, two uses.** `walkVariation` moved above every source test, so the
+  second use can see the lines the first is not allowed to take. Cost of walking
+  the lines that used to be skipped early, measured over three runs each: 291847
+  3.59 s → 4.31 s, 453453 4.67 s → 4.84 s, 455941 0.21 s → 0.22 s. The +20% on
+  the first is its 83- and 128-ply model games; it is behind the existing
+  `chunkVars` yield, so it is not a frozen tab either way.
+
+#### 14.18.3 What it does NOT do
+
+* **It does not stop a WALK re-entering the repertoire.** A frontier can still be
+  carried forward by a game into a position some other line of the course
+  answers; this rule is only about where a walk STARTS. That is a much larger
+  question (every position of the course against every step of every walk) and
+  the eval band, the ply range and the stop rules already bound how far a walk
+  goes. Left open deliberately, with the measurement above as the reason: the
+  cheap half of the problem is a quarter of the frontiers.
+* **It does not look at the store.** §14.11's positions were harvested by an
+  earlier build and are not re-filtered — the retention rule and §14.16's
+  tombstones age them out. A device gathering afresh never adds another.
+
+
 ## 15. The performance record (v0.140.0)
 
 A storm ends with a score, and a score is forgotten by the next one. The

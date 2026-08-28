@@ -34781,6 +34781,18 @@
      *  * A variation under `minVarPlies` has no repertoire to be at the
      *    frontier of.
      *
+     * …AND A THIRD (§14.18): A LINE THAT ENDS WHERE ANOTHER ONE CARRIES ON IS
+     * NOT A FRONTIER. Courses are full of lines written to show a
+     * transposition, or to introduce a model game, that stop at a position the
+     * repertoire answers perfectly well somewhere else — "Sicilian: 2...Nc6
+     * 3.d4" ending on 6...Bg7 while three other cards play 7.Be3 there. Storm
+     * that end and the walk carries it forward with somebody's real game,
+     * which is free to leave the repertoire at the very first move the
+     * repertoire had an answer for: the user is then asked to improvise in a
+     * position their own course covers, having been shown a continuation it
+     * never plays. Measured on the account's three courses (2026-08-28): 8 of
+     * 33 frontiers, 8 of 72 and 1 of 6.
+     *
      * WHOSE MOVE THE STORM ASKS FOR COMES FROM THE LINE, never from
      * `courseSide` — 24h's rule, for 24h's reason: `courseSide` is a
      * course-wide MAJORITY and §12.6 measured it answering 'w' for a course
@@ -34797,27 +34809,52 @@
       // has to be sayable. Hung off the returned array rather than changing
       // the return type: every caller wants the pool and only one wants this.
       let paused = 0;
+      // §14.18) THE POSITIONS THE COURSE STILL HAS SOMETHING TO SAY AT, per
+      // side: every position one of its variations plays a move FROM, which is
+      // every position of every line except the one it ends on. A line end
+      // that turns up in here is a stub, not a frontier.
+      //
+      // TWO DELIBERATE ASYMMETRIES with the exclusions above, and both read
+      // the same way — the question here is "does this course answer this
+      // position", which is a different question from "is this line a usable
+      // source":
+      //  * A CUSTOM-FEN LINE CANNOT BE A SOURCE BUT CAN BE A CONTINUER. On
+      //    291847 every one of the eight stubs is an "- Introduction" card
+      //    stopping exactly where an "- Improving Our Position" card, whose
+      //    start FEN is that very position, picks the game up.
+      //  * SO CAN A PAUSED ONE. The user asked not to be PROMPTED about that
+      //    line; they did not say their course stops there.
+      // Short lines are walked too — their positions are as real as anyone
+      // else's, and the length rule is about being a frontier.
+      const cont = { w: new Set(), b: new Set() };
+      let covered = 0;
       for (const v of vars || []) {
         // Section 24's walk yields for the same reason: this is `walkVariation`
         // over every line of the course, measured at 1.2 s for 80 variations,
         // and a 500-line repertoire is ~8 s of frozen tab at the very moment
         // the user has just pressed a button.
         if (++i % C.chunkVars === 0) await sleepMs(0);
-        if (!v.sans || v.sans.length < C.minVarPlies) continue;
+        if (!v.sans || !v.sans.length) continue;
+        const side = sideOf(v.color);
+        // ONE WALK, TWO USES — and the walk moved ABOVE every source test so
+        // the second use can see the lines the first one is not allowed to
+        // take. A colourless line is walked for neither: it cannot be
+        // attributed to a repertoire, and the frontier rule below refuses to
+        // guess at one for exactly that reason.
+        const w = side ? walkVariation(v) : null;
+        if (w) for (const p of w.plies) cont[side].add(cacheKey(p.before));
+        if (v.sans.length < C.minVarPlies) continue;
         // PAUSED LINES ARE NOT STORMED. "Paused" and "skipped" are Chessable's
         // two words for one flag (see `reduceCourse`) and both mean the user
         // has asked not to be prompted about this line — so asking what they
         // would play the move AFTER it is the same question one ply later.
-        // Counted BEFORE the walk, so the figure is "lines you paused", not
-        // "lines you paused that would also have been usable": the second
-        // number explains nothing to somebody wondering where their course
-        // went.
+        // Counted BEFORE the source tests, so the figure is "lines you
+        // paused", not "lines you paused that would also have been usable":
+        // the second number explains nothing to somebody wondering where their
+        // course went.
         if (v.paused) { paused++; continue; }
-        const side = sideOf(v.color);
-        if (!side) continue;
+        if (!side || !w) continue;
         if (v.fen && cacheKey(v.fen) !== cacheKey(START_FEN)) continue;
-        const w = walkVariation(v);
-        if (!w) continue;
         const ck = cacheKey(w.end);
         const last = w.plies[w.plies.length - 1];
         let e = byEnd.get(ck);
@@ -34845,10 +34882,19 @@
       const out = [];
       for (const e of byEnd.values()) {
         if (e.w && e.b) continue; // ambiguous: two repertoires end here
-        e.side = e.w ? 'w' : 'b';
+        const side = e.w ? 'w' : 'b';
+        // §14.18: SCOPED TO THE FRONTIER'S OWN SIDE. A line of the other
+        // colour passing through says nothing about whether THIS repertoire
+        // continues — the user meeting the position from the other side has a
+        // move there, the one facing it does not.
+        if (cont[side].has(e.ck)) { covered++; continue; }
+        e.side = side;
         out.push(e);
       }
       out.paused = paused;
+      // …reported the same way and for the same reason: with a chapter full of
+      // transposition stubs this is where a course's frontiers went.
+      out.covered = covered;
       return out;
     }
 
@@ -36679,6 +36725,9 @@
         // `startSession`: with every line paused this pass has nothing to walk,
         // and "every line has been walked" would be the wrong explanation.
         const skipped = (st.pool && st.pool.paused) || 0;
+        // …and §14.18's, which on a stub-heavy chapter is the bigger of the two
+        // and is otherwise indistinguishable from the course simply being small.
+        const inside = (st.pool && st.pool.covered) || 0;
         // §14.17: THE HEADLINE IS STILL THE STORE — that is what a session
         // will draw on — but the funnel now says how it was arrived at, which
         // is the question "2 new" could never answer on its own.
@@ -36691,6 +36740,7 @@
               Object.keys(st.store || {}).length + ' ready on this course.',
           funnelNote,
           skipped ? skipped + ' paused or skipped variation(s) are not walked.' : '',
+          inside ? inside + ' line end(s) sit inside other lines and are not frontiers.' : '',
         ].filter(Boolean).join(' '), '');
         // THE QUEUE THIS PASS EMPTIED IS REFILLED FROM WHAT IT STORED. Gathering
         // during the pre-roll clears the queue (it owns the pool), so without
@@ -36868,6 +36918,10 @@
         // is a decision they made and can unmake, and the old sentence would
         // have told them their course was unsuitable instead.
         const paused = frontiers.paused || 0;
+        // …and §14.18's exclusion is named the same way, for the same reason:
+        // a chapter written as transposition stubs is a property of the course
+        // the user can see for themselves once they are told to look.
+        const covered = frontiers.covered || 0;
         endSession('no frontiers', paused
           ? (course.allPaused
               ? 'Every variation in this course is paused, so there is nothing to storm. ' +
@@ -36875,13 +36929,21 @@
               : paused + ' variation(s) in this course are paused or skipped and are ' +
                 'not stormed. Nothing else here ends on a position a real game passes ' +
                 'through.')
-          : 'None of this course’s variations ends on a position a real game passes ' +
-            'through — every line either starts from a custom position (tactics, model ' +
-            'games) or is too short to have a frontier.');
+          : covered
+            ? covered + ' line end(s) here sit inside other lines of the same ' +
+              'repertoire, which carries on past them, so they are not frontiers. ' +
+              'Nothing else in this course ends on a position a real game passes through.'
+            : 'None of this course’s variations ends on a position a real game passes ' +
+              'through — every line either starts from a custom position (tactics, model ' +
+              'games) or is too short to have a frontier.');
         return;
       }
       if (frontiers.paused) {
         log('storm:', frontiers.paused, 'paused/skipped variation(s) excluded on', st.bid);
+      }
+      if (frontiers.covered) {
+        log('storm:', frontiers.covered, 'line end(s) excluded — the repertoire ' +
+          'continues past them');
       }
       st.pool = frontiers;
       st.poolSize = frontiers.length;

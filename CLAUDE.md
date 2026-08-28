@@ -3264,6 +3264,25 @@ Currently working (v0.18.x).
     at. NOT reached: the store, since `produceFromStore` runs before the course
     is read (§14.11's whole point) — bounded, not fixed, and §14.14 says what
     fixing it would cost.
+  * A LINE THAT ENDS WHERE ANOTHER ONE CARRIES ON IS NOT A FRONTIER (§14.18,
+    v0.144.0) — the transposition stub and the publisher's "- Introduction"
+    card, which stop at a position other lines of the same repertoire play on
+    from. Storming one walks a real game forward from a position the course
+    already answers, so the user improvises where their own book has a move.
+    Measured: 8 of 33 frontiers, 8 of 72 and 1 of 6 on the account's courses.
+    Like the paused filter it is INSIDE `stormFrontiers`, so it covers the
+    gather pass and the store for free, and its count rides back on the array
+    (`frontiers.covered`). TWO ASYMMETRIES WITH THE SOURCE EXCLUSIONS BESIDE IT,
+    and they are not oversights: a CUSTOM-FEN line and a PAUSED one can both be
+    the CONTINUER though neither may be a SOURCE — those rules answer "is this
+    line a usable frontier" and this index answers "does the course say anything
+    else here". It is SIDE-SCOPED for the same reason the frontier's own side
+    is (24h's rule): a line of the other colour moving there is the same board
+    met from the other end. `walkVariation` therefore runs ABOVE every source
+    test — ONE WALK, TWO USES — which costs +20% on a model-game-heavy course
+    (3.59 s → 4.31 s for 81 variations in node) behind the existing `chunkVars`
+    yield. NOT reached: a walk RE-ENTERING the repertoire after the frontier,
+    which is a different and much larger question (§14.18.3).
   * NOTHING IS SHOWN UNTIL "Start" IS PRESSED (§14.13, v0.135.0), and the gate
     is ONE line at the top of `nextCard` (`if (!st.started) { render(); return; }`).
     Every route into the first card — `produce`'s finally, the store path in
@@ -3512,7 +3531,10 @@ control flow, §14.17), whose invariant is that the four candidate outcomes
 account for every examined position — or the PAUSED filter in
 `stormFrontiers`
 (§14.14, whose whole failure mode is silence: a course with nothing paused
-answers identically either way) — or the ENGINE TIER's `CONFIG.storm`
+answers identically either way) — or the STUB filter beside it (§14.18, whose
+failure mode is the same silence, plus two asymmetries an edit is likely to
+"tidy" away: a custom-FEN or paused line may be the CONTINUER though neither may
+be a SOURCE) — or the ENGINE TIER's `CONFIG.storm`
 numbers (`engineDepth`, `engineTimeoutMs`, `gradeTimeoutMs`), whose every
 failure mode is a tier that still runs and silently answers "No verdict" for
 ever: a depth above engine.js's own `PROFILES` ceiling is CLAMPED rather than

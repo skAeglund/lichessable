@@ -46,6 +46,9 @@
  *     negation — the two really are separate traps)
  *   * `stormPickReject`'s spread5 rule removed            → 3 fail
  *   * `stormBestLine`'s same-move guard defeated          → 3 fail
+ *   * §14.18's stub filter removed altogether            → 6 fail
+ *   * …its continuation index made colour-agnostic       → 1 fail
+ *   * …restricted to the lines eligible to BE a frontier → 2 fail
  */
 'use strict';
 const fs = require('fs');
@@ -622,6 +625,55 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
     { oid: 2, name: 'B', color: 'black', sans: ['e4', 'e5', 'Nf3', 'Nc6'] },
   ], C);
   eq('a frontier two repertoires share is dropped', mixed.length, 0);
+
+  // --- §14.18: a line that ends where another one carries on ---------------
+  // The measured shape (2026-08-28): course 453453 has "Sicilian: 2...Nc6 3.d4"
+  // ending on 6...Bg7 while three other cards play 7.Be3 from that very
+  // position, and 291847 has eight "- Introduction" model-game headers stopping
+  // exactly where the game itself continues. Storming such an end walks a real
+  // game forward from a position the repertoire already answers.
+  const stubSans = ['e4', 'c5', 'Nf3', 'Nc6', 'd4', 'cxd4', 'Nxd4', 'g6'];
+  const deepSans = stubSans.concat(['Nc3', 'Bg7', 'Be3', 'Nf6']);
+  const stubs = await S.stormFrontiers([
+    { oid: 1, name: 'Overview stub', color: 'white', sans: stubSans },
+    { oid: 2, name: 'The real line', color: 'white', sans: deepSans },
+  ], C);
+  eq('a line ending inside another one is not a frontier',
+    stubs.some((f) => f.names.indexOf('Overview stub') >= 0), false);
+  eq('…and the line that carries on still has its own',
+    stubs.length === 1 && stubs[0].names[0], 'The real line');
+  eq('the count is reported so a refusal can say why', stubs.covered, 1);
+  eq('a course with no stubs reports zero',
+    (await S.stormFrontiers([{ oid: 2, name: 'The real line', color: 'white',
+      sans: deepSans }], C)).covered, 0);
+  // SCOPED TO THE FRONTIER'S OWN SIDE. A Black line playing a move in that
+  // position says nothing about whether the WHITE repertoire continues there —
+  // it is the other half of the same board, met from the other end.
+  const crossColour = await S.stormFrontiers([
+    { oid: 1, name: 'Overview stub', color: 'white', sans: stubSans },
+    { oid: 2, name: 'Black meets it', color: 'black', sans: deepSans },
+  ], C);
+  eq('a line of the OTHER colour continuing does not exclude it',
+    crossColour.some((f) => f.names.indexOf('Overview stub') >= 0), true);
+  // …and the two asymmetries with the source rules above. Both lines below are
+  // barred from BEING a frontier and both are still evidence that the course
+  // answers the position — which is the whole of the question here.
+  const byPuzzle = await S.stormFrontiers([
+    { oid: 1, name: 'Overview stub', color: 'white', sans: stubSans },
+    // 291847's shape exactly: an "Improving Our Position" card whose custom
+    // start FEN IS the stub's last position.
+    { oid: 2, name: 'Improving Our Position', color: 'white', sans: ['Nc3', 'Bg7'],
+      fen: 'r1bqkbnr/pp1ppp1p/2n3p1/8/3NP3/8/PPP2PPP/RNBQKB1R w KQkq - 0 5' },
+  ], C);
+  eq('a CUSTOM-FEN line continuing there excludes it',
+    byPuzzle.some((f) => f.names.indexOf('Overview stub') >= 0), false);
+  const byPaused = await S.stormFrontiers([
+    { oid: 1, name: 'Overview stub', color: 'white', sans: stubSans },
+    { oid: 2, name: 'Paused deep line', color: 'white', paused: 1, sans: deepSans },
+  ], C);
+  eq('a PAUSED line continuing there excludes it too',
+    byPaused.some((f) => f.names.indexOf('Overview stub') >= 0), false);
+  eq('…and is still counted as paused for its own end', byPaused.paused, 1);
 
   // The weighted draw removes what it hands out, so a session never repeats a
   // frontier however the random numbers fall.
