@@ -76,6 +76,9 @@ const src = [
   sliceDecl('stormUserEval'),
   sliceDecl('PGN_COMMENT_RE'),
   sliceDecl('stormPgnMoves'),
+  // §16's conversion, which everything below it is a transformation of.
+  sliceDecl('stormWinPct'),
+  sliceDecl('stormWpLoss'),
   sliceDecl('stormPickReject'),
   sliceDecl('stormMoveLoss'),
   sliceDecl('stormMoverCp'),
@@ -88,6 +91,21 @@ const src = [
   sliceDecl('stormWirePack'),
   sliceDecl('stormWireUnpack'),
   sliceDecl('stormWireMerge'),
+  // §15's performance record. The three silent failures are the denominator,
+  // the merge and the roll-up — see section 9 below.
+  sliceDecl('STAT_BAND'),
+  sliceDecl('stormStatBlank'),
+  sliceDecl('stormStatApply'),
+  sliceDecl('stormStatPlus'),
+  sliceDecl('stormStatSum'),
+  sliceDecl('stormStatGraded'),
+  sliceDecl('stormStatRoll'),
+  sliceDecl('stormStatRate'),
+  sliceDecl('stormStatLoss'),
+  sliceDecl('stormStatsMerge'),
+  sliceDecl('stormStatsPrune'),
+  sliceDecl('stormStatsWirePack'),
+  sliceDecl('stormStatsWireUnpack'),
   sliceDecl('stormCandidate'),
   sliceDecl('stormAdvance'),
   sliceDecl('stormWalkGame'),
@@ -95,6 +113,7 @@ const src = [
   sliceDecl('stormCard'),
   // The verdict line: pure, and the half of this feature the user reads.
   sliceDecl('stormCp'),
+  sliceDecl('stormWp'),
   sliceDecl('stormVerdictLine'),
   sliceDecl('stormBestLine'),
   'return { stormFrontiers, stormDrawFrontier, stormUserEval, stormPgnMoves,' +
@@ -102,7 +121,13 @@ const src = [
   '         stormWalkGame, stormRandomLine, stormCandidate, stormAdvance,' +
   '         stormCard, stormPack, stormUnpack, stormRetain, stormStoreDraw,' +
   '         stormWirePack, stormWireUnpack, stormWireMerge,' +
-  '         stormCp, stormMoverCp,' +
+  '         stormStatBlank, stormStatApply, stormStatPlus, stormStatSum,' +
+  '         stormStatGraded,' +
+  '         stormStatRoll, stormStatRate, stormStatLoss,' +
+  '         stormStatsMerge, stormStatsPrune,' +
+  '         stormStatsWirePack, stormStatsWireUnpack,' +
+  '         stormCp, stormWp, stormMoverCp,' +
+  '         stormWinPct, stormWpLoss,' +
   '         stormVerdictLine, stormBestLine,' +
   '         sanToUci, fenAfterUci };',
 ].join('\n');
@@ -122,6 +147,11 @@ const num = (name) => {
   if (!m) throw new Error('CONFIG.storm.' + name + ' not found');
   return Number(m[1]);
 };
+const numF = (name) => {
+  const m = new RegExp('\\b' + name + ':\\s*(-?[0-9.]+)').exec(cfgBody);
+  if (!m) throw new Error('CONFIG.storm.' + name + ' not found');
+  return Number(m[1]);
+};
 const C = {
   minVarPlies: num('minVarPlies'), chunkVars: num('chunkVars'),
   userLoCp: num('userLoCp'), userHiCp: num('userHiCp'),
@@ -129,9 +159,14 @@ const C = {
   blunderCp: num('blunderCp'), decidedCp: num('decidedCp'),
   minScored: num('minScored'),
   spreadMinCp: num('spreadMinCp'), spreadMaxCp: num('spreadMaxCp'),
-  goodCp: num('goodCp'), decentCp: num('decentCp'),
-  goodPoints: num('goodPoints'), decentPoints: num('decentPoints'),
-  missPoints: num('missPoints'),
+  // §16's bands. `wpK` is a float and `num`'s pattern only matches integers —
+  // it would have read "0" and made every position a coin toss, which is a
+  // failure that still grades every move and still looks entirely plausible.
+  greatWp: num('greatWp'), goodWp: num('goodWp'),
+  okWp: num('okWp'), badWp: num('badWp'),
+  greatPoints: num('greatPoints'), goodPoints: num('goodPoints'),
+  badPoints: num('badPoints'), blunderPoints: num('blunderPoints'),
+  wpK: numF('wpK'), wpClampCp: num('wpClampCp'),
   // PER PROFILE since v0.134.0 (`{ desktop: 20, mobile: 18 }`), so it is no
   // longer a scalar — section 8 below asserts the shape and the two orderings
   // that fail silently.
@@ -156,6 +191,10 @@ const C = {
   randomTopN: num('randomTopN'), randomTopCp: num('randomTopCp'),
   randomMinPlies: num('randomMinPlies'),
   streakStep: num('streakStep'), streakMax: num('streakMax'),
+  // §15. Not a threshold anybody tunes, but the wire version IS what a payload
+  // is refused on, so it has to be the shipped one.
+  statsWireVersion: num('statsWireVersion'),
+  statsMaxLines: num('statsMaxLines'),
 };
 
 let pass = 0, fail = 0;
@@ -175,7 +214,7 @@ const eq = (label, got, want) => {
 // Found live 2026-08-28: `renderReview` threw `stormVerdictLine is not defined`
 // at the first teardown, which `node --check` cannot see and no assertion below
 // would have caught. Two-space indent IS top level in this file.
-for (const name of ['stormCp', 'stormVerdictLine', 'stormBestLine']) {
+for (const name of ['stormCp', 'stormWp', 'stormVerdictLine', 'stormBestLine']) {
   const line = SRC.split('\n')[findDecl(name)];
   const indent = line.length - line.replace(/^ +/, '').length;
   eq(name + ' is declared at top level (2-space indent), not inside a module', indent, 2);
@@ -213,67 +252,162 @@ const scored = [
   { uci: 'h2h3', san: 'h3', score: -120, winrate: 43 },
 ];
 
-eq('the top move loses nothing', S.stormMoveLoss(scored, 'g1f3').loss, 0);
-eq('…and is rank 1', S.stormMoveLoss(scored, 'g1f3').rank, 1);
-eq('the second move is 12cp behind', S.stormMoveLoss(scored, 'f1b5').loss, 12);
-eq('the fourth is 80cp behind', S.stormMoveLoss(scored, 'b1c3').loss, 80);
-eq('a listed move reports its source', S.stormMoveLoss(scored, 'd2d4').source, 'list');
-eq('a listed move carries its win rate', S.stormMoveLoss(scored, 'd2d4').winrate, 49);
+eq('the top move loses nothing', S.stormMoveLoss(scored, 'g1f3', undefined, C).loss, 0);
+eq('…and is rank 1', S.stormMoveLoss(scored, 'g1f3', undefined, C).rank, 1);
+eq('the second move is 12cp behind', S.stormMoveLoss(scored, 'f1b5', undefined, C).loss, 12);
+eq('the fourth is 80cp behind', S.stormMoveLoss(scored, 'b1c3', undefined, C).loss, 80);
+eq('a listed move reports its source', S.stormMoveLoss(scored, 'd2d4', undefined, C).source, 'list');
+eq('a listed move carries its win rate', S.stormMoveLoss(scored, 'd2d4', undefined, C).winrate, 49);
 
 // THE FALLBACK. The move is not in the list; the position AFTER it scores
 // −10 for the OPPONENT, so the move is worth +10 to us and is 22cp behind the
 // best (32). `best − childBest` would say 42, which is a perfectly plausible
 // number for a move nobody can check.
-const viaChild = S.stormMoveLoss(scored, 'a2a3', -10);
+const viaChild = S.stormMoveLoss(scored, 'a2a3', -10, C);
+// §16: BOTH numbers ride together, and the win-probability one is derived from
+// the SAME pair — a `wp` computed from anything but this move's own score and
+// the position's best is the one way this could disagree with itself.
+eq('a listed move carries a win-probability loss too',
+  Math.abs(S.stormMoveLoss(scored, 'f1b5', undefined, C).wp -
+    S.stormWpLoss(scored[0].score, scored[1].score, C)) < 1e-9, true);
+eq('the top move gives up no probability either',
+  S.stormMoveLoss(scored, 'g1f3', undefined, C).wp, 0);
+eq('…and the position it was measured against rides along',
+  S.stormMoveLoss(scored, 'f1b5', undefined, C).bestScore, scored[0].score);
 eq('the child-negation fallback negates', viaChild.loss, 22);
 eq('…and says so', viaChild.source, 'child');
 eq('…and claims no rank', viaChild.rank, null);
 // A child that is GOOD for the opponent means the move was bad for us.
 eq('a child good for the opponent is a big loss',
-  S.stormMoveLoss(scored, 'a2a3', 150).loss, 182);
+  S.stormMoveLoss(scored, 'a2a3', 150, C).loss, 182);
 // …and one that is terrible for them means our move was fine.
 eq('a child bad for the opponent is no loss at all',
-  S.stormMoveLoss(scored, 'a2a3', -400).loss, 0);
-eq('with no child there is no answer', S.stormMoveLoss(scored, 'a2a3'), null);
-eq('an empty list answers nothing', S.stormMoveLoss([], 'g1f3', 0), null);
+  S.stormMoveLoss(scored, 'a2a3', -400, C).loss, 0);
+eq('with no child there is no answer', S.stormMoveLoss(scored, 'a2a3', undefined, C), null);
+eq('an empty list answers nothing', S.stormMoveLoss([], 'g1f3', 0, C), null);
 // A score of 0 is a real score, so the fallback must type-check rather than
 // test truthiness — the trap DESIGN-chessdb.md §3.2 is about, arriving here.
 eq('a child score of 0 is a real answer',
-  S.stormMoveLoss(scored, 'a2a3', 0).loss, 32);
+  S.stormMoveLoss(scored, 'a2a3', 0, C).loss, 32);
 
 // ===========================================================================
 // 3) THE VERDICT BANDS AND THE SCORE
 // ===========================================================================
-eq('level with best is good', S.stormGrade(0, C), 'good');
-eq('exactly goodCp is still good', S.stormGrade(C.goodCp, C), 'good');
-eq('one past it is decent', S.stormGrade(C.goodCp + 1, C), 'decent');
-eq('exactly decentCp is still decent', S.stormGrade(C.decentCp, C), 'decent');
-eq('one past it is a miss', S.stormGrade(C.decentCp + 1, C), 'miss');
+// §16: WIN PROBABILITY LOST, not centipawns lost. Two things here are silent:
+// the CONVERSION (a wrong `wpK` re-scales every band at once and the verdicts
+// stay entirely plausible) and the CALIBRATION against the system this
+// replaced, which is the whole claim that this is a change of meaning rather
+// than of difficulty.
+
+// The curve itself. Lichess's own fit, and these are the fixed points that
+// pin it: equality is 50%, it is symmetric, and it saturates rather than
+// running off.
+eq('an equal position is a coin toss', Math.round(S.stormWinPct(0, C)), 50);
+eq('the curve is symmetric',
+  Math.round(S.stormWinPct(300, C) + S.stormWinPct(-300, C)), 100);
+eq('a big advantage is not a certainty', S.stormWinPct(500, C) < 90, true);
+eq('…and a decisive one is close to one', S.stormWinPct(1000, C) > 97, true);
+// THE CLAMP is what keeps a mate score from needing a band of its own: ChessDB
+// writes one as ~30000 and the engine tier as `engineMateCp`, and without this
+// the arithmetic would run on numbers thirty times the board's own scale.
+eq('a mate score is clamped, not special-cased',
+  S.stormWinPct(30000, C), S.stormWinPct(C.wpClampCp, C));
+eq('…in both directions',
+  S.stormWinPct(-30000, C), S.stormWinPct(-C.wpClampCp, C));
+eq('no score is no probability', S.stormWinPct(null, C), null);
+
+// THE LOSS IS FLOORED AT 0 — a move scoring better than the book's "best" is
+// the book being imprecise, not a bonus to be handed out.
+eq('the best move gives up nothing', S.stormWpLoss(0, 0, C), 0);
+eq('…and neither does a better one', S.stormWpLoss(0, 50, C), 0);
+eq('giving up ground costs', S.stormWpLoss(0, -100, C) > 8, true);
+
+// THE POINT OF THE WHOLE CHANGE: the same centipawn loss is worth less where
+// the game is already decided. Measured — 100cp costs 9.10 points of
+// probability at equality, 4.96 at +500 and 3.80 at +600 — so the assertion is
+// written as a RELATION rather than against those figures, which move with
+// `wpK`.
+eq('a centipawn is worth less once you are winning',
+  S.stormWpLoss(0, -100, C) > 1.5 * S.stormWpLoss(500, 400, C), true);
+eq('…and less again the further ahead you are',
+  S.stormWpLoss(500, 400, C) > S.stormWpLoss(600, 500, C), true);
+
+// CALIBRATION (§16.2). At EQUALITY the two scoring bands land where the old
+// flat 30cp/70cp ones did — which is what makes this a change of meaning
+// rather than a change of difficulty, and it is the property a re-tuned `wpK`
+// or a re-typed threshold would silently lose.
+const cpAtEquality = (band) => {
+  let lo = -2000, hi = 0;
+  for (let i = 0; i < 200; i++) {
+    const m = (lo + hi) / 2;
+    if (S.stormWpLoss(0, m, C) > band) lo = m; else hi = m;
+  }
+  return Math.round(-(lo + hi) / 2);
+};
+const greatCp = cpAtEquality(C.greatWp), goodCp = cpAtEquality(C.goodWp);
+eq('at equality the "great" band is the old 30cp band, within 5cp',
+  Math.abs(greatCp - 30) <= 5, true);
+eq('…and the "good" band is the old 70cp one, within 5cp',
+  Math.abs(goodCp - 70) <= 5, true);
+// …and at the top of the frontier band (`userHiCp`) the SAME verdicts are
+// reached later, which is the behaviour the old system could not express.
+const cpAt = (band, base) => {
+  let lo = base - 2000, hi = base;
+  for (let i = 0; i < 200; i++) {
+    const m = (lo + hi) / 2;
+    if (S.stormWpLoss(base, m, C) > band) lo = m; else hi = m;
+  }
+  return Math.round(base - (lo + hi) / 2);
+};
+eq('the same band is more forgiving at +200 than at equality',
+  cpAt(C.greatWp, C.userHiCp) > greatCp, true);
+
+// The bands themselves. Written with `<`, so a threshold value falls into the
+// band BELOW it.
+eq('level with the best is great', S.stormGrade(0, C), 'great');
+eq('just under greatWp is still great', S.stormGrade(C.greatWp - 0.01, C), 'great');
+eq('exactly greatWp is good', S.stormGrade(C.greatWp, C), 'good');
+eq('exactly goodWp is an inaccuracy', S.stormGrade(C.goodWp, C), 'ok');
+eq('exactly okWp is a mistake', S.stormGrade(C.okWp, C), 'bad');
+eq('exactly badWp is a blunder', S.stormGrade(C.badWp, C), 'blunder');
+eq('giving up the game is a blunder', S.stormGrade(60, C), 'blunder');
 eq('no number is no verdict', S.stormGrade(null, C), 'unknown');
 eq('NaN is no verdict', S.stormGrade(NaN, C), 'unknown');
+// THE BANDS MUST BE IN ORDER, or one of them is unreachable and nothing says
+// so — a five-band ladder typed by hand is exactly where that happens.
+eq('the bands ascend', C.greatWp < C.goodWp && C.goodWp < C.okWp &&
+  C.okWp < C.badWp, true);
 
-eq('the first good answer scores the base', S.stormPoints('good', 0, C), C.goodPoints);
-eq('a miss costs missPoints', S.stormPoints('miss', 0, C), C.missPoints);
+eq('the first great answer scores the base', S.stormPoints('great', 0, C), C.greatPoints);
+eq('a good one scores its own base', S.stormPoints('good', 0, C), C.goodPoints);
+// THE MIDDLE BAND IS WORTH NOTHING, which is the whole reason it exists: it is
+// neither a reward nor a punishment, and giving it either would collapse the
+// five bands back into the three this replaced.
+eq('an inaccuracy scores nothing', S.stormPoints('ok', 0, C), 0);
+eq('…on any streak', S.stormPoints('ok', C.streakStep * 50, C), 0);
+eq('a mistake costs badPoints', S.stormPoints('bad', 0, C), C.badPoints);
+eq('a blunder costs blunderPoints', S.stormPoints('blunder', 0, C), C.blunderPoints);
 // THE FLAT PENALTY, pinned. Multiplying it would make one lapse after twelve
 // right answers cost four times what the same lapse costs after none —
 // punishing the STREAK rather than the mistake, and it is invisible from the
 // outside: the score still moves in the right direction, just by the wrong
 // amount, and only on the answers hardest to reproduce deliberately.
 eq('…and costs exactly the same on a long streak',
-  S.stormPoints('miss', C.streakStep * 50, C), C.missPoints);
-eq('a pass is a miss, so it costs the same',
-  S.stormPoints('miss', C.streakStep, C), C.missPoints);
+  S.stormPoints('blunder', C.streakStep * 50, C), C.blunderPoints);
+eq('…as does a mistake',
+  S.stormPoints('bad', C.streakStep * 50, C), C.badPoints);
+eq('a pass is a blunder, so it costs the same',
+  S.stormPoints('blunder', C.streakStep, C), C.blunderPoints);
 eq('an ungradeable answer scores nothing', S.stormPoints('unknown', 99, C), 0);
 // §14.10c's card: never answered, so never charged for either.
 eq('the card the storm ended on scores nothing',
   S.stormPoints('unanswered', 99, C), 0);
 eq('the multiplier steps at streakStep',
-  S.stormPoints('good', C.streakStep, C), C.goodPoints * 2);
+  S.stormPoints('great', C.streakStep, C), C.greatPoints * 2);
 eq('…and is capped',
-  S.stormPoints('good', C.streakStep * 50, C), C.goodPoints * C.streakMax);
-eq('decent answers ride the same multiplier',
-  S.stormPoints('decent', C.streakStep, C), C.decentPoints * 2);
-
+  S.stormPoints('great', C.streakStep * 50, C), C.greatPoints * C.streakMax);
+eq('good answers ride the same multiplier',
+  S.stormPoints('good', C.streakStep, C), C.goodPoints * 2);
 
 // ===========================================================================
 // 4) THE PICK RULES
@@ -607,27 +741,40 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('…and exactly zero is written without a sign', S.stormCp(0), '0.00');
   eq('a missing score is nothing at all', S.stormCp(undefined), '');
 
+  // §16: THE LINE PRINTS WIN PROBABILITY, one decimal under ten points and
+  // none above — "23.4%" is a precision the figure does not have, and the
+  // difference between 23% and 24% changes no verdict.
+  eq('a small loss keeps its decimal', S.stormWp(3.44), '3.4%');
+  eq('…and a large one does not', S.stormWp(23.4), '23%');
+  eq('a missing figure is nothing at all', S.stormWp(null), '');
+
   eq('the top move says so',
-    S.stormVerdictLine({ verdict: 'good', userSan: 'Bb5', rank: 1, loss: 0, points: 3 }, cardOf()),
-    'Bb5 · the top move · level with the best · +3');
+    S.stormVerdictLine({ verdict: 'great', userSan: 'Bb5', rank: 1, wp: 0, points: 2 }, cardOf()),
+    'Bb5 · the top move · level with the best · +2');
   eq('a ranked move names its place',
-    S.stormVerdictLine({ verdict: 'decent', userSan: 'Nf3', rank: 4, loss: 42, points: 1 }, cardOf()),
-    'Nf3 · #4 of 31 · 42cp behind · +1');
+    S.stormVerdictLine({ verdict: 'good', userSan: 'Nf3', rank: 4, wp: 3.44, points: 1 }, cardOf()),
+    'Nf3 · #4 of 31 · 3.4% of the game · +1');
   eq('a move graded through the child has no rank to name',
-    S.stormVerdictLine({ verdict: 'miss', userSan: 'a3', rank: null, loss: 180, points: 0 }, cardOf()),
-    'a3 · 180cp behind');
-  // SIGNED, since v0.139.0: a miss scores `missPoints`, and the old
+    S.stormVerdictLine({ verdict: 'bad', userSan: 'a3', rank: null, wp: 14.2, points: 0 }, cardOf()),
+    'a3 · 14% of the game');
+  // SIGNED, since v0.139.0: a mistake scores a NEGATIVE number, and the old
   // unconditional '+' rendered the penalty as "+-2" — a bug that survives
   // every numeric assertion about `stormPoints` above.
   eq('a penalty is printed with its own sign',
-    S.stormVerdictLine({ verdict: 'miss', userSan: 'a3', rank: null, loss: 180,
-      points: C.missPoints }, cardOf()),
-    'a3 · 180cp behind · ' + C.missPoints);
+    S.stormVerdictLine({ verdict: 'blunder', userSan: 'a3', rank: null, wp: 31.5,
+      points: C.blunderPoints }, cardOf()),
+    'a3 · 32% of the game · ' + C.blunderPoints);
   eq('…and a reward keeps its plus',
-    S.stormVerdictLine({ verdict: 'good', userSan: 'Bb5', rank: 1, loss: 0, points: 6 }, cardOf()),
+    S.stormVerdictLine({ verdict: 'great', userSan: 'Bb5', rank: 1, wp: 0, points: 6 }, cardOf()),
     'Bb5 · the top move · level with the best · +6');
+  // A LOSS TOO SMALL TO PRINT IS NOT A LOSS. Without the floor the line would
+  // read "0.0% of the game", which is a claim of imprecision about a move that
+  // was simply the best one.
+  eq('a hair behind the best still reads as level',
+    S.stormVerdictLine({ verdict: 'great', userSan: 'Bb5', rank: 2, wp: 0.01, points: 2 }, cardOf()),
+    'Bb5 · #2 of 31 · level with the best · +2');
   eq('a pass says what it was',
-    S.stormVerdictLine({ verdict: 'miss', passed: true }, cardOf()), 'Passed — no answer given');
+    S.stormVerdictLine({ verdict: 'blunder', passed: true }, cardOf()), 'Passed — no answer given');
   eq('an ungradeable move claims nothing about the move',
     S.stormVerdictLine({ verdict: 'unknown', userSan: 'Nxh2' }, cardOf()),
     'Nxh2 — ChessDB cannot score it here');
@@ -638,11 +785,11 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   // come FIRST, above `passed`, since a card abandoned mid-grade is neither.
   eq('the position the clock ran out on says so',
     S.stormVerdictLine({ verdict: 'unanswered', unanswered: true, userSan: '',
-      loss: null, rank: null }, cardOf()),
+      wp: null, loss: null, rank: null }, cardOf()),
     'Not answered — the storm ended on this position');
   eq('…and one abandoned mid-grade names the move instead',
     S.stormVerdictLine({ verdict: 'unanswered', unanswered: true, userSan: 'Nf3',
-      loss: null, rank: null }, cardOf()),
+      wp: null, loss: null, rank: null }, cardOf()),
     'Nf3 — the storm ended before it was graded');
   eq('an unanswered card still names the best move there was',
     S.stormBestLine({ verdict: 'unanswered', unanswered: true, userSan: '' }, cardOf()),
@@ -651,16 +798,16 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   // THE BUG FOUND LIVE, pinned: the user's move is named only when it is a
   // DIFFERENT move from the best.
   eq('playing the top move prints it once',
-    S.stormBestLine({ verdict: 'good', userSan: 'Bb5', rank: 1, userScore: 32, userWinrate: 54 }, cardOf()),
+    S.stormBestLine({ verdict: 'great', userSan: 'Bb5', rank: 1, userScore: 32, userWinrate: 54 }, cardOf()),
     'best Bb5 +0.32 · 54%');
   eq('…however the rank came out, if the SAN agrees',
-    S.stormBestLine({ verdict: 'good', userSan: 'Bb5', rank: null, userScore: 32 }, cardOf()),
+    S.stormBestLine({ verdict: 'great', userSan: 'Bb5', rank: null, userScore: 32 }, cardOf()),
     'best Bb5 +0.32 · 54%');
   eq('a different move IS named, with both win rates',
-    S.stormBestLine({ verdict: 'decent', userSan: 'Nf3', rank: 4, userScore: -10, userWinrate: 49 }, cardOf()),
+    S.stormBestLine({ verdict: 'good', userSan: 'Nf3', rank: 4, userScore: -10, userWinrate: 49 }, cardOf()),
     'best Bb5 +0.32 · 54%   Nf3 -0.10 · 49%');
   eq('…and without one where the child supplied the score',
-    S.stormBestLine({ verdict: 'miss', userSan: 'a3', rank: null, userScore: -148, userWinrate: null }, cardOf()),
+    S.stormBestLine({ verdict: 'blunder', userSan: 'a3', rank: null, userScore: -148, userWinrate: null }, cardOf()),
     'best Bb5 +0.32 · 54%   a3 -1.48');
   eq('a best move with no win rate of its own still prints',
     S.stormBestLine({ verdict: 'unknown', userSan: 'Nxh2' },
@@ -690,8 +837,14 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('being mated is the mirror', S.stormMoverCp({ mate: -3 }, 'w', C), -C.engineMateCp + 3);
   eq('a faster mate scores higher than a slower one',
     S.stormMoverCp({ mate: 3 }, 'w', C) > S.stormMoverCp({ mate: 5 }, 'w', C), true);
-  eq('…but the gap between them is small beside a missed one',
-    (S.stormMoverCp({ mate: 3 }, 'w', C) - S.stormMoverCp({ mate: 5 }, 'w', C)) < C.decentCp, true);
+  // …and §16 is what makes that concrete: both mates clamp to the same end of
+  // the curve, so preferring a slower one costs NOTHING at all, while missing
+  // one entirely is most of the game.
+  eq('…but choosing the slower mate costs nothing',
+    S.stormWpLoss(S.stormMoverCp({ mate: 3 }, 'w', C),
+      S.stormMoverCp({ mate: 5 }, 'w', C), C), 0);
+  eq('…while missing the mate for a modest edge is a blunder',
+    S.stormGrade(S.stormWpLoss(S.stormMoverCp({ mate: 3 }, 'w', C), 300, C), C), 'blunder');
   eq('a score of 0 is a real score, not an absence',
     S.stormMoverCp({ cp: 0 }, 'b', C), -0);
   eq('an evaluation carrying neither is refused', S.stormMoverCp({}, 'w', C), null);
@@ -701,15 +854,15 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   // ChessDB's: both halves of a comparison have to come from one evaluator,
   // which is the same rule that makes this tier TWO searches rather than one.
   eq('an engine verdict says where the number came from',
-    S.stormVerdictLine({ verdict: 'miss', userSan: 'Nxh2', rank: null, loss: 140,
+    S.stormVerdictLine({ verdict: 'bad', userSan: 'Nxh2', rank: null, wp: 12.7,
       source: 'engine', points: 0 }, cardOf()),
-    'Nxh2 · 140cp behind · by the engine');
+    'Nxh2 · 13% of the game · by the engine');
   eq('…and names the ENGINE’s best, not the book’s',
-    S.stormBestLine({ verdict: 'miss', userSan: 'Nxh2', rank: null, userScore: -108,
+    S.stormBestLine({ verdict: 'bad', userSan: 'Nxh2', rank: null, userScore: -108,
       source: 'engine', bestSan: 'Qf3', bestScore: 32 }, cardOf()),
     'best Qf3 +0.32   Nxh2 -1.08');
   eq('…with no win rate, which is a book figure and not a search one',
-    S.stormBestLine({ verdict: 'miss', userSan: 'Nxh2', rank: null, userScore: -108,
+    S.stormBestLine({ verdict: 'bad', userSan: 'Nxh2', rank: null, userScore: -108,
       source: 'engine', bestSan: 'Qf3', bestScore: 32,
       userWinrate: 41 }, cardOf()).indexOf('%'), -1);
   eq('an engine verdict agreeing with the engine’s best prints it once',
@@ -894,7 +1047,7 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   // live is the DELETE — it needs a good answer, and a random legal move is a
   // miss nearly every time, so five live cards in a row demonstrated only that
   // misses are kept.
-  eq('the config says which verdicts drop a position', C.storeDropOn, ['good', 'decent']);
+  eq('the config says which verdicts drop a position', C.storeDropOn, ['great', 'good']);
   const store = () => ({ ck1: { f: fFen, k: 0 }, ck2: { f: fFen, k: 2 } });
   for (const good of C.storeDropOn) {
     const st1 = store();
@@ -1085,6 +1238,197 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('engineTimeoutMs was raised along with the depth',
     C.engineTimeoutMs >= 15000, true);
 
+  // =========================================================================
+  // 9) THE PERFORMANCE RECORD (§15)
+  // =========================================================================
+  // THREE THINGS HERE FAIL SILENTLY and all three still print a tidy
+  // percentage, which is why they are executed rather than eyeballed:
+  //
+  //  * THE DENOMINATOR. `unknown` is a verdict about ChessDB and not about the
+  //    user — `finishAnswer` scores it nothing and holds the streak for exactly
+  //    that reason. Counted as a failure it marks the user down for the book's
+  //    ignorance; counted as a success it flatters them. Either reads as a
+  //    plausible number. Since §16 the NUMERATOR is a second way to be wrong:
+  //    it is the two bands that SCORE, and quietly folding `ok` into them would
+  //    turn "how often did I find it" into "how often was it survivable".
+  //  * THE MERGE. These are COUNTERS and the wire merge is a UNION over a whole
+  //    snapshot, so summing two devices' totals sums them AGAIN on the next
+  //    exchange, and again after that. The numbers stay plausible and keep
+  //    growing, which is what a working feature also does.
+  //  * THE AVERAGE LOSS. A mean over ANSWERS, never a mean over lines: rolling
+  //    a chapter up from its lines' averages weights a line answered once like
+  //    one answered forty times.
+
+  // Block-scoped: this file is one long function body and the names below are
+  // ordinary enough to collide with section 7's.
+  {
+  // §16's five bands. `ls` is in TENTHS of a point of win probability, which
+  // is what keeps the whole record integral on the wire.
+  const dev = (n, a, g, o, b, x, u, ls, lc, t) => ({ n, a, g, o, b, x, u, ls, lc, t });
+
+  // --- the denominator ---------------------------------------------------
+  const rec = S.stormStatBlank();
+  eq('a fresh record is empty', rec,
+    { n: 0, a: 0, g: 0, o: 0, b: 0, x: 0, u: 0, ls: 0, lc: 0, t: 0 });
+  eq('a great answer counts', S.stormStatApply(rec, { verdict: 'great', wp: 1.2 }, 100), true);
+  S.stormStatApply(rec, { verdict: 'good', wp: 5.5 }, 200);
+  S.stormStatApply(rec, { verdict: 'ok', wp: 8.0 }, 250);
+  S.stormStatApply(rec, { verdict: 'blunder', wp: 21.0 }, 300);
+  eq('…and an ungradeable one counts as an ANSWER',
+    S.stormStatApply(rec, { verdict: 'unknown', wp: null }, 400), true);
+  eq('five answers', rec.n, 5);
+  eq('…of which four were graded', S.stormStatGraded(rec), 4);
+  eq('every band lands in its own counter',
+    [rec.a, rec.g, rec.o, rec.b, rec.x, rec.u], [1, 1, 1, 0, 1, 1]);
+  // THE NUMERATOR IS THE TWO BANDS THAT SCORE. An inaccuracy is not a move
+  // found — it is the answer "no, but it did not matter much", which is what
+  // the average loss beside it is for.
+  eq('THE RATE IS THE SCORING BANDS OVER THE GRADED ONES', S.stormStatRate(rec), 2 / 4);
+  eq('…and so does the loss: four graded, four losses', rec.lc, 4);
+  eq('the mean loss is over the answers that HAVE one, in probability points',
+    S.stormStatLoss(rec), (12 + 55 + 80 + 210) / 4 / 10);
+  eq('the stamp is the last answer', rec.t, 400);
+
+  // §14.10c's card the clock stopped on is in the review because it is the
+  // position most in mind. It is NOT an answer, and counting it would mark the
+  // user down for running out of time.
+  const noAns = S.stormStatBlank();
+  eq('`unanswered` is refused', S.stormStatApply(noAns, { verdict: 'unanswered' }, 1), false);
+  eq('…and leaves nothing behind', noAns.n, 0);
+  eq('a verdict with no name is refused', S.stormStatApply(noAns, {}, 1), false);
+
+  // A missing loss is NOT zero. Reading it as one is what would make the
+  // book's ignorance show up as perfect play.
+  const noLoss = S.stormStatBlank();
+  S.stormStatApply(noLoss, { verdict: 'unknown', wp: null }, 1);
+  eq('an ungradeable answer contributes no loss', S.stormStatLoss(noLoss), null);
+  eq('…and no rate at all, rather than 0%', S.stormStatRate(noLoss), null);
+
+  // A perfect record and an empty one are different claims.
+  const perfect = S.stormStatBlank();
+  S.stormStatApply(perfect, { verdict: 'great', wp: 0 }, 1);
+  eq('a lone great answer is 100%', S.stormStatRate(perfect), 1);
+  eq('…and a loss of 0 is a real number, not a missing one', S.stormStatLoss(perfect), 0);
+  // …and the middle band is a graded answer that is NOT a find: 0%, with a
+  // real loss behind it. This is the pair a folded-in `ok` makes identical.
+  const meh = S.stormStatBlank();
+  S.stormStatApply(meh, { verdict: 'ok', wp: 8 }, 1);
+  eq('a lone inaccuracy is 0% found', S.stormStatRate(meh), 0);
+  eq('…but it is still a graded answer with a loss', S.stormStatLoss(meh), 8);
+
+  // --- the roll-up is over ANSWERS ---------------------------------------
+  // The trap: one line answered once at 20 points of probability and one
+  // answered nine times at 0 average to 10 per LINE and 2 per ANSWER. Only the
+  // second is the chapter's average loss.
+  const busy = S.stormStatBlank();
+  for (let i = 0; i < 9; i++) S.stormStatApply(busy, { verdict: 'great', wp: 0 }, 10 + i);
+  const rare = S.stormStatBlank();
+  S.stormStatApply(rare, { verdict: 'blunder', wp: 20 }, 5);
+  const rolled = S.stormStatRoll([{ dv: { a: busy } }, { dv: { b: rare } }]);
+  eq('a roll-up sums the answers', rolled.n, 10);
+  eq('…so the mean loss is per answer, not per line', S.stormStatLoss(rolled), 2);
+  eq('…and the rate likewise', S.stormStatRate(rolled), 0.9);
+  eq('the roll-up takes the LATEST stamp, never their sum', rolled.t, 18);
+
+  // --- the merge ---------------------------------------------------------
+  // PER DEVICE, AND NEVER A SUM. A device's own counters only grow, so the
+  // longer record is the later one.
+  const statsA = () => ({
+    '1': { name: 'Course one', lines: {
+      v1: { nm: 'Scotch', dv: { A: dev(10, 6, 2, 0, 0, 2, 0, 400, 10, 900) } },
+    } },
+  });
+  const statsB = {
+    '1': { name: 'Course one', lines: {
+      v1: { nm: 'Scotch', dv: { B: dev(4, 1, 1, 0, 0, 2, 0, 300, 4, 800) } },
+      v2: { nm: 'Caro', dv: { B: dev(3, 3, 0, 0, 0, 0, 0, 30, 3, 850) } },
+    } },
+    '2': { name: 'Course two', lines: {
+      v9: { nm: 'Sicilian', dv: { B: dev(2, 0, 0, 0, 0, 2, 0, 500, 2, 700) } },
+    } },
+  };
+  const local = statsA();
+  const merged = S.stormStatsMerge(local, statsB);
+  eq('the other device is added, not added IN', merged.added, 3);
+  eq('…so one line now holds two devices', Object.keys(local['1'].lines.v1.dv).sort(), ['A', 'B']);
+  eq('…and the line total is their sum', S.stormStatSum(local['1'].lines.v1.dv).n, 14);
+  eq('a course only the other device has arrives whole', local['2'].lines.v9.dv.B.n, 2);
+
+  // THE SAME EXCHANGE AGAIN MUST CHANGE NOTHING. This is the assertion a
+  // summing merge fails, and it fails it while still looking like progress.
+  const again = S.stormStatsMerge(local, statsB);
+  eq('a second exchange adds nothing', again.added, 0);
+  eq('…and bumps nothing', again.bumped, 0);
+  eq('…and the total is unmoved', S.stormStatSum(local['1'].lines.v1.dv).n, 14);
+
+  // …and a LONGER record from the same device replaces the shorter one.
+  const grown = { '1': { name: 'Course one', lines: {
+    v1: { nm: 'Scotch', dv: { B: dev(9, 4, 3, 0, 0, 2, 0, 600, 9, 999) } },
+  } } };
+  const bump = S.stormStatsMerge(local, grown);
+  eq('a device that has answered more replaces its own record', bump.bumped, 1);
+  eq('…and the line total moves by the DIFFERENCE, not by the whole',
+    S.stormStatSum(local['1'].lines.v1.dv).n, 19);
+  eq('…and a SHORTER one is ignored',
+    S.stormStatsMerge(local, statsB).bumped, 0);
+  eq('…leaving the total where it was',
+    S.stormStatSum(local['1'].lines.v1.dv).n, 19);
+
+  // --- pruning -----------------------------------------------------------
+  const old = { '1': { name: 'c', lines: {
+    fresh: { nm: 'f', dv: { A: dev(1, 1, 0, 0, 0, 0, 0, 0, 1, 1000) } },
+    stale: { nm: 's', dv: { A: dev(1, 1, 0, 0, 0, 0, 0, 0, 1, 10) } },
+  } } };
+  eq('a line untouched for longer than the TTL is dropped',
+    S.stormStatsPrune(old, { statsTtlMs: 500, statsMaxLines: 99 }, 1000), 1);
+  eq('…and the recent one stays', Object.keys(old['1'].lines), ['fresh']);
+  const many = { '1': { name: 'c', lines: {} } };
+  for (let i = 0; i < 12; i++) {
+    many['1'].lines['l' + i] = { nm: 'l', dv: { A: dev(1, 1, 0, 0, 0, 0, 0, 0, 1, 1000 + i) } };
+  }
+  eq('…and the cap drops the least recently answered',
+    S.stormStatsPrune(many, { statsTtlMs: 1e9, statsMaxLines: 5 }, 2000), 7);
+  eq('…keeping the newest', Object.keys(many['1'].lines).sort(),
+    ['l11', 'l10', 'l9', 'l8', 'l7'].sort());
+
+  // --- the wire ----------------------------------------------------------
+  const wired = S.stormStatsWirePack(statsA(), C, 0, 4242);
+  eq('the payload names its version', wired.v, C.statsWireVersion);
+  eq('…and carries one line', wired.n, 1);
+  const statsBack = S.stormStatsWireUnpack(wired, C);
+  eq('…which reads back with its counters intact',
+    statsBack.stats['1'].lines.v1.dv.A.n, 10);
+  eq('…and its name', statsBack.stats['1'].lines.v1.nm, 'Scotch');
+  eq('a payload from a newer version is refused, never half-read',
+    S.stormStatsWireUnpack({ v: C.statsWireVersion + 1, c: {} }, C), null);
+  // A record read from a card is one another build wrote: a single bad field
+  // would poison every total it is ever added to.
+  const junk = S.stormStatsWireUnpack({ v: C.statsWireVersion, at: 1, c: {
+    '1': { name: 'c', lines: {
+      ok: { nm: 'a', dv: { A: { n: 3, g: 'x', d: null, m: 0, u: 0, ls: 9, lc: 3, t: 5 } } },
+      bad: { nm: 'b', dv: { A: { n: 'lots' } } },
+    } },
+  } }, C);
+  eq('a non-numeric counter is forced to a number', junk.stats['1'].lines.ok.dv.A.g, 0);
+  eq('…and a record with no usable count is dropped whole',
+    Object.keys(junk.stats['1'].lines), ['ok']);
+
+  // The budget: fewer lines rather than a failed exchange.
+  const lots = { '1': { name: 'Course one', lines: {} } };
+  for (let i = 0; i < 60; i++) {
+    lots['1'].lines['v' + i] = { nm: 'A line with a fairly long name ' + i,
+      dv: { A: dev(4, 2, 1, 0, 0, 1, 0, 120, 4, 1000 + i) } };
+  }
+  const cutStats = S.stormStatsWirePack(lots, C, 1500, 1);
+  eq('the budget cuts the record', cutStats.n < 60, true);
+  eq('…and the count matches what is in it',
+    cutStats.n, Object.keys(cutStats.c['1'].lines).length);
+  eq('…and what is carried is the most recently answered',
+    Object.keys(cutStats.c['1'].lines).indexOf('v59') >= 0, true);
+  eq('…and it still reads back',
+    Object.keys(S.stormStatsWireUnpack(cutStats, C).stats['1'].lines).length, cutStats.n);
+
+  }
   console.log('\n' + SRC_PATH);
   console.log(pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);

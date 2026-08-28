@@ -1635,27 +1635,66 @@
       // author would have kept teaching.
       spreadMaxCp: 300,
 
-      // --- stage 4: the verdict (§8.1) -----------------------------------
-      // FLAT bands, licensed by the spread filter above: the normalising is
-      // done once, in the filter, so the score itself stays legible during a
-      // timed session. A move within 30cp of best is a good move, full stop —
-      // reward only the engine's first choice and this becomes an
-      // engine-agreement trainer.
-      goodCp: 30,
-      decentCp: 70,
-      goodPoints: 3,
-      decentPoints: 1,
-      // A MISS COSTS POINTS (v0.139.0, the author's own call). Puzzle Storm's
-      // own model is that a miss merely resets the combo; here the exercise is
-      // "find a decent move", where playing SOMETHING is always available and
-      // the streak alone lets a scattergun session still read as a score.
+      // --- stage 4: the verdict (§8.1, rebuilt in v0.141.0 — §16) ----------
+      // WIN PROBABILITY LOST AGAINST THE BEST MOVE, not centipawns lost, and
+      // the reason is the frontier band directly above: `userHiCp` admits
+      // positions up to +200, and a centipawn is not worth the same there as
+      // it is at equality. Giving up 100cp from +500 leaves you winning; giving
+      // up 100cp from 0 does not, and a flat 30/70cp rule called both the same
+      // thing.
+      //
+      // The conversion is Lichess's own (`stormWinPct`), so the bands can be
+      // read as what they are: "how much of the game did that cost".
+      //
+      // CALIBRATED AGAINST THE OLD BANDS AT EQUALITY (§16.2), which is what
+      // makes this a change of MEANING rather than of difficulty — the numbers
+      // below are the author's, and they land where the old ones did:
+      //
+      //   base    3%      6%      10%     20%
+      //   0cp     33cp    65cp    110cp   230cp     (old: good 30, decent 70)
+      //   +200    36cp    71cp    117cp   226cp
+      //   +500    63cp    118cp   182cp   316cp
+      //
+      // …so at an equal position the top two bands are the old two, to within
+      // 3cp and 5cp, and the tolerance widens exactly where the old system was
+      // wrong.
+      greatWp: 3,     // < this much of the game given up: the move you wanted
+      goodWp: 6,      // …a move worth playing
+      okWp: 10,       // …an inaccuracy: nothing gained, nothing charged
+      badWp: 20,      // …a mistake
+      // …and past `badWp` it is a blunder. FIVE bands rather than three
+      // because the old middle was a cliff: 71cp at equality scored the same
+      // −2 as hanging a queen.
+      greatPoints: 2,
+      goodPoints: 1,
+      // `ok` scores NOTHING and is not in this table: zero points is the whole
+      // meaning of the middle band, and `stormPoints` returns 0 for anything
+      // it does not name.
+      badPoints: -1,
+      blunderPoints: -2,
+      // A BAD MOVE COSTS POINTS (v0.139.0, the author's own call). Puzzle
+      // Storm's own model is that a miss merely resets the combo; here the
+      // exercise is "find a decent move", where playing SOMETHING is always
+      // available and the streak alone lets a scattergun session still read as
+      // a score.
       //
       // FLAT, and never multiplied — see `stormPoints`. The session score can
       // therefore go NEGATIVE, deliberately: flooring it at zero would make
-      // every miss after the first free, which is the opposite of what a
-      // penalty is for. Set to 0 to go back to the Puzzle Storm shape.
-      missPoints: -2,
-      // Puzzle Storm's shape: a streak multiplier, reset by a miss. One step
+      // every mistake after the first free, which is the opposite of what a
+      // penalty is for. Set both to 0 to go back to the Puzzle Storm shape.
+      //
+      // THE CONVERSION ITSELF. Lichess's own fit over real games:
+      //   Win% = 50 + 50 * (2 / (1 + exp(-k * cp)) - 1)
+      // `k` is theirs and is NOT a dial — changing it re-scales every band at
+      // once and silently, since the verdicts stay plausible.
+      wpK: 0.00368208,
+      // Evaluations are clamped before the conversion, so a MATE score
+      // (ChessDB's ~30000 band, or `engineMateCp`) does not have to be special
+      // -cased: at ±1000 the curve is already at 97.6%, so "mate" and "+10" are
+      // one thing and the arithmetic stays bounded. It changes no ordinary
+      // verdict — within the storm's own eval band nothing comes near it.
+      wpClampCp: 1000,
+      // Puzzle Storm's shape: a streak multiplier, reset by a mistake. One step
       // per `streakStep` answers, capped so the arithmetic stays doable.
       streakStep: 4,
       streakMax: 4,
@@ -1720,7 +1759,7 @@
       // TWO searches, not one, and both from the SAME engine: the loss is a
       // SUBTRACTION, and taking one side from ChessDB's book and the other from
       // Stockfish would put the systematic offset between two evaluators —
-      // easily the width of the whole `goodCp` band — straight into the verdict.
+      // easily the width of the whole `greatWp` band — straight into the verdict.
       engineFallback: true,
       // PER PROFILE, and raised from a flat 14 in v0.134.0 on the author's
       // instruction: "correct results are more important than low wait time".
@@ -1777,7 +1816,10 @@
       // THE RETENTION RULE, and it is the user's own: a position answered WELL
       // has been learned and leaves; one MISSED stays, to come round again. An
       // ungradeable one stays too — nothing was learned from it either way.
-      storeDropOn: ['good', 'decent'],
+      // §16: the two verdicts that SCORE. An `ok` answer keeps its position —
+      // nothing was gained by it, and a move you can improve on is one worth
+      // meeting again.
+      storeDropOn: ['great', 'good'],
       // The gather pass. Its own ceiling, far above a session's: this is the
       // burst that is expected to be long, and it is the one the user asked for
       // by pressing a button that says so.
@@ -1814,6 +1856,44 @@
       maxWireBytes: 150000,
       // How long a device may go without pulling before a page re-reads.
       pullMs:   30 * 60 * 1000,
+
+      // --- the performance record (§15) -------------------------------------
+      // WHAT THE STORM IS ACTUALLY TELLING YOU, kept: every graded answer,
+      // counted against the LINE whose frontier the position came from — so
+      // the question "which part of this repertoire do I not understand one
+      // move past the book" has an answer that outlives a three-minute
+      // session.
+      //
+      // Two figures, and they are different questions. The SUCCESS RATE is
+      // how often a decent move was found; the AVERAGE LOSS is how bad the
+      // rest were. A chapter can be strong on one and weak on the other, and
+      // that is the interesting case — a line you nearly always half-solve
+      // reads as 90% and −40cp, and one you either see or blunder reads as
+      // 60% and −25cp.
+      statsKey: 'cloStormStats',       // storage.local: { [bid]: course }
+      // ONE COUNTER SET PER DEVICE, which is the whole of why the merge is
+      // safe (§15.2). A counter summed on a union merge is a counter counted
+      // again on every exchange; kept per device and summed only on READ, the
+      // arithmetic is exact however many times two devices meet.
+      statsDeviceKey: 'cloStormDevice',
+      // WHICH CHAPTER EACH LINE IS IN, cached separately and NOT synced: it is
+      // a property of the course rather than of the user, every device can read
+      // it for itself, and keeping it out of the payload keeps the merge to
+      // counters alone.
+      chaptersKey: 'cloStormChapters', // storage.local: { [bid]: { at, ch, cn } }
+      statsMaxLines: 400,   // lines kept per course, least-recently-answered out
+      statsTtlMs: 180 * 24 * 60 * 60 * 1000,
+      // The wire, section 16e's transport again and a card of its own — NOT
+      // folded into the position card (§15.3): that payload is CUT to fit its
+      // budget, and a statistic dropped because a position list was long is a
+      // statistic lost silently.
+      statsCardName: 'CLO-STATS · do not delete',
+      // 2 SINCE v0.141.0: §16 replaced the three verdict bands with five, so a
+      // version-1 payload's counters mean something else entirely — and every
+      // field it has is a field this one also has, which is exactly the shape
+      // of corruption that would be read without complaint. Refused instead.
+      statsWireVersion: 2,
+      statsMaxWireBytes: 60000,
 
       // --- costs and politeness (§9) --------------------------------------
       // ~230 ChessDB requests for a 20-position session, at a volunteer
@@ -22844,8 +22924,13 @@
     function syncStormUi() {
       const s = cr.line.storm;
       const v = cr.stormVerdict;
+      // §16's five bands. "Inaccuracy", "Mistake" and "Blunder" are the words
+      // every annotated game already uses for exactly these three amounts of
+      // the game given up, so they need no explaining — and they are what makes
+      // the middle band legible as a band rather than as a soft failure.
       const words = {
-        good: 'Good move', decent: 'Decent', miss: 'Missed',
+        great: 'Great move', good: 'Good move', ok: 'Inaccuracy',
+        bad: 'Mistake', blunder: 'Blunder',
         // NOT "not in the book", which reads as a claim about the POSITION and
         // so as a verdict on the move. It is neither: both grading sources came
         // back empty, the move is ungraded, and nothing is scored either way.
@@ -22857,9 +22942,14 @@
       const retry = cr.stormRetry;
       cr.ui.title.textContent = v ? (words[v.verdict] || 'Answered')
         : (retry ? 'Try this one again' : 'Find a good move');
+      // TWO TREATMENTS FOR FIVE BANDS, and that is deliberate: this line is
+      // read in about a second with a clock running, so it answers "did that
+      // score or cost" and leaves the degree to the words. Green for the two
+      // that score, red for the two that cost, nothing for `ok`, which is
+      // exactly what it is worth.
       cr.ui.prompt.className = 'clo-cr-prompt' + (v
-        ? (v.verdict === 'good' ? ' clo-cr-prompt--ok'
-          : v.verdict === 'miss' ? ' clo-cr-prompt--bad' : '')
+        ? (v.verdict === 'great' || v.verdict === 'good' ? ' clo-cr-prompt--ok'
+          : v.verdict === 'bad' || v.verdict === 'blunder' ? ' clo-cr-prompt--bad' : '')
         : '');
 
       if (!v) {
@@ -33909,8 +33999,12 @@
     const bits = [v.userSan || 'your move'];
     if (v.rank === 1) bits.push('the top move');
     else if (v.rank) bits.push('#' + v.rank + ' of ' + s.cand.nScored);
-    if (typeof v.loss === 'number') {
-      bits.push(v.loss <= 0 ? 'level with the best' : v.loss + 'cp behind');
+    // §16: WIN PROBABILITY, not centipawns. "42cp behind" is a number the
+    // reader has to place against an evaluation they were not shown; "3.4% of
+    // the game" is the same fact already placed. The centipawn pair is on the
+    // line below (`stormBestLine`) for anyone who wants to do the subtraction.
+    if (typeof v.wp === 'number') {
+      bits.push(v.wp < 0.05 ? 'level with the best' : stormWp(v.wp) + ' of the game');
     }
     // WHERE THE NUMBER CAME FROM, where it is not the book's own ranking of
     // this position (§3.4's two fallbacks). A centipawn figure the user
@@ -33953,6 +34047,14 @@
       parts.push(v.userSan + ' ' + stormCp(v.userScore) + (yw ? ' · ' + yw : ''));
     }
     return parts.join('   ');
+  }
+
+  /** A win-probability loss as the user reads it: one decimal under 10 points
+   *  and none above, because "23.4%" is a precision the number does not have
+   *  and the difference between 23% and 24% changes no verdict. */
+  function stormWp(wp) {
+    if (typeof wp !== 'number' || !Number.isFinite(wp)) return '';
+    return (wp < 10 ? wp.toFixed(1) : String(Math.round(wp))) + '%';
   }
 
   /** A ChessDB score as pawns, from the MOVER's side — which is whose move it
@@ -34107,6 +34209,19 @@
       syncNote: '',       // one line: what the exchange did, or why it could not
       lastPull: 0,
       gathered: 0,        // positions it has added
+      // --- the performance record (§15) -------------------------------------
+      // EVERY course, not only this one: the stats view answers "which of my
+      // repertoires do I read worst", which is a question about all of them,
+      // and the record is small enough that holding it whole costs nothing.
+      stats: null,          // { [bid]: { name, lines: { [oid]: { nm, dv } } } }
+      statsDirty: false,
+      devId: '',            // this device's counter slot (§15.2)
+      viewStats: false,     // the stats view is up INSTEAD of the stage/review
+      statsNote: '',        // one line: what the chapter read or the exchange did
+      statsBusy: false,     // chapters are being read
+      statsOpen: null,      // Set of chapter ids the user has expanded
+      statsSyncing: false,
+      chapters: null,       // { ch: { [oid]: lid }, cn: { [lid]: name }, at }
       // --- caches and budget (§9) -------------------------------------------
       cdb: new Map(),    // cacheKey → scored[] | null ("null" = asked, unknown)
       cdbCount: 0,
@@ -34185,6 +34300,11 @@
         p: cand.ply,
         c: cand.userColor,
         n: (f && f.names && f.names[0]) || '',
+        // The variation the name above belongs to (§15), so a position taken
+        // out of the store months later still knows which line it is a
+        // frontier of. Absent on anything written before v0.140.0, which
+        // `backfillStoreOids` fills in from the course's own listing.
+        o: (f && f.oids && f.oids[0]) || '',
         i: cand.invented ? 1 : 0,
         a: cand.arrived ? [cand.arrived.uci || '', cand.arrived.san || ''] : null,
         // The scored list, mover's perspective, best first — the thing the
@@ -34342,6 +34462,263 @@
       return { added, dropped, bumped, gone };
     }
 
+    // ----------------------------------------------------------------------
+    // §15) The performance record
+    //
+    // Every graded answer, counted against the LINE whose frontier the position
+    // came from — which is what turns a storm from an amusement into a reading
+    // of the repertoire: not "I scored 31" but "one move past my Scotch lines I
+    // find a decent move a third of the time".
+    //
+    // Everything in this block is pure and `dev/check-storm.js` executes it,
+    // because THREE of these fail silently and all three still print a tidy
+    // percentage:
+    //
+    //  * THE DENOMINATOR. `unknown` is a verdict about ChessDB, not about the
+    //    user — `finishAnswer` scores it nothing and holds the streak for
+    //    exactly that reason — so counting it as a failure marks the user down
+    //    for the book's ignorance, and counting it as a success does the
+    //    opposite. It is out of the fraction altogether.
+    //  * THE MERGE. These are COUNTERS and the wire merge is a UNION over a
+    //    whole snapshot, so adding two devices' totals adds them again on the
+    //    next exchange, and again on the one after. Per device, summed on READ.
+    //  * THE AVERAGE LOSS, which is a mean over ANSWERS and not a mean over
+    //    lines: rolling a chapter up by averaging its lines' averages weights a
+    //    line answered once like one answered forty times.
+    // ----------------------------------------------------------------------
+
+    /** One device's counters for one line — §16's five bands plus `unknown`.
+     *  Short keys: this goes on the wire. `ls` is a sum of TENTHS of a point of
+     *  win probability, so the whole record stays integers. */
+    function stormStatBlank() {
+      return { n: 0, a: 0, g: 0, o: 0, b: 0, x: 0, u: 0, ls: 0, lc: 0, t: 0 };
+    }
+
+    /** The band each verdict is counted in. One table rather than a chain of
+     *  comparisons, so adding a band is one line here and one in the bar. */
+    const STAT_BAND = { great: 'a', good: 'g', ok: 'o', bad: 'b', blunder: 'x',
+      unknown: 'u' };
+
+    /**
+     * Adds one graded answer.
+     *
+     * `unanswered` (§14.10c's card the clock stopped on) is NOT an answer and
+     * is refused here — it is in the review because it is the position most in
+     * mind, and counting it would mark the user down for running out of time.
+     * Returns whether anything was counted, which is what decides a write.
+     */
+    function stormStatApply(rec, v, now) {
+      const band = v && STAT_BAND[v.verdict];
+      if (!rec || !band) return false;
+      rec.n = (rec.n || 0) + 1;
+      rec[band] = (rec[band] || 0) + 1;
+      // THE LOSS IS ONLY EVER SUMMED WHERE THERE IS ONE. An ungradeable answer
+      // has no loss at all, and reading a missing number as zero is what would
+      // make the book's ignorance show up as perfect play.
+      //
+      // §16: it is the WIN-PROBABILITY loss, in tenths of a point — an average
+      // over centipawns would be an average over a quantity whose meaning
+      // changes with the position it was measured in, which is the whole
+      // reason the grade stopped using them.
+      if (band !== 'u' && typeof v.wp === 'number' && isFinite(v.wp)) {
+        rec.ls = (rec.ls || 0) + Math.max(0, Math.round(v.wp * 10));
+        rec.lc = (rec.lc || 0) + 1;
+      }
+      rec.t = now;
+      return true;
+    }
+
+    /** Folds one record into another. The `t`s take the LATER, not the sum. */
+    function stormStatPlus(into, r) {
+      if (!r) return into;
+      into.n += r.n || 0;
+      into.a += r.a || 0;
+      into.g += r.g || 0;
+      into.o += r.o || 0;
+      into.b += r.b || 0;
+      into.x += r.x || 0;
+      into.u += r.u || 0;
+      into.ls += r.ls || 0;
+      into.lc += r.lc || 0;
+      if ((r.t || 0) > into.t) into.t = r.t || 0;
+      return into;
+    }
+
+    /** A line's own total: its devices summed. This is the ONLY place two
+     *  devices' counters are ever added, and it happens on READ. */
+    function stormStatSum(dv) {
+      const out = stormStatBlank();
+      for (const id of Object.keys(dv || {})) stormStatPlus(out, dv[id]);
+      return out;
+    }
+
+    /** …and a set of lines rolled up into one figure — a chapter, or a course.
+     *  Over ANSWERS, never over lines: see the block comment. */
+    function stormStatRoll(lines) {
+      const out = stormStatBlank();
+      for (const l of lines || []) stormStatPlus(out, stormStatSum(l && l.dv));
+      return out;
+    }
+
+    /** How many graded answers there were at all — §16's five bands, and the
+     *  denominator of everything below. `unknown` is not one of them. */
+    function stormStatGraded(a) {
+      return (a.a || 0) + (a.g || 0) + (a.o || 0) + (a.b || 0) + (a.x || 0);
+    }
+
+    /**
+     * How often a move worth POINTS was found, 0..1, or null with nothing
+     * graded.
+     *
+     * THE NUMERATOR IS THE TWO BANDS THAT SCORE, and `ok` is deliberately not
+     * among them even though it costs nothing: this figure answers "did I find
+     * the move", and an inaccuracy is the answer "no, but it did not matter
+     * much" — which is what the average loss beside it is for.
+     */
+    function stormStatRate(a) {
+      const graded = stormStatGraded(a);
+      return graded ? ((a.a || 0) + (a.g || 0)) / graded : null;
+    }
+
+    /** The mean win probability given up, in POINTS OF PROBABILITY, over the
+     *  answers that have one — or null. The record holds tenths; the division
+     *  by 10 lives here so no caller has to know that. */
+    function stormStatLoss(a) {
+      return (a.lc || 0) ? (a.ls || 0) / a.lc / 10 : null;
+    }
+
+    /**
+     * Folds a remote snapshot in.
+     *
+     * PER DEVICE, AND NEVER A SUM. A device only ever writes its own counters
+     * and they only ever grow, so the record with the higher `n` is simply the
+     * later one and `max` is exact however often two devices meet. Summing
+     * would be right once and wrong for ever after — and it would look right,
+     * because the numbers would still be plausible and still be growing.
+     */
+    function stormStatsMerge(local, remote) {
+      let added = 0, bumped = 0;
+      for (const bid of Object.keys(remote || {})) {
+        const rc = remote[bid];
+        if (!rc || !rc.lines) continue;
+        let mine = local[bid];
+        if (!mine) mine = local[bid] = { name: rc.name || '', lines: {} };
+        if (!mine.name && rc.name) mine.name = rc.name;
+        for (const oid of Object.keys(rc.lines)) {
+          const rl = rc.lines[oid];
+          if (!rl || !rl.dv) continue;
+          let ml = mine.lines[oid];
+          if (!ml) ml = mine.lines[oid] = { nm: rl.nm || '', dv: {} };
+          if (!ml.nm && rl.nm) ml.nm = rl.nm;
+          for (const dev of Object.keys(rl.dv)) {
+            const theirs = rl.dv[dev], ours = ml.dv[dev];
+            if (!theirs) continue;
+            if (!ours) { ml.dv[dev] = theirs; added++; continue; }
+            if ((theirs.n || 0) > (ours.n || 0)) { ml.dv[dev] = theirs; bumped++; }
+          }
+        }
+      }
+      return { added, bumped };
+    }
+
+    /**
+     * Ages out and caps, least-recently-answered first.
+     *
+     * NO TOMBSTONES, deliberately, and unlike the position store beside it
+     * (§14.12): the rule here is a function of the record's own `t` and every
+     * device applies it to the same numbers, so a line dropped on one device is
+     * a line the other drops too. A resurrection would in any case be harmless
+     * — the record is still true — where a resurrected POSITION is one the user
+     * has already learned.
+     */
+    function stormStatsPrune(all, C, now) {
+      let dropped = 0;
+      for (const bid of Object.keys(all || {})) {
+        const c = all[bid];
+        if (!c || !c.lines) { delete all[bid]; continue; }
+        const rows = [];
+        for (const oid of Object.keys(c.lines)) {
+          const t = stormStatSum(c.lines[oid] && c.lines[oid].dv).t || 0;
+          if (now - t > C.statsTtlMs) { delete c.lines[oid]; dropped++; continue; }
+          rows.push({ oid, t });
+        }
+        if (rows.length > C.statsMaxLines) {
+          rows.sort((a, b) => b.t - a.t);
+          for (const r of rows.slice(C.statsMaxLines)) { delete c.lines[r.oid]; dropped++; }
+        }
+      }
+      return dropped;
+    }
+
+    /**
+     * The whole record as one card's text, most recently answered line first
+     * and cut to fit — `stormWirePack`'s shape, for its reason: a payload that
+     * overshoots is a card the server refuses, and fewer lines is the honest
+     * answer to that rather than a failed exchange.
+     *
+     * EVERY COURSE, not just the one on screen. A line is ~80 bytes with its
+     * devices, and the question the user asked is about their repertoires
+     * plural — which is also why this is a card of its own and not a field in
+     * the position card, whose budget is spent on ONE course's positions.
+     */
+    function stormStatsWirePack(all, C, budget, now) {
+      const out = { v: C.statsWireVersion, at: now, c: {} };
+      const rows = [];
+      for (const bid of Object.keys(all || {})) {
+        const c = all[bid];
+        if (!c || !c.lines) continue;
+        for (const oid of Object.keys(c.lines)) {
+          const l = c.lines[oid];
+          if (!l || !l.dv) continue;
+          rows.push({ bid, oid, l, name: c.name || '', t: stormStatSum(l.dv).t || 0 });
+        }
+      }
+      rows.sort((a, b) => b.t - a.t);
+      let kept = 0;
+      for (const r of rows) {
+        let c = out.c[r.bid];
+        if (!c) c = out.c[r.bid] = { name: r.name, lines: {} };
+        c.lines[r.oid] = r.l;
+        const size = Math.ceil(JSON.stringify(out).length * 8 / 5);
+        if (budget && size > budget) { delete c.lines[r.oid]; break; }
+        kept++;
+      }
+      out.n = kept;
+      return out;
+    }
+
+    /** …and back, with every counter forced to a number: a record read from a
+     *  card is one another build wrote, and a single bad field would poison
+     *  every total it is ever added to. */
+    function stormStatsWireUnpack(blob, C) {
+      if (!blob || blob.v !== C.statsWireVersion || !blob.c) return null;
+      const all = {};
+      for (const bid of Object.keys(blob.c)) {
+        const c = blob.c[bid];
+        if (!c || !c.lines) continue;
+        const lines = {};
+        for (const oid of Object.keys(c.lines)) {
+          const l = c.lines[oid];
+          if (!l || !l.dv) continue;
+          const dv = {};
+          for (const dev of Object.keys(l.dv)) {
+            const r = l.dv[dev];
+            if (!r || typeof r.n !== 'number' || !(r.n > 0)) continue;
+            dv[dev] = {
+              n: Math.max(0, r.n | 0), a: Math.max(0, r.a | 0), g: Math.max(0, r.g | 0),
+              o: Math.max(0, r.o | 0), b: Math.max(0, r.b | 0), x: Math.max(0, r.x | 0),
+              u: Math.max(0, r.u | 0),
+              ls: Math.max(0, r.ls | 0), lc: Math.max(0, r.lc | 0),
+              t: Number(r.t) || 0,
+            };
+          }
+          if (Object.keys(dv).length) lines[oid] = { nm: String(l.nm || ''), dv };
+        }
+        if (Object.keys(lines).length) all[bid] = { name: String(c.name || ''), lines };
+      }
+      return { stats: all, at: Number(blob.at) || 0 };
+    }
+
     /**
      * STAGE 0 — the frontier set: every position one of this course's own
      * variations ENDS on, with whose repertoire it belongs to and how many
@@ -34402,6 +34779,10 @@
         if (!e) {
           byEnd.set(ck, e = {
             ck, fen: w.end, side: null, n: 0, w: 0, b: 0, names: [],
+            // …and the oid beside it (§15). The NAME is what the card shows and
+            // the oid is what the performance record counts against — a name is
+            // not unique and cannot be resolved to a chapter.
+            oids: [],
             // The course's OWN last move into this position. Free here, and it
             // is what lets an invented line's first card still say how it was
             // arrived at — a real game's walk reads that off the game instead.
@@ -34411,7 +34792,10 @@
         }
         e.n++;
         if (side === 'w') e.w++; else e.b++;
-        if (e.names.length < 3) e.names.push(v.name || String(v.oid));
+        if (e.names.length < 3) {
+          e.names.push(v.name || String(v.oid));
+          e.oids.push(String(v.oid));
+        }
       }
       const out = [];
       for (const e of byEnd.values()) {
@@ -34524,17 +34908,23 @@
      * not agree to the centipawn) is "as good as the best move", never a
      * negative loss that would read as a bonus.
      */
-    function stormMoveLoss(scored, uci, childBest) {
+    function stormMoveLoss(scored, uci, childBest, C) {
       if (!scored || !scored.length) return null;
       const best = scored[0].score;
+      // §16: the LOSS IS THE WIN-PROBABILITY ONE and the centipawn figure is
+      // kept beside it as the raw fact. Computed here, where both scores are in
+      // hand and both are certainly the mover's, rather than by a caller
+      // holding one number from the book and one from somewhere else.
       for (let i = 0; i < scored.length; i++) {
         if (scored[i].uci !== uci) continue;
         return {
           loss: Math.max(0, best - scored[i].score),
+          wp: stormWpLoss(best, scored[i].score, C),
           rank: i + 1,
           score: scored[i].score,
           san: scored[i].san || '',
           winrate: scored[i].winrate,
+          bestScore: best,
           source: 'list',
         };
       }
@@ -34542,10 +34932,12 @@
       const value = -childBest;
       return {
         loss: Math.max(0, best - value),
+        wp: stormWpLoss(best, value, C),
         rank: null,
         score: value,
         san: '',
         winrate: null,
+        bestScore: best,
         source: 'child',
       };
     }
@@ -34575,41 +34967,85 @@
     }
 
     /**
-     * The verdict bands (§8.1). FLAT centipawn loss, and the flatness is
-     * licensed by the spread filter above: the normalising is done once, in the
-     * filter, so the score itself stays legible during a timed session. A
-     * scoring function nobody can hold in their head is one nobody trusts.
+     * §16) A centipawn evaluation as a WIN PROBABILITY, 0..100, from the side
+     * whose score it is.
      *
-     * The premise of the whole feature is the first band: a move within
-     * `goodCp` of best is a good move, full stop.
+     * Lichess's own fit over real games. It is the whole of why the verdict
+     * bands mean something at +200 as well as at 0: the curve is steep at
+     * equality and flat once a game is decided, so the same 100cp is a third
+     * of the game in one place and a twentieth in the other.
+     *
+     * CLAMPED FIRST, which is what keeps a mate score from needing a band of
+     * its own — ChessDB writes one as ~30000 and the engine tier as
+     * `engineMateCp`, and at ±`wpClampCp` the curve is already at 97.6%.
      */
-    function stormGrade(loss, C) {
-      if (typeof loss !== 'number' || !Number.isFinite(loss)) return 'unknown';
-      if (loss <= C.goodCp) return 'good';
-      if (loss <= C.decentCp) return 'decent';
-      return 'miss';
+    function stormWinPct(cp, C) {
+      if (typeof cp !== 'number' || !Number.isFinite(cp)) return null;
+      const x = Math.max(-C.wpClampCp, Math.min(C.wpClampCp, cp));
+      return 50 + 50 * (2 / (1 + Math.exp(-C.wpK * x)) - 1);
+    }
+
+    /**
+     * How much of the game a move gives up against the best one, in points of
+     * win probability.
+     *
+     * BOTH SCORES MUST BE THE SAME SIDE'S, and every caller here hands in two
+     * mover-perspective figures — which is not a coincidence but the reason
+     * `stormMoveLoss` computes this itself rather than leaving it to a caller
+     * holding one number from the book and one from somewhere else. Floored at
+     * 0: a move that scores better than the book's best is not a bonus, it is
+     * the book being imprecise.
+     */
+    function stormWpLoss(bestCp, playedCp, C) {
+      const a = stormWinPct(bestCp, C), b = stormWinPct(playedCp, C);
+      if (a === null || b === null) return null;
+      return Math.max(0, a - b);
+    }
+
+    /**
+     * The verdict bands (§8.1, rebuilt in §16). FIVE of them, over WIN
+     * PROBABILITY LOST — see `CONFIG.storm` for the calibration table that
+     * makes the top two the old `goodCp`/`decentCp` at equality.
+     *
+     * The premise of the whole feature is still the first band: a move that
+     * gives up almost nothing IS the move, whether or not it is the engine's
+     * first choice. What is new is the middle: an inaccuracy is no longer the
+     * same answer as hanging a queen.
+     */
+    function stormGrade(wp, C) {
+      if (typeof wp !== 'number' || !Number.isFinite(wp)) return 'unknown';
+      if (wp < C.greatWp) return 'great';
+      if (wp < C.goodWp) return 'good';
+      if (wp < C.okWp) return 'ok';
+      if (wp < C.badWp) return 'bad';
+      return 'blunder';
     }
 
     /**
      * Points for one answer. `streak` is the run BEFORE it, so the first answer
      * of a session is always at the plain multiplier.
      *
-     * A MISS IS A FLAT PENALTY AND IS NEVER MULTIPLIED. The multiplier is a
-     * reward for a run, and charging it against the answer that ENDS the run
-     * would make one lapse after twelve right answers cost four times what the
-     * same lapse costs after none — punishing the streak rather than the
-     * mistake, and making a long streak something to protect by passing.
-     * (Which is itself a miss, so that door is shut either way.)
+     * A PENALTY IS FLAT AND IS NEVER MULTIPLIED. The multiplier is a reward
+     * for a run, and charging it against the answer that ENDS the run would
+     * make one lapse after twelve right answers cost four times what the same
+     * lapse costs after none — punishing the streak rather than the mistake,
+     * and making a long streak something to protect by passing. (Which is
+     * itself a blunder, so that door is shut either way.) The test is the
+     * SIGN, not the verdict's name, so a band added later cannot be given a
+     * multiplied penalty by accident.
      *
-     * 'unknown' and 'unanswered' fall through to 0: neither is the user's
-     * doing, and charging for a position ChessDB cannot score is the one unfair
-     * verdict available here.
+     * 'ok' scores 0 because that is what the middle band means. 'unknown' and
+     * 'unanswered' fall through to the same 0 by a different argument: neither
+     * is the user's doing, and charging for a position ChessDB cannot score is
+     * the one unfair verdict available here.
      */
     function stormPoints(verdict, streak, C) {
-      if (verdict === 'miss') return C.missPoints;
-      const base = verdict === 'good' ? C.goodPoints
-        : verdict === 'decent' ? C.decentPoints : 0;
+      const base = verdict === 'great' ? C.greatPoints
+        : verdict === 'good' ? C.goodPoints
+        : verdict === 'bad' ? C.badPoints
+        : verdict === 'blunder' ? C.blunderPoints : 0;
       if (!base) return 0;
+      if (base < 0) return base;
       const mult = Math.min(C.streakMax, 1 + Math.floor(Math.max(0, streak) / C.streakStep));
       return base * mult;
     }
@@ -34845,6 +35281,10 @@
           bestScore: best.score,
           bestWinrate: best.winrate,
           from: (frontier && frontier.names[0]) || '',
+          // §15: which line's frontier this is. '' where the store predates the
+          // field and the backfill could not name it — those answers are still
+          // counted, under one "line not recorded" row.
+          oid: (frontier && frontier.oids && frontier.oids[0]) || '',
           plyPast: cand.ply,
         },
       };
@@ -34995,7 +35435,7 @@
         const cand = stormUnpack(store[ck]);
         if (!cand) continue;
         out.push({ ck, cand, k: store[ck].k || 0, r: rnd(),
-          name: store[ck].n || '' });
+          name: store[ck].n || '', oid: store[ck].o || '' });
       }
       out.sort((a, b) => (a.k - b.k) || (a.r - b.r));
       return out;
@@ -35174,7 +35614,7 @@
      * TWO, not one, and this is the whole reason the tier is shaped this way: a
      * loss is a SUBTRACTION, and taking `best(P)` from ChessDB's book while
      * taking `best(P after m)` from Stockfish would put the systematic offset
-     * between two evaluators — easily wider than the whole `goodCp` band —
+     * between two evaluators — easily wider than the whole `greatWp` band —
      * straight into the verdict. Both sides come from the same engine or the
      * answer is refused.
      *
@@ -35393,7 +35833,7 @@
              st.shown + st.queue.length < C.maxPositions) {
         const item = st.storeQueue.shift();
         if (st.seen.has(item.ck)) continue;
-        const card = stormCard(item.cand, { names: [item.name] });
+        const card = stormCard(item.cand, { names: [item.name], oids: [item.oid] });
         if (!card) { delete st.store[item.ck]; st.storeDirty = true; continue; }
         st.seen.add(item.ck);
         st.queue.push(card);
@@ -35567,6 +36007,279 @@
     }
 
     // ----------------------------------------------------------------------
+    // §15) The performance record — storage, attribution and the exchange
+    //
+    // The pure half is above; this is where it meets storage, the course and
+    // the wire. Three decisions worth stating here rather than discovering:
+    //
+    //  * A LINE IS IDENTIFIED BY ITS OID, never by its name. Two variations can
+    //    share a name, a name can be edited, and only an oid can be resolved to
+    //    a chapter.
+    //  * THE CHAPTER IS RESOLVED SEPARATELY AND LAZILY, into a cache of its
+    //    own. Chessable's `getList` does not say which chapter a variation is
+    //    in — `fetchVariationChapter` reads chapters one at a time until it
+    //    finds the oid — so grouping a whole course costs one request per
+    //    chapter. That is behind a press, and the answer is kept.
+    //  * IT IS A CARD OF ITS OWN on the wire. The position card is cut to fit
+    //    its budget, so a statistic folded into it would be dropped whenever a
+    //    position list ran long — silently, and after the requests were spent.
+    // ----------------------------------------------------------------------
+
+    /** This device's counter slot, made once and kept. Section 16b's store is
+     *  keyed by the pin; these are counters, and a counter needs to know whose
+     *  it is or two devices cannot be told apart on a union merge. */
+    async function ensureDeviceId() {
+      if (st.devId) return st.devId;
+      try {
+        const got = await chrome.storage.local.get(C.statsDeviceKey);
+        let id = got && got[C.statsDeviceKey];
+        if (!id || typeof id !== 'string') {
+          id = 'd' + Math.random().toString(36).slice(2, 10);
+          await chrome.storage.local.set({ [C.statsDeviceKey]: id });
+        }
+        st.devId = id;
+      } catch (err) {
+        // An orphaned content script, or a profile with no storage: a
+        // per-document id still counts this session correctly and simply does
+        // not survive the tab.
+        st.devId = 'd' + Math.random().toString(36).slice(2, 10);
+      }
+      return st.devId;
+    }
+
+    async function loadStats() {
+      try {
+        const got = await chrome.storage.local.get([C.statsKey, C.chaptersKey]);
+        const raw = got && got[C.statsKey];
+        st.stats = (raw && typeof raw === 'object') ? raw : {};
+        stormStatsPrune(st.stats, C, Date.now());
+        const ch = got && got[C.chaptersKey] && got[C.chaptersKey][st.bid];
+        st.chapters = { ch: (ch && ch.ch) || {}, cn: (ch && ch.cn) || {}, at: (ch && ch.at) || 0 };
+      } catch (err) {
+        warn('storm: the performance record is unreadable — continuing without it:', err);
+        st.stats = {};
+        st.chapters = { ch: {}, cn: {}, at: 0 };
+      }
+    }
+
+    /**
+     * Writes it back, RE-READING first — `saveStore`'s lesson, and here the
+     * re-read is also the merge: another tab (or the same device's earlier
+     * session) may have counted answers this one never saw, and our own
+     * records are monotone, so folding the stored copy in with the same
+     * per-device max the wire uses cannot lose either side.
+     */
+    async function saveStats() {
+      if (!st.statsDirty || !st.stats) return;
+      st.statsDirty = false;
+      try {
+        const got = await chrome.storage.local.get(C.statsKey);
+        const stored = (got && got[C.statsKey] && typeof got[C.statsKey] === 'object')
+          ? got[C.statsKey] : {};
+        stormStatsMerge(st.stats, stored);
+        stormStatsPrune(st.stats, C, Date.now());
+        await chrome.storage.local.set({ [C.statsKey]: st.stats });
+      } catch (err) {
+        warn('storm: could not write the performance record:', err);
+      }
+    }
+
+    async function saveChapters() {
+      try {
+        const got = await chrome.storage.local.get(C.chaptersKey);
+        const all = (got && got[C.chaptersKey]) || {};
+        all[st.bid] = st.chapters;
+        await chrome.storage.local.set({ [C.chaptersKey]: all });
+      } catch (err) { /* the grouping runs on what it has */ }
+    }
+
+    /** This course's slice, created on demand. */
+    function courseStats(create) {
+      if (!st.stats || !st.bid) return null;
+      let c = st.stats[st.bid];
+      if (!c && create) c = st.stats[st.bid] = { name: st.name || '', lines: {} };
+      if (c && st.name && c.name !== st.name) c.name = st.name;
+      return c || null;
+    }
+
+    /**
+     * ONE GRADED ANSWER, counted against the line the position is a frontier
+     * of. Called from `finishAnswer` only — a review retry (§14.10b) is
+     * deliberately not counted, for the same reason it scores no points: it was
+     * answered at leisure, and mixing the two would make the record a measure
+     * of how much reviewing was done.
+     */
+    function statNote(card, v) {
+      if (!st.stats || !st.devId || !card || !card.storm) return;
+      const c = courseStats(true);
+      if (!c) return;
+      const oid = String(card.storm.oid || '');
+      let line = c.lines[oid];
+      if (!line) line = c.lines[oid] = { nm: card.storm.from || '', dv: {} };
+      if (!line.nm && card.storm.from) line.nm = card.storm.from;
+      let rec = line.dv[st.devId];
+      if (!rec) rec = line.dv[st.devId] = stormStatBlank();
+      if (!stormStatApply(rec, v, Date.now())) return;
+      st.statsDirty = true;
+      saveStats();
+    }
+
+    /**
+     * Fills in the oid of stored positions written before v0.140.0, from the
+     * course listing that has just been read anyway.
+     *
+     * BY NAME, which is the one thing those entries do carry — and a name that
+     * matches two variations is left alone rather than attributed to whichever
+     * came first: a statistic filed under the wrong line is worse than one
+     * filed under none.
+     */
+    function backfillStoreOids(course) {
+      if (!st.store) return;
+      const byName = new Map();
+      for (const v of (course && course.vars) || []) {
+        const nm = String(v.name || '').trim();
+        if (!nm) continue;
+        byName.set(nm, byName.has(nm) ? null : String(v.oid));
+      }
+      let filled = 0;
+      for (const ck of Object.keys(st.store)) {
+        const e = st.store[ck];
+        if (!e || e.o || !e.n) continue;
+        const oid = byName.get(String(e.n).trim());
+        if (!oid) continue;
+        e.o = oid;
+        filled++;
+      }
+      if (filled) {
+        st.storeDirty = true;
+        log('storm: named the line of', filled, 'stored position(s)');
+      }
+    }
+
+    /**
+     * Which chapter each recorded line is in — one `getList` per chapter until
+     * every oid has been found, through the shared `fetchVariationChapter`, and
+     * cached for good.
+     *
+     * IT CAN ONLY ANSWER FOR A COURSE THE USER CAN ADD TO. `getImportData` is
+     * the only call that enumerates a course's chapters and bought courses are
+     * absent from it, so for those the answer is honestly "no chapters" and the
+     * lines are listed flat. That is stated rather than left as an empty list.
+     */
+    async function resolveChapters() {
+      if (st.statsBusy) return;
+      const bid = st.bid;
+      const c = courseStats(false);
+      if (!c || !bid) return;
+      st.statsBusy = true;
+      setStatsNote('Reading the chapters…');
+      render();
+      try {
+        const cr = chessableCreds();
+        if (!cr) throw new Error('not signed in to Chessable in this tab');
+        const targets = await importTargetsOnce(cr);
+        const mine = targets.chapters.filter((ch) => ch.bid === String(bid));
+        if (!mine.length) {
+          throw new Error('Chessable lists chapters only for courses you can add to, ' +
+            'so a bought course has none to read');
+        }
+        const ch = Object.assign({}, st.chapters.ch);
+        const cn = Object.assign({}, st.chapters.cn);
+        for (const one of mine) cn[one.lid] = one.name;
+        let placed = 0, missing = 0;
+        for (const oid of Object.keys(c.lines)) {
+          if (!oid || ch[oid]) continue;
+          const lid = await fetchVariationChapter(bid, oid, cr);
+          if (lid == null) { missing++; continue; }
+          ch[oid] = String(lid);
+          placed++;
+        }
+        st.chapters = { ch, cn, at: Date.now() };
+        await saveChapters();
+        setStatsNote(mine.length + ' chapter(s) read' +
+          (placed ? ' — ' + placed + ' line(s) placed' : '') +
+          (missing ? ', ' + missing + ' not found (deleted since?)' : '') + '.');
+      } catch (err) {
+        setStatsNote('Could not group by chapter: ' + String((err && err.message) || err));
+      } finally {
+        st.statsBusy = false;
+        render();
+      }
+    }
+
+    function setStatsNote(text) {
+      st.statsNote = text || '';
+      if (st.ui) {
+        st.ui.statsNote.textContent = st.statsNote;
+        st.ui.statsNote.hidden = !st.statsNote;
+      }
+    }
+
+    /**
+     * §15.3) The exchange, section 16e's transport and a card of its own.
+     *
+     * READ, MERGE, WRITE — the position store's order and for its reason: the
+     * card is a snapshot overwritten in place, so writing first discards
+     * whatever the other device put there since.
+     *
+     * NO TOMBSTONES, unlike the position card: nothing here is ever deleted by
+     * a rule that one device could apply and another not, so a union merge
+     * converges by itself.
+     */
+    async function syncStats(reason) {
+      if (st.statsSyncing) return false;
+      if (!pinSyncApi || !pinSyncApi.carrier) return false;
+      const carrier = pinSyncApi.carrier;
+      if (!carrier.course()) {
+        setStatsNote('Choose a course for syncing on the options page first.');
+        return false;
+      }
+      if (!st.stats) await loadStats();
+      st.statsSyncing = true;
+      setStatsNote('Syncing the record…');
+      render();
+      try {
+        let added = 0, bumped = 0;
+        const text = await carrier.read(C.statsCardName);
+        if (text) {
+          let blob = null;
+          try {
+            blob = JSON.parse(new TextDecoder().decode(carrier.decode(text)));
+          } catch (err) {
+            // A payload we cannot read must not be treated as "the other device
+            // has nothing", which would push ours over it.
+            throw new Error('the stored record could not be read');
+          }
+          const got = stormStatsWireUnpack(blob, C);
+          if (!got) throw new Error('the stored record is from a newer version');
+          const merged = stormStatsMerge(st.stats, got.stats);
+          added = merged.added;
+          bumped = merged.bumped;
+          st.statsDirty = true;
+        }
+        stormStatsPrune(st.stats, C, Date.now());
+        const packed = stormStatsWirePack(st.stats, C, C.statsMaxWireBytes, Date.now());
+        const wire = carrier.encode(new TextEncoder().encode(JSON.stringify(packed)));
+        await carrier.write(C.statsCardName, wire, C.statsMaxWireBytes);
+        st.statsDirty = true;
+        await saveStats();
+        setStatsNote('Record synced — ' + packed.n + ' line(s) carried' +
+          (added ? ', ' + added + ' taken from another device' : '') +
+          (bumped ? ', ' + bumped + ' brought up to date' : ''));
+        log('storm: stats synced (' + reason + ') —', packed.n, 'lines,', added, 'added,',
+          bumped, 'bumped,', wire.length, 'bytes');
+        return true;
+      } catch (err) {
+        warn('storm: the stats sync failed:', err);
+        setStatsNote('Could not sync the record: ' + String((err && err.message) || err));
+        return false;
+      } finally {
+        st.statsSyncing = false;
+        render();
+      }
+    }
+
+    // ----------------------------------------------------------------------
     // §14.11) The gather pass
     //
     // The producer with nothing on the other end of it: it walks frontiers,
@@ -35590,6 +36303,7 @@
       if (!st.running || st.over || st.started || st.gathering) return;
       if (!st.queue.length) return;
       st.started = true;
+      st.viewStats = false;  // §15.4: the stage is what a press of Start means
       render();
       nextCard();
     }
@@ -35725,7 +36439,11 @@
       pass() {
         if (st.retry) { retryAnother(); return; }
         if (!st.card || st.verdict || st.grading) return;
-        finishAnswer({ verdict: 'miss', passed: true, userSan: '', loss: null, rank: null });
+        // §16: THE WORST BAND, deliberately. "I have no idea" costing less than
+        // a bad move would make passing the way to protect a streak, which is
+        // the one incentive this scoring must not create.
+        finishAnswer({ verdict: 'blunder', passed: true, userSan: '',
+          wp: null, loss: null, rank: null });
       },
       close() { endSession('closed'); },
     };
@@ -35764,6 +36482,9 @@
       st.cdbCount = 0;
       st.pgn = new Map();
       st.endsAt = 0;
+      st.viewStats = false;
+      st.statsNote = '';
+      st.statsOpen = new Set();
       mount();
       render();
       setStatus('Reading the course…', '');
@@ -35772,6 +36493,10 @@
       // arrive with no network at all.
       await loadStore();
       await loadSyncMeta();
+      // §15. Before the first answer can be graded, and cheap — one
+      // storage.local read for the record and this device's own id.
+      await loadStats();
+      await ensureDeviceId();
       if (!st.running) return;
       // §14.12: a pull, if it has been a while and syncing is on. Deliberately
       // NOT awaited — the whole point of the store is that a session opens
@@ -35779,7 +36504,11 @@
       // simply makes the NEXT draw richer.
       if (pinSyncApi && pinSyncApi.carrier && pinSyncApi.carrier.course() &&
           Date.now() - st.lastPull > C.pullMs) {
-        syncStore('opening a session');
+        // …and the RECORD behind it, in that order rather than at once: both
+        // read the sync course and write a card of their own, and two exchanges
+        // racing over one course listing is a needless way to find out whether
+        // that is safe.
+        syncStore('opening a session').then(() => syncStats('opening a session'));
       }
       st.storeQueue = storeDraw();
       if (st.storeQueue.length) {
@@ -35807,6 +36536,10 @@
         return;
       }
       if (!st.running) return;
+      // §15: the course listing is in hand exactly once per session, which is
+      // the only moment a pre-v0.140.0 stored position can be told which line
+      // it belongs to.
+      backfillStoreOids(course);
 
       const frontiers = await stormFrontiers(course.vars, C);
       if (!st.running) return;
@@ -35955,7 +36688,7 @@
         warn('storm: grading', san, 'timed out — no verdict');
         st.grading = false;
         if (st.eng) endEngineJob(st.eng, null);
-        finish({ verdict: 'unknown', userSan: san, userUci: uci, loss: null, rank: null });
+        finish({ verdict: 'unknown', userSan: san, userUci: uci, wp: null, loss: null, rank: null });
       }, C.gradeTimeoutMs);
       try {
         const got = await gradeTiers(card, uci, alive);
@@ -35971,13 +36704,16 @@
           // played a legal move and the database simply has nothing to say
           // about it, and scoring that against them is the one unfair verdict
           // available.
-          finish({ verdict: 'unknown', userSan: san, userUci: uci, loss: null, rank: null });
+          finish({ verdict: 'unknown', userSan: san, userUci: uci, wp: null, loss: null, rank: null });
           return;
         }
         finish({
-          verdict: stormGrade(got.loss, C),
+          verdict: stormGrade(got.wp, C),
           userSan: san,
           userUci: uci,
+          // Both: `wp` is what the verdict is made of and what the record
+          // keeps, `loss` is the centipawn fact behind it.
+          wp: got.wp,
           loss: got.loss,
           rank: got.rank,
           userScore: got.score,
@@ -35993,7 +36729,7 @@
           st.grading = false;
           clearTimeout(st.gradeTimer);
           st.gradeTimer = 0;
-          finish({ verdict: 'unknown', userSan: san, userUci: uci, loss: null, rank: null });
+          finish({ verdict: 'unknown', userSan: san, userUci: uci, wp: null, loss: null, rank: null });
         }
       }
     }
@@ -36002,11 +36738,11 @@
      *  both callers of `runGrade` get ONE definition of what a move is worth. */
     async function gradeTiers(card, uci, alive) {
       const scored = card.storm.cand.scored;
-      let got = stormMoveLoss(scored, uci, undefined);
+      let got = stormMoveLoss(scored, uci, undefined, C);
       if (!got) {
         const after = fenAfterUci(card.startFen, uci);
         const child = after ? await askCdb(after) : null;
-        got = stormMoveLoss(scored, uci, child && child.length ? child[0].score : undefined);
+        got = stormMoveLoss(scored, uci, child && child.length ? child[0].score : undefined, C);
       }
       // §3.4's THIRD source, and the live run is why it is not optional: the
       // child of an ARBITRARY move is a position no game ever reached, so §3.2's
@@ -36018,6 +36754,10 @@
         if (eng) {
           got = {
             loss: Math.max(0, eng.best - eng.value),
+            // BOTH SIDES FROM THE SAME SEARCH, which is the same rule that
+            // makes this tier two searches rather than one — a win probability
+            // is a transformation of a score and inherits every offset in it.
+            wp: stormWpLoss(eng.best, eng.value, C),
             rank: null, score: eng.value, san: '', winrate: null, source: 'engine',
             // Both halves of the line the panel prints come from the SAME
             // search, so it names the engine's best and not the book's.
@@ -36036,19 +36776,29 @@
       v.streakBefore = st.streak;
       st.answered++;
       st.score += earned;
-      if (v.verdict === 'good' || v.verdict === 'decent') {
+      // §16: THE STREAK FOLLOWS THE SIGN OF THE POINTS, not a list of verdict
+      // names — one rule for five bands, and a band added later cannot be
+      // forgotten here. A move that scored extends the run, one that cost ends
+      // it, and one worth nothing does neither.
+      if (earned > 0) {
         st.streak++;
         if (st.streak > st.bestStreak) st.bestStreak = st.streak;
-      } else if (v.verdict === 'miss') {
+      } else if (earned < 0) {
         st.streak = 0;
         if (C.missPenaltyMs > 0) st.endsAt -= C.missPenaltyMs;
       }
-      // 'unknown' holds the streak and scores nothing: it is not the user's
-      // fault and not an achievement either.
+      // So 'ok' holds the streak because zero points is what the middle band
+      // MEANS, and 'unknown' holds it for a different reason: it is not the
+      // user's fault and not an achievement either.
       st.verdict = v;
       // §14.11's retention rule: learned positions leave the store, missed ones
       // stay and come round again.
       if (st.card) storeNote(st.card.startFen, v.verdict);
+      // §15: …and the answer itself, counted against the line this position is
+      // a frontier of. Here rather than in `runGrade`, which the review's
+      // retry also goes through: a move found at leisure afterwards is not one
+      // of the session's answers.
+      if (st.card) statNote(st.card, v);
       // KEPT FOR THE REVIEW (§14.10). The card carries its own scored list, so
       // nothing has to be fetched again to show the best move afterwards — and
       // the cap is a memory bound rather than a policy: a three-minute storm
@@ -36166,6 +36916,7 @@
       // …and the store, whose whole value is that it outlives this session.
       // Fire and forget: nothing after this reads it back.
       saveStore();
+      saveStats();   // §15, and for the same reason
       // Section 18's board first: the summary belongs on the window, and a
       // board still pinned over its slot would cover half of it.
       if (continuationStormApi) continuationStormApi.close();
@@ -36197,6 +36948,7 @@
       st.card = null;
       st.queue = [];
       st.pool = [];
+      st.viewStats = false;   // §15.4: the next session opens on the storm
       st.verdict = null;
       st.history = [];
       st.analysing = false;
@@ -36326,6 +37078,17 @@
         'informational card in the course you chose for syncing (the same one the ' +
         'pinned mistakes use). It reads the card, merges, and writes the result back.';
       syncBtn.addEventListener('click', () => syncStore('by hand'));
+
+      // §15.4. NEUTRAL, beside Sync and for the same reason (DESIGN-ui-inventory
+      // §3): it is the action away from both storming and gathering. It lives in
+      // this row rather than in the header because this row is exactly the two
+      // moments it may be pressed — before the first card and after the last.
+      const statsBtn = el('button', 'clo-st-sync clo-st-statsbtn', 'Stats');
+      statsBtn.type = 'button';
+      statsBtn.title = 'How you have read this repertoire, and your others — how often ' +
+        'you find a decent move one move past the book, and how much the rest cost. ' +
+        'Counted per line and grouped by chapter (s).';
+      statsBtn.addEventListener('click', toggleStats);
       const mkSel = (lo, hi, onPick) => {
         const sel = document.createElement('select');
         sel.className = 'clo-st-sel';
@@ -36344,7 +37107,7 @@
         el('span', 'clo-st-set-label', 'Offer positions'), minSel,
         el('span', 'clo-st-set-label', 'to'), maxSel,
         el('span', 'clo-st-set-label', 'moves past the end of a line'),
-        el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, syncBtn);
+        el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, syncBtn, statsBtn);
       settings.title = 'How far past the point a course line stops a position may be. ' +
         '1 asks what you play the move AFTER the book runs out; a wider range mixes ' +
         'that with positions further downstream.';
@@ -36360,6 +37123,34 @@
       stage.append(boardSlot, panelSlot, dbSlot);
       const summary = el('div', 'clo-st-summary');
       summary.hidden = true;
+
+      // §15.4) THE STATS VIEW, a fourth thing the body can be showing.
+      const stats = el('div', 'clo-st-stats');
+      stats.hidden = true;
+      const statsHead = el('div', 'clo-st-stats-head');
+      const statsChapters = el('button', 'clo-st-analyse', 'Group by chapter');
+      statsChapters.type = 'button';
+      statsChapters.title = 'Read this course’s chapters and place every line in one. ' +
+        'It costs one request per chapter and the answer is kept, so this is asked ' +
+        'once rather than on every open — and Chessable lists chapters only for ' +
+        'courses you can add to.';
+      statsChapters.addEventListener('click', resolveChapters);
+      const statsSync = el('button', 'clo-st-analyse', 'Sync record');
+      statsSync.type = 'button';
+      statsSync.title = 'Carry this record to your other devices through an ' +
+        'informational card in the course you chose for syncing. Each device counts ' +
+        'its own answers, so the totals are exact however often two of them meet.';
+      statsSync.addEventListener('click', () => syncStats('by hand'));
+      const statsBack = el('button', 'clo-st-analyse', 'Back');
+      statsBack.type = 'button';
+      statsBack.title = 'Back to the storm (s)';
+      statsBack.addEventListener('click', toggleStats);
+      statsHead.append(el('span', 'clo-st-stats-title', 'How you read your repertoires'),
+        el('span', 'clo-st-set-spacer'), statsChapters, statsSync, statsBack);
+      const statsNote = el('div', 'clo-st-note clo-st-statsnote');
+      statsNote.hidden = true;
+      const statsBody = el('div', 'clo-st-stats-body');
+      stats.append(statsHead, statsNote, statsBody);
 
       // §14.10: the REVIEW. A timed exercise is one you cannot think during, so
       // the thinking has to be available after it — which means the position,
@@ -36412,7 +37203,7 @@
       revActions.append(revRetry, revBest, revAnalyse, revAgain, revDone);
       revSide.append(revHead, revLegend, revList, revActions);
       review.append(revBoard, revSide);
-      body.append(status, note, syncNote, settings, stage, review, summary);
+      body.append(status, note, syncNote, settings, stage, review, summary, stats);
 
       panel.append(head, body);
       document.body.appendChild(panel);
@@ -36420,7 +37211,8 @@
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
         settings, minSel, maxSel, startBtn, gatherBtn, ready, syncBtn, syncNote,
         review, revBoard, revGrid, revLayer, revShapes, revHead, revLegend, revList,
-        revActions, revRetry, revBest, revAnalyse, dbSlot };
+        revActions, revRetry, revBest, revAnalyse, dbSlot,
+        statsBtn, stats, statsHead, statsChapters, statsSync, statsNote, statsBody };
       syncSettings();
     }
 
@@ -36471,6 +37263,7 @@
         : 'Nothing is ready yet. Finding a position costs about eleven ChessDB ' +
           'lookups; "Gather positions" pays that in advance, and syncing brings ' +
           'over what another device already found.';
+      st.ui.statsBtn.textContent = st.viewStats ? 'Back' : 'Stats';
       st.ui.syncBtn.disabled = st.syncing || st.gathering;
       st.ui.syncBtn.textContent = st.syncing ? 'Syncing…' : 'Sync';
       st.ui.gatherBtn.textContent = st.gathering ? 'Stop gathering' : 'Gather positions';
@@ -36533,7 +37326,17 @@
       // own board and list stand down.
       const reviewable = st.over && st.history.length > 0;
       const onStage = st.analysing || Boolean(st.retry);
-      st.ui.stage.hidden = !(!st.over || (reviewable && onStage));
+      // §15.4: the stats view is the FOURTH, and it hides all three of the
+      // others — including the stage, which is why it may never be up while a
+      // card is (section 18's board is pinned to that stage's slots and would
+      // be left floating over the table).
+      // …at exactly the two moments the settings row that holds its button is
+      // shown, which is not tidiness: between two cards `st.card` is null for a
+      // moment, and a table that came back over the stage there would flash
+      // once per card.
+      const onStats = st.viewStats && !st.card && (!st.endsAt || st.over);
+      st.ui.stats.hidden = !onStats;
+      st.ui.stage.hidden = onStats || !(!st.over || (reviewable && onStage));
       // The database slot exists for the analysis board and for nothing else —
       // NOT for a retry, where the database's top move would name the answer
       // (section 20's rule for the drill, and the card's own).
@@ -36541,10 +37344,11 @@
       // measure a laid-out stage, so a slot revealed after the placement is a
       // rect of zero.
       st.ui.dbSlot.hidden = !st.analysing;
-      st.ui.review.hidden = !(reviewable && !onStage);
-      st.ui.summary.hidden = !(st.over && !reviewable);
+      st.ui.review.hidden = onStats || !(reviewable && !onStage);
+      st.ui.summary.hidden = onStats || !(st.over && !reviewable);
       syncSettings();
-      if (reviewable) renderReview();
+      if (onStats) renderStats();
+      else if (reviewable) renderReview();
       else if (st.over) renderSummary();
     }
 
@@ -36576,6 +37380,221 @@
       const row = el('div', 'clo-st-sum-actions');
       row.append(again, done);
       box.append(row);
+    }
+
+    // ----------------------------------------------------------------------
+    // §15.4) The stats view
+    //
+    // Up INSTEAD of the stage, the review and the summary, and reachable only
+    // when no clock is running — the ply selectors' own rule (§14.9) and for a
+    // harder reason than theirs: section 18's board is pinned to the stage's
+    // slots in DOCUMENT coordinates, so hiding the stage under it would leave a
+    // board floating over the table.
+    //
+    // TWO QUESTIONS, both asked for: which REPERTOIRE do I read worst, and
+    // which CHAPTER of the one in front of me. The rows are sorted WORST FIRST
+    // — a table of statistics whose top row is your best line answers nothing —
+    // and every row carries its answer count, because a 0% built on one answer
+    // is not the same claim as a 0% built on twenty.
+    // ----------------------------------------------------------------------
+
+    const statPct = (a) => {
+      const r = stormStatRate(a);
+      return r === null ? '—' : Math.round(r * 100) + '%';
+    };
+    const statLossText = (a) => {
+      const l = stormStatLoss(a);
+      return l === null ? '—' : stormWp(l);
+    };
+
+    /** The three-verdict strip. Absolute widths over the GRADED answers, so two
+     *  rows are comparable; `unknown` is not in it at all, being a fact about
+     *  ChessDB rather than about the user. */
+    function statBar(a) {
+      const bar = el('span', 'clo-st-bar');
+      const graded = stormStatGraded(a);
+      if (!graded) return bar;
+      const seg = (cls, n) => {
+        if (!n) return;
+        const i = el('span', 'clo-st-bar-seg clo-st-bar-' + cls);
+        i.style.width = (n / graded * 100) + '%';
+        bar.appendChild(i);
+      };
+      // §16's five bands, best first, in the same order and the same colours
+      // the review's row edges use.
+      seg('a', a.a || 0);
+      seg('g', a.g || 0);
+      seg('o', a.o || 0);
+      seg('b', a.b || 0);
+      seg('x', a.x || 0);
+      bar.title = (a.a || 0) + ' great · ' + (a.g || 0) + ' good · ' + (a.o || 0) +
+        ' inaccuracy · ' + (a.b || 0) + ' mistake · ' + (a.x || 0) + ' blunder' +
+        ((a.u || 0) ? ' · ' + a.u + ' ungradeable (not counted either way)' : '');
+      return bar;
+    }
+
+    /** One row of any of the tables. `tag` is the element, so a chapter row can
+     *  be a button and a line row need not be. */
+    function statRow(tag, cls, label, agg) {
+      const row = el(tag, 'clo-st-strow' + (cls ? ' ' + cls : ''));
+      if (tag === 'button') row.type = 'button';
+      row.append(el('span', 'clo-st-stname', label));
+      row.append(statBar(agg));
+      row.append(el('span', 'clo-st-stnum', statPct(agg)));
+      row.append(el('span', 'clo-st-stnum', statLossText(agg)));
+      row.append(el('span', 'clo-st-stnum clo-st-stnum--faint', String(agg.n || 0)));
+      return row;
+    }
+
+    function statHeader(first) {
+      const row = el('div', 'clo-st-strow clo-st-strow--head');
+      row.append(el('span', 'clo-st-stname', first));
+      row.append(el('span', 'clo-st-bar'));
+      const pct = el('span', 'clo-st-stnum', 'found');
+      pct.title = 'How often you played a move worth points here — great or good. ' +
+        'Positions nothing could grade are left out of both halves of the fraction.';
+      row.append(pct);
+      const loss = el('span', 'clo-st-stnum', 'avg lost');
+      loss.title = 'On average, how much of the game each graded move gave up against ' +
+        'the best one — in winning probability, so it means the same thing in a sharp ' +
+        'position and in a won one.';
+      row.append(loss);
+      row.append(el('span', 'clo-st-stnum clo-st-stnum--faint', 'n'));
+      return row;
+    }
+
+    /** Worst first, and a row with nothing graded last of all: it is not a bad
+     *  score, it is an absence of one. */
+    const byWorst = (a, b) => {
+      const ra = stormStatRate(a.agg), rb = stormStatRate(b.agg);
+      if (ra === null && rb === null) return (b.agg.n || 0) - (a.agg.n || 0);
+      if (ra === null) return 1;
+      if (rb === null) return -1;
+      return (ra - rb) || ((b.agg.n || 0) - (a.agg.n || 0));
+    };
+
+    /** Every course with anything recorded — the "each repertoire" half. */
+    function statsCourseRows() {
+      const out = [];
+      for (const bid of Object.keys(st.stats || {})) {
+        const c = st.stats[bid];
+        if (!c || !c.lines) continue;
+        const lines = Object.keys(c.lines).map((oid) => c.lines[oid]);
+        const agg = stormStatRoll(lines);
+        if (!agg.n) continue;
+        out.push({ bid, name: c.name || ('Course ' + bid), agg, lines: lines.length });
+      }
+      out.sort(byWorst);
+      return out;
+    }
+
+    /** …and this course by chapter — or, where the chapters are not readable,
+     *  one group holding every line. */
+    function statsChapterGroups() {
+      const c = courseStats(false);
+      if (!c) return [];
+      const ch = (st.chapters && st.chapters.ch) || {};
+      const cn = (st.chapters && st.chapters.cn) || {};
+      const by = new Map();
+      for (const oid of Object.keys(c.lines)) {
+        const line = c.lines[oid];
+        const agg = stormStatSum(line && line.dv);
+        if (!agg.n) continue;
+        const lid = ch[oid] || '';
+        let g = by.get(lid);
+        if (!g) by.set(lid, g = { lid, name: lid ? (cn[lid] || ('Chapter ' + lid)) : '', rows: [] });
+        g.rows.push({
+          oid,
+          // A line with no oid is one stored before v0.140.0 whose name matched
+          // two variations or none — counted, and said so rather than filed
+          // under a guess.
+          name: line.nm || (oid ? ('Line ' + oid) : 'Line not recorded'),
+          agg,
+        });
+      }
+      const groups = Array.from(by.values());
+      for (const g of groups) {
+        g.agg = g.rows.reduce((a, r) => stormStatPlus(a, r.agg), stormStatBlank());
+        g.rows.sort(byWorst);
+      }
+      groups.sort(byWorst);
+      return groups;
+    }
+
+    function renderStats() {
+      if (!st.statsOpen) st.statsOpen = new Set();
+      const body = st.ui.statsBody;
+      while (body.firstChild) body.removeChild(body.firstChild);
+      const grouped = Boolean(st.chapters && Object.keys(st.chapters.ch || {}).length);
+      st.ui.statsChapters.disabled = st.statsBusy;
+      st.ui.statsChapters.textContent = st.statsBusy ? 'Reading chapters…'
+        : (grouped ? 'Re-read chapters' : 'Group by chapter');
+      st.ui.statsSync.disabled = st.statsSyncing;
+      st.ui.statsSync.textContent = st.statsSyncing ? 'Syncing…' : 'Sync record';
+      // Re-applied rather than left to `setStatsNote` alone: a re-mount builds a
+      // fresh, empty element and the last thing said would simply vanish.
+      st.ui.statsNote.textContent = st.statsNote;
+      st.ui.statsNote.hidden = !st.statsNote;
+
+      const courses = statsCourseRows();
+      if (!courses.length) {
+        body.append(el('div', 'clo-st-stempty',
+          'Nothing recorded yet. Every position you answer in a storm is counted ' +
+          'against the line whose end it is one move past.'));
+        return;
+      }
+
+      body.append(el('div', 'clo-st-sthead', 'Your repertoires'));
+      body.append(statHeader('Course'));
+      for (const row of courses) {
+        const r = statRow('div', row.bid === String(st.bid) ? 'clo-st-strow--here' : '',
+          row.name, row.agg);
+        r.title = row.lines + ' line end(s) answered from';
+        body.append(r);
+      }
+
+      const groups = statsChapterGroups();
+      if (!groups.length) return;
+      body.append(el('div', 'clo-st-sthead',
+        grouped ? 'This course, by chapter' : 'This course, line by line'));
+      body.append(statHeader(grouped ? 'Chapter' : 'Line end'));
+      for (const g of groups) {
+        if (!grouped && !g.lid) {
+          // Ungrouped: the "chapter" is every line, so print the lines
+          // themselves rather than one meaningless total above them.
+          for (const row of g.rows) body.append(statRow('div', '', row.name, row.agg));
+          continue;
+        }
+        const open = st.statsOpen.has(g.lid);
+        const head = statRow('button', 'clo-st-strow--grp', (open ? '▾ ' : '▸ ') +
+          (g.name || 'Not in a chapter'), g.agg);
+        head.title = g.rows.length + ' line end(s) — click to ' + (open ? 'fold' : 'list them');
+        head.addEventListener('click', () => {
+          if (st.statsOpen.has(g.lid)) st.statsOpen.delete(g.lid);
+          else st.statsOpen.add(g.lid);
+          renderStats();
+        });
+        body.append(head);
+        if (!open) continue;
+        for (const row of g.rows) body.append(statRow('div', 'clo-st-strow--sub', row.name, row.agg));
+      }
+    }
+
+    /**
+     * Only where no clock is running, which the settings row already enforces
+     * by hiding the button — this is the second half of the same rule, for the
+     * paths that are not a press.
+     */
+    function toggleStats() {
+      if (!st.viewStats && st.card) return;
+      st.viewStats = !st.viewStats;
+      if (st.viewStats) {
+        // Both put section 18's board on the stage's slots, and the stats view
+        // is what the stage makes way for.
+        if (st.analysing) closeAnalyse();
+        if (st.retry) endRetry();
+      }
+      render();
     }
 
     function stormAgain() {
@@ -36709,10 +37728,14 @@
         const bestCell = el('span', 'clo-st-revrow-best', item.shown ? (mv.bestSan || '?') : '…');
         bestCell.classList.toggle('clo-st-revrow-best--hidden', !item.shown);
         row.append(bestCell);
+        // §16: the win-probability loss, which is what the verdict is made of.
+        // The centipawn figure moves to the row's tooltip — still the raw fact,
+        // no longer the headline.
         row.append(el('span', 'clo-st-revrow-loss',
-          typeof v.loss === 'number' ? (v.loss ? '−' + v.loss : '0') : '?'));
+          typeof v.wp === 'number' ? (v.wp < 0.05 ? '0' : '−' + stormWp(v.wp)) : '?'));
         row.title = (item.card.storm.from || '') +
-          (item.card.storm.cand.invented ? ' · invented continuation' : '');
+          (item.card.storm.cand.invented ? ' · invented continuation' : '') +
+          (typeof v.loss === 'number' ? ' · ' + v.loss + 'cp' : '');
         row.addEventListener('click', () => {
           if (st.reviewIdx === i) return;
           st.reviewIdx = i;
@@ -36929,6 +37952,27 @@
     function onKey(e) {
       if (!st.running) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // §15.4) THE RECORD, and this block sits ABOVE the review's arrows: with
+      // the table up the review is hidden, and stepping a list nobody can see
+      // is the one thing those keys must not do here. Escape closes the table
+      // rather than the window — the nearer thing to back out of, the reading
+      // Escape already has in the analysis board's lead-in field.
+      if (st.viewStats) {
+        if (e.key !== 's' && e.key !== 'S' && e.key !== 'Escape') return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleStats();
+        return;
+      }
+      // …and 's' opens it, wherever there is no board of section 18's holding
+      // the keyboard. Never over a live card: `toggleStats` refuses that too.
+      if ((e.key === 's' || e.key === 'S') && !st.card &&
+          !(continuationActive && continuationActive())) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleStats();
+        return;
+      }
       // §14.10's review is walked with the arrows. Only there — during a storm
       // the board owns the keyboard, and there is nothing to step through.
       if (st.over && st.history.length && !st.analysing && !st.retry) {

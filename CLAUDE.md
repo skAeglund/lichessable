@@ -209,7 +209,10 @@ Currently working (v0.18.x).
   * `DESIGN-intuition-storm.md` — section 27 (§3 = the four findings, §3.3 and
     §3.4 shape the grader; §5 = the stop and pick rules; §6 = every number in
     `CONFIG.storm`, and §6.5 is the do-not-reintroduce; §7 = the eval band; §11 =
-    what it must never do; §12 = what was NOT measured)
+    what it must never do; §12 = what was NOT measured; §15 = the performance
+    record, whose §15.2 is the three ways a statistic is wrong and plausible;
+    §16 = win probability replacing centipawns as the grade, whose §16.2 is the
+    calibration against the system it replaced)
 - `DESIGN-ui-inventory.md` — every control by host and state, what competes with
   what, the agreed visual hierarchy, and the remaining change list. Read it
   before adding a control to the overstudy row or picking a colour for one; §3
@@ -3224,6 +3227,113 @@ Currently working (v0.18.x).
     reason: it fired once in 54 candidates, and a value implying it does
     something would be the misleading one.
 
+  * THE VERDICT IS WIN PROBABILITY LOST, NOT CENTIPAWNS (§16, v0.141.0), and
+    there are FIVE bands. `userHiCp` admits positions up to +200 and a centipawn
+    is not worth the same there as at equality — giving up 100cp from +500
+    leaves you winning, and the old flat 30/70cp rule called that the same thing
+    as giving up 100cp from 0. **READ DESIGN-intuition-storm.md §16 BEFORE
+    TOUCHING THE GRADE**; §16.2 is the calibration table. What an edit ELSEWHERE
+    can break:
+    - `wpK` (0.00368208) IS LICHESS'S OWN FIT AND IS NOT A DIAL. Changing it
+      re-scales every band at once and completely silently, since the verdicts
+      stay plausible. `dev/check-storm.js` §3 pins it by its CONSEQUENCES — the
+      curve's fixed points, and that the two scoring bands still land on the old
+      `goodCp`/`decentCp` at equality (33cp and 65cp against 30 and 70, within
+      5cp). That last assertion is the one that makes this a change of MEANING
+      rather than of difficulty, and it is what a re-tuned constant or a
+      mistyped threshold would quietly lose.
+    - EVERY SCORE IS CLAMPED TO ±`wpClampCp` BEFORE THE CONVERSION, which is why
+      a mate needs no band of its own: ChessDB writes one as ~30000 and the
+      engine tier as `engineMateCp`, and at ±1000 the curve is already at 97.6%.
+      Removing the clamp runs the arithmetic on numbers thirty times the board's
+      own scale.
+    - `stormMoveLoss` COMPUTES THE `wp` ITSELF, from the two scores it already
+      holds, and both are certainly the mover's. A caller pairing one number
+      from the book with one from somewhere else is exactly the cross-source
+      mixture §3.4's two-search rule exists to prevent.
+    - A PENALTY IS FLAT AND THE TEST IS THE SIGN, not a list of verdict names
+      (v0.139.0's rule, restated so a sixth band cannot be given a multiplied
+      penalty by accident). `finishAnswer`'s STREAK follows the same sign: it
+      extends on positive points, resets on negative, and holds on zero — so
+      `ok` holds it because zero points is what the middle band MEANS, and
+      `unknown` holds it by the older argument.
+    - A PASS IS A `blunder`. "I have no idea" costing less than a bad move would
+      make passing the way to protect a streak.
+    - `storeDropOn` IS THE TWO BANDS THAT SCORE (`great`, `good`). An `ok`
+      answer keeps its position: nothing was gained by it.
+    - THE FIVE BANDS ARE ONE COLOUR RAMP, defined ONCE in the stylesheet beside
+      `.clo-st-revrow--*`, with `.clo-st-bar-*` reading the same five tokens —
+      green, dim green, neutral, amber, red. Section 18's panel deliberately
+      draws only TWO of them (green for the two that score, red for the two that
+      cost, nothing for `ok`): that line is read in about a second with a clock
+      running, so the colour answers "did that score or cost" and the WORD
+      carries the degree.
+    - §15's RECORD COUNTS BANDS, so this changed its shape too: `a/g/o/b/x/u`
+      for `g/d/m/u`, `statsWireVersion` 2 so a version-1 payload is REFUSED
+      rather than misread (every field it has is a field this one also has),
+      `found` is the two bands that SCORE, and the stored loss is in TENTHS OF A
+      POINT of win probability — an average over centipawns would be an average
+      over a quantity whose meaning changes with the position it was measured
+      in, which is the whole reason the grade stopped using them.
+    - THE PICK RULES ARE STILL CENTIPAWNS (`blunderCp`, `decidedCp`,
+      `spreadMinCp`, `spreadMaxCp`) and were deliberately left alone: they
+      decide which positions are OFFERED, which is a different question, and
+      every one is a `dev/probe-storm.js` measurement. §16.5 records the one
+      place the same objection does apply — `spreadMinCp` buys ~15% less at +200
+      than at equality — and why fixing it needs the probe re-run rather than an
+      argument.
+  * THE PERFORMANCE RECORD (§15, v0.140.0): every graded answer counted against
+    the LINE whose frontier the position came from, rolled up per CHAPTER and
+    per COURSE, and carried between devices on 16e's transport. **READ
+    DESIGN-intuition-storm.md §15 BEFORE CHANGING IT** — §15.2 is the three
+    silent failures, §15.3 why it is a card of its own. What an edit ELSEWHERE
+    can break:
+    - THE COUNTERS ARE PER DEVICE (`cloStormDevice`) AND SUMMED ONLY ON READ.
+      The wire merge is a UNION over a whole snapshot, so a merge that ADDS two
+      devices' totals adds them again on every later exchange — while the
+      numbers stay plausible and keep growing, which is what working also looks
+      like. A device's own counters are monotone, so `max` on `n` is exact.
+      `dev/check-storm.js` §9's "a second exchange adds nothing" is the
+      assertion that catches it.
+    - `unknown` IS OUT OF BOTH HALVES OF THE FRACTION. It is a verdict about
+      ChessDB, not about the user — `finishAnswer` scores it nothing and holds
+      the streak for exactly that reason — so counting it as a failure marks the
+      user down for the book's ignorance and counting it as a success flatters
+      them. A row with nothing graded reads "—", never "0%". `unanswered`
+      (§14.10c) is refused outright, and a review RETRY (§14.10b) is not counted
+      at all: `statNote` is called from `finishAnswer`, never from the shared
+      `runGrade`.
+    - AN AVERAGE LOSS IS A MEAN OVER ANSWERS, NEVER OVER LINES. `stormStatRoll`
+      sums the raw `ls`/`lc` pairs and divides once; averaging a chapter's
+      lines' averages weights a line answered once like one answered forty
+      times.
+    - IT KEYS ON THE OID, so `stormFrontiers` now carries `oids` beside `names`
+      and `stormPack` stores `o`. `reduceCourse` was NOT touched — the oid was
+      already in its reduced shape — so `CONFIG.coverage.cacheKey` needed no
+      fifth bump. A position stored before v0.140.0 has no oid;
+      `backfillStoreOids` names it from the course listing `startSession` reads
+      anyway, BY NAME, and refuses a name that matches two variations — what it
+      cannot name is counted under one "Line not recorded" row rather than filed
+      under a guess.
+    - THE CHAPTER COSTS REQUESTS AND IS BEHIND A PRESS. `getList` does not say
+      which chapter a variation is in (that is why 24g's `fetchVariationChapter`
+      exists), so grouping a course is up to one request per chapter — cached
+      for good in `cloStormChapters`. It can only answer for a course the user
+      can ADD to, `getImportData` being the only call that enumerates chapters
+      and bought courses being absent from it; that refusal is said in words.
+    - THE VIEW MAY NOT BE UP WHILE A CARD IS. Section 18's board is pinned to
+      the STAGE's slots in document coordinates, so hiding the stage under a
+      live card leaves a board floating over the table. Enforced twice — the
+      settings row that holds the button is hidden while a clock runs, and
+      `toggleStats` refuses on `st.card`.
+    - IT IS A CARD OF ITS OWN ON THE WIRE, never a field in the position card:
+      that payload is CUT to fit its budget, so a statistic folded into it would
+      be dropped whenever a position list ran long, silently and after the
+      requests were spent. NO TOMBSTONES, unlike that card, and that is not an
+      oversight — a line leaves this record only by `stormStatsPrune`, a
+      function of its own timestamp that every device applies to the same
+      numbers, so the union converges by itself.
+
 - SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
   (`quickEditSelectMoveEl`, hoisted out of `quickEditSelectMove` — which now just
@@ -3328,7 +3438,14 @@ After touching section 27's producer — `stormFrontiers`, `stormDrawFrontier`,
 `stormWalkGame`, `stormRandomLine` or `stormCard` — or the verdict line it
 prints (`stormCp`, `stormVerdictLine`, `stormBestLine`), or the position store
 and its wire (`stormPack`, `stormUnpack`, `stormRetain`, `stormWirePack`,
-`stormWireUnpack`, `stormWireMerge`) — or the STORE'S DRAW ORDER (`stormStoreDraw`, §14.15: a
+`stormWireUnpack`, `stormWireMerge`) — — or the GRADE ITSELF (§16: `stormWinPct`, `stormWpLoss`, `stormGrade`,
+`stormPoints`, `stormWp`, and `CONFIG.storm`'s `wpK`/`wpClampCp` and five
+bands), whose every failure mode is a verdict that still grades every move —
+or the PERFORMANCE RECORD (§15:
+`stormStatApply`, `stormStatPlus`, `stormStatSum`, `stormStatRoll`,
+`stormStatRate`, `stormStatLoss`, `stormStatsMerge`, `stormStatsPrune`,
+`stormStatsWirePack`, `stormStatsWireUnpack`), every one of whose failure modes
+is a plausible percentage — or the STORE'S DRAW ORDER (`stormStoreDraw`, §14.15: a
 reversed comparator returns every position in a plausible-looking sequence and
 is otherwise undetectable from the outside) — or the PAUSED filter in
 `stormFrontiers`
@@ -3371,6 +3488,32 @@ SILENTLY and every one still produces a tidy column of plausible numbers:
   an addition, wrong by twice the child's eval.
 * THE STOP AND PICK RULES, where a rule that never fires yields MORE positions
   and so looks like the feature working better.
+* THE GRADE'S OWN (v0.141.0, §3 of that file). `wpK` is Lichess's fit and not a
+  dial: a different constant re-scales every band at once while every verdict
+  stays plausible, so it is pinned by its CONSEQUENCES — the curve's fixed
+  points, and that the two scoring bands still land on the old 30cp/70cp at
+  equality. Losing the clamp runs the arithmetic on a mate's ~30000. Writing the
+  bands with `<=` puts each threshold in the band above it. And the penalty
+  multiplied by the streak is v0.139.0's bug in a new shape, now guarded by the
+  SIGN rather than by a list of names. Controls run 2026-08-28, each failing on
+  exactly its own assertions: `wpK` at 0.002 → 5; the clamp removed → 2; the
+  penalty multiplied → 3; the bands written `<=` → 2.
+* THE PERFORMANCE RECORD'S THREE (v0.140.0, §9 of that file), plus a FOURTH
+  since v0.141.0: `found` is the two bands that SCORE, and folding `ok` into it
+  turns "how often did I find the move" into "how often was it survivable".
+  Controls run 2026-08-28: `ok` folded into the numerator → 2; the loss summed
+  in centipawns again → 3. A denominator
+  that counts `unknown` marks the user down for ChessDB's ignorance; a merge
+  that SUMS two devices' counters sums them again on every later exchange, while
+  the numbers stay plausible and keep growing; and a chapter's average loss
+  taken over its LINES rather than its ANSWERS weights a line answered once like
+  one answered forty times. Controls run 2026-08-28, each failing on exactly its
+  own assertions and no others: the denominator widened to include `unknown`
+  → 2; the merge summing instead of taking the higher `n` → 5; a missing loss
+  read as 0 → 3; the roll-up averaging its lines' averages → 1. The merge one is
+  worth noting for its shape — it does NOT fail "the other device is added", the
+  assertion that looks like the merge test; it fails "a SECOND exchange adds
+  nothing", which is the only one a double-count can be seen in.
 * THE MISS PENALTY BEING MULTIPLIED (v0.139.0). `stormPoints` charges
   `missPoints` (−2) FLAT and must keep doing so: the streak multiplier is a
   reward for a run, and charging it against the answer that ENDS the run makes

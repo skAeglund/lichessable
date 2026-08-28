@@ -3395,6 +3395,13 @@ body {
     pinned onto them by <code>positionInHost</code>, exactly as 24g pins the
     analysis board into the tree. Nothing is drawn into them, so they are outlined
     and labelled here the way 24g's are.</p>
+  <p><strong>The verdict is win probability lost</strong> (§16), not centipawns:
+    <code>userHiCp</code> admits positions up to +200, and giving up 100cp from +500
+    leaves you winning where giving up 100cp from 0 does not. FIVE bands rather than
+    three, because the old middle was a cliff — 71cp at equality scored the same
+    −2 as hanging a queen. At an equal position the two scoring bands land where
+    the old flat 30cp/70cp ones did (33cp and 65cp), so this is a change of MEANING
+    rather than of difficulty.</p>
   <p><strong>Colour means one thing.</strong> Green is the streak multiplier and
     nothing else — it is the reward being counted. The clock goes AMBER when it runs
     low ("you have N seconds outstanding", the row palette's own meaning), never red:
@@ -3547,8 +3554,8 @@ body {
         <code>.clo-cdb--est</code> &mdash; and its tooltip says why.</p>
       <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px;align-items:flex-start">
         <div class="clo-cr-panel hx-pos" style="width:300px">
-          <div class="clo-cr-title">Good move</div>
-          <div class="clo-cr-prompt clo-cr-prompt--ok">Nf3 &middot; #2 of 31 &middot; 12cp behind &middot; +6</div>
+          <div class="clo-cr-title">Great move</div>
+          <div class="clo-cr-prompt clo-cr-prompt--ok">Nf3 &middot; #2 of 31 &middot; 1.1% of the game &middot; +6</div>
           <div class="clo-cr-progress clo-cdb--est"
                title="ChessDB scores every legal move here, but the ones outside its analysed book are computed on the spot.">
             best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Nf3 +0.20 &middot; 53%</div>
@@ -3557,8 +3564,8 @@ body {
           </div>
         </div>
         <div class="clo-cr-panel hx-pos" style="width:300px">
-          <div class="clo-cr-title">Good move</div>
-          <div class="clo-cr-prompt clo-cr-prompt--ok">Bb5 &middot; the top move &middot; level with the best &middot; +3</div>
+          <div class="clo-cr-title">Great move</div>
+          <div class="clo-cr-prompt clo-cr-prompt--ok">Bb5 &middot; the top move &middot; level with the best &middot; +2</div>
           <!-- PLAYING THE TOP MOVE NAMES IT ONCE. It was printed twice until
                v0.130.0 - "best Nxf3+ -0.89   Nxf3+ -0.89" - which reads as a
                defect rather than as agreement (found in a live session). -->
@@ -3567,9 +3574,21 @@ body {
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
           </div>
         </div>
+        <!-- &sect;16's MIDDLE band: neither treatment, because it is worth
+             neither. Two colours for five bands is deliberate &mdash; this line is
+             read in about a second with a clock running, so it answers "did that
+             score or cost" and leaves the degree to the word. -->
         <div class="clo-cr-panel hx-pos" style="width:300px">
-          <div class="clo-cr-title">Missed</div>
-          <div class="clo-cr-prompt clo-cr-prompt--bad">h3 &middot; #9 of 31 &middot; 148cp behind</div>
+          <div class="clo-cr-title">Inaccuracy</div>
+          <div class="clo-cr-prompt">Re1 &middot; #6 of 31 &middot; 7.8% of the game</div>
+          <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Re1 &minus;0.55 &middot; 47%</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
+          </div>
+        </div>
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Blunder</div>
+          <div class="clo-cr-prompt clo-cr-prompt--bad">h3 &middot; #9 of 31 &middot; 24% of the game &middot; &minus;2</div>
           <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; h3 &minus;1.16 &middot; 43%</div>
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
@@ -3629,36 +3648,42 @@ body {
                    data-hx-board="r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w"
                    data-hx-shapes="arrow:b1:c3:r"></div>
               <div class="clo-st-revside">
-                <div class="clo-st-revhead">Position 4 of 14</div>
+                <div class="clo-st-revhead">Position 4 of 16</div>
                 <!-- &sect;14.10a: the verdict line stays (it is about the move that was
                      PLAYED); only the "best &hellip;" half waits to be asked for. Revealed,
                      it continues:
                      &nbsp;&middot;&nbsp; best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Nf3 -0.10 &middot; 49% -->
-                <div class="clo-st-revlegend clo-cdb--est">Nf3 &middot; #4 of 31 &middot; 42cp behind &middot; +1</div>
+                <div class="clo-st-revlegend clo-cdb--est">Nf3 &middot; #4 of 31 &middot; 3.4% of the game &middot; +1</div>
                 <div class="clo-st-revlist">
-                  <button type="button" class="clo-st-revrow clo-st-revrow--good">
+                  <button type="button" class="clo-st-revrow clo-st-revrow--great">
                     <span class="clo-st-revrow-n">1</span><span class="clo-st-revrow-move">cxd4</span>
                     <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">0</span></button>
                   <!-- Revealed earlier and stepped away from: the flag is per POSITION,
                        so a mixed list is the ordinary state. -->
-                  <button type="button" class="clo-st-revrow clo-st-revrow--miss">
+                  <button type="button" class="clo-st-revrow clo-st-revrow--blunder">
                     <span class="clo-st-revrow-n">2</span><span class="clo-st-revrow-move">Qxb2</span>
-                    <span class="clo-st-revrow-best">Qd8</span><span class="clo-st-revrow-loss">&minus;779</span></button>
+                    <span class="clo-st-revrow-best">Qd8</span><span class="clo-st-revrow-loss">&minus;48%</span></button>
                   <button type="button" class="clo-st-revrow clo-st-revrow--unknown">
                     <span class="clo-st-revrow-n">3</span><span class="clo-st-revrow-move">Nxh2</span>
                     <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">?</span></button>
-                  <button type="button" class="clo-st-revrow clo-st-revrow--decent clo-st-revrow--on">
+                  <button type="button" class="clo-st-revrow clo-st-revrow--good clo-st-revrow--on">
                     <span class="clo-st-revrow-n">4</span><span class="clo-st-revrow-move">Nf3</span>
-                    <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">&minus;42</span></button>
-                  <button type="button" class="clo-st-revrow clo-st-revrow--good">
-                    <span class="clo-st-revrow-n">5</span><span class="clo-st-revrow-move">Nxd4</span>
-                    <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">0</span></button>
+                    <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">&minus;3.4%</span></button>
+                  <!-- &sect;16's middle band, and the reason the ramp has five steps:
+                       a neutral edge for an answer worth neither points nor a
+                       penalty. Under the old three-band system this row was red. -->
+                  <button type="button" class="clo-st-revrow clo-st-revrow--ok">
+                    <span class="clo-st-revrow-n">5</span><span class="clo-st-revrow-move">Re1</span>
+                    <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">&minus;7.8%</span></button>
+                  <button type="button" class="clo-st-revrow clo-st-revrow--bad">
+                    <span class="clo-st-revrow-n">6</span><span class="clo-st-revrow-move">Nxd4</span>
+                    <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">&minus;14%</span></button>
                   <!-- &sect;14.10c: the card the clock ran out ON. Kept because it is the
                        position most in mind, and the only one the review used to be
                        unable to show. No answer, so the move column reads "&mdash;" and the
                        edge is the same neutral "nothing was decided here". -->
                   <button type="button" class="clo-st-revrow clo-st-revrow--unanswered">
-                    <span class="clo-st-revrow-n">6</span><span class="clo-st-revrow-move">&mdash;</span>
+                    <span class="clo-st-revrow-n">7</span><span class="clo-st-revrow-move">&mdash;</span>
                     <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">?</span></button>
                 </div>
                 <div class="clo-st-revactions">
@@ -3705,6 +3730,156 @@ body {
               <div class="clo-st-sum-actions">
                 <button type="button" class="clo-st-again">Storm again</button>
                 <button type="button" class="clo-st-done">Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>The performance record (&sect;15)</h3>
+      <p>A FOURTH thing the body can show, up <em>instead of</em> the stage, the review
+        and the summary &mdash; and reachable only when no clock is running, for a
+        harder reason than the ply selectors': section 18's board is pinned to the
+        stage's slots in DOCUMENT coordinates, so hiding the stage under a live card
+        would leave a board floating over the table.</p>
+      <p><strong>The strip is §16's five bands as one ramp</strong> — green,
+        dim green, neutral, amber, red — which is green for the two that SCORE,
+        nothing for the one worth nothing, and the row palette's own "outstanding" and
+        "danger" for the two that COST. The same five tokens colour the review's row
+        edges, defined once in the stylesheet beside them.</p>
+      <p><strong>Two tables, two questions</strong>, both of which were asked for: which
+        REPERTOIRE do I read worst, and which CHAPTER of the one in front of me. Rows
+        are sorted WORST FIRST &mdash; a table whose top row is your best line answers
+        nothing &mdash; the course being stormed is MARKED rather than moved (pulling it
+        out of that order would break the only thing the sort is for), and every row
+        carries its answer count, because a 0% built on one answer is not the claim a
+        0% built on twenty is.</p>
+      <p><strong>The strip is over the GRADED answers only.</strong>
+        <code>unknown</code> is a fact about ChessDB, not about the user &mdash;
+        <code>finishAnswer</code> scores it nothing and holds the streak for exactly
+        that reason &mdash; so it is out of both halves of the fraction and out of the
+        bar; it is named in the bar's tooltip instead. <em>found</em> is the two bands
+        that SCORE: an inaccuracy is not a move found, it is "no, but it did not
+        matter much", which is what <em>avg lost</em> beside it is for.</p>
+      <p>Under 700px of PANEL width the STRIP is what goes, not a number: the
+        percentage beside it says the same thing less precisely, and the two numbers
+        are what the table is read for.</p>
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:430px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Intermediate Starter Kit</span>
+            <span class="clo-st-clock clo-st-clock--off">0:00</span>
+            <span class="clo-st-stat">31 pts</span>
+            <span class="clo-st-stat">streak 0</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <div class="clo-st-settings">
+              <span class="clo-st-set-label">Offer positions</span>
+              <select class="clo-st-sel"><option>1</option></select>
+              <span class="clo-st-set-label">to</span>
+              <select class="clo-st-sel"><option>16</option></select>
+              <span class="clo-st-set-label">moves past the end of a line</span>
+              <span class="clo-st-set-spacer"></span>
+              <span class="clo-st-ready">19 position(s) ready</span>
+              <button type="button" class="clo-st-gather">Gather positions</button>
+              <button type="button" class="clo-st-sync">Sync</button>
+              <!-- NEUTRAL, beside Sync and for the same reason: the action away from
+                   both storming and gathering. Reads "Back" while the table is up. -->
+              <button type="button" class="clo-st-sync clo-st-statsbtn">Back</button>
+            </div>
+            <div class="clo-st-stats">
+              <div class="clo-st-stats-head">
+                <span class="clo-st-stats-title">How you read your repertoires</span>
+                <span class="clo-st-set-spacer"></span>
+                <button type="button" class="clo-st-analyse">Re-read chapters</button>
+                <button type="button" class="clo-st-analyse">Sync record</button>
+                <button type="button" class="clo-st-analyse">Back</button>
+              </div>
+              <div class="clo-st-note clo-st-statsnote">6 chapter(s) read &mdash; 23 line(s) placed.</div>
+              <div class="clo-st-stats-body">
+                <div class="clo-st-sthead">Your repertoires</div>
+                <div class="clo-st-strow clo-st-strow--head">
+                  <span class="clo-st-stname">Course</span>
+                  <span class="clo-st-bar"></span>
+                  <span class="clo-st-stnum">found</span>
+                  <span class="clo-st-stnum">avg lost</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">n</span>
+                </div>
+                <div class="clo-st-strow">
+                  <span class="clo-st-stname">1. e4 for the Creative Attacker</span>
+                  <span class="clo-st-bar"><span class="clo-st-bar-seg clo-st-bar-a" style="width:14%"></span><span class="clo-st-bar-seg clo-st-bar-g" style="width:25%"></span><span class="clo-st-bar-seg clo-st-bar-o" style="width:22%"></span><span class="clo-st-bar-seg clo-st-bar-b" style="width:24%"></span><span class="clo-st-bar-seg clo-st-bar-x" style="width:15%"></span></span>
+                  <span class="clo-st-stnum">39%</span>
+                  <span class="clo-st-stnum">8.4%</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">41</span>
+                </div>
+                <div class="clo-st-strow clo-st-strow--here">
+                  <span class="clo-st-stname">Intermediate Starter Kit</span>
+                  <span class="clo-st-bar"><span class="clo-st-bar-seg clo-st-bar-a" style="width:31%"></span><span class="clo-st-bar-seg clo-st-bar-g" style="width:28%"></span><span class="clo-st-bar-seg clo-st-bar-o" style="width:20%"></span><span class="clo-st-bar-seg clo-st-bar-b" style="width:13%"></span><span class="clo-st-bar-seg clo-st-bar-x" style="width:8%"></span></span>
+                  <span class="clo-st-stnum">67%</span>
+                  <span class="clo-st-stnum">4.1%</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">64</span>
+                </div>
+                <div class="clo-st-strow">
+                  <span class="clo-st-stname">Short &amp; Sweet: The Caro-Kann</span>
+                  <span class="clo-st-bar"><span class="clo-st-bar-seg clo-st-bar-a" style="width:50%"></span><span class="clo-st-bar-seg clo-st-bar-g" style="width:30%"></span><span class="clo-st-bar-seg clo-st-bar-o" style="width:10%"></span><span class="clo-st-bar-seg clo-st-bar-b" style="width:10%"></span></span>
+                  <span class="clo-st-stnum">80%</span>
+                  <span class="clo-st-stnum">2.2%</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">10</span>
+                </div>
+
+                <div class="clo-st-sthead">This course, by chapter</div>
+                <div class="clo-st-strow clo-st-strow--head">
+                  <span class="clo-st-stname">Chapter</span>
+                  <span class="clo-st-bar"></span>
+                  <span class="clo-st-stnum">found</span>
+                  <span class="clo-st-stnum">avg lost</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">n</span>
+                </div>
+                <!-- Expanded: a chapter row is a BUTTON and its lines sit under it,
+                     indented and dimmed. Folded is the default, because a course with
+                     twenty chapters is otherwise a wall of line names. -->
+                <button type="button" class="clo-st-strow clo-st-strow--grp">
+                  <span class="clo-st-stname">&#9662; The Scotch</span>
+                  <span class="clo-st-bar"><span class="clo-st-bar-seg clo-st-bar-a" style="width:15%"></span><span class="clo-st-bar-seg clo-st-bar-g" style="width:15%"></span><span class="clo-st-bar-seg clo-st-bar-o" style="width:20%"></span><span class="clo-st-bar-seg clo-st-bar-b" style="width:25%"></span><span class="clo-st-bar-seg clo-st-bar-x" style="width:25%"></span></span>
+                  <span class="clo-st-stnum">40%</span>
+                  <span class="clo-st-stnum">9.9%</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">20</span>
+                </button>
+                <div class="clo-st-strow clo-st-strow--sub">
+                  <span class="clo-st-stname">Scotch 4&hellip;Qh4?!</span>
+                  <span class="clo-st-bar"><span class="clo-st-bar-seg clo-st-bar-x" style="width:100%"></span></span>
+                  <span class="clo-st-stnum">0%</span>
+                  <span class="clo-st-stnum">19%</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">4</span>
+                </div>
+                <div class="clo-st-strow clo-st-strow--sub">
+                  <span class="clo-st-stname">Scotch 4&hellip;Bc5 5.Nb3</span>
+                  <span class="clo-st-bar"><span class="clo-st-bar-seg clo-st-bar-a" style="width:25%"></span><span class="clo-st-bar-seg clo-st-bar-g" style="width:25%"></span><span class="clo-st-bar-seg clo-st-bar-o" style="width:25%"></span><span class="clo-st-bar-seg clo-st-bar-x" style="width:25%"></span></span>
+                  <span class="clo-st-stnum">50%</span>
+                  <span class="clo-st-stnum">6.4%</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">8</span>
+                </div>
+                <button type="button" class="clo-st-strow clo-st-strow--grp">
+                  <span class="clo-st-stname">&#9656; Anti-Sicilians</span>
+                  <span class="clo-st-bar"><span class="clo-st-bar-seg clo-st-bar-a" style="width:40%"></span><span class="clo-st-bar-seg clo-st-bar-g" style="width:34%"></span><span class="clo-st-bar-seg clo-st-bar-o" style="width:14%"></span><span class="clo-st-bar-seg clo-st-bar-b" style="width:12%"></span></span>
+                  <span class="clo-st-stnum">74%</span>
+                  <span class="clo-st-stnum">3.2%</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">27</span>
+                </button>
+                <!-- The chapters could not be read, or this line was answered before
+                     v0.140.0 taught the store which variation it came from. Named
+                     rather than filed under a guess. -->
+                <button type="button" class="clo-st-strow clo-st-strow--grp">
+                  <span class="clo-st-stname">&#9656; Not in a chapter</span>
+                  <span class="clo-st-bar"><span class="clo-st-bar-seg clo-st-bar-a" style="width:30%"></span><span class="clo-st-bar-seg clo-st-bar-g" style="width:29%"></span><span class="clo-st-bar-seg clo-st-bar-o" style="width:18%"></span><span class="clo-st-bar-seg clo-st-bar-b" style="width:13%"></span><span class="clo-st-bar-seg clo-st-bar-x" style="width:10%"></span></span>
+                  <span class="clo-st-stnum">59%</span>
+                  <span class="clo-st-stnum">4.8%</span>
+                  <span class="clo-st-stnum clo-st-stnum--faint">17</span>
+                </button>
               </div>
             </div>
           </div>

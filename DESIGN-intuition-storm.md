@@ -1569,3 +1569,311 @@ budget, because there the question is which positions are worth *carrying*: a
 failure count records something the other device learned and cannot be
 regenerated, while one fresh position is interchangeable with any other. Do not
 "align" the two — they are asking different things of the same field.
+
+## 15. The performance record (v0.140.0)
+
+A storm ends with a score, and a score is forgotten by the next one. The
+question the exercise is actually asking — *which part of my repertoire do I
+not understand one move past the book* — was never answered anywhere, because
+nothing outlived the session.
+
+So every graded answer is counted against the LINE whose frontier the position
+came from, kept in `chrome.storage.local`, rolled up per CHAPTER and per COURSE,
+and carried between devices on section 16e's transport. Two figures per row:
+
+* **found** — how often a good or decent move was played;
+* **avg loss** — the mean centipawn loss of the moves that could be graded.
+
+They are different questions and the interesting case is where they disagree. A
+chapter you nearly always half-solve reads 90% / −40cp; one you either see or
+blunder reads 60% / −25cp. Neither number alone separates those.
+
+### 15.1 What is counted, and against what
+
+The unit is the **line end**, not the position: `st.card.storm.oid` is the
+variation whose frontier the position is past, and that is the only thing here
+that is not free. Three consequences:
+
+* **`stormFrontiers` now keeps `oids` beside `names`.** The name was already
+  kept (it is what a card is labelled with); a name is not unique, can be
+  edited, and cannot be resolved to a chapter, so the oid is what the record is
+  keyed on. Where several variations end on one frontier, the answer is counted
+  against the FIRST — which is the one whose name the card was showing, so the
+  attribution is the one the user saw.
+* **`stormPack` gains `o`.** A stored position is drawn months after it was
+  found, so the oid has to survive in the store. Entries written before this
+  version have none; `backfillStoreOids` fills them in from the course listing
+  that `startSession` reads anyway, BY NAME, and refuses a name that matches two
+  variations. What it cannot name is counted under one "Line not recorded" row
+  rather than filed under a guess.
+* **A review retry (§14.10b) is not counted**, for the same reason it scores no
+  points: it was answered at leisure. `statNote` is called from `finishAnswer`
+  and not from `runGrade`, which both paths share.
+
+`unanswered` (§14.10c) is refused outright. It is in the review because it is
+the position most in mind; counting it would mark the user down for the clock.
+
+### 15.2 The three things that fail silently
+
+All of these produce plausible numbers when they are wrong, which is why
+`dev/check-storm.js` §9 executes them (45 assertions; four controls, each
+failing on exactly its own — the rate's denominator on 2, the merge on 5, the
+missing-loss rule on 3, the roll-up on 1).
+
+**The denominator.** `unknown` is a verdict about ChessDB and not about the
+user — `finishAnswer` already scores it nothing and holds the streak for exactly
+that reason. Counted as a failure it marks the user down for the book's
+ignorance; counted as a success it flatters them. It is out of BOTH halves of
+the fraction, out of the bar, and named only in the bar's tooltip. A row with
+nothing else on it reads "—", not "0%": an absence of a score is not a bad one.
+
+**The merge.** These are counters and the wire merge is a union over a whole
+snapshot, so *summing* two devices' totals sums them again on the next exchange,
+and again after that — while the numbers stay plausible and keep growing, which
+is also what working looks like. So the record is kept **per device**
+(`cloStormDevice`, one random id made once) and summed only on READ. A device's
+own counters increase monotonically, so the record with the higher `n` is simply
+the later one and `max` is exact however often two devices meet. The assertion
+that catches a summing merge is *"a second exchange adds nothing"*.
+
+**The roll-up.** A chapter's average loss is a mean over ANSWERS, never over its
+lines: one line answered once at 200cp beside one answered nine times at 0cp is
+20cp per answer and 100cp per line, and only the first is the chapter's figure.
+`stormStatRoll` sums the raw `ls`/`lc` pairs and divides once.
+
+### 15.3 The wire is a card of its own
+
+Section 16e's transport again, through `pinSyncApi.carrier`, and deliberately
+**not** folded into the position card. That payload is CUT to fit its budget
+(`stormWirePack` drops positions until it fits), so a statistic carried inside
+it would be dropped whenever a position list ran long — silently, and after the
+requests that produced it had been spent. It also carries ONE course's positions
+while the record is about every course.
+
+`statsMaxWireBytes` is 60000 base32 characters against §14.12's measured ceiling
+of 162460; a line is ~80 bytes with its devices, so that is several thousand.
+
+**No tombstones**, unlike the position card, and the difference is worth stating:
+a position leaves the position store by the *retention rule*, which one device
+can apply and another not, so "absent here, present there" is ambiguous. A line
+leaves this record only by `stormStatsPrune`, which is a function of the
+record's own timestamp and which every device applies to the same numbers — so
+a union merge converges by itself. A resurrection would in any case be harmless,
+the record still being true, where a resurrected POSITION is one the user has
+already learned.
+
+An exchange happens on the stats view's own button, and behind the session's
+existing auto-pull — `syncStore(...).then(() => syncStats(...))`, in that order
+rather than at once, because both read the sync course and write a card, and two
+exchanges racing over one course listing is a needless way to find out whether
+that is safe.
+
+### 15.4 Chapters cost requests, so they are behind a press
+
+**`getList` does not say which chapter a variation is in.** That is why
+`fetchVariationChapter` (24g's, shared and unchanged) exists: it reads chapters
+one at a time and stops at the oid. Grouping a whole course therefore costs up
+to one request per chapter, so it is a button — *Group by chapter* — and the
+answer is cached for good in `cloStormChapters`, keyed by course. Until it is
+pressed the lines are listed flat, which is a complete answer to the second half
+of the question in its own right.
+
+**It can only answer for a course the user can add to.** `getImportData` is the
+only call that enumerates a course's chapters and bought courses are absent from
+it (19d's `fetchImportTargets`), so for those the refusal says so in words
+rather than leaving an empty list. Grouping a bought course would need the
+chapter list off the course page's own DOM, i.e. a new Chessable selector; not
+built, and noted here rather than attempted.
+
+### 15.5 The view
+
+A FOURTH thing the storm window's body can show, up instead of the stage, the
+review and the summary, on `s` or the settings row's *Stats* button. It is
+reachable only where no clock is running — the ply selectors' rule (§14.9), for
+a harder reason than theirs: section 18's board is pinned to the STAGE's slots
+in document coordinates, so hiding the stage under a live card would leave a
+board floating over the table. `toggleStats` refuses that itself as well, since
+the settings row is not the only way in.
+
+Two tables, because two questions were asked. **Your repertoires** is every
+course with anything recorded; **This course** is by chapter, foldable, with the
+lines under each. Both sorted **worst first** — a table of statistics whose top
+row is your best line answers nothing — and the course being stormed is MARKED
+rather than moved, since pulling it out of that order would break the only thing
+the sort is for. Every row carries its answer count: a 0% built on one answer is
+not the claim a 0% built on twenty is, and no threshold hides the thin rows,
+because which of them to believe is a judgement the count is enough to make.
+
+The strip is good / decent / missed in the review rows' own three colours
+(`--clo-accent`, `--clo-attention`, `--clo-danger`) — a fourth palette for the
+same three verdicts is how two halves of one feature come to disagree about what
+amber means. Under 700px of panel width the strip is what goes, not a number:
+the percentage says the same thing less precisely, and the numbers are what the
+table is read for. Measured in `dev/harness.html` at 880px and 360px, desktop
+and `html.clo-touch`: no overflow in any of the four, rows 23px and 31px.
+
+### 15.6 What was NOT measured
+
+* **Whether the figures are stable enough to act on.** A three-minute session
+  answers about a dozen positions and a course has dozens of line ends, so a
+  chapter's percentage is built on a handful of answers for a long time. The
+  count column is the mitigation; whether a "seen fewer than N times" fold would
+  be better is a question for somebody who has used it for a month.
+* **The exchange end to end**, exactly as §14.12 left it: it needs a course
+  chosen for syncing on the options page, which the browser tooling cannot
+  reach. The pack, the merge and the unpack are executed by the check; the POST
+  is 16e's own, already proved with a second card.
+* **The cost of `Group by chapter` on a large course.** It is one `getList` per
+  chapter, and the largest course on the test account has few; a fifty-chapter
+  course has not been tried.
+* **Nothing here is graded a second time.** The record stores the verdict the
+  session produced, so a change to `stormGrade`'s bands makes old rows and new
+  rows subtly different claims. Not versioned, because the bands have not moved
+  since v0.130.0 and a re-grade is impossible anyway — the scored list is not
+  kept per answer.
+
+## 16. Win probability, not centipawns (v0.141.0)
+
+§8.1's verdict was a flat centipawn loss: within 30cp of the best move, good;
+within 70cp, decent; past that, a miss. That was wrong for a reason built into
+this feature's own stage 0, and the author named it: **`userHiCp` admits
+positions up to +200**, and a centipawn is not worth the same there as it is at
+equality. Giving up 100cp from +500 leaves you winning; giving up 100cp from 0
+does not. The old rule called both the same thing.
+
+So the grade is now **how much winning probability a move gives up against the
+best one**, and there are five bands rather than three.
+
+### 16.1 The conversion
+
+Lichess's own fit over real games, in `stormWinPct`:
+
+```
+Win% = 50 + 50 * (2 / (1 + exp(-k * cp)) - 1)      k = 0.00368208
+```
+
+`k` is theirs and is **not a dial**: changing it re-scales every band at once
+and silently, since the verdicts stay entirely plausible. `dev/check-storm.js`
+pins it by its consequences rather than by its value — the curve is 50% at
+equality, symmetric, under 90% at +500 and over 97% at +1000.
+
+Evaluations are **clamped to ±`wpClampCp` (1000) first**, which is what keeps a
+mate score from needing a band of its own: ChessDB writes one as ~30000 and the
+engine tier as `engineMateCp`, and at ±1000 the curve is already at 97.6%. It
+changes no ordinary verdict — within the storm's own eval band nothing comes
+near it — and it has one pleasant consequence worth stating: preferring mate in
+5 to mate in 3 now costs exactly nothing, while missing the mate for a modest
+edge is a blunder. Both are asserted.
+
+The loss is **floored at 0**. A move scoring better than the book's own "best"
+is the book being imprecise, not a bonus to be handed out.
+
+### 16.2 The bands, and why these numbers
+
+The author's, unchanged, with the points they came with:
+
+| band | win probability given up | points |
+| --- | --- | --- |
+| great | < 3% | +2 |
+| good | 3–6% | +1 |
+| ok (inaccuracy) | 6–10% | 0 |
+| bad (mistake) | 10–20% | −1 |
+| blunder | ≥ 20% | −2 |
+
+They needed no adjustment, which is the useful finding. **At an equal position
+the two scoring bands land almost exactly where the old flat ones did:**
+
+| base eval | 3% | 6% | 10% | 20% |
+| --- | --- | --- | --- | --- |
+| 0cp | 33cp | 65cp | 110cp | 230cp |
+| +200 | 36cp | 71cp | 117cp | 226cp |
+| +500 | 63cp | 118cp | 182cp | 316cp |
+
+— against the old `goodCp` 30 and `decentCp` 70. So this is a change of
+**meaning** rather than of difficulty at equality, and the tolerance widens
+exactly where the old system was wrong. That property is asserted directly
+(`dev/check-storm.js` §3 solves the curve for the band boundary and compares it
+against 30 and 70 within 5cp), because it is what a re-tuned `wpK` or a
+mistyped threshold would quietly lose.
+
+The old system's real defect shows up in the middle: at equality a 71cp
+inaccuracy scored the same **−2** as hanging a queen. That cliff is what the
+`ok` band removes.
+
+### 16.3 What five bands changed elsewhere
+
+* **`stormPoints` tests the SIGN, not the name.** A penalty is flat and is never
+  multiplied — v0.139.0's rule, unchanged in substance — but the test is now
+  `base < 0` rather than a list of verdicts, so a band added later cannot be
+  given a multiplied penalty by accident.
+* **`finishAnswer`'s streak follows the sign of the points earned**, for the
+  same reason: one rule for five bands. A move that scored extends the run, one
+  that cost ends it, and one worth nothing does neither. So `ok` holds the
+  streak because zero points is what the middle band MEANS, and `unknown` holds
+  it by the older argument — it is not the user's doing.
+* **A pass is a `blunder`.** "I have no idea" costing less than a bad move would
+  make passing the way to protect a streak, which is the one incentive this
+  scoring must not create. Same cost it had when the only bad band was `miss`.
+* **`storeDropOn` is the two bands that SCORE.** An `ok` answer keeps its
+  position in the store: nothing was gained by it, and a move you can improve on
+  is one worth meeting again.
+* **The verdict line prints probability**, not "42cp behind" — a number the
+  reader has to place against an evaluation they were not shown. `stormWp` gives
+  one decimal under ten points and none above, because "23.4%" is a precision
+  the figure does not have and the difference between 23% and 24% changes no
+  verdict. The centipawn pair is still on the line below it. A loss under 0.05
+  reads "level with the best" rather than "0.0% of the game", which would be a
+  claim of imprecision about a move that was simply the best one.
+* **The panel gets two treatments for five bands**, deliberately: it is read in
+  about a second with a clock running, so the colour answers "did that score or
+  cost" and the WORD carries the degree. "Inaccuracy", "Mistake" and "Blunder"
+  are what every annotated game already calls these three amounts, so they need
+  no explaining.
+* **The review's row edges and the stats bar are one five-step ramp** — green,
+  dim green, neutral, amber, red — defined once in the stylesheet, with the bar
+  reading the same five tokens. Measured in the harness: six distinct edge
+  colours, the bar segments identical to the edges, and no overflow at 1400px or
+  360px in either density.
+
+### 16.4 What it did to the performance record (§15)
+
+The record counts bands, so five bands is a different record: `a/g/o/b/x/u`
+replaces `g/d/m/u`, and `statsWireVersion` goes to **2** so a version-1 payload
+is refused rather than misread — every field it has is a field this one also
+has, which is exactly the shape of corruption that would be read without
+complaint.
+
+Two derived figures changed with it:
+
+* **`found` is the two bands that SCORE**, not "everything that was not a
+  miss". An inaccuracy is not a move found; it is "no, but it did not matter
+  much", which is what the average beside it is for. Quietly folding `ok` in
+  would turn the column into "how often was it survivable".
+* **the average loss is in points of win probability**, stored as tenths so the
+  record stays integral. An average over centipawns would have been an average
+  over a quantity whose meaning changes with the position it was measured in —
+  the whole reason the grade stopped using them.
+
+### 16.5 What was NOT changed, and one open question
+
+**The pick rules are still centipawns** — `blunderCp`, `decidedCp`,
+`spreadMinCp`, `spreadMaxCp`. Those decide which positions are OFFERED, which is
+a different question from what a move is worth, and every one of them is a
+number `dev/probe-storm.js` measured against real courses (§6). Changing them
+changes the yield and needs that probe re-run, not an argument.
+
+But the same objection does apply to one of them, and it should be recorded
+rather than discovered: **`spreadMinCp` (best − 5th ≥ 60cp) is the rule that
+says "there must be something to get wrong"**, and 60cp buys less at +200 than
+it does at equality — by the table above, about 15% less. So the filter admits
+positions that are, in the terms the grade now uses, flatter than intended. It
+is bounded (the frontier band stops at +200, where the effect is small) and
+fixing it means re-running the probe to see what the yield does. Not done.
+
+**Nothing is re-graded.** The record stores the verdict the session produced, so
+rows written before this change are a different claim from rows written after.
+There is no re-grade available — the scored list is not kept per answer — and
+the record itself is one version old (§15 shipped in v0.140.0), so in practice
+there is nothing to reconcile. On a record with real history there would be, and
+the honest answer would still be to leave it: a verdict is a statement about
+what the grader said at the time.

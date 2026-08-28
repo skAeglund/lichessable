@@ -6619,12 +6619,20 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
 /* THE VERDICT AS A LEFT EDGE, not a fill and not a text colour. A fill would
    make twenty rows twenty coloured blocks with the moves unreadable on them,
    and the move text has to stay the move text — this is a list you read, and
-   the colour is what lets you find the misses in it without reading. Same
-   three meanings as everywhere else here: green good, amber "outstanding",
-   red missed. */
-.clo-st-revrow--good   { border-left-color: var(--clo-accent); }
-.clo-st-revrow--decent { border-left-color: var(--clo-attention-line); }
-.clo-st-revrow--miss   { border-left-color: var(--clo-danger); }
+   the colour is what lets you find the mistakes in it without reading.
+
+   §16's FIVE bands, as one ramp: green → dim green → neutral → amber → red,
+   which is green for the two that SCORE, nothing for the one worth nothing,
+   and the row palette's own "outstanding" and "danger" for the two that COST.
+   The ramp is the whole reason the middle band is legible at a glance as a
+   band rather than as a quiet failure — and it is defined ONCE here, with
+   `.clo-st-bar-*` below reading the same five tokens, so a sixth band is two
+   lines in one place and cannot end up meaning two colours. */
+.clo-st-revrow--great  { border-left-color: var(--clo-accent); }
+.clo-st-revrow--good   { border-left-color: var(--clo-accent-text); }
+.clo-st-revrow--ok     { border-left-color: var(--clo-text-faint); }
+.clo-st-revrow--bad    { border-left-color: var(--clo-attention); }
+.clo-st-revrow--blunder { border-left-color: var(--clo-danger); }
 .clo-st-revrow--unknown { border-left-color: var(--clo-bg-raised); }
 /* §14.10c: the card the storm ENDED on — no answer, so no verdict to colour.
    The same neutral edge "unknown" wears, because both mean "nothing was
@@ -6743,6 +6751,132 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
 .clo-st-again:hover { background: var(--clo-accent); color: #fff; }
 .clo-st-done:hover { color: var(--clo-text-bright); }
 
+/* --- §15.4) The performance record ------------------------------------------
+   A fourth thing the body can show, and it takes the whole of it: this is a
+   table you read, not a thing beside the board. Up only where no clock is
+   running, so it never competes with the stage for the slots section 18's
+   board is pinned onto. */
+
+.clo-st-stats {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.clo-st-stats[hidden] { display: none; }
+
+.clo-st-stats-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.clo-st-stats-title {
+  font-weight: 600;
+  color: var(--clo-text-bright);
+}
+
+.clo-st-stats-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* A section heading, not a row: the two tables answer two different questions
+   and running them together would read as one list with a change of subject. */
+.clo-st-sthead {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--clo-text-faint);
+}
+.clo-st-sthead:first-child { margin-top: 0; }
+
+.clo-st-stempty {
+  color: var(--clo-text-dim);
+  padding: 8px 0;
+  max-width: 60ch;
+}
+
+/* ONE grid for every row — header, course, chapter and line alike — because
+   three tables whose columns nearly line up are worse than one that does. */
+.clo-st-strow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button.clo-st-strow { cursor: pointer; }
+button.clo-st-strow:hover { background: var(--clo-bg-raised); }
+
+.clo-st-strow--head {
+  color: var(--clo-text-faint);
+  font-size: 11px;
+  border-bottom: 1px solid var(--clo-bg-sunken);
+  padding-bottom: 2px;
+}
+
+/* The course being stormed, marked rather than moved: the table is sorted
+   worst-first and pulling one row out of that order would break the one thing
+   the sort is for. */
+.clo-st-strow--here { background: var(--clo-bg-raised); }
+.clo-st-strow--grp { font-weight: 600; }
+.clo-st-strow--sub .clo-st-stname { padding-left: 16px; color: var(--clo-text-dim); }
+
+.clo-st-stname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clo-st-stnum {
+  flex: 0 0 auto;
+  width: 58px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.clo-st-stnum--faint { width: 34px; color: var(--clo-text-faint); }
+
+/* The strip: good / decent / missed, over the GRADED answers only. Absolute
+   widths so two rows can be compared, and the same three colours the review's
+   row edges already use — a fourth palette for the same three verdicts is how
+   two parts of one feature come to disagree about what amber means. */
+.clo-st-bar {
+  flex: 0 0 auto;
+  width: 70px;
+  height: 5px;
+  display: flex;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--clo-bg-sunken);
+}
+
+.clo-st-bar-seg { display: block; height: 100%; }
+/* The same five tokens the row edges above use, in the same order — see the
+   note there. Best on the left, so a good row reads as green filling from the
+   left and a bad one as red filling from the right. */
+.clo-st-bar-a { background: var(--clo-accent); }
+.clo-st-bar-g { background: var(--clo-accent-text); }
+.clo-st-bar-o { background: var(--clo-text-faint); }
+.clo-st-bar-b { background: var(--clo-attention); }
+.clo-st-bar-x { background: var(--clo-danger); }
+
 /* §3.1's shape for a phone: the board above the panel, the same interaction
    rather than a different mode. The header's numbers wrap under the title. */
 @container (max-width: 700px) {
@@ -6788,9 +6922,18 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
   .clo-st-slot--panel { flex: 0 0 auto; min-width: 0; height: 150px; }
   .clo-st-head { flex-wrap: wrap; }
   .clo-st-sub { order: 1; flex: 1 0 100%; }
+  /* §15.4: the STRIP is what goes, not a number. It is the redundant column —
+     the percentage beside it says the same thing less precisely — and the two
+     numbers are what the table is read for. */
+  .clo-st-bar { display: none; }
+  .clo-st-stnum { width: 48px; }
+  .clo-st-stnum--faint { width: 28px; }
 }
 
 html.clo-touch .clo-st { font-size: 15px; }
+html.clo-touch .clo-st-strow { padding: 7px 6px; }
+html.clo-touch .clo-st-strow--head { font-size: 12px; }
+html.clo-touch .clo-st-sthead { font-size: 13px; }
 html.clo-touch .clo-st-x { font-size: 22px; padding: 0 6px; }
 html.clo-touch .clo-st-clock { font-size: 24px; }
 html.clo-touch .clo-st-note { font-size: 13px; }
