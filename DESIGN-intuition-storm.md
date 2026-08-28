@@ -1843,16 +1843,110 @@ Three decisions, and the two asymmetries are the interesting ones:
 
 #### 14.18.3 What it does NOT do
 
-* **It does not stop a WALK re-entering the repertoire.** A frontier can still be
-  carried forward by a game into a position some other line of the course
-  answers; this rule is only about where a walk STARTS. That is a much larger
-  question (every position of the course against every step of every walk) and
-  the eval band, the ply range and the stop rules already bound how far a walk
-  goes. Left open deliberately, with the measurement above as the reason: the
-  cheap half of the problem is a quarter of the frontiers.
+* ~~**It does not stop a WALK re-entering the repertoire.**~~ **Built in
+  v0.145.0 — §14.18.4.** The estimate here ("a much larger question: every
+  position of the course against every step of every walk") was wrong by the
+  cost of one property lookup: the index that answers it is the one §14.18.2
+  already builds and then throws away.
 * **It does not look at the store.** §14.11's positions were harvested by an
   earlier build and are not re-filtered — the retention rule and §14.16's
   tombstones age them out. A device gathering afresh never adds another.
+
+#### 14.18.4 …and now the walk too (v0.145.0)
+
+`stormFrontiers` builds `cont` and drops it on return. Carrying it out
+(`out.cont`, beside `out.paused` and `out.covered`) makes the second half of the
+rule a set lookup per ply, and `stormReentered` is that lookup:
+
+```js
+function stormReentered(covered, pos, fen, userSide) {
+  if (!covered || !pos || pos.side !== userSide) return false;
+  return covered.has(cacheKey(fen));
+}
+```
+
+Four things about it are decisions rather than mechanics.
+
+**It is a STOP, not a candidate rejection, and the walk stops AT the position.**
+Everything past a position the course answers is past the point where the user
+was on their own — the game may have played the course's own move there, or
+something the course was equally ready for, and either way the line has stopped
+being "what happens after your book runs out". So the position itself is not
+offered and neither is anything beyond it.
+
+**The test is scoped to the USER's own move, and that is the whole precision of
+it.** `cont[side]` holds `before` for every ply of that side's lines, the
+opponent's included — a White repertoire's index contains Black-to-move
+positions, because a White line records what it expects Black to play. An
+opponent-to-move position in the index therefore means only that the course has
+a reply *prepared for what the opponent is about to play*. If the opponent plays
+something else, the position the user then faces is genuinely unprepared, and is
+exactly what this feature exists to ask about. Stopping there would throw away
+the good half of the rule. A position with the USER to move that appears in the
+index is a different thing entirely: their own course plays a move from it, so
+there is nothing to improvise.
+
+Nothing had to change in how `cont` is built for this: a user-to-move position
+in `cont[side]` is by construction one that a ply of that side's own colour was
+played from.
+
+**Both walks take it, and the invented one is not a formality.**
+`stormRandomLine` picks among ChessDB's own best moves, which is precisely the
+play a repertoire is written to meet — so it re-enters the course *more* readily
+than a random human game does, not less.
+
+**It is handed in, never closed over.** `stormWalkGame(…, covered)` and
+`stormRandomLine(…, covered)` keep the property that made them checkable at all:
+`dev/check-storm.js` executes the whole of stage 2 with no network and no module
+state.
+
+##### The coverage asymmetry, which a later edit will want to tidy
+
+§14.14's paused filter and §14.18.2's stub filter both live **inside**
+`stormFrontiers`, so a session and a gather pass got them for free — both
+producers draw their pool from that one function. **A walk is not inside it.**
+So this rule is covered by being threaded through `harvestFrontier`, which is
+the shared entry both passes reach the walks through, via `frontierCovered(f)`
+reading `st.pool.cont`. Anything that ever walks by another route has to pass
+the index itself. That is the asymmetry; it is not an oversight, and the two
+halves of §14.18 really are covered by two different mechanisms.
+
+##### Its own funnel row
+
+The stop reason is the string `your own course answers this position`, which
+`stormFunnelWhy(fn, 'stops', …)` files under its own key — so **how often it
+fires is a number before it is an argument** (§14.17). On a stub-heavy course
+this is expected to be a visible fraction of walk stops; nothing has been
+measured live yet, and that is on the list.
+
+##### The store is not re-filtered
+
+Unchanged from the bullet above, and now true of both halves: positions
+harvested by an earlier build stay until the retention rule and §14.16's
+tombstones age them out. Re-filtering the store would need the course read
+before `produceFromStore` runs, which is exactly the ordering §14.11 exists to
+avoid.
+
+##### The checks
+
+`dev/check-storm.js` §7 executes it. The failure mode is silence — a course
+whose walks never re-enter answers identically either way — so the fixture has
+to actually re-enter, and it reaches the position **by another move order**
+(1.e4 e5 2.Nf3 a6 3.Bb5 Nc6 4.Ba4 arrives at the position after 3...a6 of the
+main order without ever standing on the Ruy frontier), or §14.18.2 would have
+dropped the frontier before the walk began.
+
+Controls run 2026-08-29, each failing on exactly its own assertions and no
+others:
+
+| control | fails |
+|---|---|
+| `stormReentered` returning false always (the rule reverted) | **5** |
+| …with the `pos.side !== userSide` guard removed (the "tidy") | **3** |
+
+The second is the one worth having: it still stops walks, it still looks
+entirely plausible, and it silently discards the positions where the opponent
+left the book first.
 
 
 ## 15. The performance record (v0.140.0)

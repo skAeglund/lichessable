@@ -47,6 +47,10 @@
  *   * `stormPickReject`'s spread5 rule removed            → 3 fail
  *   * `stormBestLine`'s same-move guard defeated          → 3 fail
  *   * §14.18's stub filter removed altogether            → 6 fail
+ *   * §14.18.4's walk re-entry stop reverted             → 5 fail
+ *   * …with its `pos.side !== userSide` guard removed    → 3 fail (the "tidy":
+ *     it still stops walks and still looks plausible, and silently discards
+ *     every position where the OPPONENT left the book first)
  *   * …its continuation index made colour-agnostic       → 1 fail
  *   * …restricted to the lines eligible to BE a frontier → 2 fail
  */
@@ -129,6 +133,7 @@ const src = [
   sliceDecl('stormStatsWireUnpack'),
   sliceDecl('stormCandidate'),
   sliceDecl('stormAdvance'),
+  sliceDecl('stormReentered'),
   sliceDecl('stormWalkGame'),
   sliceDecl('stormRandomLine'),
   sliceDecl('stormCard'),
@@ -140,6 +145,7 @@ const src = [
   'return { stormFrontiers, stormDrawFrontier, stormUserEval, stormPgnMoves,' +
   '         stormPickReject, stormMoveLoss, stormGrade, stormPoints,' +
   '         stormWalkGame, stormRandomLine, stormCandidate, stormAdvance,' +
+'         stormReentered,' +
   '         stormCard, stormPack, stormUnpack, stormRetain, stormStoreDraw,' +
   '         stormDone, stormPickGames,' +
   '         stormFunnelBlank, stormFunnelBump, stormFunnelWhy,' +
@@ -758,6 +764,74 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   const short = await S.stormWalkGame(
     fFen, 'w', gameSans, book(20), Object.assign({}, C, { maxPly: 2 }));
   eq('maxPly stops the walk', short.stop, 'the walk reached its ply limit');
+
+  // --- §14.18.3: the walk re-entering the repertoire -----------------------
+  // v0.144.0 stopped the storm asking about a line END that sits inside another
+  // line. A WALK can arrive at the same place one move later — a real game is
+  // free to leave the repertoire at the very first move the repertoire had an
+  // answer for — and the card it produces looks exactly like a good one, which
+  // is why this fails silently and needs a fixture that actually re-enters.
+  //
+  // THE FIXTURE HAS TO REACH THE LATER POSITION BY ANOTHER MOVE ORDER, or the
+  // §14.18 stub filter would have dropped the frontier before the walk began:
+  // 1.e4 e5 2.Nf3 a6 3.Bb5 Nc6 4.Ba4 arrives at the position after 3...a6 of
+  // the main order without ever standing on the Ruy frontier itself.
+  const reentry = await S.stormFrontiers([
+    { oid: 1, name: 'Ruy', color: 'white', sans: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5'] },
+    { oid: 9, name: 'Morphy by transposition', color: 'white',
+      sans: ['e4', 'e5', 'Nf3', 'a6', 'Bb5', 'Nc6', 'Ba4'] },
+  ], C);
+  const ruy = reentry.filter((f) => f.names.indexOf('Ruy') >= 0)[0];
+  eq('the transposing line does not itself exclude the frontier', Boolean(ruy), true);
+  const covW = reentry.cont && reentry.cont.w;
+  eq('the continuation index rides out on the pool', covW instanceof Set, true);
+  const freeWalk = await S.stormWalkGame(ruy.fen, 'w', gameSans, book(20), C);
+  eq('with no index the walk offers positions as before', freeWalk.out.length > 0, true);
+  const stopped = await S.stormWalkGame(ruy.fen, 'w', gameSans, book(20), C, covW);
+  eq('a walk back into the repertoire stops',
+    stopped.stop, 'your own course answers this position');
+  eq('…and the position it stopped AT is not offered', stopped.out.length, 0);
+  // SCOPED TO THE USER'S OWN MOVE, which is the precision of the rule rather
+  // than an optimisation: the index holds every ply's `before`, the opponent's
+  // included, and an opponent-to-move position in it means only that the course
+  // has a reply prepared for what the opponent is ABOUT to play. If they play
+  // something else the user really is unprepared — which is the good half.
+  const gameFens = (() => {
+    let fen = START_FEN;
+    const out = [fen];
+    for (const san of gameSans) {
+      fen = S.fenAfterUci(fen, S.sanToUci(CloSan.parseFen(fen), san));
+      out.push(fen);
+    }
+    return out;
+  })();
+  eq('the fixture position really is the one the course transposes into',
+    covW.has(cacheKey(gameFens[6])), true);
+  eq('…and it is the user’s move there', gameFens[6].split(' ')[1], 'w');
+  const oppOnly = new Set([cacheKey(gameFens[7])]);
+  eq('the same position with the OPPONENT to move is not in the index',
+    covW.has(cacheKey(gameFens[7])), false);
+  const opponentCovered = await S.stormWalkGame(ruy.fen, 'w', gameSans, book(20), C, oppOnly);
+  eq('an opponent-to-move position in the index does not stop the walk',
+    opponentCovered.out.length, freeWalk.out.length);
+  eq('…and the walk runs on to its ordinary end',
+    opponentCovered.stop, freeWalk.stop);
+  // The predicate itself, since the side scoping is the one thing here that is
+  // wrong invisibly — a rule that never fires yields MORE positions.
+  eq('a user-to-move position the course answers is a re-entry',
+    S.stormReentered(covW, CloSan.parseFen(gameFens[6]), gameFens[6], 'w'), true);
+  eq('…asked of the other side it is not',
+    S.stormReentered(covW, CloSan.parseFen(gameFens[6]), gameFens[6], 'b'), false);
+  eq('no index at all is never a re-entry',
+    S.stormReentered(null, CloSan.parseFen(gameFens[6]), gameFens[6], 'w'), false);
+  // §14.17: it gets a row of its own in the funnel, so how often it fires is a
+  // number before it is an argument.
+  const reFn = S.stormFunnelBlank();
+  S.stormFunnelWhy(reFn, 'stops', stopped.stop);
+  S.stormFunnelWhy(reFn, 'stops', freeWalk.stop);
+  eq('the re-entry stop is counted separately from every other reason',
+    Object.keys(reFn.stops).length, 2);
+  eq('…under its own name', reFn.stops['your own course answers this position'], 1);
 
   // --- the flat rule, through the walk ------------------------------------
   const flat = await S.stormWalkGame(fFen, 'w', gameSans,

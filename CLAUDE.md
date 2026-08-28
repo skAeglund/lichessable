@@ -3264,6 +3264,34 @@ Currently working (v0.18.x).
     at. NOT reached: the store, since `produceFromStore` runs before the course
     is read (§14.11's whole point) — bounded, not fixed, and §14.14 says what
     fixing it would cost.
+  * …AND A WALK THAT COMES BACK INSIDE THE REPERTOIRE STOPS THERE (§14.18.4,
+    v0.145.0). The same failure one ply later: a real game is free to leave the
+    course at the very first move the course had an answer for, and the card
+    that produces looks exactly like a good one. `stormReentered` is the
+    lookup, `stormFrontiers` now carries its own continuation index out
+    (`out.cont`) instead of dropping it, and both walks take it as a PARAMETER
+    — never a closure over `st`, which is what keeps stage 2 executable with no
+    network. THREE things an edit elsewhere can break:
+    - THE TEST IS SCOPED TO THE USER'S OWN MOVE, and that is the rule's whole
+      precision rather than an optimisation. The index holds every ply's
+      `before`, the OPPONENT's included, so an opponent-to-move position in it
+      means only that the course has a reply prepared for what the opponent is
+      ABOUT to play — if they play something else the user really is
+      unprepared, which is the good half of this feature. Removing the guard
+      still stops walks, still looks plausible, and silently discards exactly
+      those positions.
+    - IT IS COVERED BY A DIFFERENT MECHANISM FROM ITS TWO NEIGHBOURS, and that
+      asymmetry will look like an oversight. The paused filter (§14.14) and the
+      stub filter (§14.18) live INSIDE `stormFrontiers`, so both producers get
+      them for free; a walk is not inside it, so this one is threaded through
+      `harvestFrontier` — the shared entry both passes reach the walks through
+      — by `frontierCovered(f)`. Anything that ever walks by another route must
+      pass the index itself.
+    - IT IS A STOP, NOT A REJECTION, and the walk stops AT the position: the
+      position itself is not offered either. It gets its own row in §14.17's
+      `stops` table, so how often it fires is a number before it is an
+      argument. THE STORE IS NOT RE-FILTERED — positions harvested by an older
+      build age out through the retention rule and the tombstones.
   * A LINE THAT ENDS WHERE ANOTHER ONE CARRIES ON IS NOT A FRONTIER (§14.18,
     v0.144.0) — the transposition stub and the publisher's "- Introduction"
     card, which stop at a position other lines of the same repertoire play on
@@ -3534,7 +3562,10 @@ account for every examined position — or the PAUSED filter in
 answers identically either way) — or the STUB filter beside it (§14.18, whose
 failure mode is the same silence, plus two asymmetries an edit is likely to
 "tidy" away: a custom-FEN or paused line may be the CONTINUER though neither may
-be a SOURCE) — or the ENGINE TIER's `CONFIG.storm`
+be a SOURCE) — or the WALK's own re-entry stop (`stormReentered`, §14.18.4,
+whose failure mode is the same silence again and whose side-scoping guard, if
+"tidied" away, still stops walks and still looks plausible) — or the ENGINE
+TIER's `CONFIG.storm`
 numbers (`engineDepth`, `engineTimeoutMs`, `gradeTimeoutMs`), whose every
 failure mode is a tier that still runs and silently answers "No verdict" for
 ever: a depth above engine.js's own `PROFILES` ceiling is CLAMPED rather than

@@ -34895,6 +34895,15 @@
       // …reported the same way and for the same reason: with a chapter full of
       // transposition stubs this is where a course's frontiers went.
       out.covered = covered;
+      // §14.18.3) …AND THE INDEX ITSELF RIDES OUT, because a WALK can re-enter
+      // the repertoire just as a line end can sit inside it. The set was built
+      // above and thrown away, which is what made that second rule look
+      // expensive ("every position of the course against every step of every
+      // walk"): it is one walk of the course, already paid for here, and a set
+      // lookup per ply. Hung off the array like the two counts above rather
+      // than changing the return type — every caller wants the pool, and two
+      // want this.
+      out.cont = cont;
       return out;
     }
 
@@ -35339,6 +35348,36 @@
     }
 
     /**
+     * §14.18.3) HAS THE WALK COME BACK INSIDE THE REPERTOIRE? Shared by both
+     * walks, for `stormCandidate`'s reason: two copies of this is two places
+     * for a rule to be subtly different, and this one is silent when it is.
+     *
+     * `covered` is `stormFrontiers`'s own continuation index for the frontier's
+     * SIDE — every position one of that side's variations plays a move from.
+     * v0.144.0 used it to drop a line END sitting inside another line; a walk
+     * can arrive at the same place one move later, and the card it produces
+     * looks exactly like a good one.
+     *
+     * THE TEST IS SCOPED TO THE USER'S OWN MOVE, and that is the whole
+     * precision of the rule rather than an optimisation. The index holds
+     * `before` for EVERY ply of those lines, the opponent's included — so an
+     * opponent-to-move position in it means only that the course has a reply
+     * PREPARED for what the opponent is about to play. If the opponent then
+     * plays something else, the position the user faces is genuinely
+     * unprepared and is exactly what this feature is for; stopping there would
+     * throw away the good half of the rule. A position with the USER to move
+     * that appears in the index, by contrast, is one their own course plays a
+     * move from — there is nothing to improvise.
+     *
+     * Null-safe: a walk driven without an index (a check, or a store written
+     * by an older build) simply keeps its old behaviour.
+     */
+    function stormReentered(covered, pos, fen, userSide) {
+      if (!covered || !pos || pos.side !== userSide) return false;
+      return covered.has(cacheKey(fen));
+    }
+
+    /**
      * STAGE 2 — walk one real game forward from the frontier, collecting every
      * position where the USER is to move along with the numbers each pick rule
      * needs. `ask(fen)` answers ChessDB's scored move list (mover's
@@ -35352,8 +35391,17 @@
      * exercise, which is a different skill, and past your own the position is
      * one that good play would not have produced, so nothing beyond it is a
      * position the repertoire leads to.
+     *
+     * …AND SINCE v0.145.0 A SIXTH ONE (§14.18.3). `covered` is the set of
+     * positions this course plays a move FROM on the user's own side — the
+     * index `stormFrontiers` builds to drop stub line ends, handed in rather
+     * than closed over so this stays executable with neither network nor
+     * module state. A real game is free to leave the repertoire at the very
+     * first move the repertoire had an answer for, and everything past that
+     * point is a position the user is NOT on their own in. See the stop itself
+     * for why the test is scoped to the user's move.
      */
-    async function stormWalkGame(frontierFen, userSide, sans, ask, C) {
+    async function stormWalkGame(frontierFen, userSide, sans, ask, C, covered) {
       const target = cacheKey(frontierFen);
       let fen = START_FEN;
       let i = 0;
@@ -35384,6 +35432,10 @@
       for (let k = 0; k < C.maxPly && i + k < sans.length; k++) {
         const pos = CloSan.parseFen(fen);
         if (!pos) { stop = 'unparseable position'; break; }
+        if (stormReentered(covered, pos, fen, userSide)) {
+          stop = 'your own course answers this position';
+          break;
+        }
         const scored = await ask(fen);
         if (!scored || !scored.length) { stop = 'ChessDB has no score here'; break; }
 
@@ -35435,9 +35487,13 @@
      *    somebody's game, and here there is no game.
      *
      * `rnd` is a parameter for the reason `ask` is: the whole of this runs in
-     * `dev/check-storm.js` with neither network nor randomness.
+     * `dev/check-storm.js` with neither network nor randomness. So is
+     * `covered` — §14.18.3's re-entry stop applies here too, and it is not
+     * redundant: an invented line picks among ChessDB's own best moves, which
+     * is exactly the kind of play a repertoire is written to meet, so it walks
+     * back into the course MORE readily than a random human game does.
      */
-    async function stormRandomLine(frontierFen, userSide, ask, C, rnd, seed) {
+    async function stormRandomLine(frontierFen, userSide, ask, C, rnd, seed, covered) {
       const out = [];
       let fen = frontierFen;
       let prevCapSq = null;
@@ -35452,6 +35508,10 @@
       for (let k = 0; k < len; k++) {
         const pos = CloSan.parseFen(fen);
         if (!pos) { stop = 'unparseable position'; break; }
+        if (stormReentered(covered, pos, fen, userSide)) {
+          stop = 'your own course answers this position';
+          break;
+        }
         const scored = await ask(fen);
         if (!scored || !scored.length) { stop = 'ChessDB has no score here'; break; }
         const best = scored[0].score;
@@ -36008,6 +36068,27 @@
     // session cleanly rather than stalling on a spinner.
     // ----------------------------------------------------------------------
 
+    /**
+     * §14.18.3) The continuation index for one frontier's own side, or null.
+     *
+     * IT IS THE ONE PLACE THE RE-ENTRY RULE IS COVERED, and that asymmetry is
+     * worth stating because a later edit will want to "tidy" it: the paused
+     * filter (§14.14) and the stub filter (§14.18) both live INSIDE
+     * `stormFrontiers`, so a gather pass and a session got them for free —
+     * both producers draw from that function. A walk is not inside it, so this
+     * rule has to be handed in, and `harvestFrontier` is the shared entry both
+     * passes reach the walks through. Anything that ever walks by another
+     * route must pass the index itself.
+     *
+     * The index rides on the pool array (`out.cont`), so it is present exactly
+     * when the pool is — including on a gather, which sets `st.pool` the same
+     * way `startSession` does.
+     */
+    function frontierCovered(f) {
+      const cont = st.pool && st.pool.cont;
+      return (cont && f && cont[f.side]) || null;
+    }
+
     /** Everything one frontier yields, or [] when it yields nothing. */
     async function harvestFrontier(f) {
       // STAGE 0'S EVAL BAND (§7). One `queryall`, before any game is fetched:
@@ -36049,7 +36130,8 @@
         if (!C.randomFallback) return [];
         const walked = await stormRandomLine(
           f.fen, f.side, askCdb, cfg(), Math.random,
-          f.lastUci ? { san: f.lastSan || '', uci: f.lastUci } : null);
+          f.lastUci ? { san: f.lastSan || '', uci: f.lastUci } : null,
+          frontierCovered(f));
         stormFunnelWhy(fn, 'stops', walked.stop);
         log('storm: no games at', f.names[0], '— invented a line,', walked.out.length,
           'position(s) considered (' + walked.stop + ')');
@@ -36070,7 +36152,8 @@
         if (!st.running || st.over) break;
         const sans = await askPgn(g.id, st.mastersOnly);
         if (!sans) { stormFunnelBump(fn, 'gamesFailed'); continue; }
-        const walked = await stormWalkGame(f.fen, f.side, sans, askCdb, cfg());
+        const walked = await stormWalkGame(
+          f.fen, f.side, sans, askCdb, cfg(), frontierCovered(f));
         // A game the explorer named for this position but whose moves do not
         // pass through it — the walk's own `found` — is not a walk, so it is
         // counted as unusable rather than as one that found nothing.
