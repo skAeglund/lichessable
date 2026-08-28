@@ -104,9 +104,13 @@ Currently working (v0.18.x).
 ## Structure
 
 - `manifest.json` — MV3. Permissions: `storage` + `offscreen` + host
-  permissions for `explorer.lichess.org` and `www.chessdb.cn` (section 26,
-  added v0.128.0 on explicit request). Nothing else, keep it that way — a
-  third host needs the same conversation the second one got.
+  permissions for `explorer.lichess.org`, `www.chessdb.cn` (section 26, added
+  v0.128.0 on explicit request) and `lichess.org` (section 27, v0.130.0, same
+  conversation — DESIGN-intuition-storm.md §10). Nothing else, keep it that way
+  — a FOURTH host needs the conversation the second and third ones got. The
+  third is the one whose guard does real work: that host serves the user's whole
+  account, so the worker allows the single path prefix
+  `https://lichess.org/game/export/` and nothing more.
   The CSP (`wasm-unsafe-eval`) and COOP/COEP keys exist solely so the
   offscreen document can compile WASM and use SharedArrayBuffer (engine
   threads) — do not remove them.
@@ -202,6 +206,10 @@ Currently working (v0.18.x).
   * `DESIGN-chessdb.md` — section 26 (§2 = the wire; §3 = the three findings the
     design rests on, and §3.1 is a do-not-reintroduce; §5 = the gate; §6.2 = why
     the alt check is deliberately NOT on this; §10 = what is still unmeasured)
+  * `DESIGN-intuition-storm.md` — section 27 (§3 = the four findings, §3.3 and
+    §3.4 shape the grader; §5 = the stop and pick rules; §6 = every number in
+    `CONFIG.storm`, and §6.5 is the do-not-reintroduce; §7 = the eval band; §11 =
+    what it must never do; §12 = what was NOT measured)
 - `DESIGN-ui-inventory.md` — every control by host and state, what competes with
   what, the agreed visual hierarchy, and the remaining change list. Read it
   before adding a control to the overstudy row or picking a colour for one; §3
@@ -1232,8 +1240,14 @@ Currently working (v0.18.x).
     BOTH removal paths (unpin and the retirement branch of `note`); a removal
     that skips it is a deletion that undoes itself on the next exchange.
   * IT OWNS ONE BRIDGE, `pinSyncApi`, null-safe: `touch()` (a local change wants
-    a push — called from the pin store's own `scheduleSave`), `now()` and
-    `state()`. It CALLS `pinApi.exportAll`/`merge`, which are pure store
+    a push — called from the pin store's own `scheduleSave`), `now()`, `state()`
+    and — since v0.131.0 — `carrier`, which is this transport offered to a
+    SECOND payload (section 27's position store; `read`/`write`/`course`/
+    `encode`/`decode`/`maxBytes`). That is why `cardEntry` and `ensureSlot` take
+    a card NAME. The carrier knows nothing about what it carries: the payload's
+    shape, its version and its merge are the caller's business, and a caller
+    must respect `course()` answering null — this is the user's own Chessable
+    account and `pref.on` is their switch. It CALLS `pinApi.exportAll`/`merge`, which are pure store
     operations for exactly this reason: the transport never reaches into `pn`,
     and `dev/check-pin-store.js` keeps checking both with no network in it.
   * IT STANDS DOWN WHILE `continuationActive()` — a merge can delete the card
@@ -2539,9 +2553,10 @@ Currently working (v0.18.x).
       19 holds, because almost no board is opened in order to write.
       `analysisSource` refuses politely when a press beats it, and it tests for
       ABSENCE, never falsity: `lid` 0 is a real chapter ("Main Level").
-    - PLACEMENT IS `cr.treeSlot`, a FUNCTION the tree supplies, checked before
+    - PLACEMENT IS `cr.hostSlot` (`cr.treeSlot` until v0.130.0, when section 27
+      became the second guest), a FUNCTION the tree supplies, checked before
       `cr.standalone` in `positionOverlays`. Same `position: fixed`
-      (`.clo-cr-intree`) and NO scrim — the tree's window is what hides the page,
+      (`.clo-cr-inhost`) and NO scrim — the tree's window is what hides the page,
       and a second dimming layer would darken the columns the board is being read
       against. Both continuation ticks return early on it, exactly as they do for
       a standalone drill: this run is about the COURSE, not the page under it.
@@ -2556,7 +2571,7 @@ Currently working (v0.18.x).
       re-asks `topPanelHostNow()`. Without it a database table sits over the
       course page for up to 500 ms after the board has gone (seen live
       2026-08-22, where a driven tab's throttling stretched it to a minute).
-    - THE TEARDOWN IS NOTICED, NEVER SIGNALLED. `closeReview` nulls `cr.treeSlot`
+    - THE TEARDOWN IS NOTICED, NEVER SIGNALLED. `closeReview` nulls `cr.hostSlot`
       and the tree's own tick sees `continuationActive()` go false and puts the
       columns back — a teardown that has to remember to tell someone is one that
       will eventually forget. The tree's × closes the board FIRST, though, since
@@ -2899,6 +2914,220 @@ Currently working (v0.18.x).
     ChessDB has never seen (the ordinary case off theory, and for most tactics
     courses' custom start FENs) leaves an empty column and nothing else changed.
 
+- Intuition storm on the repertoire's frontier (section 27, v0.130.0): the
+  positions your own course lines END on, carried forward by REAL games, one
+  at a time against a clock — Chessable teaches a line and stops, and this asks
+  what you do on the move after it stops. A move is graded for being DECENT
+  rather than for matching an engine. Launched from the COURSE TREE's header
+  (24), on a full-window panel of its own; the board is section 18's overlays in
+  a fourth mode.
+  **READ `DESIGN-intuition-storm.md` BEFORE CHANGING ANYTHING HERE** — §2 is the
+  wire, §3 the four findings the whole design rests on, §5 the stop and pick
+  rules, §6 the probe's measurements (every threshold in `CONFIG.storm` is one
+  of them) and §7 the eval band. `dev/probe-storm.js` still runs the entire
+  pipeline against the live APIs and is how any rule change is re-measured;
+  `--frontiers` is the cheapest question in the file to ask of a new course.
+  What follows is only what an edit ELSEWHERE can break.
+  * **IT MUST NEVER CALL CHESSDB'S `queue` OR `store`, and this is the single
+    most tempting place in the codebase to break that rule.** The walk stops on
+    `unknown` ten to twelve times per fourteen frontiers, and "ask them to
+    analyse it" is one URL parameter away; those two actions spend a VOLUNTEER
+    NETWORK's compute (DESIGN-chessdb.md §2.4 — a queued position came back
+    analysed ~25 minutes later), and a storm would spend it in bursts of
+    hundreds. `handleChessdbFetch`'s allow-list in background.js is what makes
+    them unreachable, and it must stay an allow-list.
+  * IT NEVER WRITES TO THE COURSE (section 24's rule, and this feature has the
+    same tempting button one line away — "add this position as a puzzle" from a
+    storm card; 19d/19e already do that safely from a BOARD), never touches
+    Chessable's board, and reschedules nothing.
+  * NO NUMBER IT SHOWS MAY BE PRESENTED AS A BOOK EVAL. It grades on `learn=1`
+    only, where a real book entry and an on-the-fly fill-in are indistinguishable
+    (DESIGN-chessdb.md §3.3) — which is fine for RANKING a move against the other
+    moves in the same position, and is why one request per position is enough —
+    so the verdict line wears `.clo-cdb--est`, section 26's existing "computed
+    for us just now" styling, and says so in its tooltip.
+  * IT NEVER SHOWS THE SAME POSITION TWICE (`st.seen`, keyed `cacheKey`).
+    Measured, not theoretical: duplicates arrive from two different games in the
+    same run.
+  * THE HOST PERMISSION IS ONE PATH PREFIX, NOT A HOST. `https://lichess.org/*`
+    is the extension's third, and unlike the other two that host also serves the
+    user's whole account — so `clo-fetch-game`'s guard is
+    `https://lichess.org/game/export/` and nothing else, and `ALLOWED_URL_PREFIX`
+    was not widened. The masters PGN path
+    (`explorer.lichess.org/masters/pgn/<id>`) needs NO new permission and stays
+    worth having: it is the fallback the session switches to wholesale
+    (`st.mastersOnly`) the first time a game export fails. That path also needs
+    the worker's `as:'text'` read — `handleExplorerFetch` called `response.json()`
+    unconditionally — and deliberately does NOT require a token, since an early
+    401 there would make the no-permission fallback need the very thing it
+    exists to work without.
+  * `fetchExplorerData` MUST KEEP `topGames:'0'`/`recentGames:'0'`. The panel
+    fetches on every position change and wants nothing it will not draw; the
+    storm makes its OWN explorer call with them on, and with RELAXED filters
+    (`C.speeds`/`C.ratings`, never the module-level `lichessFilters`) — §6.4
+    measured 5 of 14 frontiers with no games at all under the user's own bands.
+  * IT DOES NOT TOUCH `cloPopularityCache`, and that is a deliberate departure
+    from the design's §9. That cache is tagged with `lichessFilters` and a moves
+    limit; the storm asks with different filters and `moves: '0'`, so it has
+    nothing correct to write there and 24b's `flushDbCache` hazard cannot arise.
+  * TWO PERSPECTIVE FLIPS, IN OPPOSITE DIRECTIONS, AND THE CHILD-NEGATION
+    FALLBACK ARE THE SILENT FAILURES. `stormUserEval` reads a ChessDB score (the
+    MOVER's) from the user's side and flips on WHOSE MOVE IT IS IN THE POSITION,
+    never on which colour the course is for — the two are usually opposite, and
+    getting it wrong inverts every frontier into a tidy column of backwards
+    numbers (it did, in the probe's own `--frontiers` block; §6.5).
+    `stormMoverCp` does the same for a STOCKFISH score, which engine.js has
+    already normalised to WHITE — so the two conversions run opposite ways in
+    one feature. And `stormMoveLoss`'s fallback is `best + childBest` because
+    the child's best is the OPPONENT's; written as a subtraction it is wrong by
+    twice the child's eval, which looks entirely plausible.
+    `node dev/check-storm.js` executes all three.
+  * GRADING HAS THREE TIERS AND THE THIRD IS NOT OPTIONAL (§3.4, §14.8). The
+    position's own scored list, then one `queryall` on the position after the
+    move, then TWO Stockfish searches. Measured live 2026-08-28: three answers
+    in a row on course 291847 were ungradeable without the third tier, because
+    §3.2's 98% coverage is a measurement over REAL continuations and the child
+    of an ARBITRARY move is a position no game ever reached.
+    - IT IS TWO SEARCHES, NEVER ONE. A loss is a SUBTRACTION, and taking
+      `best(P)` from ChessDB's book while taking `best(P after m)` from
+      Stockfish puts the systematic offset between two evaluators — easily wider
+      than the whole `goodCp` band — straight into the verdict. For the same
+      reason an engine-graded line names the ENGINE's best move and score and
+      prints NO win rate, which is a book figure.
+    - IT CLAIMS THE SHARED ENGINE THE WAY SECTION 15 DOES (`state.altCheckBusy`
+      set with `state.engineFen` nulled first, so `syncEngine` stands down and
+      sends no stop), and `endEngineJob` is the ONE place that gives it back —
+      on the answer, on the timeout, on an engine error and on `endSession`. A
+      leaked claim is a panel whose engine never starts again.
+    - ITS WATCHDOG IS SECONDS, NOT MINUTES (`engineTimeoutMs`), unlike the alt
+      check's: that one is a popup being read, this is a card with a clock
+      running. A search that has not landed by then is worth less than the
+      seconds it costs, and the verdict degrades to "No verdict", which scores
+      nothing and holds the streak.
+  * THE CARD CARRIES EXACTLY ONE PLY, the position's own best move, and that is
+    load-bearing rather than decorative: `startLine` ends in `step()`, and an
+    EMPTY ply list reads there as "this line is already finished", so the card
+    would be skipped the instant it reached the board. `tryMove`'s storm arm
+    intercepts ABOVE the comparison, so that ply is never used as an answer —
+    only as what makes a card a card, and as the "best" the verdict line names.
+  * IT OWNS TWO BRIDGES AND IS HANDED A THIRD. `stormActive()` — the course tree
+    stands down on it, by HIDING its own window (same size, same z-index; two
+    full-window panels at once is a state that should not exist) and so, for
+    free, by its keyboard's existing `ct.panel.hidden` guard. `stormApi`
+    (`open({bid,name})`, `answer(uci,san)`, `pass()`, `close()`) — `open` returns
+    FALSE when a session cannot start, the contract every launcher here has, and
+    `answer`/`pass` are what section 18's `tryMove` and Skip call. And
+    `continuationStormApi` (`open(card, slot)`, `next(card)`, `verdict(v)`,
+    `close()`), which section 18 owns: the traffic goes BOTH ways because each
+    side does something the other cannot — 18 owns the board and the panel, 27
+    owns the queue, the clock and the grade.
+  * `cr.treeSlot` IS NOW `cr.hostSlot` (+ `cr.hostKind`, `'tree' | 'storm' | ''`)
+    and `.clo-cr-intree` IS NOW `.clo-cr-inhost`. Nothing about the mechanism
+    changed — 24g's rules are unchanged and apply to both guests — only the name,
+    which was about to describe one of two hosts. `positionInTree` is
+    `positionInHost`.
+  * THE LAUNCHER IS IN THE COURSE TREE'S HEADER, not the corner: that corner
+    already holds four things (25 at 92px, 24 at 54px, 21 at 16px, 16d's pin dock
+    at 16px on every page) and a fifth would have to solve the cluster rather
+    than add an offset. The tree is the right host anyway — it already holds the
+    reading of the course the storm's stage 0 is about.
+  * THE PLY RANGE IS A USER SETTING (§14.9, `cloStormMinPly`/`cloStormMaxPly`),
+    and the pure walks never learn that. `cfg()` is `CONFIG.storm` with the
+    user's range folded in, built per call and handed to `stormWalkGame` /
+    `stormRandomLine` — so those stay pure and `dev/check-storm.js` keeps
+    executing them against a config it declares itself. The selectors show only
+    when NO clock is running: changing the range mid-session would describe an
+    exercise the queued positions are not from.
+  * A FRONTIER WITH NO GAMES GETS AN INVENTED LINE (§6.4's 5-in-14), never a
+    preferred one: `stormRandomLine` is reached only when the explorer answers
+    with nothing. It picks at random among ChessDB's own top moves — within
+    `randomTopCp` and at most `randomTopN` of them — and that band is what keeps
+    it plausible; a uniformly random legal move reaches positions no player
+    does, which is what §5.1's blunder stop keeps out of a real walk. Its
+    candidates carry `invented: true` and the panel SAYS so, because "N moves
+    past the line" is a claim about somebody's game and here there is none.
+    The blunder stop cannot fire on this walk by construction; `decidedCp` and
+    the unknown stop are what bound it.
+  * `stormCandidate` AND `stormAdvance` ARE SHARED BY BOTH WALKS. That is the
+    point: the two differ only in how the next move is chosen, and a second copy
+    of the seven pick numbers is a second place for a rule to be subtly
+    different.
+  * THE REVIEW (§14.10) KEEPS EVERY ANSWERED CARD (`st.history`, capped at
+    `reviewMax`) and is up INSTEAD of the stage once the clock has run out. Its
+    board is section 11c's STATIC one (`.clo-cr-mini`), with the best move drawn
+    in GREEN and the played one in RED where they differ — section 11c's three
+    caller rules apply, and the second is the one to watch: `paintShape` takes a
+    colour KEY or a CSS value and dropped anything else SILENTLY until v0.80.0.
+    `dev/harness.html`'s own arrow helper now resolves the same keys, or a
+    replica could not be written in the terms the code is.
+  * `stormCp`, `stormVerdictLine` AND `stormBestLine` ARE TOP LEVEL AND MUST
+    STAY THERE. Section 18's panel prints that line while a card is up and
+    section 27's review prints it again afterwards — two closures, so a helper
+    living in either one is a `ReferenceError` in the other. `node --check`
+    cannot see it and neither can a sliced check, which flattens every scope
+    into one; it shipped and threw at the first teardown (2026-08-28).
+    `dev/check-storm.js` §0 asserts the indentation instead.
+  * THE PANEL HAS A FIFTH HOST, and it is the same placement as the fourth.
+    `stormPanelSlot` is a SECOND supplier beside `courseTreePanelSlot`, both
+    read through the top-level `inHostPanelSlot()`; `topPanelHostNow()` still
+    answers `'tree'` for either, because the two differ only in which window
+    measured the rect and a second host string would need a second placement
+    branch doing exactly the same thing. The storm's third slot exists ONLY
+    while the review's analysis board is up — during a card the database's top
+    move would name the answer, which is section 20's reason for leaving the
+    panel's ordinary stand-down in place.
+  * THE POSITION STORE IS WHAT MAKES A SESSION START AT ONCE (§14.11,
+    `cloStormPositions` in storage.local, `{ [bid]: { [ck]: entry } }`). Finding
+    a position costs ~11 ChessDB requests and the store is where that is paid
+    once instead of once per session; measured live 2026-08-28, the first card
+    went from ~50 s to 3.1 s in the same tab.
+    - `produceFromStore()` RUNS BEFORE THE NETWORK PATH IS CONSIDERED, and must:
+      it needs no request and no await, so taking it second means every session
+      opens on a frontier walk with answers already sitting in storage.
+    - `stormPack`/`stormUnpack` use SHORT KEYS and keep EVERY scored move. The
+      tempting saving — the top few — is invisible: `stormMoveLoss` then misses
+      the user's move and falls through to a fallback that was the exception.
+    - `saveStore` RE-READS BEFORE IT WRITES (24b's `flushDbCache` lesson in a
+      second store): one object lives under that key and a write replaces it
+      whole, so only this course's slice is ours to replace.
+    - THE RETENTION RULE IS THE USER'S OWN (`stormRetain`, `storeDropOn`): a
+      position answered WELL leaves, one MISSED stays and comes round again, and
+      an UNGRADEABLE one stays too — it taught nothing either way, and dropping
+      it spends eleven requests to meet the same silence twice.
+    - THE GATHER PASS IS THE SAME `harvestFrontier`, deliberately: a second walk
+      written for gathering is a second set of pick rules that will one day
+      disagree about what a usable position is. It has its own request ceiling
+      (`gatherMaxCdb`) because it is the burst the user asked for BY NAME, and it
+      ENDS whatever session is running — `tick` returns early while it runs, so a
+      session left alive underneath burns its clock with no board and no way out
+      (seen live).
+  * THE STORE IS CARRIED BY SECTION 16E'S TRANSPORT (§14.12) through
+    `pinSyncApi.carrier` — a bridge rather than a hoist, because which course,
+    the JWT, the informational-card shape, base32-not-base64 and the `oid`
+    overwrite are all decided there and decided once. `cardEntry` and
+    `ensureSlot` took a `name` parameter for it; nothing else in 16e changed.
+    - THE MERGE IS A UNION, SO IT NEEDS TOMBSTONES. Without them a position the
+      retention rule dropped comes back from the other device's snapshot on
+      every exchange, for ever. `storeNote` records one on every drop whether or
+      not syncing is on — it costs a timestamp and is needed the moment it is
+      switched on.
+    - IT IS READ-MERGE-WRITE, IN THAT ORDER. The card is a snapshot overwritten
+      in place, so writing first discards whatever the other device put there.
+    - THE SAN IS DROPPED ON THE WIRE and recomputed from the uci — about a third
+      of the payload, and the recompute is once per exchange rather than once per
+      session, which is why the LOCAL store keeps its SANs. A move whose uci will
+      not resolve is DROPPED rather than carried with a blank SAN.
+    - `maxWireBytes` IS MEASURED, not inherited: 162460 base32 characters written
+      to a comment and read back byte-exact, still base32-clean and still
+      informational (2026-08-28, course 453453; the test card was deleted and the
+      course re-read to prove it). 16e's own 120000 is untouched.
+  * WALKING DEEPER IS REFUTED BY MEASUREMENT (§6.5) — `minPly` 6 left 291847's
+    survivors at +1.62/+1.87/+1.08/+1.20 and tripled the cost per position,
+    because a one-sided frontier HOLDS its advantage rather than dissipating it.
+    Do not retry it. `spreadMaxCp` is at 300 rather than 200 for the opposite
+    reason: it fired once in 54 candidates, and a value implying it does
+    something would be the misleading one.
+
 - SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
   (`quickEditSelectMoveEl`, hoisted out of `quickEditSelectMove` — which now just
@@ -2996,6 +3225,58 @@ is exactly what a hand-picked list of cases misses. Controls run 2026-08-27:
 `cdbTone(entry.score)` in place of `cdbTone(signed)` (the tone losing the
 perspective flip) fails on 8 assertions, six of them the range sweep; collapsing
 the mate/tablebase steps into the ordinary ramp fails on 6.
+
+After touching section 27's producer — `stormFrontiers`, `stormDrawFrontier`,
+`stormUserEval`, `stormPgnMoves`, `stormPickReject`, `stormMoveLoss`,
+`stormMoverCp`, `stormGrade`, `stormPoints`, `stormCandidate`, `stormAdvance`,
+`stormWalkGame`, `stormRandomLine` or `stormCard` — or the verdict line it
+prints (`stormCp`, `stormVerdictLine`, `stormBestLine`), or the position store
+and its wire (`stormPack`, `stormUnpack`, `stormRetain`, `stormWirePack`,
+`stormWireUnpack`, `stormWireMerge`):
+
+```
+node dev/check-storm.js
+```
+
+…and after touching the verdict line it prints — `stormCp`, `stormVerdictLine`
+or `stormBestLine`.
+
+Same discipline: it EXECUTES them, sliced out by `dev/slice-source.js`, with no
+network — the walk takes its ChessDB lookup as a PARAMETER, which is also the
+only way to reach the stop rules deterministically. Four things here fail
+SILENTLY and every one still produces a tidy column of plausible numbers:
+
+* TWO PERSPECTIVE FLIPS, IN OPPOSITE DIRECTIONS. `stormUserEval` reads a
+  ChessDB score (the MOVER's) from the user's side — the bug the probe's own
+  `--frontiers` block shipped with (DESIGN-intuition-storm.md §6.5) — and
+  `stormMoverCp` reads a Stockfish score (WHITE's, normalised in engine.js) the
+  same way. Neither throws when it is backwards.
+* THE CHILD-NEGATION FALLBACK (`stormMoveLoss`): a subtraction where §3.4 wants
+  an addition, wrong by twice the child's eval.
+* THE STOP AND PICK RULES, where a rule that never fires yields MORE positions
+  and so looks like the feature working better.
+
+Controls run 2026-08-28 — the two flips unflipped, the fallback subtracted, the
+flat-position rule removed, `stormBestLine`'s same-move guard defeated, the
+invented line's move band widened to every legal move, the ply floor ignored,
+the store keeping only its top five moves, its invented mark lost, its
+`typeof score` check weakened, the retention rule inverted, the wire's
+tombstones removed, its failure-count merge dropped, an unresolvable move given
+a blank SAN, and the payload budget ignored — failing on 5, 4, 3, 3, 3, 1, 1, 3,
+1, 1, 3, 1, 1, 3 and 1 assertions respectively and on no others. That last
+one is a bug a live session found: playing the TOP move printed it twice ("best
+Nxf3+ -0.89   Nxf3+ -0.89"), which reads as a defect rather than as agreement.
+
+§0 of that file asserts something no assertion below it could: that the three
+verdict-line helpers are declared at TOP LEVEL. Slicing flattens every scope
+into one, so nothing else there can tell a helper section 18 can reach from one
+it cannot — and both sections print that line.
+
+Note that `stormPgnMoves` reads its comment pattern out of `PGN_COMMENT_RE`
+rather than a regex literal, and must keep doing so: `dev/slice-source.js`
+matches braces and counts the ones inside a regex literal, so `/\{[^}]*\}/`
+truncates that slice three lines in — silently, since a half-function is still
+something `new Function` will accept.
 
 After touching `sanToUci` — or `sanToUciRelaxed`, the second pass beside it:
 

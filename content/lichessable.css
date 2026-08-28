@@ -2699,15 +2699,15 @@ html.clo-injecting .legal-square-capture-mt2 {
    what hides the page, and a second dimming layer over it would darken the
    columns the board is being read against. Doubled classes so both beat the
    base rules without those rules knowing this mode exists. */
-.clo-cr-board.clo-cr-intree,
-.clo-cr-panel.clo-cr-intree {
+.clo-cr-board.clo-cr-inhost,
+.clo-cr-panel.clo-cr-inhost {
   position: fixed;
 }
 
 /* Sized to the slot the tree measured (height written inline), not to its own
    content as the drill's is: the three surfaces stand side by side here and a
    panel that grew with its move list would leave the row ragged. */
-.clo-cr-panel.clo-cr-intree {
+.clo-cr-panel.clo-cr-inhost {
   align-items: stretch;
   max-height: none;
   overflow-y: auto;
@@ -6185,6 +6185,587 @@ html.clo-touch .clo-ct-root-pick { font-size: 12px; padding: 4px 8px; }
    one thing on the row that stops reading as deliberate. Section 6c sizes its
    own the same way, for the same reason. */
 html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
+
+/* ==========================================================================
+   27) INTUITION STORM (course page) — see DESIGN-intuition-storm.md
+   ==========================================================================
+   Section 24's window-filling shape, and for section 24's reason: this is
+   something you are inside of, not a report read while doing something else on
+   the page underneath. Same `inset: 16px` and the SAME z-index as the tree,
+   which is why the tree hides itself while a storm runs — two full-window
+   panels at once is not a layering problem to solve, it is a state that should
+   not exist.
+
+   The two slots are measured and then COVERED by surfaces that already exist:
+   section 18's board and its panel, pinned onto them by `positionInHost`
+   exactly as 24g pins the analysis board. Nothing is drawn into them here. */
+
+.clo-st {
+  position: fixed;
+  inset: 16px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  border: 1px solid var(--clo-bg-sunken);
+  border-radius: 4px;
+  background: var(--clo-bg);
+  color: var(--clo-text);
+  font-size: 13px;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+  /* The narrow shape below is a CONTAINER query for section 24's reason: the
+     harness sizes a CARD, never the viewport, so a media query could only ever
+     be eyeballed on a phone. */
+  container-type: inline-size;
+  /* ONE number for the board's ceiling and the panel's, because they are the
+     same fact: the two slots stand side by side and must end level. Two
+     literals here would drift, and the way that shows is a panel running 300px
+     past the bottom of the board with three lines of text in it. */
+  --clo-st-max: 680px;
+}
+
+/* display:flex would defeat the hidden attribute without this. */
+.clo-st[hidden] { display: none; }
+
+.clo-st-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--clo-bg-raised);
+  border-bottom: 1px solid var(--clo-bg-sunken);
+  border-radius: 4px 4px 0 0;
+}
+
+.clo-st-title {
+  font-weight: 600;
+  color: var(--clo-text-bright);
+}
+
+/* The course's name. `flex: 1` so it absorbs the width and pushes the three
+   numbers to the right edge, where they stay put as they change — a clock that
+   moves the score sideways every second is unreadable. */
+.clo-st-sub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--clo-text-dim);
+}
+
+/* TABULAR FIGURES, and this is the whole reason the clock is not plain text:
+   a proportional "1" is narrower than a "0", so a counting-down clock jitters
+   by a pixel or two every tick and the eye reads that as the panel moving. */
+.clo-st-clock {
+  font-variant-numeric: tabular-nums;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--clo-text-bright);
+  min-width: 3.2em;
+  text-align: right;
+}
+
+/* Amber, not red: the clock running low is "you have N seconds outstanding",
+   which is the row palette's own meaning for this colour. Red here would be a
+   fourth thing red means in this file. */
+.clo-st-clock--low { color: var(--clo-attention); }
+.clo-st-clock--off { color: var(--clo-text-faint); }
+
+.clo-st-stat {
+  font-variant-numeric: tabular-nums;
+  color: var(--clo-text-dim);
+  white-space: nowrap;
+}
+
+/* The streak multiplier, and the ONE green in this window. Green means a
+   verdict here as everywhere else in the file — it is the reward being counted,
+   not a label — so nothing else wears it: not the clock, not the score, not the
+   buttons. */
+.clo-st-stat--hot {
+  color: var(--clo-accent-text);
+  font-weight: 600;
+}
+
+.clo-st-x {
+  border: none;
+  background: transparent;
+  color: var(--clo-text-dim);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.clo-st-x:hover { color: #fff; }
+
+/* A flex COLUMN that does not scroll — section 24's body, for section 24's
+   reason: the stage takes the leftover height, and a scrolling body would push
+   the board off the bottom instead of shrinking it. */
+.clo-st-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.clo-st-status {
+  color: var(--clo-text-dim);
+  padding: 2px 0;
+}
+
+.clo-st-status--warn { color: var(--clo-attention); }
+.clo-st-status[hidden] { display: none; }
+
+/* What the producer is doing. Faint on purpose: it is a progress note about
+   something happening behind the card, and the card is what is being looked
+   at. */
+.clo-st-note {
+  color: var(--clo-text-faint);
+  font-size: 12px;
+}
+
+.clo-st-note[hidden] { display: none; }
+
+/* The ply range (§14.9). A SENTENCE with two selectors in it, not a labelled
+   form: it is one setting expressed as a range, and "Offer positions 1 to 16
+   moves past the end of a line" is the whole of what there is to say. Quiet,
+   because it is not the thing on screen to act on — the board is. */
+.clo-st-settings {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--clo-text-dim);
+  font-size: 12px;
+}
+
+.clo-st-settings[hidden] { display: none; }
+
+.clo-st-set-label { white-space: nowrap; }
+
+/* The inset well every other text control in this file uses, so a selector
+   reads as something to change rather than as something to press. */
+.clo-st-sel {
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text-bright);
+  border: 1px solid var(--clo-bg-raised);
+  border-radius: 3px;
+  padding: 2px 4px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.clo-st-sel:focus {
+  outline: none;
+  border-color: var(--clo-accent);
+}
+
+.clo-st-sel:disabled { opacity: 0.5; }
+
+/* Pushes the gather control to the far end of the row: it is not part of the
+   sentence beside it, and reading "…past the end of a line Gather positions"
+   as one phrase is what the gap prevents. */
+.clo-st-set-spacer { flex: 1; min-width: 12px; }
+
+/* Neutral outline: the action AWAY from both of the others in this row
+   (DESIGN-ui-inventory §3) — you neither storm nor gather by pressing it. */
+.clo-st-sync {
+  border: 1px solid var(--clo-bg-raised);
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.clo-st-sync:hover:not(:disabled) { color: var(--clo-text-bright); }
+.clo-st-sync:disabled { opacity: 0.5; cursor: default; }
+
+/* The count of what is waiting. Quiet: it is a fact, not a control, and it sits
+   beside the button that changes it. */
+.clo-st-ready {
+  color: var(--clo-text-faint);
+  white-space: nowrap;
+}
+
+.clo-st-ready[hidden] { display: none; }
+
+/* Green OUTLINE — an ordinary action, DESIGN-ui-inventory §3 — and never a
+   fill: the one thing to do in this window is storm, and this is the other
+   thing. It fills only while RUNNING, which is the one moment it is the thing
+   happening. */
+.clo-st-gather {
+  border: 1px solid var(--clo-accent);
+  background: transparent;
+  color: var(--clo-accent-text);
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.clo-st-gather:hover { background: var(--clo-accent); color: #fff; }
+
+.clo-st-gather--on {
+  background: var(--clo-accent);
+  color: #fff;
+}
+
+.clo-st-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  /* CENTRED, unlike the tree's stage, and that is the consequence of the panel
+     being CAPPED below: the board is as big as the height allows and the panel
+     is as wide as it needs, so on a wide window the pair would otherwise sit
+     hard against the left edge with a third of the screen empty beside it.
+     Measured live 2026-08-28 at 1920x1080: board 819, panel 1022 — a title, a
+     prompt and two buttons in a thousand pixels. */
+  justify-content: center;
+  gap: 10px;
+}
+
+/* `display: flex` would defeat the hidden attribute on the stage AND the
+   summary — and the symptom is not an invisible box but a laid-out one, with
+   the overlays pinned to slots that are hundreds of pixels from where they
+   look (seen live in 24g, 2026-08-22). */
+.clo-st-stage[hidden],
+.clo-st-summary[hidden] { display: none; }
+
+.clo-st-slot { min-width: 0; min-height: 0; }
+
+/* Square and as big as the stage's height allows, capped so it cannot crowd
+   the panel out on a laptop. Where the cap bites, the BOX is taller than it is
+   wide and the board inside it is not: `slots()` takes min(w, h), so the square
+   is right and the spare few pixels sit under it. */
+.clo-st-slot--board {
+  flex: none;
+  aspect-ratio: 1 / 1;
+  height: 100%;
+  /* THE HEIGHT IS WHAT BINDS, so the cap that matters is a max-HEIGHT: measured
+     live 2026-08-28, a 1920x1080 window gives the stage 991px and an unclamped
+     board takes all of it — larger than anything else in this file (the tree's
+     analysis board tops out near 751, section 20's standalone drill at 575) and
+     more travel than a timed exercise wants. `max-width` stays as the guard for
+     the other shape, a very wide and very short window, where it is what stops
+     the board squeezing the panel below its floor. */
+  max-height: var(--clo-st-max);
+  max-width: 70%;
+}
+
+/* The Lichess panel's slot, up only while the review's analysis board is (see
+   §14.10). Narrower than the analysis panel beside it: it is a four-column
+   table plus an engine section, and the same floor the review panel uses is
+   what keeps it readable. */
+.clo-st-slot--db {
+  flex: 0 1 400px;
+  min-width: 300px;
+  max-height: var(--clo-st-max);
+}
+
+.clo-st-slot--db[hidden] { display: none; }
+
+/* A floor AND a ceiling. The floor because section 18's panel is a title, a
+   prompt, a progress line and two buttons, and it stops being readable under
+   about 260px whatever the board is doing; the ceiling because it never has
+   more to say than that, and a verdict line stretched across a thousand pixels
+   is one the eye has to travel to read. */
+.clo-st-slot--panel {
+  flex: 0 1 420px;
+  min-width: 260px;
+  /* Level with the board, never stretched past it: section 18's panel is given
+     this slot's height INLINE, so an unclamped one is a 991px box holding four
+     lines of text (measured live 2026-08-28). */
+  max-height: var(--clo-st-max);
+}
+
+/* --- the review (§14.10) --------------------------------------------------
+   Up INSTEAD of the stage once the clock has run out and something was
+   answered: a timed exercise is one you cannot think during, so the thinking
+   has to be available after it. Board on the left, the positions on the right,
+   the same shape the stage has — so nothing appears to move when the session
+   ends, only what is in each half. */
+.clo-st-review {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 10px;
+}
+
+.clo-st-review[hidden] { display: none; }
+
+/* Section 11c's static board (`.clo-cr-mini`), sized exactly like the stage's
+   slot so the two views line up — `--clo-st-max` is the one number both read.
+   WIDTH is what the mini board's own stylesheet sizes from, so the height cap
+   is expressed as one too. */
+/* Sized exactly like the stage's board slot, and for the same reason: THE
+   HEIGHT IS WHAT BINDS. `.clo-cr-mini` is a bare surface with no shape of its
+   own — every host supplies one, and the course tree does it by writing a WIDTH
+   inline — so without the aspect ratio the box measures 532x0 and the board is
+   simply invisible, and without the height binding it is 532 tall inside a 383
+   tall row. Both were measured in the harness, which is what it is for. */
+.clo-st-revboard {
+  flex: none;
+  aspect-ratio: 1 / 1;
+  height: 100%;
+  max-height: var(--clo-st-max);
+  max-width: 62%;
+}
+
+.clo-st-revside {
+  flex: 0 1 420px;
+  min-width: 260px;
+  max-height: var(--clo-st-max);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.clo-st-revhead {
+  font-weight: 600;
+  color: var(--clo-text-bright);
+}
+
+/* The verdict, in full, with room to be read this time. Dimmed and italic
+   because it is a `.clo-cdb--est` line for the reason every storm number is:
+   these are ChessDB `learn=1` figures, and one of them may be a fill-in. */
+.clo-st-revlegend {
+  font-size: 12px;
+  color: var(--clo-text-dim);
+  min-height: 2.6em;
+}
+
+.clo-st-revlist {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* A four-column row: the number, what you played, what was best, what it cost.
+   Grid rather than flex so the four columns line up DOWN the list — the whole
+   value of the list is scanning one column of it at a time. */
+.clo-st-revrow {
+  display: grid;
+  grid-template-columns: 2.2em minmax(0, 1fr) minmax(0, 1fr) 4em;
+  gap: 6px;
+  align-items: baseline;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-left: 3px solid var(--clo-bg-raised);
+  border-radius: 3px;
+  color: var(--clo-text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.clo-st-revrow:hover { background: var(--clo-bg-raised); }
+
+.clo-st-revrow--on {
+  background: var(--clo-bg-raised);
+  border-color: var(--clo-bg-sunken);
+}
+
+/* THE VERDICT AS A LEFT EDGE, not a fill and not a text colour. A fill would
+   make twenty rows twenty coloured blocks with the moves unreadable on them,
+   and the move text has to stay the move text — this is a list you read, and
+   the colour is what lets you find the misses in it without reading. Same
+   three meanings as everywhere else here: green good, amber "outstanding",
+   red missed. */
+.clo-st-revrow--good   { border-left-color: var(--clo-accent); }
+.clo-st-revrow--decent { border-left-color: var(--clo-attention-line); }
+.clo-st-revrow--miss   { border-left-color: var(--clo-danger); }
+.clo-st-revrow--unknown { border-left-color: var(--clo-bg-raised); }
+
+.clo-st-revrow-n {
+  color: var(--clo-text-faint);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.clo-st-revrow-move,
+.clo-st-revrow-best {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clo-st-revrow-best { color: var(--clo-text-dim); }
+
+.clo-st-revrow-loss {
+  color: var(--clo-text-faint);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  text-align: right;
+}
+
+.clo-st-revactions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Neutral, per DESIGN-ui-inventory §3: it is an action AWAY from the thing on
+   screen — the review — and not the one thing to do next. "Storm again" keeps
+   the green outline it has in the summary. */
+.clo-st-analyse {
+  border: 1px solid var(--clo-bg-raised);
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 6px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.clo-st-analyse:hover:not(:disabled) { color: var(--clo-text-bright); }
+.clo-st-analyse:disabled { opacity: 0.5; cursor: default; }
+
+/* --- the summary ---------------------------------------------------------
+   Up when the clock (or the pool) runs out, INSTEAD of the stage: a storm that
+   vanishes the instant time is up is one whose score you never see. */
+.clo-st-summary {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.clo-st-sum-score {
+  font-size: 34px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--clo-text-bright);
+}
+
+.clo-st-sum-line { color: var(--clo-text-dim); }
+
+/* What the session SPENT. This feature uses a volunteer network's compute and a
+   stranger's bandwidth, and a session that never says how much is one that
+   makes that invisible. Faint, because it is a footnote and not a score. */
+.clo-st-sum-cost {
+  font-size: 12px;
+  color: var(--clo-text-faint);
+}
+
+.clo-st-sum-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* Green outline, the row palette's "an ordinary action" — never a fill. A fill
+   means "the one thing to do next", and after a storm that is as likely to be
+   Close as it is to be another one. */
+.clo-st-again,
+.clo-st-done {
+  border: 1px solid var(--clo-accent);
+  background: transparent;
+  color: var(--clo-accent-text);
+  padding: 6px 16px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.clo-st-done {
+  border-color: var(--clo-bg-raised);
+  color: var(--clo-text-dim);
+}
+
+.clo-st-again:hover { background: var(--clo-accent); color: #fff; }
+.clo-st-done:hover { color: var(--clo-text-bright); }
+
+/* §3.1's shape for a phone: the board above the panel, the same interaction
+   rather than a different mode. The header's numbers wrap under the title. */
+@container (max-width: 700px) {
+  .clo-st-stage,
+  .clo-st-review { flex-direction: column; }
+  /* The review's board keeps its own shape here: it is `.clo-cr-mini`, which is
+     sized from its WIDTH and holds its aspect ratio, so filling the column is
+     all it needs. The list then takes what is left and scrolls. */
+  /* Upright, THE LIST IS THE PRIMARY THING — it is what you scroll, and the
+     board is the detail beside the row you are on. So the board is capped at
+     half the height and the list takes the rest, which is the opposite
+     priority from the playing stage above (where the board IS the exercise).
+     Both dimensions are maxima with `aspect-ratio` between them, so the square
+     is the largest that fits whichever binds. */
+  .clo-st-revboard {
+    /* A DEFINITE height, not a maximum: with `width: auto` and nothing inside
+       it, `max-height` leaves the shrink-to-fit width at 0 and the board
+       disappears (measured). Half the row, and the aspect ratio turns that
+       into the width. */
+    flex: 0 0 auto;
+    height: 46%;
+    width: auto;
+    max-width: 100%;
+    max-height: none;
+    align-self: center;
+  }
+  .clo-st-revside { flex: 1 1 auto; min-width: 0; min-height: 0; max-height: none; }
+  /* THE SLOT STOPS BEING SQUARE HERE, deliberately: `slots()` takes min(w, h)
+     of whatever it measures, so the board is square however the box is shaped —
+     and keeping `aspect-ratio: 1/1` in a COLUMN flow made the board take the
+     full width and the panel under it 2px (measured in the harness at 360px).
+     The panel's height is fixed instead and the board takes the rest, which is
+     the one order that cannot squeeze either to nothing. */
+  .clo-st-slot--board {
+    aspect-ratio: auto;
+    flex: 1 1 auto;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+    min-height: 0;
+  }
+  /* A title, a prompt, a progress line and two buttons. */
+  .clo-st-slot--panel { flex: 0 0 auto; min-width: 0; height: 150px; }
+  .clo-st-head { flex-wrap: wrap; }
+  .clo-st-sub { order: 1; flex: 1 0 100%; }
+}
+
+html.clo-touch .clo-st { font-size: 15px; }
+html.clo-touch .clo-st-x { font-size: 22px; padding: 0 6px; }
+html.clo-touch .clo-st-clock { font-size: 24px; }
+html.clo-touch .clo-st-note { font-size: 13px; }
+html.clo-touch .clo-st-settings,
+html.clo-touch .clo-st-sel { font-size: 14px; }
+html.clo-touch .clo-st-sel { padding: 5px 7px; }
+html.clo-touch .clo-st-gather,
+html.clo-touch .clo-st-sync { font-size: 14px; padding: 7px 14px; }
+html.clo-touch .clo-st-sum-cost { font-size: 13px; }
+html.clo-touch .clo-st-revlegend { font-size: 13px; }
+html.clo-touch .clo-st-revrow { font-size: 15px; padding: 7px 8px; }
+html.clo-touch .clo-st-revrow-n,
+html.clo-touch .clo-st-revrow-loss { font-size: 13px; }
+html.clo-touch .clo-st-analyse { font-size: 15px; padding: 9px 18px; }
+html.clo-touch .clo-st-again,
+html.clo-touch .clo-st-done { font-size: 15px; padding: 9px 18px; }
 
 /* ==========================================================================
    25) KEY MOVES vs DIFFICULT MOVES (course page) — see DESIGN-key-moves.md

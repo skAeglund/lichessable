@@ -1235,7 +1235,9 @@ Inside the tree's window there is room for all three, so:
 
 * the tree renders **three empty slots** and measures them;
 * section 19's board and section 19's panel are pinned onto two of them
-  (`cr.treeSlot`, checked before `cr.standalone` in `positionOverlays`);
+  (`cr.hostSlot` — `cr.treeSlot` until v0.130.0, when the intuition storm
+  became its second guest — checked before `cr.standalone` in
+  `positionOverlays`);
 * the Lichess panel is pinned onto the third, as its **fourth host**.
 
 Nothing is rebuilt. The drag layer, the promotion picker, the move list, Flip,
@@ -1293,7 +1295,7 @@ beats it is told to press again — and the test is for ABSENCE, never falsity:
   the SAME node. Without the stand-down the arrows would walk the columns
   underneath the board and Escape would close the window out from under it.
 * **The teardown is noticed, never signalled.** `closeReview` nulls
-  `cr.treeSlot`; the tree's own tick sees `continuationActive()` go false and puts
+  `cr.hostSlot`; the tree's own tick sees `continuationActive()` go false and puts
   the columns back. A teardown that has to remember to tell someone is one that
   will eventually forget. The one exception is the tree's own ×, which closes the
   board first — hiding the window would otherwise leave a board floating over the

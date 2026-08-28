@@ -121,15 +121,18 @@ body {
   max-height: none !important;
 }
 
-/* 24g's slots are EMPTY by design — the tree measures them and covers them with
-   surfaces that live elsewhere. Outlined and labelled here so the layout they
-   decide can be seen and measured; harness-only, both classes hx-*. */
-.hx-slots .clo-ct-xslot {
+/* 24g's slots — and, since v0.130.0, section 27's — are EMPTY by design: the
+   host measures them and covers them with surfaces that live elsewhere.
+   Outlined and labelled here so the layout they decide can be seen and
+   measured; harness-only, both classes hx-*. */
+.hx-slots .clo-ct-xslot,
+.hx-slots .clo-st-slot {
   border: 1px dashed rgba(255, 255, 255, 0.28);
   border-radius: 3px;
   position: relative;
 }
-.hx-slots .clo-ct-xslot::after {
+.hx-slots .clo-ct-xslot::after,
+.hx-slots .clo-st-slot::after {
   content: attr(data-hx-slot);
   position: absolute;
   left: 6px; top: 4px;
@@ -2600,6 +2603,7 @@ body {
             <button type="button" class="clo-ct-toggle clo-ct-toggle--on">Lichess</button>
             <button type="button" class="clo-ct-toggle clo-ct-toggle--on">Splits (3)</button>
             <button type="button" class="clo-ct-toggle">Analyse</button>
+            <button type="button" class="clo-ct-toggle">Storm</button>
             <button type="button" class="clo-ct-toggle">Flip</button>
             <button type="button" class="clo-ct-btn">Re-read</button>
             <button type="button" class="clo-ct-x">×</button>
@@ -3383,6 +3387,289 @@ body {
   </div>
 </section>
 
+<section class="hx-sec" id="s-storm" data-title="Intuition storm (27)">
+  <h2>Intuition storm (section 27)</h2>
+  <p>Launched from the COURSE TREE's header, not the corner — that corner already
+    holds four things. A full-window panel of its own (<code>inset: 16px</code>,
+    section 24's shape) with two EMPTY slots: section 18's board and its panel are
+    pinned onto them by <code>positionInHost</code>, exactly as 24g pins the
+    analysis board into the tree. Nothing is drawn into them, so they are outlined
+    and labelled here the way 24g's are.</p>
+  <p><strong>Colour means one thing.</strong> Green is the streak multiplier and
+    nothing else — it is the reward being counted. The clock goes AMBER when it runs
+    low ("you have N seconds outstanding", the row palette's own meaning), never red:
+    red already means three things in this file. The verdict line's numbers wear
+    <code>.clo-cdb--est</code>, because every one of them is a ChessDB
+    <code>learn=1</code> figure and presenting one as a book eval is the thing this
+    feature must never do.</p>
+  <p><strong>The clock is tabular-nums</strong> and right-aligned with a
+    <code>min-width</code>: a proportional "1" is narrower than a "0", so a
+    counting-down clock jitters every tick and the eye reads that as the panel
+    moving.</p>
+
+  <div class="hx-grid">
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>Mid-session — the window and its two slots</h3>
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:440px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Intermediate Starter Kit</span>
+            <span class="clo-st-clock">3:07</span>
+            <span class="clo-st-stat">14 pts</span>
+            <span class="clo-st-stat clo-st-stat--hot">streak 5 &times;2</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <div class="clo-st-note">Looking for positions&hellip; (21 lines left)</div>
+            <div class="clo-st-note clo-st-syncnote">Synced &mdash; 31 of 31 carried, 4 taken from another device</div>
+            <!-- &sect;14.11 running: the same control, filled, with the count in the
+                 note line above the stage. The selectors are disabled &mdash; the pass
+                 is walking with the range it started on. -->
+            <div class="clo-st-settings">
+              <span class="clo-st-set-label">Offer positions</span>
+              <select class="clo-st-sel" disabled><option>1</option></select>
+              <span class="clo-st-set-label">to</span>
+              <select class="clo-st-sel" disabled><option>16</option></select>
+              <span class="clo-st-set-label">moves past the end of a line</span>
+              <span class="clo-st-set-spacer"></span>
+              <span class="clo-st-ready">31 position(s) ready</span>
+              <button type="button" class="clo-st-gather clo-st-gather--on">Stop gathering</button>
+              <button type="button" class="clo-st-sync" disabled>Sync</button>
+            </div>
+            <div class="clo-st-stage hx-slots">
+              <div class="clo-st-slot clo-st-slot--board" data-hx-slot="section 18's board"></div>
+              <div class="clo-st-slot clo-st-slot--panel" data-hx-slot="section 18's panel"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>The panel in the slot &mdash; asking</h3>
+      <p>Section 18's own panel, in the storm arm of its <code>syncUi</code>. No
+        Hint (it would name the answer) and no Navigate (there is no line to walk);
+        Skip becomes <em>No idea</em>, which counts as a MISS so that passing until
+        an easy one turns up is not the way to a streak.</p>
+      <div class="hx-stage">
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Find a good move</div>
+          <div class="clo-cr-prompt">White to play</div>
+          <div class="clo-cr-progress">Scotch 4&hellip;Qh4?! &middot; 6 moves past the line</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">No idea</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>&hellip;and having answered</h3>
+      <p>&sect;8.1's line: the move with its rank and how far behind it was, then the
+        best move and ChessDB's win rate for both. ONE line, because the clock is
+        running. The progress row is dimmed and italic &mdash;
+        <code>.clo-cdb--est</code> &mdash; and its tooltip says why.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px;align-items:flex-start">
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Good move</div>
+          <div class="clo-cr-prompt clo-cr-prompt--ok">Nf3 &middot; #2 of 31 &middot; 12cp behind &middot; +6</div>
+          <div class="clo-cr-progress clo-cdb--est"
+               title="ChessDB scores every legal move here, but the ones outside its analysed book are computed on the spot.">
+            best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Nf3 +0.20 &middot; 53%</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
+          </div>
+        </div>
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Good move</div>
+          <div class="clo-cr-prompt clo-cr-prompt--ok">Bb5 &middot; the top move &middot; level with the best &middot; +3</div>
+          <!-- PLAYING THE TOP MOVE NAMES IT ONCE. It was printed twice until
+               v0.130.0 - "best Nxf3+ -0.89   Nxf3+ -0.89" - which reads as a
+               defect rather than as agreement (found in a live session). -->
+          <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
+          </div>
+        </div>
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Missed</div>
+          <div class="clo-cr-prompt clo-cr-prompt--bad">h3 &middot; #9 of 31 &middot; 148cp behind</div>
+          <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; h3 &minus;1.16 &middot; 43%</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>The ply range (&sect;14.9) &mdash; and the review (&sect;14.10)</h3>
+      <p>The range shows only when NO clock is running &mdash; before the first card and
+        after the last &mdash; because changing it mid-session would describe an exercise
+        the positions already queued are not from. Those are also the two moments the
+        user is waiting rather than playing, which is why it needs no surface of its
+        own.</p>
+      <p>The review is up <em>instead of</em> the stage: same two halves, same widths, so
+        nothing appears to move when the session ends &mdash; only what is in each half.
+        The verdict colour is a LEFT EDGE, never a fill: twenty filled rows are twenty
+        coloured blocks with the moves unreadable on them, and the point of the list is
+        to find the misses in one column without reading it.</p>
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:470px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Intermediate Starter Kit</span>
+            <span class="clo-st-clock clo-st-clock--off">0:00</span>
+            <span class="clo-st-stat">31 pts</span>
+            <span class="clo-st-stat">streak 0</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <div class="clo-st-settings">
+              <span class="clo-st-set-label">Offer positions</span>
+              <select class="clo-st-sel"><option>1</option></select>
+              <span class="clo-st-set-label">to</span>
+              <select class="clo-st-sel"><option>16</option></select>
+              <span class="clo-st-set-label">moves past the end of a line</span>
+              <span class="clo-st-set-spacer"></span>
+              <span class="clo-st-ready">19 position(s) ready</span>
+              <!-- &sect;14.11. Green OUTLINE, never a fill: the one thing to do in
+                   this window is storm, and this is the other thing. It fills only
+                   while RUNNING, which is the one moment it IS the thing happening. -->
+              <button type="button" class="clo-st-gather">Gather positions</button>
+              <!-- &sect;14.12. NEUTRAL, per DESIGN-ui-inventory &sect;3: the action away
+                   from both of the others &mdash; you neither storm nor gather by
+                   pressing it. -->
+              <button type="button" class="clo-st-sync">Sync</button>
+            </div>
+            <div class="clo-st-review">
+              <!-- The GREEN arrow is the best move, the RED one is what was
+                   played. Two arrows and no more: the board is read-only, and
+                   the comparison is the whole of what it has to say. -->
+              <div class="clo-cr-mini clo-st-revboard hx-pos"
+                   data-hx-board="r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w"
+                   data-hx-shapes="arrow:f1:b5:g|arrow:b1:c3:r"></div>
+              <div class="clo-st-revside">
+                <div class="clo-st-revhead">Position 4 of 14</div>
+                <div class="clo-st-revlegend clo-cdb--est">Nf3 &middot; #4 of 31 &middot; 42cp behind &middot; +1
+                  &nbsp;&middot;&nbsp; best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Nf3 -0.10 &middot; 49%</div>
+                <div class="clo-st-revlist">
+                  <button type="button" class="clo-st-revrow clo-st-revrow--good">
+                    <span class="clo-st-revrow-n">1</span><span class="clo-st-revrow-move">cxd4</span>
+                    <span class="clo-st-revrow-best">cxd4</span><span class="clo-st-revrow-loss">0</span></button>
+                  <button type="button" class="clo-st-revrow clo-st-revrow--miss">
+                    <span class="clo-st-revrow-n">2</span><span class="clo-st-revrow-move">Qxb2</span>
+                    <span class="clo-st-revrow-best">Qd8</span><span class="clo-st-revrow-loss">&minus;779</span></button>
+                  <button type="button" class="clo-st-revrow clo-st-revrow--unknown">
+                    <span class="clo-st-revrow-n">3</span><span class="clo-st-revrow-move">Nxh2</span>
+                    <span class="clo-st-revrow-best">Qe8</span><span class="clo-st-revrow-loss">?</span></button>
+                  <button type="button" class="clo-st-revrow clo-st-revrow--decent clo-st-revrow--on">
+                    <span class="clo-st-revrow-n">4</span><span class="clo-st-revrow-move">Nf3</span>
+                    <span class="clo-st-revrow-best">Bb5</span><span class="clo-st-revrow-loss">&minus;42</span></button>
+                  <button type="button" class="clo-st-revrow clo-st-revrow--good">
+                    <span class="clo-st-revrow-n">5</span><span class="clo-st-revrow-move">Nxd4</span>
+                    <span class="clo-st-revrow-best">Nxd4</span><span class="clo-st-revrow-loss">0</span></button>
+                </div>
+                <div class="clo-st-revactions">
+                  <button type="button" class="clo-st-analyse">Analyse this position</button>
+                  <button type="button" class="clo-st-again">Storm again</button>
+                  <button type="button" class="clo-st-done">Close</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>The summary</h3>
+      <p>Only when NOTHING was answered &mdash; otherwise the review above takes its
+        place, with the score in the header where it already was. The cost line is
+        deliberate: this feature spends a volunteer network's compute, and a session
+        that never says how much makes that invisible.</p>
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:330px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Intermediate Starter Kit</span>
+            <span class="clo-st-clock clo-st-clock--off">0:00</span>
+            <span class="clo-st-stat">31 pts</span>
+            <span class="clo-st-stat">streak 0</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <div class="clo-st-summary">
+              <div class="clo-st-sum-score">31 points</div>
+              <div class="clo-st-sum-line">14 positions answered &middot; best streak 6</div>
+              <div class="clo-st-sum-cost">168 ChessDB lookups &middot; 17 position(s) found on 9 of 33 line ends</div>
+              <div class="clo-st-sum-actions">
+                <button type="button" class="clo-st-again">Storm again</button>
+                <button type="button" class="clo-st-done">Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>The launcher, in the tree's header</h3>
+      <p>A plain <code>.clo-ct-toggle</code> beside Lichess / Splits / Analyse / Flip
+        &mdash; it is not a toggle of the tree's state, but it belongs to the same
+        tier and inventing a sixth weight for one button is what
+        DESIGN-ui-inventory &sect;3 exists to stop. Disabled until the course has been
+        read: there is nothing to storm the frontier of.</p>
+      <div class="hx-stage">
+        <div class="clo-ct hx-pos" style="width:min(720px,100%)">
+          <div class="clo-ct-head">
+            <span class="clo-ct-title">Course tree</span>
+            <input class="clo-ct-find" type="search" placeholder="Find a variation&hellip;">
+            <button type="button" class="clo-ct-toggle">Lichess</button>
+            <button type="button" class="clo-ct-toggle">Splits (3)</button>
+            <button type="button" class="clo-ct-toggle">Analyse</button>
+            <button type="button" class="clo-ct-toggle">Storm</button>
+            <button type="button" class="clo-ct-toggle">Flip</button>
+            <button type="button" class="clo-ct-btn">Re-read</button>
+            <button type="button" class="clo-ct-x">&times;</button>
+          </div>
+          <div class="clo-ct-body">
+            <div class="clo-ct-crumbs"><span class="clo-ct-crumb">start</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>Narrow (&lt;700px of PANEL width)</h3>
+      <p>&sect;3.1's shape, the same interaction rather than a different mode: the
+        board goes above the panel and the course's name wraps under the title. A
+        <code>@container</code> query, not <code>@media</code> &mdash; which is what
+        makes it measurable HERE, since this card sizes a container and not the
+        viewport.</p>
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:360px;height:620px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Intermediate Starter Kit</span>
+            <span class="clo-st-clock clo-st-clock--low">0:24</span>
+            <span class="clo-st-stat">14 pts</span>
+            <span class="clo-st-stat clo-st-stat--hot">streak 5 &times;2</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <div class="clo-st-stage hx-slots">
+              <div class="clo-st-slot clo-st-slot--board" data-hx-slot="board"></div>
+              <div class="clo-st-slot clo-st-slot--panel" data-hx-slot="panel"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
 
 </div><!-- /hx-wrap -->
@@ -3440,7 +3727,20 @@ body {
     return out;
   }
 
+  // The real `paintShape` takes a colour KEY ('g'|'r'|'b'|'y') or a CSS value,
+  // and until v0.80.0 it dropped anything else SILENTLY. The harness has to
+  // speak the same vocabulary or a replica cannot be written in the terms the
+  // code is: without this, data-hx-shapes="arrow:f1:b5:g" sets
+  // `style.stroke = 'g'`, which the browser drops and the arrow comes out the
+  // stylesheet's green — i.e. exactly the failure the real rule exists for.
+  var SHAPE_COLOR_HEX = { g: '#77b55a', r: '#e02828', b: '#1a63c9', y: '#ffff00' };
+  var shapeColor = function (c) {
+    if (!c) return '';
+    return SHAPE_COLOR_HEX[c] || (/^(#|rgb|hsl)/i.test(c) ? c : '');
+  };
+
   function arrowGroup(from, to, view, color) {
+    color = shapeColor(color);
     var a = squareCentre(from, view), b = squareCentre(to, view);
     var dx = b.x - a.x, dy = b.y - a.y;
     var len = Math.hypot(dx, dy);
@@ -3478,6 +3778,7 @@ body {
   }
 
   function circleShape(idx, view, color) {
+    color = shapeColor(color);
     var c = squareCentre(idx, view);
     var el = svgEl('circle');
     el.setAttribute('cx', c.x);

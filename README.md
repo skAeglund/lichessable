@@ -50,6 +50,7 @@ it.
 | Show and grade, audio and blindfold | 23, 23b | `DESIGN-show-and-grade.md` |
 | Course tree (a course as positions, browsed as columns) | 24 | `DESIGN-course-tree.md` |
 | Key moves vs difficult moves | 25 | `DESIGN-key-moves.md` |
+| Intuition storm on the repertoire's frontier | 27 | `DESIGN-intuition-storm.md` |
 | Every control by host and state, and the colour rules | — | `DESIGN-ui-inventory.md` |
 
 ## Folder structure
@@ -368,11 +369,34 @@ mock data (marked with the yellow "stub data" badge) without touching the API.
   background service worker (and the options page's Test button) call the
   explorer with the Authorization header, exempt from CORS. This became
   necessary when Lichess put the explorer behind authentication; before that,
-  a plain content-script fetch was enough.
+  a plain content-script fetch was enough. The same host also serves master
+  game PGNs (`/masters/pgn/<id>`), which need no token; the worker's `as:'text'`
+  path reads those, and a missing token is not fatal there.
+- `host_permissions` for `https://www.chessdb.cn/*` — the ChessDB cloud
+  analysis book (`DESIGN-chessdb.md`), which answers "how good is this move"
+  beside the explorer's "how often is it played". Read-only twice over: the
+  worker refuses any URL on that host whose action is not `queryall` or
+  `querypv`, an allow-list rather than a block-list, because the API's `queue`
+  and `store` actions spend a volunteer network's compute. The eval column
+  itself is opt-in (panel cogwheel) — nothing is sent to a third party for a
+  user who has not switched it on.
+- `host_permissions` for `https://lichess.org/*` — one endpoint only:
+  `https://lichess.org/game/export/<id>`, the PGN of a game the intuition
+  storm (`DESIGN-intuition-storm.md`) is walking past one of your course
+  lines' end positions. This host is the one that needs its guard read
+  carefully, because unlike the two above it also serves the user's entire
+  account, so the worker's allow-list is that **single path prefix** and
+  nothing else. Manifest match patterns cannot express a path prefix for
+  `host_permissions` in a way that is worth relying on, so the guard is in
+  `handleGameFetch` and is a plain `startsWith` on the whole URL. The token is
+  sent for the higher rate limit, and the guard is what keeps it from reaching
+  any other path.
 - Nothing else: no tabs permission, no scripting, no access beyond
-  chessable.com (content script) and explorer.lichess.org (worker). The chapter
-  sort calls Chessable's own API, but that is same-origin with the page the
-  content script already runs in, so it needs no host permission either. Note the
+  chessable.com (content script) and those three hosts (worker). The chapter
+  sort calls Chessable's own API, and so do the two features that keep a blob
+  in a course of your own — the pinned-mistake sync and the intuition storm's
+  position store — but that is same-origin with the page the content script
+  already runs in, so it needs no host permission either. Note the
   overstudy widget's and the quick-edit feature's `chrome.tabs.create` /
   `chrome.tabs.remove` / `chrome.tabs.sendMessage` calls do **not** require the
   `tabs` permission — that permission only gates reading tab metadata.

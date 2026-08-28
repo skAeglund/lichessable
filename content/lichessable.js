@@ -1553,6 +1553,243 @@
         pathPlies: 10,      // plies of the run-up printed on a row, then a leading "…"
       },
     },
+
+    // --- Intuition storm on the repertoire's frontier (section 27) ---------
+    //
+    // EVERY NUMBER HERE WAS MEASURED, not estimated: `dev/probe-storm.js` ran
+    // the whole pipeline against the live APIs and the real courses on
+    // 2026-08-27, and DESIGN-intuition-storm.md §6 is the report. Change one
+    // and re-run the probe — it prints the distribution each threshold is a
+    // cut through, which is the only way to tell a tuning change from a
+    // superstition.
+    storm: {
+      // --- stage 0: which frontiers are worth a request ------------------
+      // A frontier is the position one of the course's own variations ENDS on.
+      minVarPlies: 4,      // shorter than this and there is no repertoire to be at the frontier of
+      sampleFrontiers: 30, // how many eligible frontiers one session draws on
+      // THE STAGE-0 EVAL BAND (§7). A course variation ends where the author
+      // has achieved something, so frontier evals skew positive — 291847's run
+      // to a median of +0.39 with four Scotch lines at +1.16 … +2.09 — and the
+      // game then HOLDS that advantage rather than dissipating it (§6.5, which
+      // is why walking deeper is refuted and must not be retried). One
+      // `queryall` per frontier rejects a whole LINE for one request instead of
+      // discovering the same fact 11-29 requests later.
+      //
+      // +200 rather than +100 is the author's own call (2026-08-27): it keeps
+      // the "you are clearly better, do not spoil it" frontiers, which is a
+      // real repertoire skill. +100 would drop exactly 291847's four Scotch
+      // frontiers and about six of its 26 scored ones.
+      userLoCp: -100,
+      userHiCp: 200,
+      // A frontier ChessDB cannot score at all is SKIPPED rather than offered
+      // unfiltered (§7's "separate small decision"). It is nearly free to skip:
+      // the walk's own `unknown` stop would kill such a line on ply 1 anyway,
+      // after an explorer request and two game fetches spent to learn nothing.
+      skipUnknownFrontiers: true,
+
+      // --- stage 1: the games --------------------------------------------
+      gamesPerFrontier: 2,
+      // THE STORM RELAXES THE USER'S OWN EXPLORER FILTERS, and this is the one
+      // place in the extension where "any human game at all" is the better
+      // question than "a game at my rating" (§6.4): 5 of 14 sampled frontiers
+      // had no games AT ALL under the panel's own bands, because frontier depth
+      // is expensive. `lichessFilters` is untouched — these ride on the storm's
+      // own requests only.
+      speeds: ['bullet', 'blitz', 'rapid', 'classical', 'correspondence'],
+      ratings: [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2500],
+
+      // --- stage 2: the walk ---------------------------------------------
+      // HOW FAR PAST THE COURSE'S OWN LINE a position may be, and it is a USER
+      // SETTING (storage.local) rather than a constant: "one move after the
+      // variation ends" is a different exercise from "eight moves after", and
+      // which one is wanted is a judgement about the exercise, not a
+      // measurement. The numbers here are the defaults and the bounds.
+      minPly: 2,           // never offer a position still inside the course's own line
+      maxPly: 16,          // §3.3's thinning scored set is the real ceiling, not this
+      minPlyKey: 'cloStormMinPly',
+      maxPlyKey: 'cloStormMaxPly',
+      minPlyMax: 8,        // the "from" selector's range is 1..this
+      maxPlyMin: 4,        // …and the "to" selector's is this..maxPlyMax
+      maxPlyMax: 24,
+      // The side to move just erred by this much — free from the PARENT's own
+      // scored list, so the blunder test costs no request, ever. It stops on
+      // BOTH sides: past a mistake the position is one good play would not have
+      // produced, so nothing beyond it is a position the repertoire leads to.
+      blunderCp: 150,
+      decidedCp: 250,      // |eval| beyond this and "find the good move" has no meaning
+
+      // --- stage 3: the filter (§5.2) ------------------------------------
+      minScored: 6,
+      // best - 5th: THERE MUST BE SOMETHING TO GET WRONG. This is the rule that
+      // separates the exercise from an engine-agreement trainer — a position
+      // where all 37 moves score within 1cp (hit live while probing) awards and
+      // punishes nothing. 60 is the measured setting; 30 roughly doubles the
+      // yield and whether those are GOOD positions is §12.1's open question,
+      // which wants a human looking at twenty FENs rather than another probe.
+      spreadMinCp: 60,
+      // best - 2nd: beyond this it is a tactic, not intuition. NEARLY DEAD
+      // WEIGHT and deliberately set where it says so — it fired ONCE in 54
+      // candidates and the tuning grid is byte-identical from 150 to infinity
+      // on both courses (§6.2). A post-book position essentially never has one
+      // forced move, because a position with one move in it is a position an
+      // author would have kept teaching.
+      spreadMaxCp: 300,
+
+      // --- stage 4: the verdict (§8.1) -----------------------------------
+      // FLAT bands, licensed by the spread filter above: the normalising is
+      // done once, in the filter, so the score itself stays legible during a
+      // timed session. A move within 30cp of best is a good move, full stop —
+      // reward only the engine's first choice and this becomes an
+      // engine-agreement trainer.
+      goodCp: 30,
+      decentCp: 80,
+      goodPoints: 3,
+      decentPoints: 1,
+      // Puzzle Storm's shape: a streak multiplier, reset by a miss. One step
+      // per `streakStep` answers, capped so the arithmetic stays doable.
+      streakStep: 4,
+      streakMax: 4,
+
+      // --- the review (§14.10) ---------------------------------------------
+      // Every answered position, kept so the session can be walked through
+      // afterwards: the whole point of a timed exercise is that you cannot
+      // think during it, so the thinking has to be available after.
+      reviewMax: 60,      // positions kept; a 5-minute storm answers ~20
+
+      // --- the clock (§8.2) -----------------------------------------------
+      sessionMs: 5 * 60 * 1000,
+      // Whether a miss also costs time is a tuning question, not a design one
+      // (§8.2). It costs none until somebody measures that it should.
+      missPenaltyMs: 0,
+      verdictMs: 2600,   // how long the verdict line stays before the next card
+      lowTimeMs: 30000,  // the clock goes amber under this
+      tickMs: 200,       // the clock's own repaint
+
+      // --- the producer (§8.3) --------------------------------------------
+      // ITS UNIT IS A FRONTIER, NOT A POSITION: one frontier yields two game
+      // walks and, at the measured rate, one to three survivors — which is the
+      // only reason ~11 ChessDB requests per usable position is affordable.
+      // Harvest all of a frontier's survivors onto the queue at once.
+      chunkVars: 20,     // yield to the event loop every N variations of the stage-0 walk
+      queueTarget: 3,    // keep this many ready; refill below it while the user thinks
+      // Nothing about the storm may BLOCK on the producer: an empty queue ends
+      // the session cleanly rather than stalling on a spinner.
+      maxPositions: 40,  // a session cannot ask for more than this
+
+      // --- no games at all (§6.4) -------------------------------------------
+      // 5 of 14 sampled frontiers had NO explorer games even with the filters
+      // relaxed, because frontier depth is expensive. Rather than lose those
+      // lines entirely, the continuation is INVENTED: a random walk among
+      // ChessDB's own best moves, which is a plausible continuation even though
+      // it is not one anybody played.
+      //
+      // A FALLBACK AND NOTHING ELSE. A position from a real game is what this
+      // feature is about (§1), and a synthetic one is a weaker version of the
+      // same idea — so it is reached only when the explorer has nothing, never
+      // in preference to a game.
+      randomFallback: true,
+      randomTopN: 4,       // choose among at most this many of the top moves…
+      randomTopCp: 40,     // …and only those within this much of the best
+      randomMinPlies: 2,   // the invented line is this long at least…
+      // …and at most `maxPly`, chosen at random inside that range so two
+      // sessions do not meet the same position from the same frontier.
+
+      // --- the engine tier (§3.4's third source) ---------------------------
+      // WHEN BOTH CHESSDB SOURCES COME BACK EMPTY. Measured live 2026-08-28 on
+      // course 291847: three answers in a row were ungradeable, because the
+      // child of an ARBITRARY move is a position no game ever reached and
+      // §3.2's 98% coverage is a measurement over REAL continuations. §3.4
+      // named this tier and it turns out to matter more than that paragraph
+      // implies.
+      //
+      // TWO searches, not one, and both from the SAME engine: the loss is a
+      // SUBTRACTION, and taking one side from ChessDB's book and the other from
+      // Stockfish would put the systematic offset between two evaluators —
+      // easily the width of the whole `goodCp` band — straight into the verdict.
+      engineFallback: true,
+      // Shallow and hard-capped, because the clock is running. The alt check
+      // searches to 20 with a two-minute watchdog; that is a popup the user is
+      // reading, this is a card they are waiting on.
+      engineDepth: 14,
+      engineTimeoutMs: 6000,
+      // THE WHOLE GRADE, not just the engine half. Every source here can hang
+      // rather than fail — a worker that never answers, an engine update that
+      // never lands, a `fetch` that neither resolves nor rejects (seen live) —
+      // and section 18 holds the board shut (`cr.busy`) from the moment the
+      // move is played until a verdict arrives. So a grade that never finishes
+      // is a board that never takes another move, for the rest of the session.
+      // This is the backstop that makes that impossible.
+      gradeTimeoutMs: 9000,
+      engineMateCp: 10000,  // centipawn stand-in for a mate, minus its distance
+
+      // --- the position store (§14.11) --------------------------------------
+      // ~11 ChessDB requests per usable position (§6.1) is the cost of the
+      // whole feature, and it is paid at the worst moment: while the user is
+      // waiting for a card. So the gathering is SEPARABLE — a pass that fills a
+      // store and shows nothing, left running for as long as you like, after
+      // which a session starts on what is already there.
+      //
+      // `chrome.storage.local`, and the shape is `{ [bid]: { [ck]: entry } }`.
+      // An entry is everything `stormCard` needs plus the scored list that cost
+      // the requests, with SHORT KEYS: the list is 20-36 moves and this is a
+      // 10 MB quota shared with every other feature here (no `unlimitedStorage`
+      // permission, and none is being asked for).
+      storeKey: 'cloStormPositions',
+      storeMax: 900,       // positions kept per COURSE, oldest first out
+      storeTtlMs: 30 * 24 * 60 * 60 * 1000, // a month: a course's lines move
+      // THE RETENTION RULE, and it is the user's own: a position answered WELL
+      // has been learned and leaves; one MISSED stays, to come round again. An
+      // ungradeable one stays too — nothing was learned from it either way.
+      storeDropOn: ['good', 'decent'],
+      // The gather pass. Its own ceiling, far above a session's: this is the
+      // burst that is expected to be long, and it is the one the user asked for
+      // by pressing a button that says so.
+      gatherMaxCdb: 4000,
+      gatherTarget: 200,   // …and it stops here, or when the pool runs out
+
+      // --- carrying the store between devices (§14.12) ----------------------
+      // Section 16e's transport, for a second payload: an informational card in
+      // the user's own "LiChessable" course, base32, overwritten in place. The
+      // pin store rides it because `storage.sync` cannot reach a Chromium fork;
+      // this rides it because the phone is exactly where you do NOT want to
+      // spend eleven ChessDB lookups per position.
+      syncKey:  'cloStormSync',    // storage.local: { [bid]: { at, gone } }
+      cardName: 'CLO-STORM · do not delete',
+      wireVersion: 1,
+      // What the SAN costs: it is derivable from the uci and the position, so
+      // the wire drops it and `stormWireUnpack` recomputes. Roughly a third of
+      // the payload, and the recompute is once per exchange rather than once
+      // per session — the LOCAL store keeps its SANs, which is what makes
+      // `storeDraw` cheap.
+      //
+      // A tombstone list, because the merge is a UNION and a card is a whole
+      // snapshot: without it a position dropped by the retention rule comes
+      // back from the other device's copy for ever. Section 16e's `pinGoneKey`,
+      // one payload in.
+      goneMax:  400,
+      goneDays: 60,
+      // The payload ceiling, in base32 characters. Section 16e's own is 120000,
+      // stopping short of the 128 KB its §4.3 proved with a ladder; this one is
+      // measured for THIS payload — 162460 characters written to a comment and
+      // read back BYTE-EXACT, still base32-clean and still informational
+      // (2026-08-28, course 453453, test card deleted after). 150000 keeps a
+      // margin under that, and is about 190 positions.
+      maxWireBytes: 150000,
+      // How long a device may go without pulling before a page re-reads.
+      pullMs:   30 * 60 * 1000,
+
+      // --- costs and politeness (§9) --------------------------------------
+      // ~230 ChessDB requests for a 20-position session, at a volunteer
+      // network. The cap is not a performance guard: it is the promise that a
+      // session's burst has a ceiling however long the user leaves it running.
+      cdbMaxPerSession: 600,
+      cdbGapMs:      90,
+      explorerGapMs: 150,
+      pgnGapMs:      150,
+      cdbCacheMax:  400,   // positions held in memory for the session
+      pgnCacheMax:   60,   // the same game is often the top game at several frontiers
+      pollMs: 500,
+    },
   };
 
   const PANEL_ID = 'lichessable-panel';
@@ -1581,6 +1818,7 @@
   const COV_PANEL_ID  = 'lichessable-cov';      // the coverage report panel (section 21)
   const CT_BTN_ID     = 'lichessable-ct-btn';   // "Course tree" launcher (section 24)
   const CT_PANEL_ID   = 'lichessable-ct';       // the course tree browser (section 24)
+  const ST_PANEL_ID   = 'lichessable-storm';    // the intuition storm window (section 27)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
@@ -5887,7 +6125,7 @@
    * false there and `isVariationPath()` is false there.
    */
   function topPanelHostNow() {
-    if (courseTreePanelSlot && courseTreePanelSlot()) return 'tree';
+    if (inHostPanelSlot()) return 'tree';
     return isVariationPath() ? 'variation' : 'review';
   }
 
@@ -5941,11 +6179,16 @@
   }
 
   /**
-   * 24g) THE PANEL INSIDE THE COURSE TREE. The tree measures a slot for it, the
-   * same way it measures the two the analysis overlays sit on, and this pins the
-   * panel there — so the database table, the engine and the repertoire badges
-   * come to a /course/ page with no new UI of their own and no second decision
-   * point for the engine.
+   * 24g) THE PANEL INSIDE ONE OF OUR OWN WINDOWS — the course tree, and since
+   * v0.131.0 the storm's review (§14.10) as well. The host measures a slot for
+   * it, the same way it measures the ones the analysis overlays sit on, and
+   * this pins the panel there — so the database table, the engine and the
+   * repertoire badges come to a /course/ page with no new UI of their own and
+   * no second decision point for the engine.
+   *
+   * Still named for the tree, and the host string is still `'tree'`: the two
+   * differ only in which window measured the rect, and a second host string
+   * would need a second placement branch that did exactly the same thing.
    *
    * Viewport coordinates, not document ones: the tree's window is itself fixed,
    * so its slots are already viewport rects and adding the scroll offset (as
@@ -5954,7 +6197,7 @@
    */
   function positionTreePanel() {
     if (!state.panel || state.panel.hidden) return;
-    const slot = courseTreePanelSlot && courseTreePanelSlot();
+    const slot = inHostPanelSlot();
     if (!slot) return;
     setInlinePx(state.panel, {
       left: slot.left, top: slot.top, width: slot.width,
@@ -6053,6 +6296,21 @@
    * here, because the tree already gates itself on one.
    */
   let courseTreePanelSlot = null;
+
+  // …and section 27's, for the analysis board its review opens (§14.10). A
+  // SECOND supplier rather than a shared one, because each host answers only
+  // while its OWN window has a board up — which is the whole of the test.
+  // `inHostPanelSlot()` is what the panel asks, and the placement scheme is
+  // identical for both: a fixed viewport rect inside one of our own windows.
+  let stormPanelSlot = null;
+
+  /** The slot the panel sits in while it is inside one of our full-window
+   *  surfaces (24g, §14.10), or null when it is not. Answering a rect IS the
+   *  claim, so neither supplier needs a path check of its own. */
+  function inHostPanelSlot() {
+    return (courseTreePanelSlot && courseTreePanelSlot()) ||
+           (stormPanelSlot && stormPanelSlot()) || null;
+  }
 
   /**
    * () => { lines, queued } — assigned by initContinuationReview (section 18).
@@ -15285,8 +15543,13 @@
 
     /** The one move pair the card is made of. `--` is what makes it
      *  informational; `fenB === fenW` because no move is played. */
-    function cardEntry(comment, oid) {
+    /** `name` is a parameter because the CARRIER (below) puts a second payload
+     *  in a second card of the same shape — section 27's position store. The
+     *  pin card's own name is the default, so every existing caller is
+     *  unchanged. */
+    function cardEntry(comment, oid, name) {
       const fen = C.startFen;
+      const cardName = name || C.cardName;
       const row = {
         mid: 0, sanW: C.cardMove, sanB: null, nagW: null, nagB: null,
         fen, fenW: fen, fenB: fen, isKey: false,
@@ -15300,7 +15563,7 @@
           result: '*', eco: '', variant: '', annotator: '', plycount: '',
           eventDate: '', source: '', sourceData: '', fen, setup: '',
         },
-        color: 'white', name: C.cardName, orig: C.cardName,
+        color: 'white', name: cardName, orig: cardName,
         lid: 0, moves: [row], line: '1.' + C.cardMove,
       };
       // THE WHOLE OVERWRITE IS THIS FIELD (§4.2). Without it the write creates
@@ -15358,14 +15621,16 @@
      * still answers the lesson call (§4.6), so a user who deletes the card by
      * hand would otherwise keep reading its ghost for ever.
      */
-    async function ensureSlot(cr, bid) {
+    async function ensureSlot(cr, bid, name, blankText) {
+      const cardName = name || C.cardName;
       const course = await fetchCourse(bid, cr, false);
-      const found = (course.vars || []).find((v) => v.name === C.cardName);
+      const found = (course.vars || []).find((v) => v.name === cardName);
       if (found) return { bid: String(bid), oid: String(found.oid), lid: 0 };
-      const blank = await encodeBlob({ v: C.blobVersion, at: Date.now(), pins: {}, gone: {} });
-      const oid = await postCard(cr, bid, cardEntry(blank.text));
+      const blank = blankText !== undefined ? blankText
+        : (await encodeBlob({ v: C.blobVersion, at: Date.now(), pins: {}, gone: {} })).text;
+      const oid = await postCard(cr, bid, cardEntry(blank, null, cardName));
       await dropCourseCache(bid);
-      log('pin sync: created the sync card in course', bid, '— oid', oid);
+      log('pin sync: created the card "' + cardName + '" in course', bid, '— oid', oid);
       return { bid: String(bid), oid, lid: 0 };
     }
 
@@ -15574,7 +15839,74 @@
       }
     });
 
+    /**
+     * THE CARRIER (§14.12) — this module's transport, offered to anyone with a
+     * blob to keep in the user's own Chessable course.
+     *
+     * Section 27's position store is the second payload. It is a bridge rather
+     * than a hoist because everything a second payload needs is ALREADY decided
+     * here and decided once: which course (the picker, and `autoName`'s
+     * adoption on a device that has never been configured), the JWT, the
+     * informational-card shape that is never quizzed (§4.5), base32 rather than
+     * base64 (§4.4), and the `oid` overwrite (§4.2). A copy of any of those
+     * elsewhere is a copy that will one day disagree.
+     *
+     * It carries TEXT and knows nothing about what is in it: the payload's own
+     * shape, its version and its merge are the caller's business.
+     */
+    const carrier = {
+      /** The course chosen for syncing, or null. `on` is the user's own switch
+       *  and a caller must respect it — this is their Chessable account. */
+      course() {
+        return (ps.pref && ps.pref.on && ps.pref.bid) ? String(ps.pref.bid) : null;
+      },
+      /** One card's text, or null when there is no such card. Never throws for
+       *  "no card": that is the ordinary first-run answer. */
+      async read(name) {
+        const bid = carrier.course();
+        const cr = bid && chessableCreds();
+        if (!cr) return null;
+        const course = await fetchCourse(bid, cr, false);
+        const found = (course.vars || []).find((v) => v.name === name);
+        if (!found) return null;
+        return readCard(cr, { bid, oid: String(found.oid) });
+      },
+      /**
+       * Creates or OVERWRITES it. Returns the oid, or throws with the server's
+       * own words — which is the useful half of a refusal.
+       *
+       * `limit` lets a caller name its own ceiling. §4.3 proved 128 KB with a
+       * ladder and this module stops short of it at `maxBytes`; section 27
+       * measured a 162 KB comment written and read back BYTE-EXACT
+       * (2026-08-28, course 453453), so a bigger payload has evidence behind it
+       * — but the pin store's own conservatism is left exactly where it was.
+       */
+      async write(name, text, limit) {
+        const bid = carrier.course();
+        const cr = bid && chessableCreds();
+        if (!cr) throw new Error('no course is chosen for syncing');
+        const cap = limit || C.maxBytes;
+        if (text.length > cap) {
+          throw new Error('payload is ' + text.length + ' bytes; the ceiling is ' + cap);
+        }
+        const slot = await ensureSlot(cr, bid, name, text);
+        // ensureSlot wrote the text itself if it had to create the card.
+        const oid = await postCard(cr, bid, cardEntry(text, slot.oid, name));
+        await dropCourseCache(bid);
+        return oid;
+      },
+      /** The ceiling one card's text may not exceed (§4.3 proved 128 KB; this
+       *  stops short of it). A caller sizes its payload against this. */
+      maxBytes: C.maxBytes,
+      /** base32, and it must be — see §4.4. Exposed so a caller encodes its own
+       *  payload the one way this transport survives. */
+      encode: b32encode,
+      decode: b32decode,
+    };
+
     pinSyncApi = {
+      // §14.12: the transport, for a second payload. See `carrier`.
+      carrier,
       /** Section 16b's own writes ask for a push; the debounce is what keeps a
        *  drill of twenty cards to one POST. */
       touch() { if (ps.pref && ps.pref.on && !ps.pushAt) ps.pushAt = Date.now() + C.pushMs; },
@@ -17480,6 +17812,19 @@
   // contract continuationDrill has, for the same reason.
   let continuationTreeApi = null;
 
+  // { open(card, slot) => boolean, next(card) => boolean, verdict(v), close() }
+  // — the intuition storm's cards on section 18's board, in a FOURTH mode
+  // (section 27; DESIGN-intuition-storm.md §8.5). A storm card IS a drill card
+  // with a graded answer instead of a binary one: same overlays, same run-up,
+  // same "play one move", positions from elsewhere — so `tryMove` branches to
+  // `stormPlay` exactly as it branches to `anPlay`, and nothing else changes.
+  //
+  // The traffic goes BOTH ways and each direction does something the other
+  // cannot: this one owns the board and the panel, `stormApi` owns the queue,
+  // the clock and the grade. `open` returns false when the board could not be
+  // shown, the contract every launcher here has.
+  let continuationStormApi = null;
+
   function initContinuationReview() {
     if (typeof CloSan === 'undefined') {
       warn('continuation review disabled: CloSan (engine/san.js) not loaded');
@@ -17566,12 +17911,21 @@
       // launcher's pass (16d). It is the ONE run that outlives leaving the
       // trainer, so both ticks check it before their teardowns.
       standalone: false,
-      // 24g: () => { board:{left,top,size}, panel:{left,top,width,height} } while
-      // the analysis board is running INSIDE the course tree's window. A
-      // function rather than a rect, because the tree measures its own slots and
-      // they move with the window; null everywhere else, and its presence is
-      // what every placement and teardown branch keys on.
-      treeSlot: null,
+      // () => { board:{left,top,size}, panel:{left,top,width,height} } while the
+      // overlays are running INSIDE another full-window surface of ours: the
+      // course tree (24g, the analysis board) or the intuition storm (27, its
+      // own board). A function rather than a rect, because the host measures its
+      // own slots and they move with the window; null everywhere else, and its
+      // presence is what every placement and teardown branch keys on.
+      //
+      // It was `treeSlot` until v0.130.0, when the storm became the second
+      // guest. Nothing about the mechanism changed — only the name, which was
+      // about to describe one of two hosts.
+      hostSlot: null,
+      // Which of them, for the log line and for anything that has to name the
+      // surface a run is inside. '' when the overlays are on Chessable's own
+      // board or standalone.
+      hostKind: '',
       scrim: null,
       // Lines already sent round again by a "didn't know" verdict (section 23
       // on a clickable line), by line key. Per RUN, and the whole of what stops
@@ -17580,6 +17934,12 @@
       // --- mistake drill (section 20) --------------------------------------
       // Only a tally: a drill card carries its own log entry on the line.
       drill: { done: 0, clean: 0 },
+      // --- intuition storm (section 27) ------------------------------------
+      // The graded answer currently on screen, handed in by section 27 through
+      // `continuationStormApi.verdict`. Null between the card appearing and the
+      // answer being graded, which is also what `syncUi` reads to tell "find a
+      // move" from "here is how that went".
+      stormVerdict: null,
       // --- analysis board (section 19) -------------------------------------
       an: blankAnalysis(),
       // Lead-in typed for "Add as line" ("An example continuation:"). Lives
@@ -17642,16 +18002,91 @@
     continuationTreeApi = {
       open(given, slot) {
         if (cr.active || !given || !given.startFen || typeof slot !== 'function') return false;
-        cr.treeSlot = slot;
+        cr.hostSlot = slot;
+        cr.hostKind = 'tree';
         openAnalysis(given);
         // openAnalysis refuses on an unreadable position or an unmeasurable
         // slot; the flag must not outlive a board that never opened, or the
         // NEXT run on any host would be positioned into the tree.
-        if (!cr.active) { cr.treeSlot = null; return false; }
+        if (!cr.active) { cr.hostSlot = null; cr.hostKind = ''; return false; }
         return true;
       },
       close() {
-        if (cr.active && cr.treeSlot) closeReview('course tree closed the analysis board');
+        if (cr.active && cr.hostKind === 'tree') {
+          closeReview('course tree closed the analysis board');
+        }
+      },
+    };
+    // Section 27: the storm's cards, on this board, in a fourth mode. The
+    // storm owns the queue — it is being refilled from the network while the
+    // user answers — so it hands cards in ONE AT A TIME rather than filling
+    // `cr.queue` the way a drill does, and `nextLine()`/`finish()` are never
+    // reached: a card's single ply is spent by the answer, not by `step()`.
+    continuationStormApi = {
+      open(card, slot) {
+        if (cr.active || !card || !card.startFen || typeof slot !== 'function') return false;
+        cr.hostSlot = slot;
+        cr.hostKind = 'storm';
+        cr.mode = 'storm';
+        cr.queue = [card];
+        if (!showOverlays()) {
+          // The mode and the host must not outlive a board that never opened,
+          // or the NEXT run on any host would be placed into a window that is
+          // no longer there — 24g's rule, for 24g's reason.
+          cr.hostSlot = null;
+          cr.hostKind = '';
+          cr.mode = 'quiz';
+          cr.queue = [];
+          return false;
+        }
+        cr.choosing = false;
+        cancelAutoStart();
+        cr.ui.chooser.hidden = true;
+        cr.ui.actions.hidden = false;
+        cr.boardEl.hidden = false;
+        positionOverlays();
+        cr.stormVerdict = null;
+        startLine(0);
+        applyStormArrival(card);
+        return true;
+      },
+      next(card) {
+        if (!cr.active || cr.mode !== 'storm' || !card) return false;
+        clearTimer();
+        cr.busy = false;
+        cr.stormVerdict = null;
+        cr.queue = [card];
+        startLine(0);
+        applyStormArrival(card);
+        return true;
+      },
+      /** §8.1's line. Section 27 owns the words; this owns the element, and
+       *  holds the board shut for as long as the verdict is up. */
+      verdict(v) {
+        if (!cr.active || cr.mode !== 'storm') return;
+        cr.stormVerdict = v || null;
+        cr.busy = Boolean(v);
+        syncUi();
+      },
+      /**
+       * §14.10: section 19's ANALYSIS board, on one of the storm's own review
+       * positions, in the storm's own slots.
+       *
+       * This is `continuationTreeApi.open` with a different `hostKind`, and
+       * deliberately a separate entry point rather than a shared one with a
+       * parameter: the two hosts' teardowns are keyed on which of them opened
+       * the board, and a shared opener would have to be told anyway.
+       */
+      analyse(given, slot) {
+        if (cr.active || !given || !given.startFen || typeof slot !== 'function') return false;
+        cr.hostSlot = slot;
+        cr.hostKind = 'storm';
+        openAnalysis(given);
+        if (!cr.active) { cr.hostSlot = null; cr.hostKind = ''; return false; }
+        return true;
+      },
+      close() {
+        if (cr.active && cr.hostKind === 'storm') closeReview('the storm ended');
       },
     };
     // Section 6c: a repertoire chip in the panel plays its move on our board.
@@ -18719,6 +19154,12 @@
     function moverColor() {
       if (!cr.pos) return null;
       if (cr.mode === 'analysis') return cr.pos.side;
+      // A storm card (27) asks for ONE move, from the colour the course
+      // prepares — and unlike a quiz there is no ply to compare against, so the
+      // answer comes from the card rather than from the line. `cr.busy` covers
+      // the window while a verdict is being graded; onSquare and onDragStart
+      // both bail on it before ever asking.
+      if (cr.mode === 'storm') return cr.userColor;
       // Browsing asks for nothing, so the board accepts nothing — which is the
       // whole of what the click and drag paths need to be told.
       if (cr.browse) return null;
@@ -19097,6 +19538,12 @@
 
     function tryMove(mv) {
       if (cr.mode === 'analysis') { anPlay(mv); return; }
+      // Section 27, and it branches here for the reason analysis does: a storm
+      // card has no right answer to compare against — any legal move is an
+      // answer, and what happens to it is a GRADE rather than an accept or a
+      // refusal. Everything below this line is about matching a line's next
+      // ply, which is exactly what a storm is not doing.
+      if (cr.mode === 'storm') { stormPlay(mv); return; }
       const ply = currentPly();
       if (!ply) return;
       const uci = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
@@ -19143,6 +19590,51 @@
       if (cr.attempts >= C.wrongHintAfter) cr.hint = true;
       flashSquare(mv.to, 'bad');
       syncUi();
+    }
+
+    // --- section 27's answer path --------------------------------------------
+
+    /**
+     * A storm card's answer. Unlike every other mode here the move is neither
+     * accepted nor refused — it is GRADED, and by section 27, which owns the
+     * scored list it is graded against.
+     *
+     * IT IS PLAYED ON THE BOARD FIRST, before anything is asked of the network:
+     * a user must never wait to see their own move. The grade follows, possibly
+     * a round trip later (the child-negation fallback), and latency is free at
+     * exactly that moment because they are already waiting for a verdict.
+     */
+    function stormPlay(mv) {
+      cr.sel = null;
+      if (!cr.pos) return;
+      const uci = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
+      const san = CloSan.moveToSan(cr.pos, uci);
+      if (!san) { warn('storm: could not resolve', uci, 'on', anFenOfCard()); return; }
+      applyMove({ mv }); // animation + cr.pos, exactly as in the quiz
+      // No second answer while the verdict is in flight, and none once it is up:
+      // onSquare and onDragStart both bail on this before asking moverColor().
+      cr.busy = true;
+      syncUi();
+      if (stormApi) stormApi.answer(uci, san);
+    }
+
+    /** The position a storm card started on, for a log line. */
+    const anFenOfCard = () => (cr.line && cr.line.startFen) || '';
+
+    /**
+     * A storm card arrives with the move that LED to its position already
+     * tinted. `startLine` clears `cr.lastMove` (a quiz line genuinely starts
+     * from nothing), and for a storm that would throw away the one piece of
+     * context the position carries — a card is a middlegame position with no
+     * moves before it on screen, so "the opponent has just played this" is most
+     * of what makes it readable.
+     */
+    function applyStormArrival(card) {
+      const arrived = card && card.storm && card.storm.cand && card.storm.cand.arrived;
+      const uci = arrived && arrived.uci;
+      if (!uci || uci.length < 4) return;
+      cr.lastMove = { from: squareIndexOf(uci.slice(0, 2)), to: squareIndexOf(uci.slice(2, 4)) };
+      paint();
     }
 
     // --- promotion picker ----------------------------------------------------
@@ -21791,7 +22283,16 @@
       skip.className = 'clo-cr-btn';
       skip.textContent = 'Skip line';
       skip.title = 'Give up on this continuation and go to the next one';
-      skip.addEventListener('click', () => { clearTimer(); cr.busy = false; nextLine(); });
+      skip.addEventListener('click', () => {
+        clearTimer();
+        cr.busy = false;
+        // A storm's queue belongs to section 27, not to `cr.queue` — it is
+        // being refilled from the network while the user answers — so passing
+        // is its decision to take. It counts as a MISS there, which is what
+        // stops "pass until an easy one turns up" being the way to a streak.
+        if (cr.mode === 'storm') { if (stormApi) stormApi.pass(); return; }
+        nextLine();
+      });
 
       const exit = document.createElement('button');
       exit.type = 'button';
@@ -22027,19 +22528,20 @@
     }
 
     /**
-     * 24g) INSIDE THE COURSE TREE'S WINDOW. The tree fills the screen and is
-     * already a modal surface, so this is neither the trainer's "pinned on
-     * Chessable's board" nor the drill's "centred over a scrim": the tree
-     * measures two empty slots in its own layout and this pins the overlays
-     * onto them, exactly the way the trainer host pins onto Chessable's board.
+     * INSIDE ONE OF OUR OWN FULL-WINDOW SURFACES — the course tree (24g) or the
+     * intuition storm (27). Such a window fills the screen and is already a
+     * modal surface, so this is neither the trainer's "pinned on Chessable's
+     * board" nor the drill's "centred over a scrim": the host measures empty
+     * slots in its own layout and this pins the overlays onto them, exactly the
+     * way the trainer host pins onto Chessable's board.
      *
      * `position: fixed` like the standalone drill, and for the same reason —
      * section 11's ban is on anchoring a fixed element to SCROLLING CONTENT,
-     * and the tree window is itself fixed, so its slots are viewport
-     * coordinates by construction. No scrim: the tree is the scrim.
+     * and such a window is itself fixed, so its slots are viewport coordinates
+     * by construction. No scrim: the host window is the scrim.
      */
-    function positionInTree() {
-      const slot = cr.treeSlot();
+    function positionInHost() {
+      const slot = cr.hostSlot();
       if (!slot) return false;
       setInlinePx(cr.boardEl, {
         left: slot.board.left, top: slot.board.top,
@@ -22053,7 +22555,7 @@
     }
 
     function positionOverlays() {
-      if (cr.treeSlot) return positionInTree();
+      if (cr.hostSlot) return positionInHost();
       if (cr.standalone) return positionStandalone();
       const board = getReviewBoard();
       if (!board) return false;
@@ -22133,6 +22635,9 @@
         : 'Close the continuation review and give Chessable its board back';
       // The quiz's own rows are owned by showChooser/beginRun, not by this.
       if (!cr.line) return;
+      // Section 27 owns its own wording end to end — a storm card is not "move
+      // n of m" of anything, and nothing below this line describes it.
+      if (cr.mode === 'storm') { syncStormUi(); return; }
       const total = cr.queue.length;
       // A drill card is a quiz line, so only the wording differs: which mistake
       // of how many, and what was played instead of it — a move is much easier
@@ -22259,6 +22764,73 @@
         : 'Give up on this continuation and go to the next one';
     }
 
+    /**
+     * Section 27's half of the panel (§8.1).
+     *
+     * The clock is running, so the verdict is ONE LINE and not a report: the
+     * move played with its rank and how far behind it was, the best move, and
+     * ChessDB's win rate for both. The panel beside the board is where that
+     * belongs — the storm's own window carries the clock, the score and the
+     * streak, which are about the session rather than about this position.
+     *
+     * EVERY NUMBER HERE IS A `learn=1` FIGURE, so the progress line wears
+     * `.clo-cdb--est` — section 26's existing "computed for us on the spot, not
+     * in ChessDB's analysed book" — and says so in its tooltip. Grading a move
+     * against the other moves in the same position is a fair ranking either way
+     * (DESIGN-chessdb.md §3.3); presenting one of these as a book eval is the
+     * thing this feature must never do.
+     */
+    function syncStormUi() {
+      const s = cr.line.storm;
+      const v = cr.stormVerdict;
+      const words = {
+        good: 'Good move', decent: 'Decent', miss: 'Missed',
+        // NOT "not in the book", which reads as a claim about the POSITION and
+        // so as a verdict on the move. It is neither: both grading sources came
+        // back empty, the move is ungraded, and nothing is scored either way.
+        unknown: 'No verdict',
+      };
+      cr.ui.title.textContent = v ? (words[v.verdict] || 'Answered') : 'Find a good move';
+      cr.ui.prompt.className = 'clo-cr-prompt' + (v
+        ? (v.verdict === 'good' ? ' clo-cr-prompt--ok'
+          : v.verdict === 'miss' ? ' clo-cr-prompt--bad' : '')
+        : '');
+
+      if (!v) {
+        cr.ui.prompt.textContent =
+          (cr.userColor === 'w' ? 'White' : 'Black') + ' to play' +
+          (cr.busy ? ' — checking…' : '');
+        // "N moves past the line" is a claim about somebody's GAME. Where the
+        // continuation was invented (§6.4's no-games fallback) there is no
+        // game, and saying so is the difference between a fact and a fiction.
+        const how = s.cand.invented ? ' plausible moves past the line'
+          : (s.plyPast === 1 ? ' move past the line' : ' moves past the line');
+        cr.ui.progress.textContent =
+          (s.from ? shortDrillTitle(s.from) + ' · ' : '') + s.plyPast + how;
+        cr.ui.progress.classList.remove('clo-cdb--est');
+        cr.ui.progress.removeAttribute('title');
+      } else {
+        cr.ui.prompt.textContent = stormVerdictLine(v, s);
+        cr.ui.progress.textContent = stormBestLine(v, s);
+        cr.ui.progress.classList.add('clo-cdb--est');
+        cr.ui.progress.title =
+          'ChessDB scores every legal move here, but the ones outside its analysed ' +
+          'book are computed on the spot — good enough to RANK your move against ' +
+          'the others in this position, not a book evaluation.';
+      }
+
+      // A storm has no line to walk, no answer to hint at, and Skip means "I
+      // have no idea" rather than "show me the next one".
+      cr.ui.browseBtn.hidden = true;
+      cr.ui.hint.hidden = true;
+      cr.ui.skip.hidden = Boolean(v);
+      cr.ui.skip.textContent = 'No idea';
+      cr.ui.skip.title = 'Move on without answering — it counts as a miss, so the ' +
+        'streak goes back to zero';
+      cr.ui.exit.textContent = 'End storm';
+      cr.ui.exit.title = 'Stop the storm and see the score';
+    }
+
     /** Variation names run long, and the panel is one column wide. */
     const shortDrillTitle = (t) => (t.length > 34 ? t.slice(0, 33) + '…' : t);
 
@@ -22356,11 +22928,15 @@
       // A standalone pass has no board to read an orientation off — the CARDS
       // carry one, and startLine applies it per card anyway, so this is only a
       // resting value for the first paint.
-      // 24g's host has no board of Chessable's either, and unlike a drill queue
-      // it has one answer for the whole run: the colour the course is written
-      // for, handed in with everything else.
-      const userColor = cr.treeSlot
+      // A run inside one of our own windows has no board of Chessable's either.
+      // 24g has ONE answer for the whole run — the colour the course is written
+      // for, handed in with everything else — while the storm (27) is a queue of
+      // positions from different lines and answers per CARD, exactly as a drill
+      // queue does.
+      const userColor = (cr.hostKind === 'tree')
         ? ((cr.an.given && cr.an.given.userColor) || cr.userColor || 'w')
+        : (cr.hostKind === 'storm')
+          ? ((cr.queue[0] && cr.queue[0].userColor) || cr.userColor || 'w')
         : cr.standalone
           ? ((cr.queue[0] && cr.queue[0].userColor) || cr.userColor || 'w')
           : trainerUserColor();
@@ -22679,11 +23255,12 @@
       // Before releaseTrainer, so the scrim cannot outlive the board it dims
       // behind. Nulled FIRST: applyStandaloneChrome reads the flag.
       cr.standalone = false;
-      // 24g: the same discipline. The course tree notices on its own next tick
-      // (continuationActive goes false) and puts its columns back — there is no
-      // callback, deliberately: a teardown that has to remember to tell someone
-      // is a teardown that will one day forget.
-      cr.treeSlot = null;
+      // 24g / 27: the same discipline. The host notices on its own next tick
+      // (continuationActive goes false) and puts its own content back — there is
+      // no callback, deliberately: a teardown that has to remember to tell
+      // someone is a teardown that will one day forget.
+      cr.hostSlot = null;
+      cr.hostKind = '';
       applyStandaloneChrome();
       // AFTER the overlays are down, so Chessable's board is visible again as
       // it un-dims. Called on every close, not just the tidy ones: a run torn
@@ -22700,6 +23277,7 @@
       // Back to the quiz's own defaults, so the next launcher press is a quiz.
       cr.mode = 'quiz';
       cr.browse = false;
+      cr.stormVerdict = null; // section 27's line, which belongs to the run that has gone
       cr.sgAgain.clear();
       cr.view = null;
       // A save in flight is the worker's job now and finishes (or times out)
@@ -22723,12 +23301,13 @@
       // it — so both ends are covered by one condition.
       if (cr.boardEl) cr.boardEl.classList.toggle('clo-cr-standalone', Boolean(cr.standalone));
       if (cr.panel) cr.panel.classList.toggle('clo-cr-standalone', Boolean(cr.standalone));
-      // 24g takes the same `position: fixed` and NONE of the scrim: the course
-      // tree's own window is what the page behind is already hidden by, and a
-      // second dimming layer over it would darken the columns the board is
-      // being read against.
-      if (cr.boardEl) cr.boardEl.classList.toggle('clo-cr-intree', Boolean(cr.treeSlot));
-      if (cr.panel) cr.panel.classList.toggle('clo-cr-intree', Boolean(cr.treeSlot));
+      // A run inside one of our own windows (24g, 27) takes the same
+      // `position: fixed` and NONE of the scrim: that window is what the page
+      // behind is already hidden by, and a second dimming layer over it would
+      // darken the columns — or the storm's own header — the board is being
+      // read against.
+      if (cr.boardEl) cr.boardEl.classList.toggle('clo-cr-inhost', Boolean(cr.hostSlot));
+      if (cr.panel) cr.panel.classList.toggle('clo-cr-inhost', Boolean(cr.hostSlot));
       if (!cr.standalone) { if (cr.scrim) cr.scrim.hidden = true; return; }
       if (!cr.scrim || !cr.scrim.isConnected) {
         const stale = document.getElementById(CR_SCRIM_ID);
@@ -24189,11 +24768,12 @@
       // on, so no path change, variation change or browse-state flip may close
       // it. Only Exit and the last card do.
       if (cr.active && cr.standalone) { positionOverlays(); return; }
-      // 24g's run is the other one that is not about the page underneath: it is
-      // about the COURSE, on a /course/ page none of the branches below know
-      // anything about. The tree owns its lifetime and closes it; this tick's
-      // only job is to keep it on the slots the tree measures.
-      if (cr.active && cr.treeSlot) { positionOverlays(); return; }
+      // A run inside one of our own windows (24g's analysis board, 27's storm)
+      // is the other one that is not about the page underneath: it is about the
+      // COURSE, on a /course/ page none of the branches below know anything
+      // about. The host owns its lifetime and closes it; this tick's only job is
+      // to keep the overlays on the slots the host measures.
+      if (cr.active && cr.hostSlot) { positionOverlays(); return; }
       if (isVariationPath()) { variationTick(); return; }
       // The panel element itself SURVIVES the hop from the variation page to a
       // trainer session — chessable.com never reloads the document, and
@@ -30516,6 +31096,7 @@
       splitsOpen: false,  // the list is showing
       splits: null,       // derived from the tree once per walk; null = not derived yet
       splitsEl: null, splitBtn: null, splitsLabel: '',
+      stormBtn: null,     // 27's launcher, this header being its only way in
       alts: new Map(),    // oid → { plies: [{san, alts[]}] } | { error } — one getLesson each
       altsBusy: false,
       altsJob: null,      // in-flight alternatives check, so the button can cancel it
@@ -32687,6 +33268,10 @@
      *  never from the poll, which would fight the user's scroll position. */
     function renderTree() {
       if (!ct.panel) return;
+      // 27: with the storm's own window up this one is hidden, so a redraw is a
+      // walk, a set of badges and 24b's `wantDb` spent on columns nobody can
+      // see. `render` still runs — it is what keeps the hidden state true.
+      if (stormActive && stormActive()) { render(); return; }
       // 24g: while the board is up the columns are not on screen, and drawing
       // them would still cost the walk, the badges and — through renderColumns
       // — 24b's `wantDb` for columns nobody can see. The crumb and the summary
@@ -32719,13 +33304,20 @@
     /** Visibility and button state only — this runs on EVERY tick. */
     function render() {
       if (!ct.panel) return;
-      ct.panel.hidden = !ct.open;
-      ct.launcher.hidden = ct.open;
-      if (!ct.open) return;
+      // 27: the storm has a full-window panel of its own, the same size at the
+      // same z-index, so this one gets out of the way entirely rather than
+      // being layered against. It comes back by itself when the storm's window
+      // is dismissed — the storm never has to tell it.
+      const storming = Boolean(stormActive && stormActive());
+      ct.panel.hidden = !ct.open || storming;
+      ct.launcher.hidden = ct.open || storming;
+      if (!ct.open || storming) return;
       // 24g: it is disabled until there is a tree to stand in, and `render` is
       // the only thing that runs after a walk finishes.
       syncExploreButton();
       syncSplitButton();
+      // 27: nothing to storm the frontier of until the course has been read.
+      if (ct.stormBtn) ct.stormBtn.disabled = !ct.tree || ct.busy;
       const cancellable = ct.busy && Boolean(ct.job);
       ct.runBtn.textContent = cancellable ? 'Cancel' : (ct.tree ? 'Re-read' : 'Read this course');
       ct.runBtn.classList.toggle('clo-ct-btn--cancel', cancellable);
@@ -32816,6 +33408,9 @@
     }
 
     function onKey(e) {
+      // …and `hidden` is also 27's stand-down: while a storm runs this window is
+      // hidden by `render`, so the arrows and Escape belong to the storm's own
+      // handler without this needing a clause about it.
       if (!ct.open || !ct.panel || ct.panel.hidden) return;
       // 24g: while the analysis board is running in this window, the keyboard is
       // ITS. Section 18's swallow is a capture listener on `document` too, and
@@ -32970,6 +33565,38 @@
       splitBtn.type = 'button';
       splitBtn.addEventListener('click', () => { ct.splitsOpen = !ct.splitsOpen; renderTree(); });
 
+      // 27. In THIS header rather than in the corner of the page: that corner
+      // already holds four things (25's key-moves panel at 92px, this tree at
+      // 54px, 21's coverage at 16px and 16d's pin dock, which is on every page
+      // at 16px), and a fifth would have to solve that cluster rather than add
+      // an offset. The tree is the right host anyway — it is the surface that
+      // is already about "what does this course cover", and the storm is the
+      // question about where it stops.
+      const stormBtn = el('button', 'clo-ct-toggle', 'Storm');
+      stormBtn.type = 'button';
+      stormBtn.title = 'Intuition storm: real games that carried on past the point one of ' +
+        'this course’s lines stops, one position at a time against the clock. Your move is ' +
+        'graded for being DECENT, not for matching an engine.\n' +
+        'It reads the Lichess ' +
+        'opening explorer and the ChessDB analysis book, so it sends these positions to ' +
+        'both.';
+      stormBtn.addEventListener('click', () => {
+        if (!stormApi) {
+          setStatus('The storm is not available in this tab — reload the page.', 'warn');
+          return;
+        }
+        // The board is section 18's and there can be one run at a time.
+        exitExplore();
+        if (!stormApi.open({ bid: ct.bid, name: (ct.tree && ct.tree.name) || '' })) {
+          setStatus('The storm could not be started here.', 'warn');
+          return;
+        }
+        setStatus('', '');
+        // The two windows are the same size at the same z-index, so this one
+        // goes now rather than on the next tick.
+        render();
+      });
+
       const runBtn = el('button', 'clo-ct-btn', 'Read this course');
       runBtn.type = 'button';
       runBtn.addEventListener('click', () => {
@@ -32987,7 +33614,7 @@
         ct.open = false;
         render();
       });
-      head.append(findEl, dbBtn, splitBtn, xBtn, flipBtn, runBtn, close);
+      head.append(findEl, dbBtn, splitBtn, xBtn, stormBtn, flipBtn, runBtn, close);
 
       const body = el('div', 'clo-ct-body');
 
@@ -33049,7 +33676,7 @@
         panel, statusEl, summaryEl, crumbEl, colsEl, tabsEl, rootsEl,
         boardEl, boardGrid, boardLayer, boardShapes, stageEl, runBtn,
         dbBtn, flipBtn, findEl, findBoxEl, splitsEl, splitBtn,
-        xstageEl, xBoardEl, xPanelEl, xDbEl, xBtn,
+        xstageEl, xBoardEl, xPanelEl, xDbEl, xBtn, stormBtn,
       });
       syncDbButton();
       syncExploreButton();
@@ -33169,6 +33796,2662 @@
     // so it is assigned once and gates itself on `ct.explore`.
     courseTreePanelSlot = panelSlot;
     tick();
+  }
+
+  // --- section 27's verdict line (§8.1) --------------------------------------
+  //
+  // TOP LEVEL, and that is not tidiness: section 18's panel prints this line
+  // while a card is on the board, and section 27's review prints it again
+  // afterwards — two different closures, and a helper living in either one is a
+  // `ReferenceError` in the other. Which `node --check` cannot see and a sliced
+  // check cannot see either, because slicing flattens every scope into one
+  // (found live 2026-08-28, exactly the way section 23's own note warns about).
+  //
+  // They are pure and take everything they need as arguments, so this is also
+  // the codebase's ordinary answer to "two sections must not disagree about
+  // this" — the same reason `moverScorePct` and `popEntryWdl` are up here.
+  // `dev/check-storm.js` asserts the indentation, so a well-meaning move back
+  // into a module fails loudly rather than at the next teardown.
+
+  /** "Nf3 — 2nd best, 12cp behind" / "Passed". */
+  function stormVerdictLine(v, s) {
+    if (v.passed) return 'Passed — no answer given';
+    if (v.verdict === 'unknown') {
+      return (v.userSan || 'that move') + ' — ChessDB cannot score it here';
+    }
+    const bits = [v.userSan || 'your move'];
+    if (v.rank === 1) bits.push('the top move');
+    else if (v.rank) bits.push('#' + v.rank + ' of ' + s.cand.nScored);
+    if (typeof v.loss === 'number') {
+      bits.push(v.loss <= 0 ? 'level with the best' : v.loss + 'cp behind');
+    }
+    // WHERE THE NUMBER CAME FROM, where it is not the book's own ranking of
+    // this position (§3.4's two fallbacks). A centipawn figure the user
+    // cannot place is one they cannot argue with, and the engine tier's
+    // number is a shallow search rather than a book entry.
+    if (v.source === 'engine') bits.push('by the engine');
+    if (v.points) bits.push('+' + v.points);
+    return bits.join(' · ');
+  }
+
+  /** "best Nf3 +0.32 · 54%   Bb5 +0.20 · 53%" — the best move and the one
+   *  played, side by side, which is the pair §8.1 asks for. */
+  function stormBestLine(v, s) {
+    const pct = (w) => (typeof w === 'number' ? Math.round(w) + '%' : '');
+    // A verdict from the ENGINE tier names the ENGINE's best and its score:
+    // both halves of a comparison have to come from one evaluator, which is
+    // the same rule that makes that tier two searches rather than one.
+    const eng = v.source === 'engine' && typeof v.bestScore === 'number';
+    const bestSan = eng ? (v.bestSan || '?') : (s.bestSan || '?');
+    const bestScore = eng ? v.bestScore : s.bestScore;
+    const bw = eng ? '' : pct(s.bestWinrate);
+    const parts = ['best ' + bestSan + ' ' + stormCp(bestScore) + (bw ? ' · ' + bw : '')];
+    // THE USER'S MOVE IS ONLY NAMED WHEN IT IS A DIFFERENT MOVE. Playing the
+    // top move printed it twice — "best Nxf3+ -0.89   Nxf3+ -0.89" — which
+    // reads as a defect rather than as agreement (seen live 2026-08-28). The
+    // prompt above already says "the top move", so there is nothing left to
+    // add here.
+    const same = v.rank === 1 || (v.userSan && v.userSan === bestSan);
+    if (!same && v.userSan && typeof v.userScore === 'number') {
+      // No win rate on an ENGINE-graded line either, and by construction
+      // rather than by luck: a win rate is a BOOK figure, and printing one
+      // beside a search's centipawns is the same cross-source mixture the
+      // best move above is chosen to avoid.
+      const yw = eng ? '' : pct(v.userWinrate);
+      // The win rate only where the two are comparable: a move graded through
+      // the CHILD has none of its own, and borrowing the child's would be a
+      // different number wearing the same label.
+      parts.push(v.userSan + ' ' + stormCp(v.userScore) + (yw ? ' · ' + yw : ''));
+    }
+    return parts.join('   ');
+  }
+
+  /** A ChessDB score as pawns, from the MOVER's side — which is whose move it
+   *  is on a storm card, i.e. the user's. The panel's own eval column flips to
+   *  White because an engine section sits above it; here there is no second
+   *  convention to agree with, and "how good is this FOR ME" is the reading. */
+  function stormCp(cp) {
+    if (typeof cp !== 'number' || !Number.isFinite(cp)) return '';
+    const p = cp / 100;
+    const r = p.toFixed(2);
+    return Math.abs(Number(r)) < 0.005 ? '0.00' : (Number(r) > 0 ? '+' + r : r);
+  }
+
+  // ==========================================================================
+  // 27) Intuition storm on the repertoire's frontier (course page)
+  //     — see DESIGN-intuition-storm.md
+  // ==========================================================================
+  //
+  // Chessable teaches you a line and stops; this asks what you do on the move
+  // AFTER it stops. The positions come from real games that carried on past the
+  // end of one of your own course variations, and a move is rewarded for being
+  // DECENT rather than for being the engine's first choice — reward only the top
+  // move and this becomes an engine-agreement trainer, which is a different and
+  // much less useful exercise.
+  //
+  // It is the first thing in this file that asks a question about the PLAYER
+  // rather than about the book: section 21 asks which lines are missing, 24b
+  // asks which replies the course never covers, and both are about the course.
+  //
+  // Almost all of it is reuse. The board is section 18's overlays in a FOURTH
+  // mode (`cr.mode = 'storm'`); the position graph is the shared `walkVariation`
+  // over section 21's cached `fetchCourse`; the scorer is section 26's ChessDB
+  // `queryall`; the games come from the Lichess explorer this extension has
+  // always read. What is genuinely new is the frontier picker, the game walk,
+  // the position filter, the grader and this panel.
+  //
+  // FOUR THINGS IT MUST NEVER DO, and the first is the dangerous one:
+  //   * never call ChessDB's `queue` or `store`. The walk stops on `unknown`
+  //     ten to twelve times per fourteen frontiers and "ask them to analyse it"
+  //     is one parameter away; those two actions spend a volunteer network's
+  //     compute, and a storm session would spend it in bursts of hundreds. The
+  //     worker's allow-list (background.js) is what makes them unreachable from
+  //     here, and it must stay an allow-list.
+  //   * never write to the course. Section 24's rule, and this feature has the
+  //     same tempting button one line away — "add this position as a puzzle"
+  //     from a storm card. Sections 19d/19e already do that safely from a
+  //     BOARD; a storm card must not grow its own.
+  //   * never touch Chessable's board and never reschedule anything. Section
+  //     20's guarantees are what make positions from outside the course safe to
+  //     drill at all.
+  //   * never present a `learn=1` fill-in as a book eval. Under `learn=1`
+  //     ChessDB scores every legal move but computes the unknown ones on the
+  //     spot, and nothing inside that answer distinguishes the two
+  //     (DESIGN-chessdb.md §3.3). Grading a human's move against the other
+  //     moves in the SAME position is still a fair ranking, which is why ONE
+  //     request per position is enough here — but every number shown to the
+  //     user carries `.clo-cdb--est`, which already means exactly this.
+  //
+  // And one it must never do by accident: never show the same position twice in
+  // a session. Measured — duplicates arrive from two different games in the same
+  // run — hence `st.seen`, keyed on `cacheKey`.
+
+  // () => boolean — true while an intuition-storm session (section 27) is
+  // running on a /course/ page. The course tree stands down on it in two ways:
+  // its window hides (the storm has one of its own, the same size and the same
+  // z-index) and its document-capture keyboard lets every key through.
+  // Assigned by initStorm; null-safe like every other bridge here.
+  let stormActive = null;
+
+  // { open({ bid, name }) => boolean } — starts a session on a course. Called
+  // by the course tree's header launcher, which is the storm's only way in: the
+  // corner of a course page already holds four things (25 at 92px, 24 at 54px,
+  // 21 at 16px and 16d's pin dock at 16px) and a fifth would have to solve that
+  // cluster rather than add an offset. Returns FALSE when a session could not be
+  // started, so the tree can say why in its own status line — the same contract
+  // `continuationDrill` and `continuationTreeApi.open` have, and for the same
+  // reason: a panel's own status line is the only place a refusal can be read.
+  let stormApi = null;
+
+  function initStorm() {
+    if (typeof CloSan === 'undefined') return; // no move generator, no storm
+    const C = CONFIG.storm;
+    const COURSE_PATH_RE = /^\/course\/(\d+)(?:\/|$)/;
+    const CHAPTER_EDIT_RE = /^\/course\/\d+\/\d+\/e\/?$/;
+
+    const st = {
+      bid: null,
+      name: '',
+      running: false,
+      // The ply range, a USER setting (storage.local). Held here rather than
+      // read from `C` at each use, and handed to the pure walks through
+      // `cfg()` — so those stay pure and `dev/check-storm.js` keeps executing
+      // them with a config it declares itself.
+      minPly: C.minPly,
+      maxPly: C.maxPly,
+      panel: null,
+      ui: null,
+      // --- stage 0 --------------------------------------------------------
+      pool: [],          // eligible frontiers not yet drawn, weighted by `n`
+      poolSize: 0,       // …and how many there were, for the summary line
+      // --- the producer (§8.3) --------------------------------------------
+      queue: [],         // ready cards
+      producing: false,
+      exhausted: false,  // the pool ran out, or the request cap was reached
+      note: '',          // one line: what the producer is doing, or why it stopped
+      seen: new Set(),   // cacheKey of every position offered this session
+      // --- the session -----------------------------------------------------
+      card: null,        // the card on the board
+      shown: 0,
+      answered: 0,
+      score: 0,
+      streak: 0,
+      bestStreak: 0,
+      verdict: null,     // what §8.1's line prints, or null before an answer
+      history: [],       // [{ card, verdict }] — every position answered (§14.10)
+      reviewIdx: 0,      // which of them the review is standing on
+      analysing: false,  // section 19's board is up on one of them, in our slots
+      grading: false,    // a verdict is in flight (the child-negation request)
+      gradeTimer: 0,     // …and the backstop that ends it whatever happens
+      endsAt: 0,
+      clockTimer: 0,
+      nextTimer: 0,
+      over: false,       // the clock or the pool ran out; the summary is up
+      boardUp: false,    // an overlay run of ours has been opened at least once
+      // One failed game export switches the REST of the session to master PGNs
+      // (§2.2): the likeliest cause is the lichess.org host permission being
+      // absent or withdrawn, which is a fact about the session rather than
+      // about one game.
+      mastersOnly: false,
+      // --- the store (§14.11) -----------------------------------------------
+      store: null,        // { ck: entry } for st.bid, loaded once per session
+      storeDirty: false,  // …and written back at the points listed in `saveStore`
+      storeQueue: null,   // this session's draw from it, hardest first
+      gathering: false,   // the fill-only pass is running
+      gone: null,         // §14.12's tombstones for st.bid: { ck: whenDropped }
+      syncing: false,
+      syncNote: '',       // one line: what the exchange did, or why it could not
+      lastPull: 0,
+      gathered: 0,        // positions it has added
+      // --- caches and budget (§9) -------------------------------------------
+      cdb: new Map(),    // cacheKey → scored[] | null ("null" = asked, unknown)
+      cdbCount: 0,
+      pgn: new Map(),    // game id → SAN list
+      lastCdbAt: 0, lastExplorerAt: 0, lastPgnAt: 0,
+      // --- the engine tier (§3.4) ------------------------------------------
+      // One claim on the shared engine at a time, keyed by a request id the
+      // way the alt check keys its own — UCI info lines carry no correlation,
+      // so the tag is the ONLY thing separating our updates from the panel's.
+      eng: null,     // { reqId, phase, resolve, timer, moverColor, best, child, childMover }
+      engSeq: 0,
+    };
+
+    stormActive = () => st.running;
+
+    /**
+     * The thresholds the pure pipeline runs on: `CONFIG.storm` with the user's
+     * own ply range folded in. One object per call rather than a cached one —
+     * the walks hold it for the length of a walk, and a setting changed
+     * mid-session must not reach into a walk already under way.
+     */
+    const cfg = () => ({ ...C, minPly: st.minPly, maxPly: st.maxPly });
+
+    /** Clamped into the bounds the selectors offer, and `min <= max` always:
+     *  an inverted range yields nothing at all and says nothing about why. */
+    function applyPlyRange(lo, hi) {
+      const a = Number(lo), b = Number(hi);
+      st.minPly = Number.isFinite(a) ? Math.max(1, Math.min(C.minPlyMax, Math.round(a))) : C.minPly;
+      st.maxPly = Number.isFinite(b) ? Math.max(C.maxPlyMin, Math.min(C.maxPlyMax, Math.round(b))) : C.maxPly;
+      if (st.maxPly < st.minPly) st.maxPly = st.minPly;
+    }
+
+    (async () => {
+      try {
+        const got = await chrome.storage.local.get([C.minPlyKey, C.maxPlyKey]);
+        applyPlyRange(
+          Object.prototype.hasOwnProperty.call(got, C.minPlyKey) ? got[C.minPlyKey] : C.minPly,
+          Object.prototype.hasOwnProperty.call(got, C.maxPlyKey) ? got[C.maxPlyKey] : C.maxPly);
+        syncSettings();
+      } catch (err) {
+        // An orphaned content script, or a profile with no storage: the
+        // defaults are already in place and the storm runs on them.
+      }
+    })();
+
+    // ----------------------------------------------------------------------
+    // The pipeline, as pure functions.
+    //
+    // Everything in this block is what `dev/check-storm.js` slices out and
+    // executes, so none of it may reach for `st`, the DOM or the network, and
+    // every threshold arrives as `C`. Two of them fail SILENTLY when they are
+    // wrong — `stormUserEval`'s perspective flip and `stormMoveLoss`'s
+    // child-negation arm — which is the whole reason that file exists.
+    // ----------------------------------------------------------------------
+
+    // ----------------------------------------------------------------------
+    // §14.11) The position store
+    //
+    // The expensive half of this feature is finding a position, not asking it:
+    // ~11 ChessDB requests each (§6.1), paid while the user waits. So it is
+    // separable — `gather()` fills the store and shows nothing, and a session
+    // then opens on what is already in it.
+    //
+    // Serialised with SHORT KEYS because the scored list is 20-36 moves and
+    // `chrome.storage.local` is a 10 MB quota shared with every other feature
+    // here. Measured on the test courses: ~700 bytes a position, so `storeMax`
+    // of 900 is about 0.6 MB per course.
+    // ----------------------------------------------------------------------
+
+    /** A card as it is stored. Everything `stormCard` needs and nothing else —
+     *  in particular NOT the card, which is rebuilt, so a change to
+     *  `stormCard` reaches stored positions too. */
+    function stormPack(cand, f) {
+      return {
+        f: cand.fen,
+        p: cand.ply,
+        c: cand.userColor,
+        n: (f && f.names && f.names[0]) || '',
+        i: cand.invented ? 1 : 0,
+        a: cand.arrived ? [cand.arrived.uci || '', cand.arrived.san || ''] : null,
+        // The scored list, mover's perspective, best first — the thing the
+        // requests bought. `w` is dropped where ChessDB gave none rather than
+        // stored as null: it is absent on roughly half the moves.
+        m: cand.scored.map((m) => (typeof m.winrate === 'number'
+          ? [m.uci, m.san, m.score, m.winrate]
+          : [m.uci, m.san, m.score])),
+        t: Date.now(),
+        // How many times it has been offered and NOT learned. Kept for the
+        // ordering below, and because a position missed three times is worth
+        // more than one never seen.
+        k: 0,
+      };
+    }
+
+    /** …and back. Returns a candidate in exactly the shape the walks produce,
+     *  so everything downstream is unchanged — `stormCard` most of all. */
+    function stormUnpack(e) {
+      if (!e || !e.f || !Array.isArray(e.m) || !e.m.length) return null;
+      const scored = e.m.map((m) => ({
+        uci: m[0], san: m[1] || '', score: m[2],
+        winrate: typeof m[3] === 'number' ? m[3] : undefined,
+      }));
+      if (scored.some((m) => typeof m.score !== 'number' || !m.uci)) return null;
+      return {
+        fen: e.f,
+        ply: e.p || 1,
+        userColor: e.c === 'b' ? 'b' : 'w',
+        nScored: scored.length,
+        scored,
+        invented: Boolean(e.i),
+        arrived: e.a ? { uci: e.a[0] || null, san: e.a[1] || '' } : null,
+        stored: true,
+      };
+    }
+
+    // ----------------------------------------------------------------------
+    // §14.12) Carrying the store between devices
+    //
+    // Section 16e proved this wire: an informational card in the user's own
+    // course, `--` as its move so it is never quizzed, base32 because
+    // Chessable's comment parser rewrites anything that spells a SAN, and an
+    // `oid` on the write so it overwrites in place. All of that is 16e's and is
+    // reached through `pinSyncApi.carrier`; what follows is only the payload.
+    //
+    // THE PAYLOAD IS A SNAPSHOT, and that is what makes the tombstones
+    // necessary: the merge is a union, so without them a position the retention
+    // rule dropped would come back from the other device's copy for ever.
+    // ----------------------------------------------------------------------
+
+    /**
+     * The store as text for one card, hardest first and cut to fit.
+     *
+     * IT DROPS EVERY SAN. A move's SAN is derivable from its uci and the
+     * position, so carrying it is about a third of the payload for nothing —
+     * and one card is 120 KB, which is the whole budget. `stormWireUnpack`
+     * recomputes them, once per exchange rather than once per session; the
+     * LOCAL store keeps its SANs, which is what makes `storeDraw` free.
+     *
+     * `budget` is in BASE32 characters, which is 8/5 of the bytes — so the
+     * check is made against the encoded size and not the JSON's.
+     */
+    function stormWirePack(store, gone, C, budget) {
+      const now = Date.now();
+      const keys = Object.keys(store || {}).sort((a, b) =>
+        ((store[b].k || 0) - (store[a].k || 0)) || ((store[b].t || 0) - (store[a].t || 0)));
+      const cutoff = now - C.goneDays * 24 * 60 * 60 * 1000;
+      const tombs = Object.keys(gone || {})
+        .filter((ck) => (gone[ck] || 0) > cutoff)
+        .sort((a, b) => (gone[b] || 0) - (gone[a] || 0))
+        .slice(0, C.goneMax);
+      const out = { v: C.wireVersion, at: now, g: {}, p: {} };
+      for (const ck of tombs) out.g[ck] = gone[ck];
+      // Grown one position at a time and measured each time: a payload that
+      // overshoots is a card the server refuses, and the honest answer is fewer
+      // positions rather than a failed exchange.
+      let kept = 0;
+      for (const ck of keys) {
+        const e = store[ck];
+        if (!e || !Array.isArray(e.m)) continue;
+        out.p[ck] = {
+          f: e.f, p: e.p, c: e.c, n: e.n, i: e.i, a: e.a, t: e.t, k: e.k,
+          // uci and score only; the san goes.
+          m: e.m.map((m) => (typeof m[3] === 'number' ? [m[0], m[2], m[3]] : [m[0], m[2]])),
+        };
+        const size = Math.ceil(JSON.stringify(out).length * 8 / 5);
+        if (budget && size > budget) { delete out.p[ck]; break; }
+        kept++;
+      }
+      out.n = kept;
+      return out;
+    }
+
+    /**
+     * …and back: the positions in the LOCAL store's own shape, with every SAN
+     * recomputed from its uci.
+     *
+     * A move whose uci will not resolve on the position is DROPPED rather than
+     * carried with an empty SAN — the verdict line names moves, and a blank one
+     * there reads as a defect. An entry left with no moves at all is dropped
+     * whole, because a card cannot be built from it.
+     */
+    function stormWireUnpack(blob, C) {
+      if (!blob || blob.v !== C.wireVersion || !blob.p) return null;
+      const store = {};
+      for (const ck of Object.keys(blob.p)) {
+        const e = blob.p[ck];
+        if (!e || !e.f || !Array.isArray(e.m)) continue;
+        const pos = CloSan.parseFen(e.f);
+        if (!pos) continue;
+        const m = [];
+        for (const row of e.m) {
+          if (!row || typeof row[1] !== 'number') continue;
+          const san = CloSan.moveToSan(pos, row[0]);
+          if (!san) continue;
+          m.push(typeof row[2] === 'number' ? [row[0], san, row[1], row[2]] : [row[0], san, row[1]]);
+        }
+        if (!m.length) continue;
+        store[ck] = { f: e.f, p: e.p || 1, c: e.c, n: e.n || '', i: e.i || 0,
+          a: e.a || null, t: e.t || blob.at || Date.now(), k: e.k || 0, m };
+      }
+      const gone = {};
+      for (const ck of Object.keys(blob.g || {})) gone[ck] = blob.g[ck];
+      return { store, gone, at: blob.at || 0 };
+    }
+
+    /**
+     * Folds a remote snapshot into the local store.
+     *
+     * THREE RULES, and the first two are the tombstones' whole purpose:
+     *  * a position in EITHER `gone` list is removed and never re-added — the
+     *    retention rule dropped it on some device, and a union merge would
+     *    otherwise resurrect it on every exchange;
+     *  * a position only the remote has is ADDED, which is the point;
+     *  * one both have keeps the HIGHER failure count, because that is the
+     *    number that decides how soon it comes round again and forgetting it is
+     *    the one way this merge can quietly make the feature worse.
+     *
+     * Returns what changed, so a caller knows whether to write anything back.
+     */
+    function stormWireMerge(local, remote, localGone, remoteGone) {
+      const gone = Object.assign({}, remoteGone || {}, localGone || {});
+      let added = 0, dropped = 0, bumped = 0;
+      for (const ck of Object.keys(gone)) {
+        if (local[ck]) { delete local[ck]; dropped++; }
+      }
+      for (const ck of Object.keys(remote || {})) {
+        if (gone[ck]) continue;
+        const mine = local[ck];
+        if (!mine) { local[ck] = remote[ck]; added++; continue; }
+        const theirs = remote[ck].k || 0;
+        if (theirs > (mine.k || 0)) { mine.k = theirs; bumped++; }
+      }
+      return { added, dropped, bumped, gone };
+    }
+
+    /**
+     * STAGE 0 — the frontier set: every position one of this course's own
+     * variations ENDS on, with whose repertoire it belongs to and how many
+     * lines converge there.
+     *
+     * TWO EXCLUSIONS, both measured (§6.4), and the first is not an
+     * optimisation:
+     *
+     *  * A VARIATION WITH A CUSTOM START FEN CAN NEVER BE A SOURCE. Tactics
+     *    puzzles and annotated model-game fragments end on positions no real
+     *    game passes through, so the explorer has nothing to say about them —
+     *    and on course 291847 they are 38 of 71 distinct frontiers. Paying an
+     *    explorer request each to discover that is more than half the requests
+     *    on a course of that shape.
+     *  * A variation under `minVarPlies` has no repertoire to be at the
+     *    frontier of.
+     *
+     * WHOSE MOVE THE STORM ASKS FOR COMES FROM THE LINE, never from
+     * `courseSide` — 24h's rule, for 24h's reason: `courseSide` is a
+     * course-wide MAJORITY and §12.6 measured it answering 'w' for a course
+     * holding 15 Black lines. A frontier that lines of BOTH colours end on is
+     * dropped rather than guessed at, and so is a variation whose own colour
+     * the course does not state: an inverted answer here would ask the user to
+     * find the OPPONENT's best move and then mark them wrong for their own.
+     */
+    async function stormFrontiers(vars, C) {
+      const byEnd = new Map();
+      let i = 0;
+      for (const v of vars || []) {
+        // Section 24's walk yields for the same reason: this is `walkVariation`
+        // over every line of the course, measured at 1.2 s for 80 variations,
+        // and a 500-line repertoire is ~8 s of frozen tab at the very moment
+        // the user has just pressed a button.
+        if (++i % C.chunkVars === 0) await sleepMs(0);
+        if (!v.sans || v.sans.length < C.minVarPlies) continue;
+        const side = sideOf(v.color);
+        if (!side) continue;
+        if (v.fen && cacheKey(v.fen) !== cacheKey(START_FEN)) continue;
+        const w = walkVariation(v);
+        if (!w) continue;
+        const ck = cacheKey(w.end);
+        const last = w.plies[w.plies.length - 1];
+        let e = byEnd.get(ck);
+        if (!e) {
+          byEnd.set(ck, e = {
+            ck, fen: w.end, side: null, n: 0, w: 0, b: 0, names: [],
+            // The course's OWN last move into this position. Free here, and it
+            // is what lets an invented line's first card still say how it was
+            // arrived at — a real game's walk reads that off the game instead.
+            lastUci: (last && last.uci) || null,
+            lastSan: (last && last.san) || '',
+          });
+        }
+        e.n++;
+        if (side === 'w') e.w++; else e.b++;
+        if (e.names.length < 3) e.names.push(v.name || String(v.oid));
+      }
+      const out = [];
+      for (const e of byEnd.values()) {
+        if (e.w && e.b) continue; // ambiguous: two repertoires end here
+        e.side = e.w ? 'w' : 'b';
+        out.push(e);
+      }
+      return out;
+    }
+
+    /**
+     * Draws one frontier out of the pool, WEIGHTED by how many variations end
+     * there (§4: "storming the frontier of a line you meet twice a year is a
+     * wasted rep"). It is REMOVED, so a session never repeats a frontier.
+     *
+     * Weighting by section 21's full reachability ranking is the other half of
+     * §4's instruction and is deliberately NOT built: that ranking is a product
+     * over the opponent plies' Lichess shares, i.e. one explorer request per
+     * distinct position of every line — section 21's own cost, which belongs
+     * behind section 21's own arming rather than in front of a storm's first
+     * card. `n` is the free half of the same question.
+     */
+    function stormDrawFrontier(pool, rnd) {
+      if (!pool || !pool.length) return null;
+      let total = 0;
+      for (const f of pool) total += Math.max(1, f.n);
+      let r = rnd() * total;
+      for (let i = 0; i < pool.length; i++) {
+        r -= Math.max(1, pool[i].n);
+        if (r <= 0) return pool.splice(i, 1)[0];
+      }
+      return pool.pop();
+    }
+
+    /**
+     * A ChessDB score, which is the MOVER's, read from the USER's side.
+     *
+     * WHETHER TO FLIP DEPENDS ON WHOSE MOVE IT IS IN THE POSITION, never on
+     * which colour the course is for — and the two are usually OPPOSITE, since
+     * a White line ending after White's move leaves Black to move. Getting it
+     * wrong is completely silent: it inverts every position into a tidy column
+     * of backwards numbers, and it is exactly the bug that got into
+     * `dev/probe-storm.js`'s own `--frontiers` block, which reported a median
+     * of −20 and nothing above +0.80 for a course whose frontiers actually run
+     * to a median of +0.39 with four lines above +1.10 (§6.5).
+     */
+    function stormUserEval(bestScore, stmSide, userSide) {
+      return stmSide === userSide ? bestScore : -bestScore;
+    }
+
+    /**
+     * The PGN comment pattern, built with `new RegExp` rather than written as a
+     * literal — and that is not a style choice. `dev/slice-source.js` extracts
+     * the function below by BRACE MATCHING, and it counts braces inside regex
+     * literals: a literal /\{[^}]*\}/ truncates the slice three lines in,
+     * silently, because a half-function is still a syntactically plausible
+     * thing to hand `new Function`. Inside a string the slicer skips them.
+     */
+    const PGN_COMMENT_RE = new RegExp('\\{[^}]*\\}', 'g');
+
+    /** The SAN moves of a PGN, headers, comments, NAGs and numbers stripped. */
+    function stormPgnMoves(pgn) {
+      const body = String(pgn || '')
+        .replace(/^\[.*$/gm, '')
+        .replace(PGN_COMMENT_RE, '')
+        .replace(/\$\d+/g, '')
+        .replace(/\b\d+\.(\.\.)?/g, '')
+        .replace(/(1-0|0-1|1\/2-1\/2|\*)\s*$/, '');
+      return body.split(/\s+/).filter(Boolean);
+    }
+
+    /**
+     * STAGE 3 — the first PICK rule this candidate fails, or null when it is
+     * offerable (§5.2). Every band is a measurement; see CONFIG.storm.
+     *
+     * The order is the order the probe reports its counts in, so its "why
+     * candidates were rejected" table and this function stay comparable.
+     */
+    function stormPickReject(c, C) {
+      if (c.evalUser < C.userLoCp) return 'you are losing';
+      if (c.evalUser > C.userHiCp) return 'you are already winning';
+      if (c.nScored < C.minScored) return 'too few moves scored to rank an answer';
+      if (c.inCheck) return 'in check — the choice is narrow';
+      if (c.recapture) return 'forced recapture';
+      if (c.spread5 < C.spreadMinCp) return 'flat — nothing to get wrong';
+      if (c.spread2 > C.spreadMaxCp) return 'one move only — a tactic, not intuition';
+      return null;
+    }
+
+    /**
+     * STAGE 4 — how far the played move is behind the position's best, in
+     * centipawns from the MOVER's side, plus its rank where it has one.
+     *
+     * TWO SOURCES, and the second is what makes grading TOTAL (§3.4):
+     *
+     *   loss(m) = best(P) − score(m)         when m is in P's scored list
+     *           = best(P) + best(P after m)  otherwise, at one more request
+     *
+     * `childBest` is the best score in the position AFTER the move, which is
+     * from the OPPONENT's perspective — so the move's own value is MINUS it,
+     * and the addition above is that negation already folded in. Written the
+     * other way round (`best − childBest`) it is wrong by twice the child's
+     * eval, which on a roughly balanced position is a small number that looks
+     * entirely plausible and never throws. That is why `dev/check-storm.js`
+     * asserts this arm directly rather than through the verdict it feeds.
+     *
+     * Clamped at 0 for the reason the alt check clamps: a move scoring BETTER
+     * than the list's best (the two numbers are computed separately and need
+     * not agree to the centipawn) is "as good as the best move", never a
+     * negative loss that would read as a bonus.
+     */
+    function stormMoveLoss(scored, uci, childBest) {
+      if (!scored || !scored.length) return null;
+      const best = scored[0].score;
+      for (let i = 0; i < scored.length; i++) {
+        if (scored[i].uci !== uci) continue;
+        return {
+          loss: Math.max(0, best - scored[i].score),
+          rank: i + 1,
+          score: scored[i].score,
+          san: scored[i].san || '',
+          winrate: scored[i].winrate,
+          source: 'list',
+        };
+      }
+      if (typeof childBest !== 'number' || !Number.isFinite(childBest)) return null;
+      const value = -childBest;
+      return {
+        loss: Math.max(0, best - value),
+        rank: null,
+        score: value,
+        san: '',
+        winrate: null,
+        source: 'child',
+      };
+    }
+
+    /**
+     * A Stockfish evaluation as MOVER-perspective centipawns (§3.4's third
+     * source).
+     *
+     * `engine/engine.js` normalises every score to WHITE at its own boundary,
+     * and ChessDB's are the mover's — so this is the SECOND perspective flip in
+     * this feature, and it fails exactly as silently as the first: a lost sign
+     * turns every Black-to-move verdict into its own opposite while still
+     * printing a plausible number. It is the alt check's `moverCp`, in a
+     * standalone form the checks can execute.
+     *
+     * A mate maps near ±mateCp minus its distance, so "missed a mate" reads as
+     * a huge loss while mate-in-3 against mate-in-5 stays negligible.
+     */
+    function stormMoverCp(ev, moverColor, C) {
+      if (!ev) return null;
+      const sign = moverColor === 'w' ? 1 : -1;
+      if (typeof ev.mate === 'number') {
+        const m = sign * ev.mate;
+        return m > 0 ? C.engineMateCp - m : -C.engineMateCp - m;
+      }
+      return typeof ev.cp === 'number' ? sign * ev.cp : null;
+    }
+
+    /**
+     * The verdict bands (§8.1). FLAT centipawn loss, and the flatness is
+     * licensed by the spread filter above: the normalising is done once, in the
+     * filter, so the score itself stays legible during a timed session. A
+     * scoring function nobody can hold in their head is one nobody trusts.
+     *
+     * The premise of the whole feature is the first band: a move within
+     * `goodCp` of best is a good move, full stop.
+     */
+    function stormGrade(loss, C) {
+      if (typeof loss !== 'number' || !Number.isFinite(loss)) return 'unknown';
+      if (loss <= C.goodCp) return 'good';
+      if (loss <= C.decentCp) return 'decent';
+      return 'miss';
+    }
+
+    /** Points for one answer. `streak` is the run BEFORE it, so the first
+     *  answer of a session is always at the plain multiplier. */
+    function stormPoints(verdict, streak, C) {
+      const base = verdict === 'good' ? C.goodPoints
+        : verdict === 'decent' ? C.decentPoints : 0;
+      if (!base) return 0;
+      const mult = Math.min(C.streakMax, 1 + Math.floor(Math.max(0, streak) / C.streakStep));
+      return base * mult;
+    }
+
+    /**
+     * One position, measured against every PICK rule — the whole of stage 3 for
+     * a single candidate.
+     *
+     * Shared by the two walks, and that is the point: the real-game walk and
+     * the invented one (`stormRandomLine`) differ ONLY in how they choose the
+     * next move, and a second copy of these seven numbers is a second place for
+     * a rule to be subtly different.
+     */
+    function stormCandidate(ctx, C) {
+      const scored = ctx.scored;
+      const best = scored[0].score;
+      const second = scored.length > 1 ? scored[1].score : best;
+      const fifth = scored[Math.min(4, scored.length - 1)].score;
+      const cand = {
+        fen: ctx.fen,
+        ply: ctx.ply,
+        evalUser: stormUserEval(best, ctx.pos.side, ctx.userSide),
+        nScored: scored.length,
+        spread2: best - second,
+        spread5: best - fifth,
+        inCheck: Boolean(ctx.gaveCheck),
+        recapture: ctx.prevCapSq != null && scored[0].uci.slice(2, 4) === ctx.prevCapSq,
+        scored,
+        userColor: ctx.userSide,
+        arrived: ctx.arrived || null,
+        invented: Boolean(ctx.invented),
+      };
+      cand.reject = stormPickReject(cand, C);
+      return cand;
+    }
+
+    /**
+     * Plays one ply and returns everything the NEXT one needs, or null when the
+     * move will not resolve. Also shared by both walks.
+     *
+     * `sanHint` is the game's own spelling, used only when our generator cannot
+     * produce one — the SAN matters here for two things and two only: whether
+     * the move was a capture (the forced-recapture rule) and whether it gave
+     * check (the narrow-choice rule).
+     */
+    function stormAdvance(fen, pos, uci, sanHint) {
+      const after = fenAfterUci(fen, uci);
+      if (!after) return null;
+      const full = CloSan.moveToSan(pos, uci) || sanHint || '';
+      return {
+        fen: after,
+        prevCapSq: full.indexOf('x') >= 0 ? uci.slice(2, 4) : null,
+        gaveCheck: /[+#]/.test(full),
+        arrived: { san: full, uci },
+      };
+    }
+
+    /**
+     * STAGE 2 — walk one real game forward from the frontier, collecting every
+     * position where the USER is to move along with the numbers each pick rule
+     * needs. `ask(fen)` answers ChessDB's scored move list (mover's
+     * perspective, best first) or null; it is a PARAMETER so the whole walk can
+     * be executed with no network at all.
+     *
+     * THE STOP RULES ARE §5.1, and the blunder one is FREE: the parent's own
+     * scored list already contains the move the game actually played, so "did
+     * the side to move just err" costs no request, ever. It stops on BOTH sides
+     * — past the opponent's mistake you are in a convert-a-winning-position
+     * exercise, which is a different skill, and past your own the position is
+     * one that good play would not have produced, so nothing beyond it is a
+     * position the repertoire leads to.
+     */
+    async function stormWalkGame(frontierFen, userSide, sans, ask, C) {
+      const target = cacheKey(frontierFen);
+      let fen = START_FEN;
+      let i = 0;
+      let lastUci = null;
+      while (i < sans.length && cacheKey(fen) !== target) {
+        const pos = CloSan.parseFen(fen);
+        const uci = pos && sanToUci(pos, sans[i]);
+        const after = uci && fenAfterUci(fen, uci);
+        if (!after) return { found: false, out: [], stop: 'the game left the board' };
+        lastUci = uci;
+        fen = after;
+        i++;
+      }
+      if (cacheKey(fen) !== target) {
+        return { found: false, out: [], stop: 'never reached the frontier' };
+      }
+
+      const out = [];
+      let prevCapSq = null;
+      let gaveCheck = false;
+      // The move that led INTO the position being examined, for the last-move
+      // tint. At the frontier itself that is the course's own final ply, which
+      // is exactly the move the user has just been taught — so the very first
+      // card still arrives with the board saying how it got there.
+      let arrived = i > 0 ? { san: sans[i - 1], uci: lastUci } : null;
+      let stop = 'the walk reached its ply limit';
+
+      for (let k = 0; k < C.maxPly && i + k < sans.length; k++) {
+        const pos = CloSan.parseFen(fen);
+        if (!pos) { stop = 'unparseable position'; break; }
+        const scored = await ask(fen);
+        if (!scored || !scored.length) { stop = 'ChessDB has no score here'; break; }
+
+        const best = scored[0].score;
+        if (Math.abs(best) > C.decidedCp) { stop = 'the position is already decided'; break; }
+
+        if (pos.side === userSide && k + 1 >= C.minPly) {
+          out.push(stormCandidate({
+            fen, pos, scored, ply: k + 1, userSide, arrived, prevCapSq, gaveCheck,
+          }, C));
+        }
+
+        const san = sans[i + k];
+        const uci = sanToUci(pos, san);
+        if (!uci) { stop = 'a move of the game did not resolve'; break; }
+        const played = scored.find((m) => m.uci === uci);
+        if (played && best - played.score >= C.blunderCp) {
+          stop = pos.side === userSide ? 'you would have erred here' : 'the opponent erred here';
+          break;
+        }
+        const step = stormAdvance(fen, pos, uci, san);
+        if (!step) { stop = 'illegal in sequence'; break; }
+        prevCapSq = step.prevCapSq;
+        gaveCheck = step.gaveCheck;
+        arrived = step.arrived;
+        fen = step.fen;
+        if (i + k + 1 >= sans.length) stop = 'the game ended';
+      }
+      return { found: true, out, stop };
+    }
+
+    /**
+     * An INVENTED continuation, for a frontier the explorer has no games at
+     * (§6.4: 5 of 14 sampled frontiers, even with the filters relaxed).
+     *
+     * It is the same walk with a different move source: instead of following
+     * what somebody played, it picks at random among ChessDB's OWN best moves —
+     * within `randomTopCp` of the best and at most `randomTopN` of them. That
+     * band is what keeps the line plausible: a uniformly random legal move
+     * would produce positions no reasonable player reaches, which is precisely
+     * the thing §5.1's blunder stop exists to keep out of a real game's walk.
+     *
+     * Two consequences worth stating rather than discovering:
+     *  * THE BLUNDER STOP CANNOT FIRE, because nothing here plays a blunder.
+     *    `decidedCp` and the unknown stop still do, and they are what bound it.
+     *  * A candidate from here carries `invented: true`, so nothing downstream
+     *    has to guess whether a position came from a game — and so the panel
+     *    can say so, which matters: "8 moves past the line" is a claim about
+     *    somebody's game, and here there is no game.
+     *
+     * `rnd` is a parameter for the reason `ask` is: the whole of this runs in
+     * `dev/check-storm.js` with neither network nor randomness.
+     */
+    async function stormRandomLine(frontierFen, userSide, ask, C, rnd, seed) {
+      const out = [];
+      let fen = frontierFen;
+      let prevCapSq = null;
+      let gaveCheck = false;
+      // The course's own last ply, so the first card still says how its
+      // position was arrived at — the real-game walk gets this from the game.
+      let arrived = seed || null;
+      let stop = 'the walk reached its ply limit';
+      const span = Math.max(0, C.maxPly - C.randomMinPlies);
+      const len = Math.min(C.maxPly, C.randomMinPlies + Math.floor(rnd() * (span + 1)));
+
+      for (let k = 0; k < len; k++) {
+        const pos = CloSan.parseFen(fen);
+        if (!pos) { stop = 'unparseable position'; break; }
+        const scored = await ask(fen);
+        if (!scored || !scored.length) { stop = 'ChessDB has no score here'; break; }
+        const best = scored[0].score;
+        if (Math.abs(best) > C.decidedCp) { stop = 'the position is already decided'; break; }
+
+        if (pos.side === userSide && k + 1 >= C.minPly) {
+          out.push(stormCandidate({
+            fen, pos, scored, ply: k + 1, userSide, arrived, prevCapSq, gaveCheck,
+            invented: true,
+          }, C));
+        }
+
+        // The choice. `slice` before `filter` so `randomTopN` is a cap on the
+        // RANK and not on how many happened to survive the centipawn band.
+        const pool = scored.slice(0, C.randomTopN).filter((m) => best - m.score <= C.randomTopCp);
+        const pick = (pool.length ? pool : [scored[0]])[Math.floor(rnd() * (pool.length || 1))];
+        const step = pick && stormAdvance(fen, pos, pick.uci, pick.san);
+        if (!step) { stop = 'a chosen move did not resolve'; break; }
+        prevCapSq = step.prevCapSq;
+        gaveCheck = step.gaveCheck;
+        arrived = step.arrived;
+        fen = step.fen;
+      }
+      return { found: true, out, stop, invented: true };
+    }
+
+    /**
+     * One surviving candidate as a card section 18's board can play.
+     *
+     * It carries exactly ONE ply — the position's own BEST move — and that is
+     * not decoration: `startLine` ends in `step()`, which reads `linePath()`,
+     * and an empty ply array reads as "the line is already finished" and skips
+     * straight to the next card. With one ply of the user's colour the shared
+     * machinery does precisely the right thing (wait for input, no opponent
+     * reply to auto-play) and `tryMove`'s storm arm intercepts above the
+     * comparison, so the ply is never used as an ANSWER — only as the thing
+     * that makes the card a card. It is also what the verdict line names as
+     * "best", with no second lookup.
+     *
+     * No run-up is played. A drill card animates the opponent's previous move
+     * (`drillLeadPlies`), which is worth ~350 ms of a card; here the clock is
+     * running, so the move that led here is TINTED instead — same information,
+     * instantly.
+     */
+    function stormCard(cand, frontier) {
+      const best = cand.scored[0];
+      const pos = CloSan.parseFen(cand.fen);
+      const mv = pos && CloSan.uciToMove(pos, best.uci);
+      const after = mv && fenAfterUci(cand.fen, best.uci);
+      if (!pos || !mv || !after) return null;
+      const san = CloSan.moveToSan(pos, best.uci) || best.san || '';
+      return {
+        key: 'storm:' + cacheKey(cand.fen),
+        startFen: cand.fen,
+        plies: [{ san, uci: best.uci, color: cand.userColor, fen: after }],
+        userColor: cand.userColor,
+        label: (frontier && frontier.names[0]) || '',
+        storm: {
+          cand,
+          bestSan: san,
+          bestUci: best.uci,
+          bestScore: best.score,
+          bestWinrate: best.winrate,
+          from: (frontier && frontier.names[0]) || '',
+          plyPast: cand.ply,
+        },
+      };
+    }
+    /** The whole store, or {} — never null, so no caller has to branch. */
+    async function loadStoreAll() {
+      try {
+        const got = await chrome.storage.local.get(C.storeKey);
+        const raw = got && got[C.storeKey];
+        return (raw && typeof raw === 'object') ? raw : {};
+      } catch (err) {
+        warn('storm: the position store is unreadable — continuing without it:', err);
+        return {};
+      }
+    }
+
+    /** This course's slice of it, into `st.store`. Once per session. */
+    async function loadStore() {
+      const all = await loadStoreAll();
+      const mine = all[st.bid];
+      st.store = (mine && typeof mine === 'object') ? mine : {};
+      // Age out here rather than on write: a course's lines move, and a
+      // position from a line that has since been edited is a position the
+      // course no longer leads to.
+      const cutoff = Date.now() - C.storeTtlMs;
+      let stale = 0;
+      for (const ck of Object.keys(st.store)) {
+        const e = st.store[ck];
+        if (!e || !(e.t > cutoff)) { delete st.store[ck]; stale++; }
+      }
+      if (stale) { st.storeDirty = true; log('storm: dropped', stale, 'stale stored position(s)'); }
+      log('storm: store holds', Object.keys(st.store).length, 'position(s) for', st.bid);
+    }
+
+    /**
+     * Writes this course's slice back.
+     *
+     * IT RE-READS FIRST, and that is 24b's `flushDbCache` lesson in another
+     * store: `chrome.storage.local` holds one object under this key and a write
+     * replaces it whole, so saving a snapshot taken at session start would
+     * silently delete anything a SECOND tab gathered meanwhile. Only this
+     * course's slice is ours to replace.
+     */
+    async function saveStore() {
+      if (!st.storeDirty || !st.store || !st.bid) return;
+      st.storeDirty = false;
+      try {
+        const all = await loadStoreAll();
+        // Oldest first out, but a position MISSED before outranks one never
+        // seen: it is the one the user has proved they want back.
+        let entries = Object.entries(st.store);
+        if (entries.length > C.storeMax) {
+          entries.sort((a, b) => ((b[1].k || 0) - (a[1].k || 0)) || ((b[1].t || 0) - (a[1].t || 0)));
+          entries = entries.slice(0, C.storeMax);
+          st.store = Object.fromEntries(entries);
+        }
+        all[st.bid] = st.store;
+        await chrome.storage.local.set({ [C.storeKey]: all });
+      } catch (err) {
+        // A full quota is the likely cause, and it is not fatal: the session
+        // runs on what it has and the store simply stops growing.
+        warn('storm: could not write the position store:', err);
+      }
+    }
+
+    /** Adds a harvested candidate, unless the store already holds it. */
+    function storeAdd(cand, f) {
+      if (!st.store) return false;
+      const ck = cacheKey(cand.fen);
+      if (st.store[ck]) return false;
+      st.store[ck] = stormPack(cand, f);
+      st.storeDirty = true;
+      return true;
+    }
+
+    /**
+     * THE RETENTION RULE (§14.11), and it is the user's own: a position
+     * answered well has been learned and leaves the store; one missed stays and
+     * comes round again. An UNGRADEABLE answer also stays — nothing was learned
+     * from it either way, and dropping it would spend eleven requests to
+     * discover the same silence twice.
+     */
+    function storeNote(fen, verdict) {
+      if (!st.store) return;
+      const ck = cacheKey(fen);
+      const had = Boolean(st.store[ck]);
+      if (!stormRetain(st.store, ck, verdict, C)) return;
+      st.storeDirty = true;
+      // A DROP LEAVES A TOMBSTONE (§14.12). The wire merge is a union over a
+      // whole snapshot, so without this a position the retention rule removed
+      // comes back from the other device's copy on the next exchange, for ever.
+      // Recorded whether or not syncing is on: it costs a timestamp, and it is
+      // needed the moment it IS turned on.
+      if (had && !st.store[ck]) {
+        if (!st.gone) st.gone = {};
+        st.gone[ck] = Date.now();
+      }
+    }
+
+    /**
+     * The rule itself, as a function of the store — so `dev/check-storm.js` can
+     * execute BOTH halves of it. The half that is hard to see live is the one
+     * that DELETES: it needs a good answer, and a random legal move is a miss
+     * nearly every time.
+     *
+     * Returns whether anything changed, which is what decides a write.
+     */
+    function stormRetain(store, ck, verdict, C) {
+      const e = store && store[ck];
+      if (!e) return false;
+      if (C.storeDropOn.indexOf(verdict) >= 0) { delete store[ck]; return true; }
+      e.k = (e.k || 0) + 1;
+      return true;
+    }
+
+    /**
+     * The stored positions a session should draw on, hardest first — a position
+     * missed twice before is the one most worth asking again — and shuffled
+     * within a tier so two sessions in a row are not identical.
+     */
+    function storeDraw() {
+      if (!st.store) return [];
+      const out = [];
+      for (const ck of Object.keys(st.store)) {
+        const cand = stormUnpack(st.store[ck]);
+        if (!cand) continue;
+        out.push({ ck, cand, k: st.store[ck].k || 0, r: Math.random(),
+          name: st.store[ck].n || '' });
+      }
+      out.sort((a, b) => (b.k - a.k) || (a.r - b.r));
+      return out;
+    }
+
+    // ----------------------------------------------------------------------
+    // The wire. Three services, all read-only, all paced.
+    // ----------------------------------------------------------------------
+
+    /** A politeness pause, measured from the last call of this kind. */
+    async function pace(key, gapMs) {
+      const wait = gapMs - (Date.now() - st[key]);
+      if (wait > 0) await sleepMs(wait);
+      st[key] = Date.now();
+    }
+
+    /**
+     * ChessDB's scored move list for a position — the storm's one grading
+     * primitive, and the request it spends nearly all of its budget on
+     * (~11 per usable position, §6.1).
+     *
+     * `learn=1`, and only `learn=1` (§3.3): `learn=0` scores just the handful of
+     * moves genuinely elaborated in the book — one or two in a post-book
+     * position — which cannot rank a human's arbitrary choice. The trust
+     * question that second request answers is not asked here because it is not
+     * needed: this grades a move against the OTHER moves in the same position,
+     * where a uniformly shallow answer is still a fair ranking. What it costs
+     * is that no number the storm shows may be presented as a book eval, which
+     * is why every one of them carries `.clo-cdb--est`.
+     *
+     * A MISS IS CACHED TOO (`null`), because "ChessDB has never seen this
+     * position" is the ordinary case off theory and asking twice would be the
+     * same answer at twice the price.
+     *
+     * IT DELIBERATELY DOES NOT CONSULT `cdbWanted()`. That gate (section 26) is
+     * a PRIVACY gate before it is a budget one — nothing may send a position to
+     * a second third party for a user who has switched nothing on — and here
+     * the switch is the press: the storm's launcher names both services in its
+     * tooltip and cannot do anything at all without them, so requiring the eval
+     * column's own preference as well would refuse the very thing the user just
+     * asked for. The session's summary says how many lookups it spent, which is
+     * the other half of not making this invisible.
+     */
+    async function askCdb(fen) {
+      const ck = cacheKey(fen);
+      if (st.cdb.has(ck)) return st.cdb.get(ck);
+      // The gather pass has a ceiling of its own, far above a session's: it is
+      // the burst the user asked for by name, where a session's is the one they
+      // did not.
+      const cap = st.gathering ? C.gatherMaxCdb : C.cdbMaxPerSession;
+      if (st.cdbCount >= cap) {
+        if (!st.exhausted) log('storm: ChessDB request cap reached —', st.cdbCount);
+        st.exhausted = true;
+        return null;
+      }
+      await pace('lastCdbAt', C.cdbGapMs);
+      st.cdbCount++;
+      let scored = null;
+      try {
+        const d = await fetchChessdb(fen, true);
+        if (d && d.status === 'ok' && Array.isArray(d.moves)) {
+          scored = d.moves
+            // An unelaborated move comes back as the literal STRING "??", so
+            // this has to be a type check and not a truthiness one — 0 is a
+            // perfectly real eval (DESIGN-chessdb.md §3.2).
+            .filter((m) => m && m.uci && typeof m.score === 'number')
+            .map((m) => ({
+              uci: m.uci, san: m.san || '', score: m.score,
+              note: m.note || '', winrate: m.winrate,
+            }))
+            .sort((a, b) => b.score - a.score);
+          if (!scored.length) scored = null;
+        }
+      } catch (err) {
+        // Fails soft, always: a volunteer service with no SLA, and a position
+        // it has never seen is the ordinary case rather than an error.
+        warn('storm: ChessDB lookup failed:', err);
+      }
+      if (st.cdb.size >= C.cdbCacheMax) st.cdb.delete(st.cdb.keys().next().value);
+      st.cdb.set(ck, scored);
+      return scored;
+    }
+
+    /**
+     * The real games that passed through a frontier.
+     *
+     * IT RELAXES THE USER'S OWN FILTERS, and this is the one place in the
+     * extension where "any human game at all" is the better question than "a
+     * game at my rating" (§6.4): 5 of 14 sampled frontiers had no games AT ALL
+     * under the panel's bands, because frontier depth is expensive. The
+     * module-level `lichessFilters` is untouched — `C.speeds`/`C.ratings` ride
+     * on these requests only.
+     *
+     * `topGames`/`recentGames` are ON here and must stay OFF on the panel's own
+     * path (`fetchExplorerData`), which fetches on every position change and
+     * wants nothing it will not draw.
+     */
+    async function askGames(fen, masters) {
+      await pace('lastExplorerAt', C.explorerGapMs);
+      const params = masters
+        ? new URLSearchParams({ fen, moves: '0', topGames: '4' })
+        : new URLSearchParams({
+          variant: CONFIG.lichess.variant, fen,
+          speeds: C.speeds.join(','), ratings: C.ratings.join(','),
+          moves: '0', topGames: '4', recentGames: '4',
+        });
+      const base = masters ? 'https://explorer.lichess.org/masters' : CONFIG.lichess.apiBase;
+      const reply = await chrome.runtime.sendMessage({
+        type: 'clo-fetch-explorer', url: base + '?' + params,
+      });
+      if (!reply) throw new Error('no reply from background worker');
+      if (!reply.ok) throw new Error(reply.error || 'HTTP ' + reply.status);
+      const d = reply.data || {};
+      return [].concat(d.topGames || [], d.recentGames || [])
+        .filter((g) => g && g.id);
+    }
+
+    /**
+     * One game's moves.
+     *
+     * TWO SOURCES, and the split is exact (§2.2): master PGNs live on
+     * `explorer.lichess.org`, a host permission this extension has had since
+     * the beginning, while everybody-else games need `lichess.org` — which is
+     * why the masters path stays worth having after the permission lands. It is
+     * the fallback that still works when the permission is refused or revoked,
+     * and `st.mastersOnly` is how one failure switches the rest of the session
+     * over rather than paying the same refusal per frontier.
+     */
+    async function askPgn(id, masters) {
+      const key = (masters ? 'm:' : 'l:') + id;
+      if (st.pgn.has(key)) return st.pgn.get(key);
+      await pace('lastPgnAt', C.pgnGapMs);
+      let sans = null;
+      try {
+        let text = '';
+        if (masters) {
+          const reply = await chrome.runtime.sendMessage({
+            type: 'clo-fetch-explorer', as: 'text',
+            url: 'https://explorer.lichess.org/masters/pgn/' + encodeURIComponent(id),
+          });
+          if (!reply || !reply.ok) throw new Error((reply && reply.error) || 'no reply');
+          text = reply.data;
+        } else {
+          const reply = await chrome.runtime.sendMessage({
+            type: 'clo-fetch-game',
+            url: 'https://lichess.org/game/export/' + encodeURIComponent(id) +
+                 '?evals=false&clocks=false&literate=false',
+          });
+          if (!reply || !reply.ok) throw new Error((reply && reply.error) || 'no reply');
+          text = reply.data;
+        }
+        sans = stormPgnMoves(text);
+        if (!sans.length) sans = null;
+      } catch (err) {
+        warn('storm: could not read game', id, err);
+        if (!masters && !st.mastersOnly) {
+          // The likeliest cause is the host permission being absent or
+          // withdrawn, which is a fact about the SESSION rather than about this
+          // game — so the rest of it runs on masters instead of paying the same
+          // refusal at every frontier.
+          st.mastersOnly = true;
+          log('storm: falling back to master games for the rest of this session');
+        }
+      }
+      if (st.pgn.size >= C.pgnCacheMax) st.pgn.delete(st.pgn.keys().next().value);
+      st.pgn.set(key, sans);
+      return sans;
+    }
+
+    /**
+     * §3.4's THIRD SOURCE: two Stockfish searches when ChessDB can grade
+     * neither the move nor its child.
+     *
+     * TWO, not one, and this is the whole reason the tier is shaped this way: a
+     * loss is a SUBTRACTION, and taking `best(P)` from ChessDB's book while
+     * taking `best(P after m)` from Stockfish would put the systematic offset
+     * between two evaluators — easily wider than the whole `goodCp` band —
+     * straight into the verdict. Both sides come from the same engine or the
+     * answer is refused.
+     *
+     * Resolves to a mover-perspective `{ best, value }` for the POSITION, or
+     * null. It never throws and never leaves the engine claimed: every exit
+     * goes through `endEngineJob`.
+     */
+    function stormEngineLoss(fen, uci) {
+      if (!C.engineFallback) return Promise.resolve(null);
+      if (st.eng) return Promise.resolve(null); // one claim at a time
+      const after = fenAfterUci(fen, uci);
+      const pos = CloSan.parseFen(fen);
+      if (!after || !pos) return Promise.resolve(null);
+      return new Promise((resolve) => {
+        const job = {
+          reqId: 'st' + Date.now() + '-' + (++st.engSeq),
+          phase: 'best',
+          moverColor: pos.side,
+          fen, after,
+          best: null, value: null,
+          resolve,
+          timer: 0,
+        };
+        st.eng = job;
+        // The alt check's claim, for the alt check's reason: `syncEngine` must
+        // stand down while we own the engine, and nulling the fen first is what
+        // makes the stand-down send no stop of its own.
+        state.altCheckBusy = true;
+        state.engineFen = null;
+        engineSend({
+          type: 'clo-engine-analyze', fen, profile: engineProfile(),
+          reqId: job.reqId + ':best', depth: C.engineDepth,
+        });
+        pingEngineIfSilent();
+        // A HARD cap, unlike the alt check's two minutes: that one is a popup
+        // being read, this is a card the user is waiting on with a clock
+        // running. A search that has not landed by now is worth less than the
+        // seconds it is costing.
+        job.timer = setTimeout(() => endEngineJob(job, null), C.engineTimeoutMs);
+      });
+    }
+
+    /** Ends a claim exactly once, gives the engine back, and answers the
+     *  waiting `grade()`. */
+    function endEngineJob(job, answer) {
+      if (st.eng !== job) return;
+      clearTimeout(job.timer);
+      st.eng = null;
+      if (state.altCheckBusy) {
+        state.altCheckBusy = false;
+        engineSend({ type: 'clo-engine-stop' });
+        state.engineFen = null;
+        syncEngine(); // let the panel resume wherever it should be running
+      }
+      job.resolve(answer);
+    }
+
+    function onStormEngineUpdate(msg) {
+      const job = st.eng;
+      if (!job || typeof msg.reqId !== 'string' || !msg.reqId.startsWith(job.reqId + ':')) return;
+      const which = msg.reqId.slice(job.reqId.length + 1);
+      const pv = (Array.isArray(msg.pvs) ? msg.pvs : []).find((p) => p.multipv === 1);
+      if (!pv) return;
+      if (!(msg.done || msg.depth >= C.engineDepth)) return;
+
+      if (which === 'best' && job.phase === 'best') {
+        job.best = stormMoverCp(pv, job.moverColor, C);
+        // …and WHICH move it is, because a verdict graded here must name the
+        // engine's best rather than ChessDB's: the two numbers beside each
+        // other would be the cross-source comparison this tier exists to avoid.
+        // `pv.uci` is what engine.js sends beside its numbered `san` string
+        // (section 26 added it); resolving it here spells it for this position.
+        const bestPos = CloSan.parseFen(job.fen);
+        job.bestSan = (bestPos && pv.uci && CloSan.moveToSan(bestPos, pv.uci)) || '';
+        job.phase = 'child';
+        engineSend({
+          type: 'clo-engine-analyze', fen: job.after, profile: engineProfile(),
+          reqId: job.reqId + ':child', depth: C.engineDepth,
+        });
+        return;
+      }
+      if (which === 'child' && job.phase === 'child') {
+        // The child's mover is the OPPONENT, so this is read from THEIR side and
+        // negated — §3.4's `best(P) + best(P after m)`, with the negation
+        // written where it can be seen rather than folded into a sign.
+        const opponent = job.moverColor === 'w' ? 'b' : 'w';
+        const childBest = stormMoverCp(pv, opponent, C);
+        if (typeof job.best !== 'number' || typeof childBest !== 'number') {
+          endEngineJob(job, null);
+          return;
+        }
+        endEngineJob(job, { best: job.best, value: -childBest, bestSan: job.bestSan });
+      }
+    }
+
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (!msg || !st.eng) return;
+      if (msg.type === 'clo-engine-update') onStormEngineUpdate(msg);
+      else if (msg.type === 'clo-engine-status' && msg.status === 'error') {
+        warn('storm: the engine could not answer:', msg.detail);
+        endEngineJob(st.eng, null);
+      }
+    });
+
+    // ----------------------------------------------------------------------
+    // The producer (§8.3). ITS UNIT IS A FRONTIER, NOT A POSITION: one frontier
+    // costs a stage-0 eval, one explorer call and two game fetches, and yields
+    // one to three usable positions — which is the only reason ~11 ChessDB
+    // requests per position is affordable. Harvest all of a frontier's
+    // survivors at once.
+    //
+    // Nothing about the storm may BLOCK on this: an empty queue ends the
+    // session cleanly rather than stalling on a spinner.
+    // ----------------------------------------------------------------------
+
+    /** Everything one frontier yields, or [] when it yields nothing. */
+    async function harvestFrontier(f) {
+      // STAGE 0'S EVAL BAND (§7). One `queryall`, before any game is fetched:
+      // it rejects a whole LINE for one request instead of discovering the same
+      // fact 11-29 requests later, and a course variation ends where the author
+      // has ACHIEVED something, so this is the rule that actually bites.
+      const scored = await askCdb(f.fen);
+      if (!scored) {
+        // A frontier ChessDB cannot score is skipped rather than offered
+        // unfiltered: the walk's own `unknown` stop would kill it on ply 1
+        // anyway, after an explorer call and two game fetches spent to learn
+        // nothing.
+        if (C.skipUnknownFrontiers) return [];
+      } else {
+        const stm = String(f.fen).split(' ')[1] === 'b' ? 'b' : 'w';
+        const evalUser = stormUserEval(scored[0].score, stm, f.side);
+        if (evalUser < C.userLoCp || evalUser > C.userHiCp) {
+          log('storm: skipping', f.names[0], '— frontier eval', (evalUser / 100).toFixed(2));
+          return [];
+        }
+      }
+
+      let games = [];
+      try {
+        games = await askGames(f.fen, st.mastersOnly);
+      } catch (err) {
+        warn('storm: explorer lookup failed at a frontier:', err);
+        games = [];
+      }
+      // NO GAMES AT ALL, which §6.4 measured at 5 of 14 frontiers even with the
+      // filters relaxed. Rather than lose the line, invent a continuation from
+      // ChessDB's own best moves — a fallback and never a preference, since a
+      // position somebody actually reached is what this feature is about.
+      if (!games.length) {
+        if (!C.randomFallback) return [];
+        const walked = await stormRandomLine(
+          f.fen, f.side, askCdb, cfg(), Math.random,
+          f.lastUci ? { san: f.lastSan || '', uci: f.lastUci } : null);
+        log('storm: no games at', f.names[0], '— invented a line,', walked.out.length,
+          'position(s) considered (' + walked.stop + ')');
+        return harvestCandidates(walked.out, f);
+      }
+
+      const cards = [];
+      for (const g of games.slice(0, C.gamesPerFrontier)) {
+        if (!st.running || st.over) break;
+        const sans = await askPgn(g.id, st.mastersOnly);
+        if (!sans) continue;
+        const walked = await stormWalkGame(f.fen, f.side, sans, askCdb, cfg());
+        if (!walked.found) continue;
+        for (const card of harvestCandidates(walked.out, f)) cards.push(card);
+      }
+      return cards;
+    }
+
+    /** The surviving candidates of one walk as cards, deduped — and STORED, so
+     *  the eleven requests each one cost are paid once and not once per
+     *  session (§14.11). A gather pass takes the same path and simply never
+     *  reads the cards back. */
+    function harvestCandidates(cands, f) {
+      const cards = [];
+      for (const cand of cands) {
+        if (cand.reject) continue;
+        if (storeAdd(cand, f)) st.gathered++;
+        // DEDUPE BY POSITION (§6.4): the same position really does arrive from
+        // two different games in one run, and a storm that shows a position
+        // twice is a storm that looks broken. `st.seen` is per SESSION and
+        // spans both walks, so an invented line cannot re-offer a real one's
+        // position either — and it spans the STORE too, since a stored card
+        // taken at the start of the session put its key in there.
+        //
+        // Note the order: storing happens ABOVE this, so a position already
+        // seen is still WRITTEN. It cost the same requests either way, and the
+        // next session is the one that benefits.
+        const ck = cacheKey(cand.fen);
+        if (st.seen.has(ck)) continue;
+        const card = stormCard(cand, f);
+        if (!card) continue;
+        st.seen.add(ck);
+        cards.push(card);
+      }
+      return cards;
+    }
+
+    /**
+     * Fills the queue from the STORE first (§14.11) — instantly, at no network
+     * cost. This is the whole point of the store: the ~11 ChessDB requests a
+     * position costs were paid at some earlier, unhurried moment.
+     */
+    function produceFromStore() {
+      if (!st.store) return 0;
+      let added = 0;
+      while (st.storeQueue && st.storeQueue.length &&
+             st.queue.length < C.queueTarget &&
+             st.shown + st.queue.length < C.maxPositions) {
+        const item = st.storeQueue.shift();
+        if (st.seen.has(item.ck)) continue;
+        const card = stormCard(item.cand, { names: [item.name] });
+        if (!card) { delete st.store[item.ck]; st.storeDirty = true; continue; }
+        st.seen.add(item.ck);
+        st.queue.push(card);
+        added++;
+      }
+      return added;
+    }
+
+    async function produce() {
+      // A gather pass owns the pool while it runs, and there is nothing on the
+      // other end of it to fill a queue for.
+      if (st.gathering) return;
+      if (st.producing || !st.running || st.over) return;
+      // FREE FIRST, ALWAYS. A stored position needs no request and no await, so
+      // it must be taken before the network path is even considered — otherwise
+      // the first card of every session waits on a frontier walk with a queue
+      // full of answers sitting in storage.
+      if (produceFromStore()) render();
+      if (st.queue.length >= C.queueTarget) return;
+      st.producing = true;
+      try {
+        while (st.running && !st.over &&
+               st.queue.length < C.queueTarget &&
+               st.shown + st.queue.length < C.maxPositions &&
+               !st.exhausted) {
+          const f = stormDrawFrontier(st.pool, Math.random);
+          if (!f) {
+            st.exhausted = true;
+            break;
+          }
+          setNote('Looking for positions… (' + st.pool.length + ' lines left)');
+          const cards = await harvestFrontier(f);
+          if (!st.running) return;
+          for (const card of cards) st.queue.push(card);
+          if (cards.length) render();
+        }
+      } catch (err) {
+        warn('storm: the producer stopped:', err);
+        st.exhausted = true;
+      } finally {
+        st.producing = false;
+        setNote('');
+        // The card the user is waiting for may have arrived while they were
+        // looking at nothing; and with the pool spent and the queue empty there
+        // is nothing left to wait for.
+        if (st.running && !st.over && !st.card) nextCard();
+        render();
+      }
+    }
+
+    /** The tombstones and the last-pull stamp for this course, from
+     *  storage.local. Kept beside the store rather than in it, so a store
+     *  pruned to `storeMax` cannot take its own tombstones with it. */
+    async function loadSyncMeta() {
+      try {
+        const got = await chrome.storage.local.get(C.syncKey);
+        const all = (got && got[C.syncKey]) || {};
+        const mine = all[st.bid] || {};
+        st.gone = mine.gone || {};
+        st.lastPull = mine.at || 0;
+      } catch (err) {
+        st.gone = st.gone || {};
+      }
+    }
+
+    async function saveSyncMeta() {
+      try {
+        const got = await chrome.storage.local.get(C.syncKey);
+        const all = (got && got[C.syncKey]) || {};
+        // Aged out on write: a tombstone older than `goneDays` is a position
+        // every device has long since agreed about, and keeping it for ever
+        // would eventually crowd the card.
+        const cutoff = Date.now() - C.goneDays * 24 * 60 * 60 * 1000;
+        const gone = {};
+        for (const ck of Object.keys(st.gone || {})) {
+          if (st.gone[ck] > cutoff) gone[ck] = st.gone[ck];
+        }
+        st.gone = gone;
+        all[st.bid] = { gone, at: st.lastPull };
+        await chrome.storage.local.set({ [C.syncKey]: all });
+      } catch (err) { /* the exchange runs on what it has */ }
+    }
+
+    /**
+     * ONE EXCHANGE: read the card, merge it in, write the merged snapshot back.
+     *
+     * Read-merge-write rather than write-then-read, and in that order, because
+     * the card is a SNAPSHOT overwritten in place (16e §4.2): writing first
+     * would discard whatever the other device put there since.
+     *
+     * Everything about it fails soft. There is no state here that a failed
+     * exchange corrupts — the local store is authoritative and the card is a
+     * copy — so a refusal costs a status line and nothing else.
+     */
+    async function syncStore(reason) {
+      if (st.syncing) return;
+      if (!pinSyncApi || !pinSyncApi.carrier) return;
+      const carrier = pinSyncApi.carrier;
+      if (!carrier.course()) {
+        setSyncNote('Choose a course for syncing on the options page first.');
+        return;
+      }
+      if (!st.store) await loadStore();
+      if (!st.gone) await loadSyncMeta();
+      st.syncing = true;
+      setSyncNote('Syncing…');
+      render();
+      try {
+        let merged = { added: 0, dropped: 0, bumped: 0 };
+        const text = await carrier.read(C.cardName);
+        if (text) {
+          let blob = null;
+          try {
+            blob = JSON.parse(new TextDecoder().decode(carrier.decode(text)));
+          } catch (err) {
+            // A payload we cannot read is one we must not act on — and above
+            // all must not treat as "the other device has nothing", which
+            // would push our own over it.
+            throw new Error('the stored payload could not be read');
+          }
+          const got = stormWireUnpack(blob, C);
+          if (!got) throw new Error('the stored payload is from a newer version');
+          merged = stormWireMerge(st.store, got.store, st.gone, got.gone);
+          st.gone = merged.gone;
+          st.storeDirty = true;
+        }
+        const packed = stormWirePack(st.store, st.gone, C, C.maxWireBytes);
+        const wire = carrier.encode(new TextEncoder().encode(JSON.stringify(packed)));
+        await carrier.write(C.cardName, wire, C.maxWireBytes);
+        st.lastPull = Date.now();
+        await saveStore();
+        await saveSyncMeta();
+        setSyncNote('Synced — ' + packed.n + ' of ' + storeCount() + ' carried' +
+          (merged.added ? ', ' + merged.added + ' taken from another device' : '') +
+          (merged.dropped ? ', ' + merged.dropped + ' already learned elsewhere' : ''));
+        log('storm: synced (' + reason + ') —', packed.n, 'carried,',
+          merged.added, 'added,', merged.dropped, 'dropped,', wire.length, 'bytes');
+      } catch (err) {
+        warn('storm: the sync failed:', err);
+        setSyncNote('Sync failed: ' + String((err && err.message) || err));
+      } finally {
+        st.syncing = false;
+        render();
+      }
+    }
+
+    function setSyncNote(text) {
+      st.syncNote = text || '';
+      if (st.ui) {
+        st.ui.syncNote.textContent = st.syncNote;
+        st.ui.syncNote.hidden = !st.syncNote;
+      }
+    }
+
+    // ----------------------------------------------------------------------
+    // §14.11) The gather pass
+    //
+    // The producer with nothing on the other end of it: it walks frontiers,
+    // harvests positions into the store, shows a count, and never puts a card
+    // on a board. That is the whole of "separate the gathering" — the expensive
+    // half of this feature happens when nobody is waiting, and a session then
+    // opens on what is already there.
+    //
+    // It is the SAME `harvestFrontier`, deliberately: a second walk written for
+    // gathering is a second set of pick rules that will one day disagree with
+    // the first about what a usable position is.
+    // ----------------------------------------------------------------------
+
+    async function gather() {
+      if (st.gathering) { stopGather(); return; }
+      if (!st.bid) return;
+      // GATHERING ENDS WHATEVER IS RUNNING, and it has to: this pass owns the
+      // pool and the request budget, and `tick` returns early while it runs —
+      // so a session left alive underneath would go on burning its clock with
+      // no board and no way to end (seen live 2026-08-28).
+      //
+      // Which ending depends on whether anything was TIMED. Once the clock has
+      // started the session is a thing that happened and the user gets their
+      // review; before it — the pre-roll, which is exactly when someone decides
+      // they would rather fill the store than play — the half-built session is
+      // simply dropped, since there is nothing yet to show them.
+      if (st.endsAt && !st.over) {
+        endSession('gathering instead');
+      } else {
+        st.queue = [];
+        st.card = null;
+        st.verdict = null;
+        clearTimeout(st.nextTimer);
+        st.nextTimer = 0;
+        if (st.boardUp && continuationStormApi) { continuationStormApi.close(); st.boardUp = false; }
+      }
+      st.gathering = true;
+      st.gathered = 0;
+      st.exhausted = false;
+      // Its own ceiling, far above a session's: this IS the long burst, and it
+      // is the one the user asked for by name.
+      st.cdbCount = 0;
+      render();
+      try {
+        if (!st.store) await loadStore();
+        if (!st.pool || !st.pool.length) {
+          const creds = chessableCreds();
+          if (!creds) throw new Error('not signed in to Chessable in this tab');
+          const course = await fetchCourse(st.bid, creds, true);
+          if (!st.gathering) return;
+          st.pool = await stormFrontiers(course.vars, C);
+          st.poolSize = st.pool.length;
+          st.name = course.name || st.name;
+        }
+        while (st.gathering &&
+               st.gathered < C.gatherTarget &&
+               st.cdbCount < C.gatherMaxCdb) {
+          const f = stormDrawFrontier(st.pool, Math.random);
+          if (!f) break;
+          setGatherNote();
+          await harvestFrontier(f);
+          // Written as it goes, not at the end: this pass is meant to be left
+          // running, and a crash or a closed tab must not throw away an hour.
+          await saveStore();
+          render();
+        }
+      } catch (err) {
+        warn('storm: the gather pass stopped:', err);
+        setStatus(String((err && err.message) || err), 'warn');
+      } finally {
+        // UNCONDITIONAL, and it used to be guarded on `st.gathering` — which
+        // `stopGather` has already cleared, so a pass ended BY HAND reported
+        // nothing at all, which is the one ending where the user is certainly
+        // looking. Every early return above sits before the flag is set, so
+        // reaching here means this pass ran.
+        st.gathering = false;
+        await saveStore();
+        setNote('');
+        log('storm: gathered', st.gathered, 'position(s) in',
+          st.cdbCount, 'ChessDB requests;', Object.keys(st.store || {}).length, 'in store');
+        setStatus(st.gathered
+          ? 'Stored ' + st.gathered + ' new position(s) — ' +
+            Object.keys(st.store || {}).length + ' ready on this course.'
+          : 'Nothing new to store: every line this course ends on has been walked.', '');
+        render();
+        // A gather is the one moment there is definitely something worth
+        // carrying — it is also the pass a user leaves running and walks away
+        // from, so the push has to happen without being asked.
+        if (st.gathered && pinSyncApi && pinSyncApi.carrier && pinSyncApi.carrier.course()) {
+          syncStore('after gathering');
+        }
+      }
+    }
+
+    function stopGather() {
+      if (!st.gathering) return;
+      st.gathering = false; // the loop reads this and falls out of its `while`
+      setNote('');
+    }
+
+    function setGatherNote() {
+      setNote('Gathering… ' + st.gathered + ' stored, ' +
+        (st.pool ? st.pool.length : 0) + ' line ends left, ' +
+        st.cdbCount + ' ChessDB lookups');
+    }
+
+    // ----------------------------------------------------------------------
+    // The session
+    // ----------------------------------------------------------------------
+
+    stormApi = {
+      open(spec) {
+        if (st.running) return false;
+        if (!spec || !spec.bid) return false;
+        if (continuationActive && continuationActive()) return false;
+        startSession(spec);
+        return true;
+      },
+      /** Section 18's answer path, called from `tryMove`'s storm arm. */
+      answer(uci, san) { grade(uci, san); },
+      /** …and its Skip, which here means "I have no idea" (§8.1's miss band). */
+      pass() {
+        if (!st.card || st.verdict || st.grading) return;
+        finishAnswer({ verdict: 'miss', passed: true, userSan: '', loss: null, rank: null });
+      },
+      close() { endSession('closed'); },
+    };
+
+    async function startSession(spec) {
+      st.bid = String(spec.bid);
+      st.name = spec.name || '';
+      st.running = true;
+      st.over = false;
+      st.pool = [];
+      st.queue = [];
+      st.seen = new Set();
+      st.card = null;
+      st.verdict = null;
+      st.grading = false;
+      st.history = [];
+      st.reviewIdx = 0;
+      st.analysing = false;
+      st.shown = 0;
+      st.answered = 0;
+      st.score = 0;
+      st.streak = 0;
+      st.bestStreak = 0;
+      st.exhausted = false;
+      st.boardUp = false;
+      st.mastersOnly = false;
+      st.cdb = new Map();
+      st.cdbCount = 0;
+      st.pgn = new Map();
+      st.endsAt = 0;
+      mount();
+      render();
+      setStatus('Reading the course…', '');
+
+      // The store first, and before the course: it is what lets the first card
+      // arrive with no network at all.
+      await loadStore();
+      await loadSyncMeta();
+      if (!st.running) return;
+      // §14.12: a pull, if it has been a while and syncing is on. Deliberately
+      // NOT awaited — the whole point of the store is that a session opens
+      // without waiting for a network, and an exchange that lands mid-session
+      // simply makes the NEXT draw richer.
+      if (pinSyncApi && pinSyncApi.carrier && pinSyncApi.carrier.course() &&
+          Date.now() - st.lastPull > C.pullMs) {
+        syncStore('opening a session');
+      }
+      st.storeQueue = storeDraw();
+      if (st.storeQueue.length) {
+        setStatus('', '');
+        produceFromStore();
+        render();
+        if (!st.card) nextCard();
+      }
+
+      let course = null;
+      try {
+        const creds = chessableCreds();
+        if (!creds) throw new Error('not signed in to Chessable in this tab');
+        course = await fetchCourse(st.bid, creds, true);
+      } catch (err) {
+        warn('storm: could not read the course:', err);
+        // NOT FATAL WHERE THE STORE HAS POSITIONS: a session that can already
+        // ask twenty questions should not refuse because it cannot find a
+        // twenty-first. The producer simply has no pool to draw on.
+        if (st.storeQueue && st.storeQueue.length) {
+          st.exhausted = true;
+          setNote('Playing stored positions — this course could not be re-read.');
+          return;
+        }
+        endSession('course unreadable', String((err && err.message) || err));
+        return;
+      }
+      if (!st.running) return;
+
+      const frontiers = await stormFrontiers(course.vars, C);
+      if (!st.running) return;
+      if (!frontiers.length) {
+        endSession('no frontiers',
+          'None of this course’s variations ends on a position a real game passes ' +
+          'through — every line either starts from a custom position (tactics, model ' +
+          'games) or is too short to have a frontier.');
+        return;
+      }
+      st.pool = frontiers;
+      st.poolSize = frontiers.length;
+      st.name = course.name || st.name;
+      log('storm:', frontiers.length, 'eligible frontier(s) on', st.bid);
+
+      // THE CLOCK STARTS WITH THE FIRST CARD, not here: the producer's opening
+      // round trip is ~1.5 s of network and it is not the user's to pay for.
+      setStatus('', '');
+      render();
+      produce();
+    }
+
+    function nextCard() {
+      clearTimeout(st.nextTimer);
+      st.nextTimer = 0;
+      if (!st.running || st.over) return;
+      // GATHERING SHOWS NOTHING. Pressing it during the pre-roll — the seconds
+      // before the first card, which is exactly when a user decides they would
+      // rather fill the store than play — must not be interrupted by the card
+      // the producer was already fetching.
+      if (st.gathering) return;
+      st.verdict = null;
+      const card = st.queue.shift();
+      if (!card) {
+        // Nothing ready. If more can still be produced this is a pause; if not,
+        // the session is over — an empty queue ENDS it cleanly rather than
+        // stalling on a spinner (§8.3).
+        if (st.exhausted && !st.producing) {
+          endSession(st.shown ? 'out of positions' : 'nothing to storm',
+            st.shown ? '' : 'No position on this course’s frontier could be graded — ' +
+              'ChessDB has not seen them, or the games there run out too quickly.');
+          return;
+        }
+        st.card = null;
+        render();
+        produce();
+        return;
+      }
+      st.card = card;
+      st.shown++;
+      if (!st.endsAt) startClock();
+      const ok = st.boardUp
+        ? (continuationStormApi && continuationStormApi.next(card))
+        : (continuationStormApi && continuationStormApi.open(card, slots));
+      if (!ok) {
+        endSession('board refused', 'The storm board could not be opened here.');
+        return;
+      }
+      st.boardUp = true;
+      render();
+      produce(); // top the queue up while the user thinks
+    }
+
+    /**
+     * Grades the move just played (§3.4 / §8.1).
+     *
+     * The move is already on the board — section 18 plays it before asking, so
+     * the user never waits to see their own move — and this is only the number.
+     * `stormMoveLoss` answers from the position's own scored list where it can;
+     * where it cannot, ONE more `queryall` on the position AFTER the move
+     * supplies the child's best, which is the fallback that makes grading total.
+     * Latency is free at exactly this moment: the user is already waiting for a
+     * verdict.
+     */
+    async function grade(uci, san) {
+      const card = st.card;
+      if (!card || st.grading || st.verdict) return;
+      st.grading = true;
+      render();
+      // FAIL OPEN, ALWAYS. Section 18 holds the board shut from the moment the
+      // move is played until a verdict lands, so a grade that hangs is a board
+      // that takes no further move — and, because `st.grading` gates the next
+      // one, every card after it as well. Seen live 2026-08-28. The watchdog
+      // answers with the verdict that costs nothing either way.
+      clearTimeout(st.gradeTimer);
+      st.gradeTimer = setTimeout(() => {
+        st.gradeTimer = 0;
+        if (!st.grading || st.card !== card) return;
+        warn('storm: grading', san, 'timed out — no verdict');
+        st.grading = false;
+        if (st.eng) endEngineJob(st.eng, null);
+        finishAnswer({ verdict: 'unknown', userSan: san, loss: null, rank: null });
+      }, C.gradeTimeoutMs);
+      try {
+        await gradeInner(card, uci, san);
+      } catch (err) {
+        warn('storm: grading failed:', err);
+        if (st.grading && st.card === card) {
+          st.grading = false;
+          clearTimeout(st.gradeTimer);
+          st.gradeTimer = 0;
+          finishAnswer({ verdict: 'unknown', userSan: san, loss: null, rank: null });
+        }
+      }
+    }
+
+    async function gradeInner(card, uci, san) {
+      const scored = card.storm.cand.scored;
+      let got = stormMoveLoss(scored, uci, undefined);
+      if (!got) {
+        const after = fenAfterUci(card.startFen, uci);
+        const child = after ? await askCdb(after) : null;
+        got = stormMoveLoss(scored, uci, child && child.length ? child[0].score : undefined);
+      }
+      // §3.4's THIRD source, and the live run is why it is not optional: the
+      // child of an ARBITRARY move is a position no game ever reached, so §3.2's
+      // 98% coverage — a measurement over REAL continuations — does not carry
+      // over to it. Three answers in a row came back ungradeable on course
+      // 291847 before this existed.
+      if (!got && st.card === card) {
+        const eng = await stormEngineLoss(card.startFen, uci);
+        if (eng) {
+          got = {
+            loss: Math.max(0, eng.best - eng.value),
+            rank: null, score: eng.value, san: '', winrate: null, source: 'engine',
+            // Both halves of the line the panel prints come from the SAME
+            // search, so it names the engine's best and not the book's.
+            bestSan: eng.bestSan, bestScore: eng.best,
+          };
+        }
+      }
+      st.grading = false;
+      clearTimeout(st.gradeTimer);
+      st.gradeTimer = 0;
+      // The board can have moved on under a slow request — Exit, the clock, a
+      // new card — in which case this verdict is about a position nobody is
+      // looking at.
+      if (!st.running || st.card !== card) return;
+      if (!got) {
+        // Neither source could answer. Deliberately NOT a miss: the user played
+        // a legal move and the database simply has nothing to say about it, and
+        // scoring that against them is the one unfair verdict available.
+        finishAnswer({ verdict: 'unknown', userSan: san, userUci: uci, loss: null, rank: null });
+        return;
+      }
+      finishAnswer({
+        verdict: stormGrade(got.loss, C),
+        userSan: san,
+        userUci: uci,
+        loss: got.loss,
+        rank: got.rank,
+        userScore: got.score,
+        userWinrate: got.winrate,
+        source: got.source,
+        estimated: got.source !== 'list',
+        bestSan: got.bestSan,
+        bestScore: got.bestScore,
+      });
+    }
+
+    /** Applies a verdict to the score, the streak and the clock, prints it, and
+     *  queues the next card. */
+    function finishAnswer(v) {
+      const earned = stormPoints(v.verdict, st.streak, C);
+      v.points = earned;
+      v.streakBefore = st.streak;
+      st.answered++;
+      st.score += earned;
+      if (v.verdict === 'good' || v.verdict === 'decent') {
+        st.streak++;
+        if (st.streak > st.bestStreak) st.bestStreak = st.streak;
+      } else if (v.verdict === 'miss') {
+        st.streak = 0;
+        if (C.missPenaltyMs > 0) st.endsAt -= C.missPenaltyMs;
+      }
+      // 'unknown' holds the streak and scores nothing: it is not the user's
+      // fault and not an achievement either.
+      st.verdict = v;
+      // §14.11's retention rule: learned positions leave the store, missed ones
+      // stay and come round again.
+      if (st.card) storeNote(st.card.startFen, v.verdict);
+      // KEPT FOR THE REVIEW (§14.10). The card carries its own scored list, so
+      // nothing has to be fetched again to show the best move afterwards — and
+      // the cap is a memory bound rather than a policy: a five-minute storm
+      // answers about twenty.
+      if (st.card) {
+        st.history.push({ card: st.card, verdict: v });
+        if (st.history.length > C.reviewMax) st.history.shift();
+      }
+      if (continuationStormApi) continuationStormApi.verdict(v);
+      render();
+      clearTimeout(st.nextTimer);
+      st.nextTimer = setTimeout(() => { st.nextTimer = 0; nextCard(); }, C.verdictMs);
+    }
+
+    function startClock() {
+      st.endsAt = Date.now() + C.sessionMs;
+      clearInterval(st.clockTimer);
+      st.clockTimer = setInterval(() => {
+        if (!st.running) { clearInterval(st.clockTimer); st.clockTimer = 0; return; }
+        if (Date.now() >= st.endsAt) { endSession('time'); return; }
+        paintClock();
+      }, C.tickMs);
+    }
+
+    /**
+     * Ends the session and puts the summary up. `why` is logged; `msg` is the
+     * sentence the user reads, and an empty one leaves the ordinary summary.
+     *
+     * It leaves the WINDOW open on that summary — a storm that vanishes the
+     * instant the clock runs out is one whose score you never see.
+     */
+    function endSession(why, msg) {
+      if (!st.running) return;
+      clearInterval(st.clockTimer);
+      st.clockTimer = 0;
+      clearTimeout(st.nextTimer);
+      st.nextTimer = 0;
+      clearTimeout(st.gradeTimer);
+      st.gradeTimer = 0;
+      st.grading = false;
+      st.over = true;
+      st.card = null;
+      // A claim on the shared engine must never outlive the session that made
+      // it: `syncEngine` stands down while `state.altCheckBusy` is set, so a
+      // leaked claim is a panel whose engine never starts again.
+      if (st.eng) endEngineJob(st.eng, null);
+      // …and the store, whose whole value is that it outlives this session.
+      // Fire and forget: nothing after this reads it back.
+      saveStore();
+      // Section 18's board first: the summary belongs on the window, and a
+      // board still pinned over its slot would cover half of it.
+      if (continuationStormApi) continuationStormApi.close();
+      st.boardUp = false;
+      log('storm: finished —', why + ',', st.score, 'points from', st.answered,
+        'answer(s), best streak', st.bestStreak, '·', st.cdbCount, 'ChessDB requests');
+      if (msg) setStatus(msg, 'warn');
+      // The review opens on the LAST position answered, which is the one still
+      // in mind — and where a user who ran out of time mid-thought left off.
+      st.reviewIdx = Math.max(0, st.history.length - 1);
+      // `running` stays TRUE until the window is dismissed: the course tree
+      // reads it, and putting the tree's own window back underneath the summary
+      // would be two full-window panels at once.
+      render();
+    }
+
+    /** Dismisses the whole thing — the window, the board and the tree's
+     *  stand-down. Idempotent. */
+    function closeStorm() {
+      const wasRunning = st.running;
+      // Before endSession, which calls `continuationStormApi.close()` itself —
+      // this is what keeps the flag from outliving the board it names.
+      if (st.analysing) closeAnalyse();
+      stopGather();
+      endSession('closed by hand');
+      st.running = false;
+      st.over = false;
+      st.card = null;
+      st.queue = [];
+      st.pool = [];
+      st.verdict = null;
+      st.history = [];
+      st.analysing = false;
+      if (st.panel) st.panel.hidden = true;
+      if (wasRunning) render();
+    }
+    // ----------------------------------------------------------------------
+    // The window (§8.4)
+    //
+    // A FULL-WINDOW panel, the shape section 24 uses (`inset: 16px`): this is
+    // something you are inside of, not a report read while doing something else
+    // on the page underneath. It holds the clock, the score and the streak, and
+    // two empty SLOTS — section 18's board and its panel are pinned onto them,
+    // exactly the way 24g pins the analysis board into the course tree.
+    //
+    // Same z-index as the tree's window, which is why the tree hides itself
+    // while `stormActive()`: two full-window panels at once is not a layering
+    // problem to solve, it is a state that should not exist.
+    // ----------------------------------------------------------------------
+
+    const el = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text !== undefined) n.textContent = text;
+      return n;
+    };
+
+    /** The two slots section 18's overlays are pinned onto, in VIEWPORT
+     *  coordinates — this window is itself fixed, so its slots are viewport
+     *  rects by construction (section 11's ban is on anchoring a fixed element
+     *  to SCROLLING content). Null while the stage is not laid out. */
+    /**
+     * …and the third, for the Lichess panel. THIS IS what `stormPanelSlot` is
+     * set to, so answering a rect is also the answer to "is the storm the
+     * panel's host right now" — the same contract `courseTreePanelSlot` has.
+     * Null unless the review's analysis board is up, which is the only state
+     * that wants a database beside it.
+     */
+    function panelSlot() {
+      if (!st.analysing || !st.ui || !st.ui.dbSlot || st.ui.dbSlot.hidden) return null;
+      if (!st.ui.stage || st.ui.stage.hidden) return null;
+      const r = st.ui.dbSlot.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      return {
+        left: Math.round(r.left), top: Math.round(r.top),
+        width: Math.round(r.width), height: Math.round(r.height),
+      };
+    }
+
+    function slots() {
+      if (!st.ui || !st.ui.stage || st.ui.stage.hidden) return null;
+      const b = st.ui.boardSlot.getBoundingClientRect();
+      const p = st.ui.panelSlot.getBoundingClientRect();
+      if (!b.width || !b.height || !p.width) return null;
+      const size = Math.max(160, Math.floor(Math.min(b.width, b.height)));
+      return {
+        board: { left: Math.round(b.left), top: Math.round(b.top), size },
+        panel: {
+          left: Math.round(p.left), top: Math.round(p.top),
+          width: Math.round(p.width), height: Math.round(p.height),
+        },
+      };
+    }
+
+    function mount() {
+      const stale = document.getElementById(ST_PANEL_ID);
+      if (stale && st.panel !== stale) stale.remove();
+      if (st.panel && st.panel.isConnected) { st.panel.hidden = false; return; }
+
+      const panel = el('div', 'clo-st');
+      panel.id = ST_PANEL_ID;
+
+      const head = el('div', 'clo-st-head');
+      const title = el('span', 'clo-st-title', 'Intuition storm');
+      const sub = el('span', 'clo-st-sub');
+      const clock = el('span', 'clo-st-clock', '—');
+      const score = el('span', 'clo-st-stat');
+      const streak = el('span', 'clo-st-stat');
+      const close = el('button', 'clo-st-x', '×');
+      close.type = 'button';
+      close.title = 'Close (Esc)';
+      close.addEventListener('click', closeStorm);
+      head.append(title, sub, clock, score, streak, close);
+
+      const body = el('div', 'clo-st-body');
+      const status = el('div', 'clo-st-status');
+      status.hidden = true;
+      const note = el('div', 'clo-st-note');
+      note.hidden = true;
+      const syncNote = el('div', 'clo-st-note clo-st-syncnote');
+      syncNote.hidden = true;
+
+      // THE PLY RANGE (§14.9). Shown only when no clock is running — before the
+      // first card and after the last — because changing it mid-session would
+      // describe an exercise the positions already on the queue are not from.
+      // That is also why it needs no separate settings surface: those are
+      // exactly the two moments the user is waiting rather than playing.
+      const settings = el('div', 'clo-st-settings');
+      // §14.11's own control, in the same row and for the same reason: it is
+      // available exactly when no clock is running, which is when gathering is
+      // a thing you would want to start.
+      const ready = el('span', 'clo-st-ready');
+      ready.hidden = true;
+      ready.title = 'Positions already found on this course and waiting. A storm opens ' +
+        'on these instantly — finding one costs about eleven ChessDB lookups, which ' +
+        'is what "Gather positions" pays in advance.';
+      const gatherBtn = el('button', 'clo-st-gather', 'Gather positions');
+      gatherBtn.type = 'button';
+      gatherBtn.addEventListener('click', gather);
+
+      // §14.12. Beside the gather control because it is the same subject — what
+      // is in the store — and a NEUTRAL outline because it is the action away
+      // from both of the others (DESIGN-ui-inventory §3): you neither storm nor
+      // gather by pressing it.
+      const syncBtn = el('button', 'clo-st-sync', 'Sync');
+      syncBtn.type = 'button';
+      syncBtn.title = 'Carry these positions to your other devices through an ' +
+        'informational card in the course you chose for syncing (the same one the ' +
+        'pinned mistakes use). It reads the card, merges, and writes the result back.';
+      syncBtn.addEventListener('click', () => syncStore('by hand'));
+      const mkSel = (lo, hi, onPick) => {
+        const sel = document.createElement('select');
+        sel.className = 'clo-st-sel';
+        for (let i = lo; i <= hi; i++) {
+          const o = document.createElement('option');
+          o.value = String(i);
+          o.textContent = String(i);
+          sel.appendChild(o);
+        }
+        sel.addEventListener('change', onPick);
+        return sel;
+      };
+      const minSel = mkSel(1, C.minPlyMax, () => savePlyRange(minSel.value, maxSel.value));
+      const maxSel = mkSel(C.maxPlyMin, C.maxPlyMax, () => savePlyRange(minSel.value, maxSel.value));
+      settings.append(
+        el('span', 'clo-st-set-label', 'Offer positions'), minSel,
+        el('span', 'clo-st-set-label', 'to'), maxSel,
+        el('span', 'clo-st-set-label', 'moves past the end of a line'),
+        el('span', 'clo-st-set-spacer'), ready, gatherBtn, syncBtn);
+      settings.title = 'How far past the point a course line stops a position may be. ' +
+        '1 asks what you play the move AFTER the book runs out; a wider range mixes ' +
+        'that with positions further downstream.';
+      const stage = el('div', 'clo-st-stage');
+      const boardSlot = el('div', 'clo-st-slot clo-st-slot--board');
+      const panelSlot = el('div', 'clo-st-slot clo-st-slot--panel');
+      // The THIRD slot, for the Lichess panel — and it exists only while the
+      // review's analysis board is up (§14.10). During a card it must not: the
+      // database's top move would name the answer, which is the same reason
+      // section 20's drill leaves the panel's ordinary stand-down in place.
+      const dbSlot = el('div', 'clo-st-slot clo-st-slot--db');
+      dbSlot.hidden = true;
+      stage.append(boardSlot, panelSlot, dbSlot);
+      const summary = el('div', 'clo-st-summary');
+      summary.hidden = true;
+
+      // §14.10: the REVIEW. A timed exercise is one you cannot think during, so
+      // the thinking has to be available after it — which means the position,
+      // your move, the best move, and a way into a real analysis board.
+      //
+      // The board here is section 11c's STATIC preview (`.clo-cr-mini`, the
+      // shape the course tree and the heads-up use), not section 18's playable
+      // one: nothing on it is answered, and the two arrows are the whole of
+      // what it has to say.
+      const review = el('div', 'clo-st-review');
+      review.hidden = true;
+      const revBoard = el('div', 'clo-cr-mini clo-st-revboard');
+      const revGrid = el('div', 'clo-cr-grid');
+      const revLayer = el('div', 'clo-cr-layer');
+      const revShapes = document.createElementNS(SVG_NS, 'svg');
+      revShapes.setAttribute('class', 'clo-cr-shapes');
+      revShapes.setAttribute('viewBox', '0 0 8 8');
+      revShapes.setAttribute('preserveAspectRatio', 'none');
+      revBoard.append(revGrid, revLayer, revShapes);
+      const revSide = el('div', 'clo-st-revside');
+      const revHead = el('div', 'clo-st-revhead');
+      const revLegend = el('div', 'clo-st-revlegend');
+      const revList = el('div', 'clo-st-revlist');
+      const revActions = el('div', 'clo-st-revactions');
+      const revAnalyse = el('button', 'clo-st-analyse', 'Analyse this position');
+      revAnalyse.type = 'button';
+      revAnalyse.title = 'Open the analysis board here — play it out, with the engine and ' +
+        'the database beside it.';
+      revAnalyse.addEventListener('click', toggleAnalyse);
+      const revAgain = el('button', 'clo-st-again', 'Storm again');
+      revAgain.type = 'button';
+      revAgain.addEventListener('click', stormAgain);
+      const revDone = el('button', 'clo-st-done', 'Close');
+      revDone.type = 'button';
+      revDone.addEventListener('click', closeStorm);
+      revActions.append(revAnalyse, revAgain, revDone);
+      revSide.append(revHead, revLegend, revList, revActions);
+      review.append(revBoard, revSide);
+      body.append(status, note, syncNote, settings, stage, review, summary);
+
+      panel.append(head, body);
+      document.body.appendChild(panel);
+      st.panel = panel;
+      st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
+        settings, minSel, maxSel, gatherBtn, ready, syncBtn, syncNote,
+        review, revBoard, revGrid, revLayer, revShapes, revHead, revLegend, revList,
+        revActions, revAnalyse, dbSlot };
+      syncSettings();
+    }
+
+    function setStatus(text, kind) {
+      if (!st.ui) return;
+      st.ui.status.textContent = text || '';
+      st.ui.status.hidden = !text;
+      st.ui.status.classList.toggle('clo-st-status--warn', kind === 'warn');
+    }
+
+    /** Writes the range through, then persists it. Storage is best-effort: the
+     *  setting is in force either way, it just may not survive the tab. */
+    function savePlyRange(lo, hi) {
+      applyPlyRange(lo, hi);
+      syncSettings();
+      try {
+        chrome.storage.local.set({ [C.minPlyKey]: st.minPly, [C.maxPlyKey]: st.maxPly })
+          .catch(() => {});
+      } catch (err) { /* orphaned content script */ }
+    }
+
+    /** The selectors follow the state, never the other way round — including
+     *  after `applyPlyRange` has clamped an inverted pair. */
+    /** How many positions this course has ready — the one number that says
+     *  whether the next storm starts instantly (§14.11). */
+    const storeCount = () => (st.store ? Object.keys(st.store).length : 0);
+
+    function syncSettings() {
+      if (!st.ui) return;
+      st.ui.ready.textContent = st.store
+        ? storeCount() + ' position(s) ready' : '';
+      st.ui.ready.hidden = !st.store;
+      st.ui.minSel.value = String(st.minPly);
+      st.ui.maxSel.value = String(st.maxPly);
+      // The button IS the stop button while it runs — one control, because
+      // "gather" and "stop gathering" are the two halves of one intention
+      // (section 9's rule, and the tree's Read/Cancel does the same).
+      st.ui.syncBtn.disabled = st.syncing || st.gathering;
+      st.ui.syncBtn.textContent = st.syncing ? 'Syncing…' : 'Sync';
+      st.ui.gatherBtn.textContent = st.gathering ? 'Stop gathering' : 'Gather positions';
+      st.ui.gatherBtn.classList.toggle('clo-st-gather--on', st.gathering);
+      st.ui.gatherBtn.title = st.gathering
+        ? 'Stop after the line end being walked now. Everything found so far is ' +
+          'already stored.'
+        : 'Walk this course’s line ends and store every usable position, showing ' +
+          'none of them — so a later storm starts instantly. Leave it running as ' +
+          'long as you like; it saves as it goes.\nIt reads the Lichess opening ' +
+          'explorer and the ChessDB analysis book, and says how many lookups it spent.';
+      // The selectors are meaningless mid-gather: the pass is walking with the
+      // range it started on.
+      st.ui.minSel.disabled = st.gathering;
+      st.ui.maxSel.disabled = st.gathering;
+      // Only while nothing is being timed: see the note where this is built.
+      // A gather pass is never timed, so its own control cannot hide under it.
+      st.ui.settings.hidden = Boolean(st.endsAt) && !st.over && !st.gathering;
+    }
+
+    function setNote(text) {
+      st.note = text || '';
+      if (!st.ui) return;
+      st.ui.note.textContent = st.note;
+      st.ui.note.hidden = !st.note;
+    }
+
+    const mmss = (ms) => {
+      const s = Math.max(0, Math.ceil(ms / 1000));
+      return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    };
+
+    function paintClock() {
+      if (!st.ui) return;
+      const left = st.endsAt ? st.endsAt - Date.now() : C.sessionMs;
+      st.ui.clock.textContent = mmss(left);
+      st.ui.clock.classList.toggle('clo-st-clock--low', st.endsAt > 0 && left <= C.lowTimeMs);
+      st.ui.clock.classList.toggle('clo-st-clock--off', !st.endsAt || st.over);
+    }
+
+    /** The multiplier in force for the NEXT answer. */
+    const multiplier = () =>
+      Math.min(C.streakMax, 1 + Math.floor(Math.max(0, st.streak) / C.streakStep));
+
+    function render() {
+      if (!st.panel) return;
+      st.panel.hidden = !st.running;
+      if (!st.running || !st.ui) return;
+      st.ui.sub.textContent = st.name || '';
+      paintClock();
+      st.ui.score.textContent = st.score + (st.score === 1 ? ' pt' : ' pts');
+      const mult = multiplier();
+      st.ui.streak.textContent = 'streak ' + st.streak + (mult > 1 ? ' ×' + mult : '');
+      st.ui.streak.classList.toggle('clo-st-stat--hot', mult > 1);
+      // THREE views, and exactly one is up: the card stage while playing, the
+      // REVIEW once it is over and something was answered, and the bare summary
+      // when nothing was. `analysing` is a fourth state INSIDE the review — the
+      // board is pinned to the stage's slots, so the stage comes back while the
+      // review's own board and list stand down.
+      const reviewable = st.over && st.history.length > 0;
+      st.ui.stage.hidden = !(!st.over || (reviewable && st.analysing));
+      // The database slot exists for the analysis board and for nothing else.
+      // Sized BEFORE the overlays are placed — `slots()` and `panelSlot()` both
+      // measure a laid-out stage, so a slot revealed after the placement is a
+      // rect of zero.
+      st.ui.dbSlot.hidden = !st.analysing;
+      st.ui.review.hidden = !(reviewable && !st.analysing);
+      st.ui.summary.hidden = !(st.over && !reviewable);
+      syncSettings();
+      if (reviewable) renderReview();
+      else if (st.over) renderSummary();
+    }
+
+    function renderSummary() {
+      const box = st.ui.summary;
+      while (box.firstChild) box.removeChild(box.firstChild);
+      box.append(el('div', 'clo-st-sum-score', st.score + (st.score === 1 ? ' point' : ' points')));
+      const line = st.answered
+        ? st.answered + ' position' + (st.answered === 1 ? '' : 's') + ' answered · best streak ' +
+          st.bestStreak
+        : 'No positions were answered.';
+      box.append(el('div', 'clo-st-sum-line', line));
+      // The cost, stated. This feature spends a volunteer network's compute and
+      // a stranger's bandwidth; a session that never says how much is one that
+      // makes that invisible.
+      if (storeCount()) {
+        box.append(el('div', 'clo-st-sum-line',
+          storeCount() + ' position(s) still ready on this course'));
+      }
+      box.append(el('div', 'clo-st-sum-cost',
+        st.cdbCount + ' ChessDB lookups · ' + st.seen.size + ' position(s) found on ' +
+        (st.poolSize - st.pool.length) + ' of ' + st.poolSize + ' line ends'));
+      const again = el('button', 'clo-st-again', 'Storm again');
+      again.type = 'button';
+      again.addEventListener('click', stormAgain);
+      const done = el('button', 'clo-st-done', 'Close');
+      done.type = 'button';
+      done.addEventListener('click', closeStorm);
+      const row = el('div', 'clo-st-sum-actions');
+      row.append(again, done);
+      box.append(row);
+    }
+
+    function stormAgain() {
+      const spec = { bid: st.bid, name: st.name };
+      closeStorm();
+      startSession(spec);
+    }
+
+    // ----------------------------------------------------------------------
+    // §14.10) The review
+    //
+    // The one part of this feature that is NOT under time pressure, and it is
+    // where the value of a storm mostly is: twenty positions you had four
+    // seconds each on, with the move you found beside the move there was.
+    //
+    // Read-only by construction — a static board, section 11c's — and the one
+    // way out of it is section 19's analysis board, which is a board that
+    // already knows how to do everything else.
+    // ----------------------------------------------------------------------
+
+    const revItem = () => st.history[st.reviewIdx] || null;
+
+    /** The two moves a review row is about. `best` is whatever GRADED the
+     *  answer, so an engine-graded card names the engine's move — the same
+     *  rule the verdict line follows, for the same reason. */
+    function revMoves(item) {
+      if (!item) return null;
+      const s2 = item.card.storm;
+      const v = item.verdict || {};
+      const eng = v.source === 'engine' && v.bestSan;
+      return {
+        bestUci: eng ? null : s2.bestUci,
+        bestSan: eng ? v.bestSan : s2.bestSan,
+        userSan: v.userSan || '',
+        userUci: v.userUci || '',
+      };
+    }
+
+    /**
+     * Draws the position with up to two arrows: the best move in GREEN and the
+     * user's in RED where they differ.
+     *
+     * Section 11c's three caller rules apply unchanged, and the second is the
+     * one to watch: `paintShape` takes a COLOUR KEY or a CSS value, and until
+     * v0.80.0 it dropped anything else SILENTLY — falling back to the
+     * stylesheet's green, i.e. to exactly the colour a caller passed an
+     * argument to avoid. The keys here are 'g' and 'r'.
+     */
+    function renderReviewBoard() {
+      const item = revItem();
+      const grid = st.ui.revGrid;
+      const layer = st.ui.revLayer;
+      const shapes = st.ui.revShapes;
+      while (layer.firstChild) layer.removeChild(layer.firstChild);
+      while (shapes.firstChild) shapes.removeChild(shapes.firstChild);
+      if (!item) { fillBoardGrid(grid, 'w', () => {}); return; }
+      const view = item.card.userColor === 'b' ? 'b' : 'w';
+      const squares = new Map();
+      fillBoardGrid(grid, view, (sq, idx) => squares.set(idx, sq));
+      const pos = CloSan.parseFen(item.card.startFen);
+      if (!pos) return;
+      for (let idx = 0; idx < 64; idx++) {
+        const letter = pos.board[idx];
+        if (!letter) continue;
+        const piece = makeBoardPiece(letter);
+        placeBoardPiece(piece, idx, view);
+        layer.appendChild(piece);
+      }
+      // The move that LED here, tinted — the same context the card itself had.
+      const arrived = item.card.storm.cand.arrived;
+      if (arrived && arrived.uci && arrived.uci.length >= 4) {
+        for (const n of [arrived.uci.slice(0, 2), arrived.uci.slice(2, 4)]) {
+          const sq = squares.get(squareIndexOf(n));
+          if (sq) sq.classList.add('clo-cr-sq--last');
+        }
+      }
+      const mv = revMoves(item);
+      const draw = (uci, san, colour) => {
+        const m = uci ? CloSan.uciToMove(pos, uci) : (san ? CloSan.uciToMove(pos, sanToUci(pos, san) || '') : null);
+        if (m) shapes.appendChild(boardShapeArrow(m.from, m.to, view, colour));
+      };
+      draw(mv.bestUci, mv.bestSan, 'g');
+      // Only where the two differ: two arrows on one pair of squares is a
+      // thicker arrow, not a second claim.
+      if (mv.userSan && mv.userSan !== mv.bestSan) draw(mv.userUci, mv.userSan, 'r');
+    }
+
+    function renderReviewList() {
+      const host = st.ui.revList;
+      while (host.firstChild) host.removeChild(host.firstChild);
+      st.history.forEach((item, i) => {
+        const v = item.verdict || {};
+        const row = el('button', 'clo-st-revrow');
+        row.type = 'button';
+        row.classList.toggle('clo-st-revrow--on', i === st.reviewIdx);
+        row.classList.add('clo-st-revrow--' + (v.verdict || 'unknown'));
+        row.append(el('span', 'clo-st-revrow-n', String(i + 1)));
+        const mv = revMoves(item);
+        row.append(el('span', 'clo-st-revrow-move', mv.userSan || '—'));
+        row.append(el('span', 'clo-st-revrow-best', mv.bestSan || '?'));
+        row.append(el('span', 'clo-st-revrow-loss',
+          typeof v.loss === 'number' ? (v.loss ? '−' + v.loss : '0') : '?'));
+        row.title = (item.card.storm.from || '') +
+          (item.card.storm.cand.invented ? ' · invented continuation' : '');
+        row.addEventListener('click', () => {
+          if (st.reviewIdx === i) return;
+          st.reviewIdx = i;
+          if (st.analysing) closeAnalyse(); // it describes the position being left
+          renderReview();
+        });
+        host.appendChild(row);
+      });
+    }
+
+    function renderReview() {
+      if (!st.ui) return;
+      const item = revItem();
+      st.ui.revHead.textContent = st.history.length
+        ? 'Position ' + (st.reviewIdx + 1) + ' of ' + st.history.length
+        : '';
+      const v = (item && item.verdict) || {};
+      st.ui.revLegend.textContent = item
+        ? stormVerdictLine(v, item.card.storm) + '   ·   ' + stormBestLine(v, item.card.storm)
+        : '';
+      st.ui.revLegend.classList.toggle('clo-cdb--est', Boolean(item));
+      st.ui.revAnalyse.disabled = !item;
+      st.ui.revAnalyse.textContent = st.analysing ? 'Back to the review' : 'Analyse this position';
+      renderReviewList();
+      if (!st.analysing) renderReviewBoard();
+    }
+
+    function reviewStep(delta) {
+      if (!st.over || !st.history.length) return;
+      const next = Math.max(0, Math.min(st.history.length - 1, st.reviewIdx + delta));
+      if (next === st.reviewIdx) return;
+      st.reviewIdx = next;
+      if (st.analysing) closeAnalyse();
+      renderReview();
+    }
+
+    // --- section 19's board, on a review position ---------------------------
+
+    function toggleAnalyse() {
+      if (st.analysing) { closeAnalyse(); return; }
+      const item = revItem();
+      if (!item || !continuationStormApi) return;
+      // Everything section 19 would read off a page, handed in — the shape
+      // 24g established (`openAnalysis`'s `given`). A storm position belongs to
+      // no variation, so only `startFen` and the orientation are answerable,
+      // and every field past `startFen` is optional by that contract: the three
+      // writes simply refuse, each with its own sentence.
+      const given = {
+        startFen: item.card.startFen,
+        userColor: item.card.userColor,
+      };
+      st.analysing = true;
+      render();
+      if (!continuationStormApi.analyse(given, slots)) {
+        st.analysing = false;
+        render();
+        setStatus('The analysis board could not be opened here.', 'warn');
+        return;
+      }
+      setStatus('', '');
+      // The Lichess panel follows the board rather than a poll later — 24g's
+      // `openExplore` does the same, for the same reason.
+      topPanelTick();
+    }
+
+    function closeAnalyse() {
+      if (!st.analysing) return;
+      st.analysing = false;
+      if (continuationStormApi) continuationStormApi.close();
+      render();
+      topPanelTick();
+      renderReview();
+    }
+
+    // ----------------------------------------------------------------------
+    // Lifetime
+    // ----------------------------------------------------------------------
+
+    function tick() {
+      if (!st.running) return;
+      const onCourse = !CHAPTER_EDIT_RE.test(location.pathname) &&
+        COURSE_PATH_RE.test(location.pathname);
+      if (!onCourse) {
+        // An SPA hop off the course page takes the storm with it: every card in
+        // the queue is a position from THIS course's frontier.
+        closeStorm();
+        return;
+      }
+      // A gather pass is the one state with nothing on a board, so none of the
+      // teardowns below apply to it — and it must keep its note current, which
+      // is the only sign it is still running.
+      if (st.gathering) { setGatherNote(); render(); return; }
+      // Section 18's board can be closed from its own Exit, its Escape, or
+      // anything else that tears a run down. Noticed here rather than through a
+      // callback, the discipline 24g settled on: a teardown that has to
+      // remember to tell someone is one that will eventually forget.
+      if (st.boardUp && !st.over && continuationActive && !continuationActive()) {
+        endSession('the board was closed');
+      }
+      // The same, for the review's analysis board (§14.10) — closed from its own
+      // Exit or Escape, and the review has to come back rather than leaving the
+      // window on an empty stage.
+      if (st.analysing && continuationActive && !continuationActive()) closeAnalyse();
+    }
+
+    /**
+     * Escape dismisses the window — but only when section 18 is not already
+     * listening. While a card is on the board that module's own capture-phase
+     * handler owns Escape and closes the board with it, which this module's
+     * tick then reads as the end of the session; so the first press stops the
+     * storm and shows the score, and the second closes it. Two presses for two
+     * different things, in the order a user means them.
+     */
+    function onKey(e) {
+      if (!st.running) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // §14.10's review is walked with the arrows. Only there — during a storm
+      // the board owns the keyboard, and there is nothing to step through.
+      if (st.over && st.history.length && !st.analysing) {
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { reviewStep(-1); }
+        else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { reviewStep(1); }
+        else if (e.key === 'Home') { st.reviewIdx = 0; renderReview(); }
+        else if (e.key === 'End') { st.reviewIdx = st.history.length - 1; renderReview(); }
+        else if (e.key !== 'Escape') return;
+        else { e.preventDefault(); e.stopPropagation(); closeStorm(); return; }
+        e.preventDefault(); // the arrows would otherwise scroll the page
+        e.stopPropagation();
+        return;
+      }
+      if (e.key !== 'Escape') return;
+      // While section 18 has a board up — a card, or an analysis board opened
+      // from the review — Escape is ITS, and this module's tick reads the
+      // teardown that follows. So the first press closes the board and the
+      // second closes the window: two presses for two different things, in the
+      // order a user means them.
+      if (continuationActive && continuationActive()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeStorm();
+    }
+
+    // §14.10: the panel's fifth host, and the second supplier of the slot
+    // `positionTreePanel` places into. Answering a rect IS the claim, so it is
+    // assigned once and gates itself on `st.analysing`.
+    stormPanelSlot = panelSlot;
+
+    document.addEventListener('keydown', onKey, true);
+    window.addEventListener('pagehide', () => {
+      clearInterval(st.clockTimer);
+      clearTimeout(st.nextTimer);
+      clearTimeout(st.gradeTimer);
+    });
+
+    // One try/catch around the whole tick, section 21's discipline: the interval
+    // must survive a throw, or the window silently freezes on whatever it last
+    // drew — the failure mode of a watchdog poll that is invisible from outside.
+    let lastTickError = '';
+    const pollTimer = setInterval(() => {
+      try {
+        tick();
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        if (msg !== lastTickError) { lastTickError = msg; warn('storm tick failed:', err); }
+      }
+    }, C.pollMs);
+    window.addEventListener('pagehide', () => clearInterval(pollTimer));
   }
 
   // ==========================================================================
@@ -34744,6 +38027,12 @@
     // After initCoverage only by convention: the two share fetchCourse and its
     // session cache, so opening the tree after a coverage run costs no fetch.
     initCourseTree();
+    // Section 27. After initCourseTree only by convention — the tree's header
+    // holds the storm's one launcher and the tree stands down while a storm
+    // runs, both through null-safe bridges — and it shares the same
+    // `fetchCourse` session cache, so a storm opened after a tree walk costs no
+    // fetch of its own.
+    initStorm();
     // After initCourseTree only by convention: all three course-page panels
     // share fetchCourse and its session cache, and this one is the only one of
     // them that WRITES, so it deliberately reads fresh.

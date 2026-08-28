@@ -9,12 +9,19 @@
  *   2. The token never has to pass through the content script.
  *
  * Message protocol (from content/lichessable.js):
- *   { type: 'clo-fetch-explorer', url }  -> { ok:true, data }
+ *   { type: 'clo-fetch-explorer', url, as? } -> { ok:true, data }
  *                                        |  { ok:false, status, error, noToken? }
+ *                                           (as:'text' returns the body as a
+ *                                            STRING — the masters PGN endpoint,
+ *                                            see handleExplorerFetch)
  *   { type: 'clo-fetch-chessdb', url }   -> { ok:true, data }
  *                                        |  { ok:false, status, error }
  *                                           (queryall/querypv ONLY — read actions;
  *                                            see handleChessdbFetch)
+ *   { type: 'clo-fetch-game', url }      -> { ok:true, data }
+ *                                        |  { ok:false, status, error }
+ *                                           (lichess.org/game/export/ ONLY;
+ *                                            see handleGameFetch)
  *   { type: 'clo-open-options' }         -> opens the extension options page
  *   { type: 'clo-open-overstudy', url }  -> opens a chessable.com /learn/ URL
  *                                           in a BACKGROUND tab (review-mode
@@ -88,6 +95,20 @@ const ALLOWED_URL_PREFIX = 'https://explorer.lichess.org/';
 // the host permission makes it CORS-exempt, where a content-script fetch would
 // be at the mercy of chessable.com's own connect-src.
 const CHESSDB_URL_PREFIX = 'https://www.chessdb.cn/cdb.php';
+// Game PGNs for the intuition storm (DESIGN-intuition-storm.md §10). This is
+// the extension's THIRD host permission and by far the one that needs the
+// tightest guard: `lichess.org` hosts the user's ENTIRE account — inbox,
+// preferences, the token's own settings pages, every write endpoint the API
+// has — where `explorer.lichess.org` and `chessdb.cn` host nothing but the two
+// read services they are named after. So the allow-list here is not the HOST
+// but a single PATH PREFIX, and the export endpoint is the only thing on it.
+//
+// The masters half of the same feature needs none of this: master game PGNs
+// live at explorer.lichess.org/masters/pgn/<id>, on a host permission this
+// extension has had since the beginning, which is why that path stays worth
+// having even now (§2.2 — it is the fallback that still works if this
+// permission is refused or revoked).
+const GAME_URL_PREFIX = 'https://lichess.org/game/export/';
 const TOKEN_KEY = 'lichessToken'; // must match content/lichessable.js and options/options.js
 
 // A token this browser profile can start with, so a new profile (or a reinstall,
@@ -182,11 +203,15 @@ function recordEngineError(where, err) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === 'clo-fetch-explorer') {
-    handleExplorerFetch(msg.url).then(sendResponse);
+    handleExplorerFetch(msg.url, msg.as).then(sendResponse);
     return true; // keep the message channel open for the async response
   }
   if (msg && msg.type === 'clo-fetch-chessdb') {
     handleChessdbFetch(msg.url).then(sendResponse);
+    return true;
+  }
+  if (msg && msg.type === 'clo-fetch-game') {
+    handleGameFetch(msg.url).then(sendResponse);
     return true;
   }
   if (msg && msg.type === 'clo-open-options') {
@@ -655,29 +680,78 @@ async function finalizeQuickEditJob(job, result) {
 
 // --- Lichess explorer fetch ------------------------------------------------
 
-async function handleExplorerFetch(url) {
+/**
+ * `as` is 'text' for the ONE explorer path that does not answer JSON:
+ * `/masters/pgn/<id>`, which returns a PGN body (DESIGN-intuition-storm.md
+ * §2.2). It passes the prefix guard above already — the trap is that the
+ * response was parsed as JSON unconditionally, so a perfectly good PGN came
+ * back as a parse error.
+ *
+ * That path is also UNAUTHENTICATED, and the difference matters: the token
+ * check below is an early 401 whose whole purpose is to raise the panel's
+ * "paste a token" prompt, and applying it here would make the masters
+ * fallback need a token it does not use. So a text read sends the token when
+ * there is one and proceeds without it when there is not. The JSON path — the
+ * panel's, where a 401 IS the message — is untouched.
+ */
+async function handleExplorerFetch(url, as) {
   try {
     // Only ever fetch the explorer — refuse anything else on principle.
     if (typeof url !== 'string' || !url.startsWith(ALLOWED_URL_PREFIX)) {
       return { ok: false, status: 0, error: 'blocked non-explorer URL' };
     }
+    const wantText = as === 'text';
 
     const stored = await chrome.storage.local.get(TOKEN_KEY);
     const token = (stored[TOKEN_KEY] || '').trim();
-    if (!token) {
+    if (!token && !wantText) {
       // Same shape as a real 401 so the panel shows the token prompt.
       return { ok: false, status: 401, error: 'no Lichess API token configured', noToken: true };
     }
 
     const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
 
     if (!response.ok) {
       return { ok: false, status: response.status, error: `HTTP ${response.status}` };
     }
-    const data = await response.json();
+    const data = wantText ? await response.text() : await response.json();
     return { ok: true, data };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err) };
+  }
+}
+
+/**
+ * One game's PGN for the intuition storm (section 27).
+ *
+ * Built the way handleChessdbFetch is — an ALLOW-LIST, not a block-list — and
+ * doing considerably more work than that one. chessdb.cn serves an analysis
+ * book and nothing else, so its guard only has to keep the two WRITE actions
+ * out. `lichess.org` is the user's whole account: their games, their inbox,
+ * their preferences, and every mutating endpoint the Lichess API has. So the
+ * guard is the single path prefix `/game/export/` and nothing else, and it is
+ * a prefix test on the WHOLE url rather than anything parsed out of it.
+ *
+ * The Bearer token rides along where there is one — the export endpoint takes
+ * it for a higher rate limit — and the guard above is what keeps it from ever
+ * reaching a path outside the allow-list.
+ */
+async function handleGameFetch(url) {
+  try {
+    if (typeof url !== 'string' || !url.startsWith(GAME_URL_PREFIX)) {
+      return { ok: false, status: 0, error: 'blocked non-game URL' };
+    }
+    const stored = await chrome.storage.local.get(TOKEN_KEY);
+    const token = (stored[TOKEN_KEY] || '').trim();
+    const headers = { Accept: 'application/x-chess-pgn' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(url, { headers });
+    if (!response.ok) {
+      return { ok: false, status: response.status, error: `HTTP ${response.status}` };
+    }
+    return { ok: true, data: await response.text() };
   } catch (err) {
     return { ok: false, status: 0, error: String(err) };
   }
