@@ -3107,8 +3107,30 @@ Currently working (v0.18.x).
       words `syncStormUi` prints — every one of the timed ones ("No idea", "End
       storm") names a session that is over — and turns Skip into "Try another
       move", which `stormApi.pass()` routes to `retryAnother()`.
+  * WHICH OF THE THREE TIERS GRADED A CARD IS SAID (§14.20, v0.147.0). §3.4's
+    three sources are of wildly different strength and arrived wearing ONE
+    treatment and ONE tooltip; DESIGN-chessdb.md §3.3's rule read forwards says
+    three claims must not be presented as one. THREE things an edit elsewhere
+    can break:
+    - IT IS ON THE **SECOND** LINE (`stormBestLine`), never the verdict line —
+      that one is read in about a second with a clock running (§16.3) and its
+      one provenance clause ("by the engine") MOVED off it. All three sources
+      are named, not only the odd one out: naming just the engine is what left
+      'list' and 'child' reading as the same claim.
+    - `.clo-cdb--est` IS NO LONGER UNCONDITIONAL. It means "ChessDB computed
+      this for us just now" and nothing else, so it is true of both ChessDB
+      tiers and FALSE of the engine — which is §3.3's rule broken the other way
+      round, and how it shipped from v0.130.0. `stormEstimated(v)` is the one
+      predicate BOTH display hosts read (section 18's `syncStormUi` and section
+      27's `renderReview`); `stormSourceTitle(v)` is the three sentences.
+    - THE DEPTH COMES OFF THE ENGINE JOB (`job.depth`, resolved once, carried
+      out through `endEngineJob`'s answer), never from `CONFIG.storm.engineDepth`
+      at render time — that would name a profile which may not be the one that
+      ran. It does NOT ride §15's wire: that record counts bands, not sources,
+      and `statsWireVersion` stays 2.
   * `stormCp`, `stormVerdictLine` AND `stormBestLine` ARE TOP LEVEL AND MUST
-    STAY THERE. Section 18's panel prints that line while a card is up and
+    STAY THERE — and since v0.147.0 so are `stormEstimated`, `stormSourceLabel`
+    and `stormSourceTitle`, for the same reason and with the same reach. Section 18's panel prints that line while a card is up and
     section 27's review prints it again afterwards — two closures, so a helper
     living in either one is a `ReferenceError` in the other. `node --check`
     cannot see it and neither can a sliced check, which flattens every scope
@@ -3607,8 +3629,9 @@ own watchdog can never fire:
 node dev/check-storm.js
 ```
 
-…and after touching the verdict line it prints — `stormCp`, `stormVerdictLine`
-or `stormBestLine`. Since v0.138.0 that includes the `v.unanswered` arm
+…and after touching the verdict line it prints — `stormCp`, `stormVerdictLine`,
+`stormBestLine`, or §14.20's `stormEstimated` / `stormSourceLabel` /
+`stormSourceTitle`. Since v0.138.0 that includes the `v.unanswered` arm
 (§14.10c), whose failure mode is the quietest one there: with the arm gone the
 card the storm ended on falls through to the ordinary branch and reads "your
 move", a sentence claiming an answer nobody gave. Control run 2026-08-28 — arm

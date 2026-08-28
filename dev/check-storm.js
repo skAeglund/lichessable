@@ -54,6 +54,12 @@
  *     that still looks deliberate)
  *   * …the figure dropped from the wire                  → 2 fail
  *   * …a missing figure stored as 0 rather than unset    → 1 fail
+ *   * §14.20's `.clo-cdb--est` made unconditional again   → 1 fail (which is
+ *     how it shipped from v0.130.0: the class means "ChessDB computed this for
+ *     us just now" and the engine tier is the one source it is false of)
+ *   * …only the ENGINE named, the two ChessDB tiers silent → 4 fail
+ *   * …the label put back on the VERDICT line             → 4 fail
+ *   * …the engine depth dropped from the label            → 1 fail
  *   * …with its `pos.side !== userSide` guard removed    → 3 fail (the "tidy":
  *     it still stops walks and still looks plausible, and silently discards
  *     every position where the OPPONENT left the book first)
@@ -148,6 +154,9 @@ const src = [
   // The verdict line: pure, and the half of this feature the user reads.
   sliceDecl('stormCp'),
   sliceDecl('stormWp'),
+  sliceDecl('stormEstimated'),
+  sliceDecl('stormSourceLabel'),
+  sliceDecl('stormSourceTitle'),
   sliceDecl('stormVerdictLine'),
   sliceDecl('stormBestLine'),
   'return { stormFrontiers, stormDrawFrontier, stormUserEval, stormPgnMoves,' +
@@ -168,7 +177,8 @@ const src = [
   '         stormStatsWirePack, stormStatsWireUnpack,' +
   '         stormCp, stormWp, stormMoverCp,' +
   '         stormWinPct, stormWpLoss,' +
-  '         stormVerdictLine, stormBestLine,' +
+  '         stormEstimated, stormSourceLabel, stormSourceTitle,' +
+'         stormVerdictLine, stormBestLine,' +
   '         sanToUci, fenAfterUci };',
 ].join('\n');
 // eslint-disable-next-line no-new-func
@@ -250,7 +260,7 @@ const eq = (label, got, want) => {
 };
 
 // ===========================================================================
-// 0) THE THREE DISPLAY HELPERS MUST BE AT TOP LEVEL
+// 0) THE DISPLAY HELPERS MUST BE AT TOP LEVEL
 // ===========================================================================
 // SLICING FLATTENS EVERY SCOPE INTO ONE, so nothing else in this file can tell
 // a helper section 18 can reach from one it cannot — and section 18's panel and
@@ -258,7 +268,12 @@ const eq = (label, got, want) => {
 // Found live 2026-08-28: `renderReview` threw `stormVerdictLine is not defined`
 // at the first teardown, which `node --check` cannot see and no assertion below
 // would have caught. Two-space indent IS top level in this file.
-for (const name of ['stormCp', 'stormWp', 'stormVerdictLine', 'stormBestLine']) {
+//
+// §14.20 added two more with exactly the same reach: `stormEstimated` decides a
+// CLASS on both hosts and `stormSourceTitle` a tooltip on both, so a move into
+// either closure fails in the other at the first verdict.
+for (const name of ['stormCp', 'stormWp', 'stormVerdictLine', 'stormBestLine',
+  'stormEstimated', 'stormSourceLabel', 'stormSourceTitle']) {
   const line = SRC.split('\n')[findDecl(name)];
   const indent = line.length - line.replace(/^ +/, '').length;
   eq(name + ' is declared at top level (2-space indent), not inside a module', indent, 2);
@@ -1014,14 +1029,22 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   // THE LINE AN ENGINE-GRADED VERDICT PRINTS names the ENGINE's best, never
   // ChessDB's: both halves of a comparison have to come from one evaluator,
   // which is the same rule that makes this tier TWO searches rather than one.
-  eq('an engine verdict says where the number came from',
+  // §14.20: the provenance MOVED to the second line in v0.147.0. The verdict
+  // line is read in about a second with a clock running and is not to be
+  // lengthened; it says how you did, not where the number came from.
+  eq('the verdict line does NOT carry the source',
     S.stormVerdictLine({ verdict: 'bad', userSan: 'Nxh2', rank: null, wp: 12.7,
       source: 'engine', points: 0 }, cardOf()),
-    'Nxh2 · 13% of the game · by the engine');
+    'Nxh2 · 13% of the game');
+  eq('…and reads the same whichever tier graded it',
+    S.stormVerdictLine({ verdict: 'bad', userSan: 'Nxh2', rank: null, wp: 12.7,
+      source: 'engine', points: 0 }, cardOf()),
+    S.stormVerdictLine({ verdict: 'bad', userSan: 'Nxh2', rank: null, wp: 12.7,
+      source: 'list', points: 0 }, cardOf()));
   eq('…and names the ENGINE’s best, not the book’s',
     S.stormBestLine({ verdict: 'bad', userSan: 'Nxh2', rank: null, userScore: -108,
       source: 'engine', bestSan: 'Qf3', bestScore: 32 }, cardOf()),
-    'best Qf3 +0.32   Nxh2 -1.08');
+    'best Qf3 +0.32   Nxh2 -1.08   · by Stockfish');
   eq('…with no win rate, which is a book figure and not a search one',
     S.stormBestLine({ verdict: 'bad', userSan: 'Nxh2', rank: null, userScore: -108,
       source: 'engine', bestSan: 'Qf3', bestScore: 32,
@@ -1029,7 +1052,60 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('an engine verdict agreeing with the engine’s best prints it once',
     S.stormBestLine({ verdict: 'good', userSan: 'Qf3', rank: null, userScore: 32,
       source: 'engine', bestSan: 'Qf3', bestScore: 32 }, cardOf()),
-    'best Qf3 +0.32');
+    'best Qf3 +0.32   · by Stockfish');
+
+  // --- §14.20: WHICH TIER GRADED THE CARD (v0.147.0) ----------------------
+  // Three sources of wildly different strength — the position's own scored
+  // list, one `queryall` on the child, and two Stockfish searches — arrived
+  // wearing ONE treatment and ONE tooltip. DESIGN-chessdb.md §3.3's standing
+  // rule is that a `learn=1` fill-in must never be presented as a book eval;
+  // read forwards it says three claims must not be presented as one.
+  eq('the position’s own ranking is named', S.stormSourceLabel({ source: 'list' }),
+    'ChessDB’s ranking here');
+  eq('…and one more request about the child is a DIFFERENT claim',
+    S.stormSourceLabel({ source: 'child' }), 'scored one move on');
+  eq('the engine tier names the engine and the depth it actually ran to',
+    S.stormSourceLabel({ source: 'engine', depth: 20 }), 'by Stockfish d20');
+  eq('…and still names the engine where no depth was recorded',
+    S.stormSourceLabel({ source: 'engine' }), 'by Stockfish');
+  eq('a verdict with no source claims nothing', S.stormSourceLabel({}), '');
+  // On the SECOND line, last on it, and for EVERY source — naming only the odd
+  // one out is what left 'list' and 'child' reading as the same claim.
+  eq('the book’s own ranking is named too, not only the odd one out',
+    S.stormBestLine({ verdict: 'good', userSan: 'Nf3', rank: 4, userScore: -10,
+      userWinrate: 49, source: 'list' }, cardOf()),
+    'best Bb5 +0.32 · 54%   Nf3 -0.10 · 49%   · ChessDB’s ranking here');
+  eq('…and so is a child-scored one',
+    S.stormBestLine({ verdict: 'blunder', userSan: 'a3', rank: null, userScore: -148,
+      source: 'child' }, cardOf()),
+    'best Bb5 +0.32 · 54%   a3 -1.48   · scored one move on');
+  eq('a verdict with no source adds nothing to the line',
+    S.stormBestLine({ verdict: 'unknown', userSan: 'Nxh2' }, cardOf()),
+    'best Bb5 +0.32 · 54%');
+
+  // `.clo-cdb--est` MEANS "ChessDB computed this for us just now" and nothing
+  // else. It was applied UNCONDITIONALLY until v0.147.0, i.e. to the one source
+  // it is false of — DESIGN-chessdb.md §3.3's rule broken the other way round.
+  // Both display hosts read this one predicate.
+  eq('a list-graded verdict is a ChessDB estimate',
+    S.stormEstimated({ source: 'list' }), true);
+  eq('…and so is a child-graded one', S.stormEstimated({ source: 'child' }), true);
+  eq('an ENGINE-graded verdict is not', S.stormEstimated({ source: 'engine' }), false);
+  eq('an ungraded verdict is still ChessDB’s silence, not the engine’s',
+    S.stormEstimated({ verdict: 'unknown' }), true);
+  eq('no verdict at all is nothing', S.stormEstimated(null), false);
+  // The tooltip is a different sentence per source, since that is the half that
+  // can actually explain the difference.
+  eq('each source gets its own sentence', new Set([
+    S.stormSourceTitle({ source: 'list' }),
+    S.stormSourceTitle({ source: 'child' }),
+    S.stormSourceTitle({ source: 'engine', depth: 20 }),
+  ]).size, 3);
+  eq('…and the engine’s names the depth',
+    /depth 20/.test(S.stormSourceTitle({ source: 'engine', depth: 20 })), true);
+  eq('…without inventing one it was not given',
+    /depth/.test(S.stormSourceTitle({ source: 'engine' })), false);
+  eq('no verdict has no sentence', S.stormSourceTitle(null), '');
 
   // ===========================================================================
   // 11) THE PLY RANGE IS A SETTING (§14.9)

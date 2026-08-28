@@ -3623,15 +3623,24 @@ body {
       <h3>&hellip;and having answered</h3>
       <p>&sect;8.1's line: the move with its rank and how far behind it was, then the
         best move and ChessDB's win rate for both. ONE line, because the clock is
-        running. The progress row is dimmed and italic &mdash;
-        <code>.clo-cdb--est</code> &mdash; and its tooltip says why.</p>
+        running.</p>
+      <p>&sect;14.20 (v0.147.0): the SECOND line now ends with which of &sect;3.4's
+        three sources graded the card &mdash; the position's own scored list, one
+        <code>queryall</code> on the child, or two Stockfish searches. Three claims of
+        wildly different strength used to arrive wearing one treatment.
+        <code>.clo-cdb--est</code> (dimmed and italic) means &ldquo;ChessDB computed
+        this for us just now&rdquo;, so it is on the two ChessDB rows and
+        <strong>off</strong> the engine one, which gets a tooltip naming the depth
+        instead. The verdict line above is unchanged and deliberately so: it is read
+        in about a second with a clock running.</p>
       <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px;align-items:flex-start">
         <div class="clo-cr-panel hx-pos" style="width:300px">
           <div class="clo-cr-title">Great move</div>
           <div class="clo-cr-prompt clo-cr-prompt--ok">Nf3 &middot; #2 of 31 &middot; 1.1% of the game &middot; +6</div>
           <div class="clo-cr-progress clo-cdb--est"
                title="ChessDB scores every legal move here, but the ones outside its analysed book are computed on the spot.">
-            best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Nf3 +0.20 &middot; 53%</div>
+            best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Nf3 +0.20 &middot; 53%&nbsp;&nbsp;
+            &middot; ChessDB&rsquo;s ranking here</div>
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
           </div>
@@ -3642,7 +3651,8 @@ body {
           <!-- PLAYING THE TOP MOVE NAMES IT ONCE. It was printed twice until
                v0.130.0 - "best Nxf3+ -0.89   Nxf3+ -0.89" - which reads as a
                defect rather than as agreement (found in a live session). -->
-          <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%</div>
+          <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%&nbsp;&nbsp;
+            &middot; ChessDB&rsquo;s ranking here</div>
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
           </div>
@@ -3654,7 +3664,8 @@ body {
         <div class="clo-cr-panel hx-pos" style="width:300px">
           <div class="clo-cr-title">Inaccuracy</div>
           <div class="clo-cr-prompt">Re1 &middot; #6 of 31 &middot; 7.8% of the game</div>
-          <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Re1 &minus;0.55 &middot; 47%</div>
+          <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Re1 &minus;0.55 &middot; 47%&nbsp;&nbsp;
+            &middot; ChessDB&rsquo;s ranking here</div>
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
           </div>
@@ -3662,7 +3673,24 @@ body {
         <div class="clo-cr-panel hx-pos" style="width:300px">
           <div class="clo-cr-title">Blunder</div>
           <div class="clo-cr-prompt clo-cr-prompt--bad">h3 &middot; #9 of 31 &middot; 24% of the game &middot; &minus;2</div>
-          <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; h3 &minus;1.16 &middot; 43%</div>
+          <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; h3 &minus;1.16 &middot; 43%&nbsp;&nbsp;
+            &middot; scored one move on</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
+          </div>
+        </div>
+        <!-- &sect;14.20's THIRD source, and the one row that is NOT an estimate:
+             both halves of the comparison come from our own search, so it wears
+             no `.clo-cdb--est`, prints no win rate (a book figure), and names the
+             ENGINE's best rather than the book's. Longest of the four, which is
+             what the widths below are measured against. -->
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Mistake</div>
+          <div class="clo-cr-prompt clo-cr-prompt--bad">Nxh2 &middot; 13% of the game &middot; &minus;1</div>
+          <div class="clo-cr-progress"
+               title="ChessDB could score neither your move nor the position after it, so this was graded by two local Stockfish searches to depth 20.">
+            best Qf3 +0.32&nbsp;&nbsp; Nxh2 &minus;1.08&nbsp;&nbsp;
+            &middot; by Stockfish d20</div>
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">End storm</button>
           </div>
@@ -3726,7 +3754,7 @@ body {
                      PLAYED); only the "best &hellip;" half waits to be asked for. Revealed,
                      it continues:
                      &nbsp;&middot;&nbsp; best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Nf3 -0.10 &middot; 49% -->
-                <div class="clo-st-revlegend clo-cdb--est">Nf3 &middot; #4 of 31 &middot; 3.4% of the game &middot; +1</div>
+                <div class="clo-st-revlegend clo-cdb--est">Nf3 &middot; #4 of 31 &middot; 3.4% of the game &middot; +1&nbsp;&nbsp; &middot;&nbsp;&nbsp; best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Nf3 &minus;0.10 &middot; 49%&nbsp;&nbsp; &middot; ChessDB&rsquo;s ranking here</div>
                 <div class="clo-st-revlist">
                   <button type="button" class="clo-st-revrow clo-st-revrow--great">
                     <span class="clo-st-revrow-n">1</span><span class="clo-st-revrow-move">cxd4</span>

@@ -1887,9 +1887,12 @@ games usually reaches somewhere new.
   frontier whose candidates are all retired would need the candidate list before
   the walk, which is the walk. Measured cost is one wasted frontier's requests,
   occasionally.
-* **`sampleFrontiers: 30` is still dead config**, unread since the pool became
-  the whole frontier list. Left alone rather than removed in the same change as
-  a behavioural fix.
+* ~~**`sampleFrontiers: 30` is still dead config**~~ — **DELETED in v0.147.0.**
+  It had been unread since the pool became the whole frontier list, and was left
+  in place at the time only because it was a behavioural change's neighbour. A
+  number that looks like a dial and is not is the kind of thing that gets tuned;
+  the whole point of `CONFIG.storm`'s opening comment is that every number in it
+  was measured, and one that changes nothing makes that claim false.
 * **No per-position "asked N times" counter beyond `k`.** `k` counts failures,
   which is what the draw order needs; how often a position has been *seen* is a
   different question and nothing asks it yet.
@@ -2279,6 +2282,108 @@ chosen, i.e. an explorer request per frontier up front — which is §4's expens
 half wearing a cheaper hat. **And nothing is re-gathered:** the store's existing
 positions carry no figure and simply keep their old place in the queue until
 they age out or are answered.
+
+
+### 14.20 Which tier graded the card (v0.147.0)
+
+§3.4 has three grading sources and §14.8 is why the third is not optional. They
+are of wildly different strength — the position's own ChessDB list, one more
+`queryall` on the position after the move, and two Stockfish searches at depth
+20/18 — and until now they arrived at the user wearing **one treatment and one
+tooltip**: every verdict line got `.clo-cdb--est` and the sentence about
+`learn=1` fill-ins, whatever had produced it.
+
+DESIGN-chessdb.md §3.3's standing rule is that a fill-in must never be presented
+as a book eval. Read forwards, the same rule says three claims should not be
+presented as one — and in one direction it was being broken already, since the
+engine tier is the one source `.clo-cdb--est` is simply false of.
+
+The tier was already known inside `gradeTiers` and already rode out on the
+verdict as `source`. This is mostly a display change.
+
+#### 14.20.1 It goes on the SECOND line
+
+`stormVerdictLine` is read in about a second with a clock running (§16.3) and
+was **not** lengthened; the one clause it did carry — `by the engine` — moved
+off it. `stormBestLine` is the host, because that is the line the provenance is
+*about*: it already carries the best move, both evaluations and the win rates.
+
+```
+Nxh2 · 13% of the game · −1
+best Qf3 +0.32   Nxh2 −1.08   · by Stockfish d20
+```
+
+`stormSourceLabel` is three short strings and no more:
+
+| source | label | what it claims |
+|---|---|---|
+| `list` | `ChessDB’s ranking here` | this position's own scored list — what every pick rule in §5.2 was measured against |
+| `child` | `scored one move on` | one more request, about a position no game may ever have reached (§14.8) |
+| `engine` | `by Stockfish d20` | two searches of our own, both sides of the subtraction from one evaluator |
+
+**All three are named, not only the odd one out.** Naming just the engine is
+what left `list` and `child` reading as the same claim, which is the thing this
+section exists to stop.
+
+The depth comes off the engine JOB (`job.depth`, resolved once when the job was
+created for the reason that two answers could disagree) and is carried out
+through `endEngineJob`'s answer. Quoting `CONFIG.storm.engineDepth` at render
+time would name a profile that may not be the one that ran.
+
+#### 14.20.2 `.clo-cdb--est` stops being unconditional
+
+It means *"ChessDB computed this for us just now"* and nothing else — true of
+both ChessDB tiers, false of the engine. `stormEstimated(v)` is that one
+predicate and **both display hosts read it**: section 18's panel
+(`syncStormUi`) and section 27's review (`renderReview`). The engine row wears
+no dimming and gets its own tooltip naming the depth.
+
+`stormSourceTitle(v)` is the three sentences. They are three because the
+explanations really are different — a fill-in inside the list, a lookup one ply
+on, and a local search — and a tooltip is the one place there is room to say so.
+
+Both helpers are **top level**, with `stormCp` / `stormWp` / `stormVerdictLine`
+/ `stormBestLine`, for §14.7's reason: two closures print this. `dev/check-storm
+.js` §0 now asserts the indentation of all seven.
+
+#### 14.20.3 What it cost in the panel
+
+Measured in `dev/harness.html` (the replicas are hand-written and do not update
+themselves, so a fifth storm-verdict card was added for the engine tier).
+`.clo-cr-progress`, width × height, and the panel's own height under it:
+
+| width | source | desktop | `html.clo-touch` |
+|---|---|---|---|
+| 300 | list, two moves | 266×32 · panel 172 | 266×38 · panel 208 |
+| 300 | list, top move only | 246×16 · panel 156 | 266×38 · panel 208 |
+| 300 | child | 266×32 · panel 172 | 266×38 · panel 208 |
+| 300 | engine | 252×16 · panel 134 | 266×38 · panel 181 |
+| 360 | list, two moves | 326×32 · panel 150 | 326×38 · panel 208 |
+| 360 | engine | 252×16 · panel 134 | 294×19 · panel 162 |
+| 880 | list, two moves | 340×16 · panel 134 | 397×19 · panel 162 |
+| 880 | engine | 252×16 · panel 134 | 294×19 · panel 162 |
+| 320 | every one of the five | ≤286×32 · panel ≤150 | ≤286×38 · panel ≤208 |
+
+**Horizontal overflow is 0 at every width in both modes.** The cost is one
+wrapped line at the panel's own 300px minimum — 16px of progress row and 16px of
+panel — which is gone by 360px on the widest label and by 880px on all of them.
+The verdict line above is unchanged at every width, which is the property that
+mattered.
+
+(`window.innerWidth` reads 0 in the harness's own frame, so "the panel's full
+window width" is represented here by the 880px row; the storm's panel is wider
+than that in its own window, where every label is on one line.)
+
+#### 14.20.4 What it does NOT do
+
+* **It does not ride §15's wire.** That record counts BANDS, not sources, and
+  `statsWireVersion` stays 2. A source is a fact about one answer; the record is
+  a fact about a line.
+* **It is not on the live prompt.** See §14.20.1 — one line, one second.
+* **It says nothing about whether a fill-in is good enough to grade with.** That
+  is §12.3, still open and still a probe. What this buys is that the answer will
+  be legible from real use as well as from a probe run, since a session's review
+  now says which tier produced each verdict.
 
 
 ## 15. The performance record (v0.140.0)

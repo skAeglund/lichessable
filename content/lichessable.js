@@ -1566,7 +1566,9 @@
       // --- stage 0: which frontiers are worth a request ------------------
       // A frontier is the position one of the course's own variations ENDS on.
       minVarPlies: 4,      // shorter than this and there is no repertoire to be at the frontier of
-      sampleFrontiers: 30, // how many eligible frontiers one session draws on
+      // (`sampleFrontiers` lived here and was DELETED in v0.147.0 — unread
+      // since the pool became the whole frontier list, and a number that looks
+      // like a dial and is not is the kind of thing that gets tuned. §14.16.5.)
       // THE STAGE-0 EVAL BAND (§7). A course variation ends where the author
       // has achieved something, so frontier evals skew positive — 291847's run
       // to a median of +0.39 with four Scotch lines at +1.16 … +2.09 — and the
@@ -23016,11 +23018,12 @@
       } else {
         cr.ui.prompt.textContent = stormVerdictLine(v, s);
         cr.ui.progress.textContent = stormBestLine(v, s);
-        cr.ui.progress.classList.add('clo-cdb--est');
-        cr.ui.progress.title =
-          'ChessDB scores every legal move here, but the ones outside its analysed ' +
-          'book are computed on the spot — good enough to RANK your move against ' +
-          'the others in this position, not a book evaluation.';
+        // §14.20: NO LONGER UNCONDITIONAL. `.clo-cdb--est` means "ChessDB
+        // computed this for us just now", which is true of both its tiers and
+        // false of the engine one — and the engine tier is precisely where a
+        // number needs a different sentence, not a fainter one.
+        cr.ui.progress.classList.toggle('clo-cdb--est', stormEstimated(v));
+        cr.ui.progress.title = stormSourceTitle(v);
       }
 
       // A storm has no line to walk, no answer to hint at, and Skip means "I
@@ -34053,15 +34056,82 @@
     if (typeof v.wp === 'number') {
       bits.push(v.wp < 0.05 ? 'level with the best' : stormWp(v.wp) + ' of the game');
     }
-    // WHERE THE NUMBER CAME FROM, where it is not the book's own ranking of
-    // this position (§3.4's two fallbacks). A centipawn figure the user
-    // cannot place is one they cannot argue with, and the engine tier's
-    // number is a shallow search rather than a book entry.
-    if (v.source === 'engine') bits.push('by the engine');
+    // WHERE THE NUMBER CAME FROM has moved to the SECOND line (§14.20,
+    // `stormBestLine`). This one is read in about a second with a clock
+    // running and answers "how did I do"; the provenance belongs beside the
+    // numbers it is about, and all three sources need naming rather than only
+    // the engine.
     // SIGNED, not prefixed. A miss scores `missPoints` now, and the old
     // unconditional '+' printed a penalty as "+-2".
     if (v.points) bits.push((v.points > 0 ? '+' : '') + v.points);
     return bits.join(' · ');
+  }
+
+  /**
+   * §14.20) DID CHESSDB COMPUTE THIS VERDICT FOR US JUST NOW?
+   *
+   * Which is exactly what `.clo-cdb--est` means and all it means, so it is
+   * true of both ChessDB tiers (§3.4's scored list and its child lookup) and
+   * FALSE of the engine one. It was applied unconditionally until v0.147.0 —
+   * i.e. to the one source it is not true of, which is DESIGN-chessdb.md
+   * §3.3's own rule broken in the other direction.
+   *
+   * Top level with the two line builders, for §14.7's reason: section 18's
+   * panel and section 27's review both read it, from two different closures.
+   */
+  function stormEstimated(v) {
+    return Boolean(v) && v.source !== 'engine';
+  }
+
+  /**
+   * …and WHICH of §3.4's three sources it was, in words.
+   *
+   * The three are of wildly different strength — the position's own scored
+   * list, one `queryall` on the child, and two Stockfish searches — and until
+   * v0.147.0 they arrived wearing one treatment and one tooltip. §3.3's
+   * standing rule is that a `learn=1` fill-in must never be presented as a book
+   * eval; the same rule read forwards says three claims should not be presented
+   * as one.
+   *
+   * Deliberately short. It sits on a line that already carries two moves and
+   * two evaluations, and the tooltip is where the sentence goes.
+   */
+  function stormSourceLabel(v) {
+    if (v.source === 'engine') {
+      return 'by Stockfish' + (v.depth ? ' d' + v.depth : '');
+    }
+    // The two ChessDB tiers, and the distinction is real: 'list' is this
+    // position's own ranking, which is what every pick rule was measured
+    // against, while 'child' is one more request about a position no game may
+    // ever have reached (§14.8).
+    if (v.source === 'child') return 'scored one move on';
+    if (v.source === 'list') return 'ChessDB’s ranking here';
+    return '';
+  }
+
+  /**
+   * …and the sentence behind the label, for the tooltip. THREE, because the
+   * three claims are different: a ranking out of ChessDB's own list here, one
+   * more request about a position no game may ever have reached, and a search
+   * of our own to a stated depth.
+   */
+  function stormSourceTitle(v) {
+    if (!v) return '';
+    if (v.source === 'engine') {
+      return 'ChessDB could score neither your move nor the position after it, so ' +
+        'this was graded by two local Stockfish searches' +
+        (v.depth ? ' to depth ' + v.depth : '') +
+        ' — the position and the position after your move, both from the same ' +
+        'engine, which is what makes the difference between them mean anything.';
+    }
+    if (v.source === 'child') {
+      return 'Your move is not in ChessDB’s list for this position, so it was graded ' +
+        'from one more lookup on the position AFTER it — computed on the spot ' +
+        'rather than read out of the analysed book.';
+    }
+    return 'ChessDB scores every legal move here, but the ones outside its analysed ' +
+      'book are computed on the spot — good enough to RANK your move against ' +
+      'the others in this position, not a book evaluation.';
   }
 
   /** "best Nf3 +0.32 · 54%   Bb5 +0.20 · 53%" — the best move and the one
@@ -34093,6 +34163,12 @@
       // different number wearing the same label.
       parts.push(v.userSan + ' ' + stormCp(v.userScore) + (yw ? ' · ' + yw : ''));
     }
+    // §14.20: and WHERE the two numbers above came from. Last, because it is
+    // the least of what this line says; present on all three sources, because
+    // naming only the odd one out is what made 'list' and 'child' read as the
+    // same claim.
+    const src = stormSourceLabel(v);
+    if (src) parts.push('· ' + src);
     return parts.join('   ');
   }
 
@@ -36150,7 +36226,14 @@
           endEngineJob(job, null);
           return;
         }
-        endEngineJob(job, { best: job.best, value: -childBest, bestSan: job.bestSan });
+        endEngineJob(job, {
+          best: job.best, value: -childBest, bestSan: job.bestSan,
+          // §14.20: the depth BOTH searches ran to, carried out so the verdict
+          // can name it. Read off the job rather than re-asked of
+          // `engineProfile()` — the job resolved it once for exactly the reason
+          // that two answers could disagree.
+          depth: job.depth,
+        });
       }
     }
 
@@ -37296,8 +37379,12 @@
           rank: got.rank,
           userScore: got.score,
           userWinrate: got.winrate,
+          // §14.20) WHICH OF §3.4's THREE SOURCES GRADED THIS: 'list' (the
+          // position's own scored list), 'child' (one `queryall` on the
+          // position after the move) or 'engine'. Three claims of wildly
+          // different strength used to arrive wearing one treatment.
           source: got.source,
-          estimated: got.source !== 'list',
+          depth: got.depth,
           bestSan: got.bestSan,
           bestScore: got.bestScore,
         });
@@ -37337,6 +37424,9 @@
             // is a transformation of a score and inherits every offset in it.
             wp: stormWpLoss(eng.best, eng.value, C),
             rank: null, score: eng.value, san: '', winrate: null, source: 'engine',
+            // §14.20: which search, so the tooltip can say so rather than
+            // quoting a config value that may not be the one that ran.
+            depth: eng.depth,
             // Both halves of the line the panel prints come from the SAME
             // search, so it names the engine's best and not the book's.
             bestSan: eng.bestSan, bestScore: eng.best,
@@ -38352,7 +38442,11 @@
         : shown
           ? stormVerdictLine(v, item.card.storm) + '   ·   ' + stormBestLine(v, item.card.storm)
           : stormVerdictLine(v, item.card.storm);
-      st.ui.revLegend.classList.toggle('clo-cdb--est', Boolean(item));
+      // §14.20, and the same rule as section 18's panel: the class is a claim
+      // about WHERE the number came from, so an engine-graded row must not
+      // wear it.
+      st.ui.revLegend.classList.toggle('clo-cdb--est', stormEstimated(v));
+      st.ui.revLegend.title = item ? stormSourceTitle(v) : '';
       st.ui.revBest.disabled = !item;
       st.ui.revBest.textContent = shown ? 'Hide best move' : 'Best move';
       st.ui.revBest.title = shown
