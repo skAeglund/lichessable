@@ -2762,7 +2762,9 @@ Currently working (v0.18.x).
     values is `exact` and serves every floor; the cheap one serves only floor 1.
   * `reduceCourse` NOW ALSO CARRIES per-variation `unstudied` and course-level
     `keyMode`, which cost the THIRD bump of `CONFIG.coverage.cacheKey`
-    (`…2` → `…3`) shared with 21 and 24. `unstudied` is `learnMW`/`learnMB`,
+    (`…2` → `…3`) shared with 21 and 24. (Section 27 took a FOURTH, `…3` → `…4`,
+    for per-variation `paused` + course-level `allPaused`; same rule, and only
+    27 reads either.) `unstudied` is `learnMW`/`learnMB`,
     ground-truthed 80/80 as the count of that variation's user moves with no
     level (and `reviewM*` as the count currently DUE).
     `keyMode` is the user's own study mode for the course (`isKeyMode`, matching
@@ -3068,6 +3070,40 @@ Currently working (v0.18.x).
     (`item.shown`), so it is per position and a position seen for the first
     time is always hidden. The user's OWN move is never hidden — the red arrow
     and `stormVerdictLine` are what make the position worth thinking about.
+    IT ALSO KEEPS THE CARD THE STORM ENDED ON (§14.10c, v0.138.0). `st.history`
+    is filled by `finishAnswer`, which an unanswered card never reaches, so
+    `endSession` pushes `st.card` itself — FIRST, above everything that clears
+    `st.card` or `st.grading`, both of which it reads — on EVERY route out. Two
+    rules: `nextCard` nulls `st.card` on its board-refused path, so the review
+    can never show a position nobody saw; and `stormVerdictLine` needs its
+    `v.unanswered` arm ABOVE `passed`, or the ordinary branch prints "your move"
+    about a card that was never answered. Nothing is scored and `storeNote` is
+    deliberately NOT called — the position keeps its place in the store exactly
+    as if it had never been drawn.
+    …AND THE POSITION CAN BE PLAYED AGAIN (§14.10b, v0.138.0): "Try again", or
+    `t`, puts a review item back on section 18's storm board — same mode, same
+    single ply, same three tiers — and scores NOTHING: no points, no streak, no
+    clock, no `storeNote`, no second `st.history` entry, and the row's own
+    verdict (the move played under the clock) is left as it was. Four things an
+    edit elsewhere can break:
+    - `grade` IS NOW A DISPATCHER over `runGrade(card, uci, san, alive, finish)`
+      and `gradeTiers(card, uci, alive)`. The two callers differ ONLY in those
+      two arguments; a second copy of the tiers is a second place for them to
+      fall out of step, and both answers would be plausible numbers.
+    - THE ATTEMPT IS NUMBERED (`st.retrySeq`, bumped by `toggleRetry`,
+      `retryAnother` and `endRetry`, and closed over by `alive`). A retry is
+      MEANT to be repeated, so a grade still in flight from the last attempt
+      would otherwise print over the position just put back — the alt check's
+      `reqId` problem, and its answer.
+    - IT IS EXCLUSIVE WITH `st.analysing` and each closes the other; both want
+      the stage's slots, and stepping to another review row closes both.
+      `panelSlot()` stays gated on `st.analysing` ALONE, so no database follows
+      a retry board — its top move would name the answer (section 20's rule).
+    - SECTION 18 KNOWS ONE THING ABOUT IT, `cr.stormRetry`, set by
+      `open(card, slot, opts)` and cleared in `closeReview`. It changes only the
+      words `syncStormUi` prints — every one of the timed ones ("No idea", "End
+      storm") names a session that is over — and turns Skip into "Try another
+      move", which `stormApi.pass()` routes to `retryAnother()`.
   * `stormCp`, `stormVerdictLine` AND `stormBestLine` ARE TOP LEVEL AND MUST
     STAY THERE. Section 18's panel prints that line while a card is up and
     section 27's review prints it again afterwards — two closures, so a helper
@@ -3102,6 +3138,29 @@ Currently working (v0.18.x).
       position answered WELL leaves, one MISSED stays and comes round again, and
       an UNGRADEABLE one stays too — it taught nothing either way, and dropping
       it spends eleven requests to meet the same silence twice.
+    - …AND A MISS COMES BACK AT THE **BACK** OF THE QUEUE (§14.15, v0.137.0).
+      `stormStoreDraw` sorts `k` ASCENDING — unseen first, most-missed last —
+      which REVERSES v0.130.0's hardest-first order; do not restore it. Because
+      the rule above already drops anything answered well, every `k > 0` entry
+      is a position the user has been shown and got wrong, so hardest-first
+      opened every session with the same failures and starved the fresh material
+      the gather pass paid ~11 requests each for. A REVERSED COMPARATOR IS
+      SILENT — every position is still returned, in a plausible sequence — which
+      is why `stormStoreDraw` is pure and rnd-injected (`stormDrawFrontier`'s
+      shape) and `dev/check-storm.js` executes it. `stormWirePack`'s own
+      `k`-descending sort is NOT the same question and stays: there it decides
+      what is worth CARRYING under the byte budget, where a failure count is
+      information that cannot be regenerated and a fresh position is
+      interchangeable with any other.
+    - A PULL, OR A GATHER PASS, MUST FEED THE SESSION IT LANDS IN (§14.13).
+      Both fill the store BEHIND a `storeDraw()` that has already happened —
+      the exchange is fired unawaited from `startSession`, and a gather CLEARS
+      the queue — so each ends by re-drawing `st.storeQueue` and calling
+      `produceFromStore()`. Re-drawing the whole store is safe and is the point:
+      every key already queued is in `st.seen`, which is what that function
+      filters on, so nothing incremental has to be got right. Without it a phone
+      that syncs nine positions still spends a minute walking frontiers past
+      them (reported live 2026-08-28).
     - THE GATHER PASS IS THE SAME `harvestFrontier`, deliberately: a second walk
       written for gathering is a second set of pick rules that will one day
       disagree about what a usable position is. It has its own request ceiling
@@ -3129,6 +3188,35 @@ Currently working (v0.18.x).
       to a comment and read back byte-exact, still base32-clean and still
       informational (2026-08-28, course 453453; the test card was deleted and the
       course re-read to prove it). 16e's own 120000 is untouched.
+  * PAUSED LINES ARE NOT STORMED (§14.14, v0.136.0), and the filter is ONE line
+    in `stormFrontiers` — which is why it covers the gather pass too, both
+    producers drawing from that function, so nothing paused can enter the store
+    either. THE WIRE FIELD IS `paused` AND THE APP DOES NOT CALL IT THAT: read
+    out of Chessable's public bundle 2026-08-28, the variation card's own test
+    is `1 == e.paused` on the getList row, while the redux store renames it
+    `isPaused` and `isCPaused` is optimistic post-toggle state — grepping for
+    either finds the UI's name and misses the wire's. ONE FLAG, TWO WORDS:
+    "PAUSED" for a pausable line and "SKIPPED" for the rest, both meaning the
+    user asked not to be asked, so no second condition. The count rides back on
+    the returned ARRAY (`frontiers.paused`) rather than changing the return
+    type. `allVariationsPaused` is carried by `reduceCourse` as `allPaused` and
+    is used ONLY to word a refusal — its relation to the per-variation flag is
+    unmeasured, and a course-level flag able to HIDE lines must not be guessed
+    at. NOT reached: the store, since `produceFromStore` runs before the course
+    is read (§14.11's whole point) — bounded, not fixed, and §14.14 says what
+    fixing it would cost.
+  * NOTHING IS SHOWN UNTIL "Start" IS PRESSED (§14.13, v0.135.0), and the gate
+    is ONE line at the top of `nextCard` (`if (!st.started) { render(); return; }`).
+    Every route into the first card — `produce`'s finally, the store path in
+    `startSession`, the sync refill — goes through that function, so barring it
+    once bars all of them; a second gate elsewhere is how the two would come to
+    disagree. The `render()` in that early return is what enables the button as
+    the queue fills. The pre-roll exists because gathering is a REAL alternative
+    to playing and used to be a race against the producer: the first card starts
+    the clock, so a session could begin under a decision the user was still
+    making. `gather`'s "end whatever is running" arm and `nextCard`'s
+    `st.gathering` guard both STAY — they cover a gather pressed mid-session,
+    which this does not.
   * WALKING DEEPER IS REFUTED BY MEASUREMENT (§6.5) — `minPly` 6 left 291847's
     survivors at +1.62/+1.87/+1.08/+1.20 and tripled the cost per position,
     because a one-sided frontier HOLDS its advantage rather than dissipating it.
@@ -3240,7 +3328,12 @@ After touching section 27's producer — `stormFrontiers`, `stormDrawFrontier`,
 `stormWalkGame`, `stormRandomLine` or `stormCard` — or the verdict line it
 prints (`stormCp`, `stormVerdictLine`, `stormBestLine`), or the position store
 and its wire (`stormPack`, `stormUnpack`, `stormRetain`, `stormWirePack`,
-`stormWireUnpack`, `stormWireMerge`) — or the ENGINE TIER's `CONFIG.storm`
+`stormWireUnpack`, `stormWireMerge`) — or the STORE'S DRAW ORDER (`stormStoreDraw`, §14.15: a
+reversed comparator returns every position in a plausible-looking sequence and
+is otherwise undetectable from the outside) — or the PAUSED filter in
+`stormFrontiers`
+(§14.14, whose whole failure mode is silence: a course with nothing paused
+answers identically either way) — or the ENGINE TIER's `CONFIG.storm`
 numbers (`engineDepth`, `engineTimeoutMs`, `gradeTimeoutMs`), whose every
 failure mode is a tier that still runs and silently answers "No verdict" for
 ever: a depth above engine.js's own `PROFILES` ceiling is CLAMPED rather than
@@ -3253,7 +3346,16 @@ node dev/check-storm.js
 ```
 
 …and after touching the verdict line it prints — `stormCp`, `stormVerdictLine`
-or `stormBestLine`.
+or `stormBestLine`. Since v0.138.0 that includes the `v.unanswered` arm
+(§14.10c), whose failure mode is the quietest one there: with the arm gone the
+card the storm ended on falls through to the ordinary branch and reads "your
+move", a sentence claiming an answer nobody gave. Control run 2026-08-28 — arm
+removed — fails on exactly the two assertions that cover it and on no others.
+Since v0.139.0 it also covers the miss PENALTY and the signed rendering.
+Controls run 2026-08-28: the penalty multiplied by the streak fails on exactly
+2 (both long-streak cases, and NOT the plain one — which is the point of having
+all three); the penalty removed altogether fails on 3; the unconditional '+'
+restored fails on exactly 1.
 
 Same discipline: it EXECUTES them, sliced out by `dev/slice-source.js`, with no
 network — the walk takes its ChessDB lookup as a PARAMETER, which is also the
@@ -3269,6 +3371,18 @@ SILENTLY and every one still produces a tidy column of plausible numbers:
   an addition, wrong by twice the child's eval.
 * THE STOP AND PICK RULES, where a rule that never fires yields MORE positions
   and so looks like the feature working better.
+* THE MISS PENALTY BEING MULTIPLIED (v0.139.0). `stormPoints` charges
+  `missPoints` (−2) FLAT and must keep doing so: the streak multiplier is a
+  reward for a run, and charging it against the answer that ENDS the run makes
+  one lapse after twelve right answers cost four times what the same lapse
+  costs after none. The score still moves in the right direction, just by the
+  wrong amount, and only on the answers hardest to reproduce on purpose — so
+  the assertion that catches it is the LONG-STREAK one, never the plain
+  `stormPoints('miss', 0, C)`, which a multiplied penalty passes (multiplier 1).
+  `unknown` and `unanswered` stay at 0: neither is the user's doing.
+  `stormVerdictLine` prints the figure SIGNED for the same change — an
+  unconditional '+' renders the penalty as "+-2", which survives every numeric
+  assertion about the points themselves.
 
 Controls run 2026-08-28 — the two flips unflipped, the fallback subtracted, the
 flat-position rule removed, `stormBestLine`'s same-move guard defeated, the
@@ -3277,7 +3391,14 @@ the store keeping only its top five moves, its invented mark lost, its
 `typeof score` check weakened, the retention rule inverted, the wire's
 tombstones removed, its failure-count merge dropped, an unresolvable move given
 a blank SAN, and the payload budget ignored — failing on 5, 4, 3, 3, 3, 1, 1, 3,
-1, 1, 3, 1, 1, 3 and 1 assertions respectively and on no others. That last
+1, 1, 3, 1, 1, 3 and 1 assertions respectively and on no others. Since v0.136.0,
+dropping the PAUSED filter fails on 8 (control run 2026-08-28) — the fixture's
+two paused lines are ordinary in every other respect, same colour and same
+length as the surviving one, so only the flag can be what excludes them, and one
+of them converges on the SURVIVING frontier, which is what catches a filter that
+drops the line but still lets it add its name and its draw weight. Since
+v0.137.0, restoring v0.130.0's hardest-first draw order fails on exactly the 5
+assertions that cover it (control run 2026-08-28). That last
 one is a bug a live session found: playing the TOP move printed it twice ("best
 Nxf3+ -0.89   Nxf3+ -0.89"), which reads as a defect rather than as agreement.
 

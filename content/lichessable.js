@@ -1356,7 +1356,7 @@
       // Reduced course listings (id/name/SAN/colour/initialFEN only — never the
       // 180 KB payload) live beside cloCourseFenCache with the same 12 h TTL:
       // the analysis is re-run every time the user works through the list.
-      cacheKey:    'cloCourseListCache3', // chrome.storage.session: bid → { t, name, ours, keyMode, vars[] }
+      cacheKey:    'cloCourseListCache4', // chrome.storage.session: bid → { t, name, ours, keyMode, allPaused, vars[] }
       // …2 since v0.118.0: the reduced shape gained per-ply `keys` (section 25).
       // …3 since v0.121.0: per-variation `unstudied` and course-level `keyMode`
       // (section 25d). A listing written by an older build parses fine and
@@ -1642,9 +1642,19 @@
       // reward only the engine's first choice and this becomes an
       // engine-agreement trainer.
       goodCp: 30,
-      decentCp: 80,
+      decentCp: 70,
       goodPoints: 3,
       decentPoints: 1,
+      // A MISS COSTS POINTS (v0.139.0, the author's own call). Puzzle Storm's
+      // own model is that a miss merely resets the combo; here the exercise is
+      // "find a decent move", where playing SOMETHING is always available and
+      // the streak alone lets a scattergun session still read as a score.
+      //
+      // FLAT, and never multiplied — see `stormPoints`. The session score can
+      // therefore go NEGATIVE, deliberately: flooring it at zero would make
+      // every miss after the first free, which is the opposite of what a
+      // penalty is for. Set to 0 to go back to the Puzzle Storm shape.
+      missPoints: -2,
       // Puzzle Storm's shape: a streak multiplier, reset by a miss. One step
       // per `streakStep` answers, capped so the arithmetic stays doable.
       streakStep: 4,
@@ -3298,6 +3308,17 @@
         // so it takes the larger figure: over-reporting reads as "unproven",
         // which can only ever ADD coverage (§2's invariant).
         unstudied: unstudiedCount(v),
+        // PAUSED / SKIPPED (section 27's filter). Chessable's own variation
+        // card reads exactly this — `var a = 1 == e.paused` — off the same
+        // getList row, and its tooltip splits the one flag two ways: "PAUSED
+        // (you will not be prompted to review this)" for a pausable line and
+        // "SKIPPED (you marked this as known or as a line to skip)" for the
+        // rest. Both mean the user has asked not to be asked, so one flag is
+        // the whole answer. Read out of the public bundle 2026-08-28 (the
+        // store renames it `isPaused`; the WIRE field is `paused`).
+        // `Number()` rather than `Boolean()`: the field is 0/1, and a loose
+        // `== 1` is what their own code does.
+        paused: Number(v.paused) === 1,
         color: typeof v.color === 'string' ? v.color : '',
         fen: (typeof v.initialFEN === 'string' && v.initialFEN.trim()) || '',
       });
@@ -3315,6 +3336,12 @@
       // is absent, which must never read as `false`: section 25d only ever
       // states it, never branches on it.
       keyMode: typeof list.isKeyMode === 'boolean' ? list.isKeyMode : null,
+      // Course-level "everything here is paused". STATED, never used as a
+      // filter: the per-variation flag above is what was ground-truthed, and a
+      // course-level flag whose relationship to it is unverified must not be
+      // able to HIDE lines. Section 27 uses it only to word a refusal.
+      allPaused: typeof list.allVariationsPaused === 'boolean'
+        ? list.allVariationsPaused : null,
       vars,
     };
   }
@@ -17967,6 +17994,11 @@
       // answer being graded, which is also what `syncUi` reads to tell "find a
       // move" from "here is how that went".
       stormVerdict: null,
+      // …and whether this card is a REVIEW RETRY (§14.10b) rather than a timed
+      // one. Nothing about the board changes — the same mode, the same grading,
+      // the same single ply — only the three sentences the panel prints, since
+      // "No idea" and "End storm" both name a session that is already over.
+      stormRetry: false,
       // --- analysis board (section 19) -------------------------------------
       an: blankAnalysis(),
       // Lead-in typed for "Add as line" ("An example continuation:"). Lives
@@ -18050,11 +18082,12 @@
     // `cr.queue` the way a drill does, and `nextLine()`/`finish()` are never
     // reached: a card's single ply is spent by the answer, not by `step()`.
     continuationStormApi = {
-      open(card, slot) {
+      open(card, slot, opts) {
         if (cr.active || !card || !card.startFen || typeof slot !== 'function') return false;
         cr.hostSlot = slot;
         cr.hostKind = 'storm';
         cr.mode = 'storm';
+        cr.stormRetry = Boolean(opts && opts.retry);
         cr.queue = [card];
         if (!showOverlays()) {
           // The mode and the host must not outlive a board that never opened,
@@ -18063,6 +18096,7 @@
           cr.hostSlot = null;
           cr.hostKind = '';
           cr.mode = 'quiz';
+          cr.stormRetry = false;
           cr.queue = [];
           return false;
         }
@@ -22817,7 +22851,12 @@
         // back empty, the move is ungraded, and nothing is scored either way.
         unknown: 'No verdict',
       };
-      cr.ui.title.textContent = v ? (words[v.verdict] || 'Answered') : 'Find a good move';
+      // §14.10b: a RETRY is the same card asked again with the clock already
+      // stopped, so only the words change — and they must, since every one of
+      // the three below names a session that is over.
+      const retry = cr.stormRetry;
+      cr.ui.title.textContent = v ? (words[v.verdict] || 'Answered')
+        : (retry ? 'Try this one again' : 'Find a good move');
       cr.ui.prompt.className = 'clo-cr-prompt' + (v
         ? (v.verdict === 'good' ? ' clo-cr-prompt--ok'
           : v.verdict === 'miss' ? ' clo-cr-prompt--bad' : '')
@@ -22833,7 +22872,8 @@
         const how = s.cand.invented ? ' plausible moves past the line'
           : (s.plyPast === 1 ? ' move past the line' : ' moves past the line');
         cr.ui.progress.textContent =
-          (s.from ? shortDrillTitle(s.from) + ' · ' : '') + s.plyPast + how;
+          (s.from ? shortDrillTitle(s.from) + ' · ' : '') + s.plyPast + how +
+          (retry ? ' · nothing is scored' : '');
         cr.ui.progress.classList.remove('clo-cdb--est');
         cr.ui.progress.removeAttribute('title');
       } else {
@@ -22848,14 +22888,23 @@
 
       // A storm has no line to walk, no answer to hint at, and Skip means "I
       // have no idea" rather than "show me the next one".
+      //
+      // IN A RETRY IT MEANS THE OPPOSITE HALF OF THE CLOCK: there is nothing to
+      // pass on, so the button appears once a verdict is up and puts the
+      // position back for another move — the one thing a review board can offer
+      // that a timed card cannot.
       cr.ui.browseBtn.hidden = true;
       cr.ui.hint.hidden = true;
-      cr.ui.skip.hidden = Boolean(v);
-      cr.ui.skip.textContent = 'No idea';
-      cr.ui.skip.title = 'Move on without answering — it counts as a miss, so the ' +
-        'streak goes back to zero';
-      cr.ui.exit.textContent = 'End storm';
-      cr.ui.exit.title = 'Stop the storm and see the score';
+      cr.ui.skip.hidden = retry ? !v : Boolean(v);
+      cr.ui.skip.textContent = retry ? 'Try another move' : 'No idea';
+      cr.ui.skip.title = retry
+        ? 'Put the position back and play something else — still nothing is scored'
+        : 'Move on without answering — it counts as a miss, so the streak goes ' +
+          'back to zero and it costs points';
+      cr.ui.exit.textContent = retry ? 'Back to the review' : 'End storm';
+      cr.ui.exit.title = retry
+        ? 'Stop playing this position and go back to the list'
+        : 'Stop the storm and see the score';
     }
 
     /** Variation names run long, and the panel is one column wide. */
@@ -23305,6 +23354,7 @@
       cr.mode = 'quiz';
       cr.browse = false;
       cr.stormVerdict = null; // section 27's line, which belongs to the run that has gone
+      cr.stormRetry = false;  // …and whether that run was a review retry (§14.10b)
       cr.sgAgain.clear();
       cr.view = null;
       // A save in flight is the worker's job now and finishes (or times out)
@@ -33842,6 +33892,16 @@
 
   /** "Nf3 — 2nd best, 12cp behind" / "Passed". */
   function stormVerdictLine(v, s) {
+    // §14.10c: THE CARD THE STORM ENDED ON. It is the one verdict shape here
+    // with nothing of the user's in it — no rank, no loss, no points — because
+    // nothing was answered; it is kept because it is the position most in mind
+    // when the clock ran out. The grading tiers are reachable only through an
+    // answer, so a card abandoned MID-GRADE names the move and says only that.
+    if (v.unanswered) {
+      return v.userSan
+        ? v.userSan + ' — the storm ended before it was graded'
+        : 'Not answered — the storm ended on this position';
+    }
     if (v.passed) return 'Passed — no answer given';
     if (v.verdict === 'unknown') {
       return (v.userSan || 'that move') + ' — ChessDB cannot score it here';
@@ -33857,7 +33917,9 @@
     // cannot place is one they cannot argue with, and the engine tier's
     // number is a shallow search rather than a book entry.
     if (v.source === 'engine') bits.push('by the engine');
-    if (v.points) bits.push('+' + v.points);
+    // SIGNED, not prefixed. A miss scores `missPoints` now, and the old
+    // unconditional '+' printed a penalty as "+-2".
+    if (v.points) bits.push((v.points > 0 ? '+' : '') + v.points);
     return bits.join(' · ');
   }
 
@@ -34008,7 +34070,20 @@
       history: [],       // [{ card, verdict }] — every position answered (§14.10)
       reviewIdx: 0,      // which of them the review is standing on
       analysing: false,  // section 19's board is up on one of them, in our slots
+      // §14.10b: the review item being PLAYED AGAIN — section 18's storm board,
+      // on a position out of the history, graded through the same three tiers
+      // and scored nowhere. A fifth state of the window, exclusive with
+      // `analysing` because both want the stage's slots.
+      retry: null,       // the { card, verdict } history item, or null
+      // …and which ATTEMPT at it, so a grade still in flight when the position
+      // is put back cannot land on the next move played. Same job as the alt
+      // check's `reqId` prefix and for the same reason: the answer carries no
+      // identity of its own, so the caller has to supply one.
+      retrySeq: 0,
       grading: false,    // a verdict is in flight (the child-negation request)
+      // The move currently being graded, so a session ended mid-grade can name
+      // it in the review rather than reporting the card as untouched (§14.10c).
+      lastPlayed: null,
       gradeTimer: 0,     // …and the backstop that ends it whatever happens
       endsAt: 0,
       lastTickAt: 0,     // …and when the clock last looked, so a pause can be
@@ -34295,6 +34370,11 @@
     async function stormFrontiers(vars, C) {
       const byEnd = new Map();
       let i = 0;
+      // How many lines were dropped for being paused — the ONE reason a course
+      // can come back with no frontiers that is the user's own doing, so it
+      // has to be sayable. Hung off the returned array rather than changing
+      // the return type: every caller wants the pool and only one wants this.
+      let paused = 0;
       for (const v of vars || []) {
         // Section 24's walk yields for the same reason: this is `walkVariation`
         // over every line of the course, measured at 1.2 s for 80 variations,
@@ -34302,6 +34382,15 @@
         // the user has just pressed a button.
         if (++i % C.chunkVars === 0) await sleepMs(0);
         if (!v.sans || v.sans.length < C.minVarPlies) continue;
+        // PAUSED LINES ARE NOT STORMED. "Paused" and "skipped" are Chessable's
+        // two words for one flag (see `reduceCourse`) and both mean the user
+        // has asked not to be prompted about this line — so asking what they
+        // would play the move AFTER it is the same question one ply later.
+        // Counted BEFORE the walk, so the figure is "lines you paused", not
+        // "lines you paused that would also have been usable": the second
+        // number explains nothing to somebody wondering where their course
+        // went.
+        if (v.paused) { paused++; continue; }
         const side = sideOf(v.color);
         if (!side) continue;
         if (v.fen && cacheKey(v.fen) !== cacheKey(START_FEN)) continue;
@@ -34330,6 +34419,7 @@
         e.side = e.w ? 'w' : 'b';
         out.push(e);
       }
+      out.paused = paused;
       return out;
     }
 
@@ -34500,9 +34590,23 @@
       return 'miss';
     }
 
-    /** Points for one answer. `streak` is the run BEFORE it, so the first
-     *  answer of a session is always at the plain multiplier. */
+    /**
+     * Points for one answer. `streak` is the run BEFORE it, so the first answer
+     * of a session is always at the plain multiplier.
+     *
+     * A MISS IS A FLAT PENALTY AND IS NEVER MULTIPLIED. The multiplier is a
+     * reward for a run, and charging it against the answer that ENDS the run
+     * would make one lapse after twelve right answers cost four times what the
+     * same lapse costs after none — punishing the streak rather than the
+     * mistake, and making a long streak something to protect by passing.
+     * (Which is itself a miss, so that door is shut either way.)
+     *
+     * 'unknown' and 'unanswered' fall through to 0: neither is the user's
+     * doing, and charging for a position ChessDB cannot score is the one unfair
+     * verdict available here.
+     */
     function stormPoints(verdict, streak, C) {
+      if (verdict === 'miss') return C.missPoints;
       const base = verdict === 'good' ? C.goodPoints
         : verdict === 'decent' ? C.decentPoints : 0;
       if (!base) return 0;
@@ -34857,22 +34961,47 @@
     }
 
     /**
-     * The stored positions a session should draw on, hardest first — a position
-     * missed twice before is the one most worth asking again — and shuffled
-     * within a tier so two sessions in a row are not identical.
+     * The stored positions a session should draw on — **UNSEEN FIRST**, then
+     * the ones already missed, most-missed last; shuffled within a tier so two
+     * sessions in a row are not identical.
+     *
+     * THIS ORDER IS THE REVERSE OF v0.130.0's (§14.15), and the reversal is the
+     * point rather than a tidy-up. The original argument — "a position missed
+     * twice is the one most worth asking again" — is the SRS argument, and it
+     * is wrong here because this store is not an SRS queue:
+     *
+     *  * the retention rule already drops a position the moment it is answered
+     *    well, so everything with `k > 0` is by construction a position the
+     *    user has ALREADY been shown and got wrong. Hardest-first therefore
+     *    opened every session with the same handful of failures, in the same
+     *    order, for as long as they kept failing;
+     *  * and it starved the fresh ones. A session is three minutes; a gather
+     *    pass stores hundreds. With the misses in front, the positions those
+     *    ~11 requests each were spent on could go a long time unseen — the
+     *    store filling up with material the session never reaches.
+     *
+     * A miss is not lost, it is queued behind the new material — which is also
+     * what makes the tail of a long session the harder half.
+     *
+     * Pure and rnd-injected, `stormDrawFrontier`'s shape and for its reason:
+     * `dev/check-storm.js` executes it. The ORDER is the whole of what this
+     * function decides, and a reversed comparator is silent — it still returns
+     * every position, still in a plausible-looking sequence.
      */
-    function storeDraw() {
-      if (!st.store) return [];
+    function stormStoreDraw(store, rnd) {
+      if (!store) return [];
       const out = [];
-      for (const ck of Object.keys(st.store)) {
-        const cand = stormUnpack(st.store[ck]);
+      for (const ck of Object.keys(store)) {
+        const cand = stormUnpack(store[ck]);
         if (!cand) continue;
-        out.push({ ck, cand, k: st.store[ck].k || 0, r: Math.random(),
-          name: st.store[ck].n || '' });
+        out.push({ ck, cand, k: store[ck].k || 0, r: rnd(),
+          name: store[ck].n || '' });
       }
-      out.sort((a, b) => (b.k - a.k) || (a.r - b.r));
+      out.sort((a, b) => (a.k - b.k) || (a.r - b.r));
       return out;
     }
+
+    function storeDraw() { return stormStoreDraw(st.store, Math.random); }
 
     // ----------------------------------------------------------------------
     // The wire. Three services, all read-only, all paced.
@@ -35402,6 +35531,24 @@
           (merged.dropped ? ', ' + merged.dropped + ' already learned elsewhere' : ''));
         log('storm: synced (' + reason + ') —', packed.n, 'carried,',
           merged.added, 'added,', merged.dropped, 'dropped,', wire.length, 'bytes');
+        // A PULL MUST FEED THE SESSION IT LANDED IN. The exchange is fired from
+        // `startSession` and deliberately not awaited (§14.12), so the store it
+        // enriches has ALREADY been drawn from — and without this the positions
+        // another device just handed over sit unused until the NEXT session,
+        // while this one walks frontiers at eleven ChessDB requests apiece.
+        // Reported live 2026-08-28 on a phone: "9 positions synced" and then a
+        // long wait for the first card.
+        //
+        // Re-drawing the WHOLE store is safe and is the simple thing: every key
+        // already queued is in `st.seen`, which is what `produceFromStore`
+        // filters on, so nothing can be offered twice.
+        if (merged.added && st.running && !st.over && !st.gathering) {
+          st.storeQueue = storeDraw();
+          if (produceFromStore()) {
+            render();
+            if (!st.card) nextCard();
+          }
+        }
       } catch (err) {
         warn('storm: the sync failed:', err);
         setSyncNote('Sync failed: ' + String((err && err.message) || err));
@@ -35432,6 +35579,20 @@
     // gathering is a second set of pick rules that will one day disagree with
     // the first about what a usable position is.
     // ----------------------------------------------------------------------
+
+    /**
+     * §14.13: the press that opens the first card. It is also what starts the
+     * clock, indirectly — `nextCard` does that on the card it shows — so
+     * everything before this point is untimed, however long the producer or a
+     * sync exchange takes.
+     */
+    function startStorm() {
+      if (!st.running || st.over || st.started || st.gathering) return;
+      if (!st.queue.length) return;
+      st.started = true;
+      render();
+      nextCard();
+    }
 
     async function gather() {
       if (st.gathering) { stopGather(); return; }
@@ -35500,10 +35661,27 @@
         setNote('');
         log('storm: gathered', st.gathered, 'position(s) in',
           st.cdbCount, 'ChessDB requests;', Object.keys(st.store || {}).length, 'in store');
+        // The paused count rides along on the pool the same way it does in
+        // `startSession`: with every line paused this pass has nothing to walk,
+        // and "every line has been walked" would be the wrong explanation.
+        const skipped = (st.pool && st.pool.paused) || 0;
         setStatus(st.gathered
           ? 'Stored ' + st.gathered + ' new position(s) — ' +
-            Object.keys(st.store || {}).length + ' ready on this course.'
-          : 'Nothing new to store: every line this course ends on has been walked.', '');
+            Object.keys(st.store || {}).length + ' ready on this course.' +
+            (skipped ? ' ' + skipped + ' paused line(s) were skipped.' : '')
+          : (skipped
+              ? 'Nothing new to store. ' + skipped + ' paused or skipped variation(s) ' +
+                'are not walked; every other line here has been.'
+              : 'Nothing new to store: every line this course ends on has been walked.'), '');
+        // THE QUEUE THIS PASS EMPTIED IS REFILLED FROM WHAT IT STORED. Gathering
+        // during the pre-roll clears the queue (it owns the pool), so without
+        // this the session it interrupted is left with nothing ready and
+        // "Start" can never light up again — free here, since the store is
+        // exactly what the pass has just been filling.
+        if (st.running && !st.over && !st.started) {
+          st.storeQueue = storeDraw();
+          produceFromStore();
+        }
         render();
         // A gather is the one moment there is definitely something worth
         // carrying — it is also the pass a user leaves running and walks away
@@ -35540,8 +35718,12 @@
       },
       /** Section 18's answer path, called from `tryMove`'s storm arm. */
       answer(uci, san) { grade(uci, san); },
-      /** …and its Skip, which here means "I have no idea" (§8.1's miss band). */
+      /** …and its Skip, which here means "I have no idea" (§8.1's miss band) —
+       *  or, in the review's retry (§14.10b), "put the position back and let me
+       *  try a different move". Two words for the same control because both are
+       *  what a user means by pressing it in that state. */
       pass() {
+        if (st.retry) { retryAnother(); return; }
         if (!st.card || st.verdict || st.grading) return;
         finishAnswer({ verdict: 'miss', passed: true, userSan: '', loss: null, rank: null });
       },
@@ -35553,6 +35735,11 @@
       st.name = spec.name || '';
       st.running = true;
       st.over = false;
+      // §14.13: NOTHING IS SHOWN UNTIL "Start" IS PRESSED. The pre-roll is
+      // exactly when a user decides they would rather fill the store than
+      // play, and a card appearing under that decision starts the clock on a
+      // session nobody asked for.
+      st.started = false;
       st.pool = [];
       st.queue = [];
       st.seen = new Set();
@@ -35562,6 +35749,9 @@
       st.history = [];
       st.reviewIdx = 0;
       st.analysing = false;
+      st.retry = null;
+      st.retrySeq = 0;
+      st.lastPlayed = null;
       st.shown = 0;
       st.answered = 0;
       st.score = 0;
@@ -35596,7 +35786,6 @@
         setStatus('', '');
         produceFromStore();
         render();
-        if (!st.card) nextCard();
       }
 
       let course = null;
@@ -35622,11 +35811,25 @@
       const frontiers = await stormFrontiers(course.vars, C);
       if (!st.running) return;
       if (!frontiers.length) {
-        endSession('no frontiers',
-          'None of this course’s variations ends on a position a real game passes ' +
-          'through — every line either starts from a custom position (tactics, model ' +
-          'games) or is too short to have a frontier.');
+        // NAME THE PAUSE WHERE IT IS THE REASON. Every other cause here is a
+        // property of the course and nothing the user can act on; a paused line
+        // is a decision they made and can unmake, and the old sentence would
+        // have told them their course was unsuitable instead.
+        const paused = frontiers.paused || 0;
+        endSession('no frontiers', paused
+          ? (course.allPaused
+              ? 'Every variation in this course is paused, so there is nothing to storm. ' +
+                'Resume some lines on the course page and try again.'
+              : paused + ' variation(s) in this course are paused or skipped and are ' +
+                'not stormed. Nothing else here ends on a position a real game passes ' +
+                'through.')
+          : 'None of this course’s variations ends on a position a real game passes ' +
+            'through — every line either starts from a custom position (tactics, model ' +
+            'games) or is too short to have a frontier.');
         return;
+      }
+      if (frontiers.paused) {
+        log('storm:', frontiers.paused, 'paused/skipped variation(s) excluded on', st.bid);
       }
       st.pool = frontiers;
       st.poolSize = frontiers.length;
@@ -35649,6 +35852,11 @@
       // rather fill the store than play — must not be interrupted by the card
       // the producer was already fetching.
       if (st.gathering) return;
+      // …AND NEITHER DOES ANYTHING ELSE BEFORE "Start" (§14.13). This is the
+      // one gate: `produce`'s finally, the store path and the sync refill all
+      // reach here, so barring it once bars every route into the first card.
+      // `render()` is what enables the button as the queue fills.
+      if (!st.started) { render(); return; }
       st.verdict = null;
       const card = st.queue.shift();
       if (!card) {
@@ -35667,12 +35875,17 @@
         return;
       }
       st.card = card;
+      st.lastPlayed = null;
       st.shown++;
       if (!st.endsAt) startClock();
       const ok = st.boardUp
         ? (continuationStormApi && continuationStormApi.next(card))
         : (continuationStormApi && continuationStormApi.open(card, slots));
       if (!ok) {
+        // NULLED BEFORE `endSession`, which now keeps whatever card is on the
+        // board (§14.10c). This one never reached a board, so putting it in the
+        // review would show a position the user has not seen.
+        st.card = null;
         endSession('board refused', 'The storm board could not be opened here.');
         return;
       }
@@ -35693,38 +35906,101 @@
      * verdict.
      */
     async function grade(uci, san) {
+      // §14.10b: THE SAME MOVE, THE SAME THREE TIERS, AND SOMEWHERE ELSE
+      // ENTIRELY TO PUT THE ANSWER. A "Try again" in the review is a card in
+      // every respect the GRADER cares about and in none that the SESSION cares
+      // about — no score, no streak, no clock, no store note, no history entry —
+      // so the two paths differ only in `alive` and `finish` and share
+      // everything between them. A second copy of the tiers is a second place
+      // for them to fall out of step, which is the one way this feature could
+      // come to grade two identical moves differently.
+      if (st.retry) {
+        const item = st.retry;
+        const seq = st.retrySeq;
+        if (st.grading) return;
+        st.grading = true;
+        st.lastPlayed = { uci, san };
+        await runGrade(item.card, uci, san,
+          () => st.retry === item && st.retrySeq === seq, finishRetry);
+        return;
+      }
       const card = st.card;
       if (!card || st.grading || st.verdict) return;
       st.grading = true;
+      st.lastPlayed = { uci, san };
       render();
-      // FAIL OPEN, ALWAYS. Section 18 holds the board shut from the moment the
-      // move is played until a verdict lands, so a grade that hangs is a board
-      // that takes no further move — and, because `st.grading` gates the next
-      // one, every card after it as well. Seen live 2026-08-28. The watchdog
-      // answers with the verdict that costs nothing either way.
+      await runGrade(card, uci, san, () => st.running && st.card === card, finishAnswer);
+    }
+
+    /**
+     * The three tiers, the watchdog and the fail-open — everything a grade does
+     * before anybody decides what the verdict is FOR.
+     *
+     * `alive()` says whether the answer is still about a position somebody is
+     * looking at; `finish(v)` is what to do with it. Both callers hand in their
+     * own, and that is the whole of the difference between a timed card and a
+     * review retry.
+     *
+     * FAIL OPEN, ALWAYS. Section 18 holds the board shut from the moment the
+     * move is played until a verdict lands, so a grade that hangs is a board
+     * that takes no further move — and, because `st.grading` gates the next
+     * one, every card after it as well. Seen live 2026-08-28. The watchdog
+     * answers with the verdict that costs nothing either way.
+     */
+    async function runGrade(card, uci, san, alive, finish) {
       clearTimeout(st.gradeTimer);
       st.gradeTimer = setTimeout(() => {
         st.gradeTimer = 0;
-        if (!st.grading || st.card !== card) return;
+        if (!st.grading || !alive()) return;
         warn('storm: grading', san, 'timed out — no verdict');
         st.grading = false;
         if (st.eng) endEngineJob(st.eng, null);
-        finishAnswer({ verdict: 'unknown', userSan: san, loss: null, rank: null });
+        finish({ verdict: 'unknown', userSan: san, userUci: uci, loss: null, rank: null });
       }, C.gradeTimeoutMs);
       try {
-        await gradeInner(card, uci, san);
+        const got = await gradeTiers(card, uci, alive);
+        st.grading = false;
+        clearTimeout(st.gradeTimer);
+        st.gradeTimer = 0;
+        // The board can have moved on under a slow request — Exit, the clock, a
+        // new card, a step to another review position — in which case this
+        // verdict is about a position nobody is looking at.
+        if (!alive()) return;
+        if (!got) {
+          // Neither source could answer. Deliberately NOT a miss: the user
+          // played a legal move and the database simply has nothing to say
+          // about it, and scoring that against them is the one unfair verdict
+          // available.
+          finish({ verdict: 'unknown', userSan: san, userUci: uci, loss: null, rank: null });
+          return;
+        }
+        finish({
+          verdict: stormGrade(got.loss, C),
+          userSan: san,
+          userUci: uci,
+          loss: got.loss,
+          rank: got.rank,
+          userScore: got.score,
+          userWinrate: got.winrate,
+          source: got.source,
+          estimated: got.source !== 'list',
+          bestSan: got.bestSan,
+          bestScore: got.bestScore,
+        });
       } catch (err) {
         warn('storm: grading failed:', err);
-        if (st.grading && st.card === card) {
+        if (st.grading && alive()) {
           st.grading = false;
           clearTimeout(st.gradeTimer);
           st.gradeTimer = 0;
-          finishAnswer({ verdict: 'unknown', userSan: san, loss: null, rank: null });
+          finish({ verdict: 'unknown', userSan: san, userUci: uci, loss: null, rank: null });
         }
       }
     }
 
-    async function gradeInner(card, uci, san) {
+    /** §3.4's three sources, in order, and nothing else — no bookkeeping, so
+     *  both callers of `runGrade` get ONE definition of what a move is worth. */
+    async function gradeTiers(card, uci, alive) {
       const scored = card.storm.cand.scored;
       let got = stormMoveLoss(scored, uci, undefined);
       if (!got) {
@@ -35737,7 +36013,7 @@
       // 98% coverage — a measurement over REAL continuations — does not carry
       // over to it. Three answers in a row came back ungradeable on course
       // 291847 before this existed.
-      if (!got && st.card === card) {
+      if (!got && alive()) {
         const eng = await stormEngineLoss(card.startFen, uci);
         if (eng) {
           got = {
@@ -35749,33 +36025,7 @@
           };
         }
       }
-      st.grading = false;
-      clearTimeout(st.gradeTimer);
-      st.gradeTimer = 0;
-      // The board can have moved on under a slow request — Exit, the clock, a
-      // new card — in which case this verdict is about a position nobody is
-      // looking at.
-      if (!st.running || st.card !== card) return;
-      if (!got) {
-        // Neither source could answer. Deliberately NOT a miss: the user played
-        // a legal move and the database simply has nothing to say about it, and
-        // scoring that against them is the one unfair verdict available.
-        finishAnswer({ verdict: 'unknown', userSan: san, userUci: uci, loss: null, rank: null });
-        return;
-      }
-      finishAnswer({
-        verdict: stormGrade(got.loss, C),
-        userSan: san,
-        userUci: uci,
-        loss: got.loss,
-        rank: got.rank,
-        userScore: got.score,
-        userWinrate: got.winrate,
-        source: got.source,
-        estimated: got.source !== 'list',
-        bestSan: got.bestSan,
-        bestScore: got.bestScore,
-      });
+      return got;
     }
 
     /** Applies a verdict to the score, the streak and the clock, prints it, and
@@ -35875,6 +36125,31 @@
      */
     function endSession(why, msg) {
       if (!st.running) return;
+      // §14.10c: THE CARD ON THE BOARD RIGHT NOW GOES INTO THE REVIEW TOO.
+      // Before anything below clears it, and before `st.grading` is dropped —
+      // both are read here.
+      //
+      // The position the clock runs out on is the one the user was actually
+      // thinking about, and it was the only one the review could not show: the
+      // history is filled by `finishAnswer`, which an unanswered card never
+      // reaches. So the review opened on the second-most-interesting position
+      // in the session, and the best move for the most interesting one was
+      // simply gone.
+      //
+      // It is pushed on EVERY route out — the clock, "End storm", the board
+      // being closed — because "I stopped on a position I could not solve" is
+      // the same wish as "the clock stopped me on one". Nothing is scored: no
+      // points, no streak, and deliberately no `storeNote`, so the position
+      // keeps its place in the store exactly as if it had never been drawn.
+      if (st.card) {
+        const played = st.grading ? st.lastPlayed : null;
+        st.history.push({ card: st.card, verdict: {
+          verdict: 'unanswered', unanswered: true,
+          userSan: (played && played.san) || '', userUci: (played && played.uci) || '',
+          loss: null, rank: null,
+        } });
+        if (st.history.length > C.reviewMax) st.history.shift();
+      }
       clearInterval(st.clockTimer);
       st.clockTimer = 0;
       clearTimeout(st.nextTimer);
@@ -35914,6 +36189,7 @@
       // Before endSession, which calls `continuationStormApi.close()` itself —
       // this is what keeps the flag from outliving the board it names.
       if (st.analysing) closeAnalyse();
+      if (st.retry) endRetry();
       stopGather();
       endSession('closed by hand');
       st.running = false;
@@ -35924,6 +36200,8 @@
       st.verdict = null;
       st.history = [];
       st.analysing = false;
+      st.retry = null;
+      st.lastPlayed = null;
       if (st.panel) st.panel.hidden = true;
       if (wasRunning) render();
     }
@@ -36027,6 +36305,13 @@
       ready.title = 'Positions already found on this course and waiting. A storm opens ' +
         'on these instantly — finding one costs about eleven ChessDB lookups, which ' +
         'is what "Gather positions" pays in advance.';
+      // §14.13) START. THE one primary in this window — a FILL, which nothing
+      // else in this row wears (DESIGN-ui-inventory §3): the whole point of the
+      // button is that the alternative, gathering, is a real choice and used to
+      // be one you had a couple of seconds to make.
+      const startBtn = el('button', 'clo-st-start', 'Start');
+      startBtn.type = 'button';
+      startBtn.addEventListener('click', startStorm);
       const gatherBtn = el('button', 'clo-st-gather', 'Gather positions');
       gatherBtn.type = 'button';
       gatherBtn.addEventListener('click', gather);
@@ -36059,7 +36344,7 @@
         el('span', 'clo-st-set-label', 'Offer positions'), minSel,
         el('span', 'clo-st-set-label', 'to'), maxSel,
         el('span', 'clo-st-set-label', 'moves past the end of a line'),
-        el('span', 'clo-st-set-spacer'), ready, gatherBtn, syncBtn);
+        el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, syncBtn);
       settings.title = 'How far past the point a course line stops a position may be. ' +
         '1 asks what you play the move AFTER the book runs out; a wider range mixes ' +
         'that with positions further downstream.';
@@ -36099,6 +36384,13 @@
       const revLegend = el('div', 'clo-st-revlegend');
       const revList = el('div', 'clo-st-revlist');
       const revActions = el('div', 'clo-st-revactions');
+      // §14.10b, and FIRST because it is the thing to do BEFORE the answer is
+      // revealed: play the position again. Neutral like the two beside it —
+      // all three are things to do with THIS position, and the green pair at
+      // the end of the row is about the session.
+      const revRetry = el('button', 'clo-st-analyse clo-st-retry', 'Try again');
+      revRetry.type = 'button';
+      revRetry.addEventListener('click', toggleRetry);
       // §14.10a: the best move is HIDDEN until this is pressed. Neutral, like
       // Analyse beside it — the one thing to do on a review position is look
       // at it, and a filled button saying "Best move" is an invitation to
@@ -36117,7 +36409,7 @@
       const revDone = el('button', 'clo-st-done', 'Close');
       revDone.type = 'button';
       revDone.addEventListener('click', closeStorm);
-      revActions.append(revBest, revAnalyse, revAgain, revDone);
+      revActions.append(revRetry, revBest, revAnalyse, revAgain, revDone);
       revSide.append(revHead, revLegend, revList, revActions);
       review.append(revBoard, revSide);
       body.append(status, note, syncNote, settings, stage, review, summary);
@@ -36126,9 +36418,9 @@
       document.body.appendChild(panel);
       st.panel = panel;
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
-        settings, minSel, maxSel, gatherBtn, ready, syncBtn, syncNote,
+        settings, minSel, maxSel, startBtn, gatherBtn, ready, syncBtn, syncNote,
         review, revBoard, revGrid, revLayer, revShapes, revHead, revLegend, revList,
-        revActions, revBest, revAnalyse, dbSlot };
+        revActions, revRetry, revBest, revAnalyse, dbSlot };
       syncSettings();
     }
 
@@ -36166,6 +36458,19 @@
       // The button IS the stop button while it runs — one control, because
       // "gather" and "stop gathering" are the two halves of one intention
       // (section 9's rule, and the tree's Read/Cancel does the same).
+      // Shown only before the first card and hidden for good once it is spent:
+      // "Start" during a session would be a control with nothing to do, and
+      // after one the summary's own "Storm again" is the way back.
+      const haveCard = Boolean(st.queue && st.queue.length);
+      st.ui.startBtn.hidden = st.started || st.over || st.gathering;
+      st.ui.startBtn.disabled = !haveCard;
+      st.ui.startBtn.textContent = haveCard ? 'Start' : 'Finding a position…';
+      st.ui.startBtn.title = haveCard
+        ? 'Begin. The clock starts with the first card — ' + st.queue.length +
+          ' position(s) are ready and the rest are found while you play.'
+        : 'Nothing is ready yet. Finding a position costs about eleven ChessDB ' +
+          'lookups; "Gather positions" pays that in advance, and syncing brings ' +
+          'over what another device already found.';
       st.ui.syncBtn.disabled = st.syncing || st.gathering;
       st.ui.syncBtn.textContent = st.syncing ? 'Syncing…' : 'Sync';
       st.ui.gatherBtn.textContent = st.gathering ? 'Stop gathering' : 'Gather positions';
@@ -36222,17 +36527,21 @@
       st.ui.streak.classList.toggle('clo-st-stat--hot', mult > 1);
       // THREE views, and exactly one is up: the card stage while playing, the
       // REVIEW once it is over and something was answered, and the bare summary
-      // when nothing was. `analysing` is a fourth state INSIDE the review — the
-      // board is pinned to the stage's slots, so the stage comes back while the
-      // review's own board and list stand down.
+      // when nothing was. `analysing` and `retry` are two further states INSIDE
+      // the review, mutually exclusive with each other — in both the board is
+      // pinned to the stage's slots, so the stage comes back while the review's
+      // own board and list stand down.
       const reviewable = st.over && st.history.length > 0;
-      st.ui.stage.hidden = !(!st.over || (reviewable && st.analysing));
-      // The database slot exists for the analysis board and for nothing else.
+      const onStage = st.analysing || Boolean(st.retry);
+      st.ui.stage.hidden = !(!st.over || (reviewable && onStage));
+      // The database slot exists for the analysis board and for nothing else —
+      // NOT for a retry, where the database's top move would name the answer
+      // (section 20's rule for the drill, and the card's own).
       // Sized BEFORE the overlays are placed — `slots()` and `panelSlot()` both
       // measure a laid-out stage, so a slot revealed after the placement is a
       // rect of zero.
       st.ui.dbSlot.hidden = !st.analysing;
-      st.ui.review.hidden = !(reviewable && !st.analysing);
+      st.ui.review.hidden = !(reviewable && !onStage);
       st.ui.summary.hidden = !(st.over && !reviewable);
       syncSettings();
       if (reviewable) renderReview();
@@ -36407,7 +36716,9 @@
         row.addEventListener('click', () => {
           if (st.reviewIdx === i) return;
           st.reviewIdx = i;
-          if (st.analysing) closeAnalyse(); // it describes the position being left
+          // Both describe the position being LEFT.
+          if (st.analysing) closeAnalyse();
+          if (st.retry) endRetry();
           renderReview();
         });
         host.appendChild(row);
@@ -36435,10 +36746,17 @@
       st.ui.revBest.title = shown
         ? 'Hide it again (b)'
         : 'Show the best move here — work it out first (b)';
+      st.ui.revRetry.disabled = !item;
+      st.ui.revRetry.textContent = st.retry ? 'Back to the review' : 'Try again';
+      st.ui.revRetry.title = st.retry
+        ? 'Stop playing this position and go back to the list'
+        : 'Play this position again and have the move graded — nothing is scored ' +
+          'and the answer you gave under the clock is kept as it is';
       st.ui.revAnalyse.disabled = !item;
       st.ui.revAnalyse.textContent = st.analysing ? 'Back to the review' : 'Analyse this position';
       renderReviewList();
-      if (!st.analysing) renderReviewBoard();
+      // Neither board-borne state has the review's own board on screen.
+      if (!st.analysing && !st.retry) renderReviewBoard();
     }
 
     function reviewStep(delta) {
@@ -36447,7 +36765,84 @@
       if (next === st.reviewIdx) return;
       st.reviewIdx = next;
       if (st.analysing) closeAnalyse();
+      if (st.retry) endRetry();
       renderReview();
+    }
+
+    // --- §14.10b) the same position, played again ---------------------------
+    //
+    // A review that can only be READ is half of what a storm is for: four
+    // seconds was all the card allowed, and the thinking the position deserves
+    // has nowhere to go. So "Try again" puts the position back on section 18's
+    // storm board — the SAME board, the same mode, the same three grading tiers
+    // — and lands the answer nowhere near the session.
+    //
+    // NOTHING IS SCORED AND NOTHING IS RECORDED. No points, no streak, no clock
+    // (it stopped when the session ended), no `storeNote`, and no second
+    // `st.history` entry: the history is the record of the TIMED session, and a
+    // move found at leisure afterwards is not one of its answers. That is also
+    // why the row's own verdict — the move actually played under the clock —
+    // stays exactly as it was.
+    //
+    // Exclusive with `analysing`, because both want the stage's slots and
+    // section 18 will only run one board at a time anyway. Each closes the
+    // other rather than refusing, since pressing the second is an unambiguous
+    // request for it.
+
+    function toggleRetry() {
+      if (st.retry) { endRetry(); return; }
+      const item = revItem();
+      if (!item || !continuationStormApi) return;
+      if (st.analysing) closeAnalyse();
+      // The stage must be LAID OUT before `slots()` is asked for a rect —
+      // `toggleAnalyse`'s rule, for `toggleAnalyse`'s reason: a slot revealed
+      // after the placement measures zero.
+      st.retry = item;
+      st.retrySeq++;
+      render();
+      if (!continuationStormApi.open(item.card, slots, { retry: true })) {
+        st.retry = null;
+        render();
+        setStatus('The board could not be opened here.', 'warn');
+        return;
+      }
+      setStatus('', '');
+    }
+
+    /** Puts the position back for another attempt, keeping the retry running.
+     *  Section 18 holds the board shut behind a verdict (`cr.busy`), which is
+     *  right — the move played is still ON the board — so a second try has to
+     *  be a fresh card rather than a second move on the same one. */
+    function retryAnother() {
+      if (!st.retry) return;
+      // The attempt changes, so a grade still in flight from the LAST one has
+      // no `alive()` any more and its verdict is dropped rather than printed
+      // over the position that has just been put back.
+      st.retrySeq++;
+      st.grading = false;
+      clearTimeout(st.gradeTimer);
+      st.gradeTimer = 0;
+      if (continuationStormApi) continuationStormApi.next(st.retry.card);
+    }
+
+    function endRetry() {
+      if (!st.retry) return;
+      st.retry = null;
+      st.retrySeq++;
+      // A grade still in flight now has no `alive()`, so its verdict is
+      // discarded by `runGrade` rather than landing on a board that has gone.
+      st.grading = false;
+      clearTimeout(st.gradeTimer);
+      st.gradeTimer = 0;
+      if (st.eng) endEngineJob(st.eng, null);
+      if (continuationStormApi) continuationStormApi.close();
+      render();
+    }
+
+    /** The retry's verdict: onto section 18's own panel and nowhere else. */
+    function finishRetry(v) {
+      if (!st.retry) return;
+      if (continuationStormApi) continuationStormApi.verdict(v);
     }
 
     // --- section 19's board, on a review position ---------------------------
@@ -36456,6 +36851,7 @@
       if (st.analysing) { closeAnalyse(); return; }
       const item = revItem();
       if (!item || !continuationStormApi) return;
+      if (st.retry) endRetry();
       // Everything section 19 would read off a page, handed in — the shape
       // 24g established (`openAnalysis`'s `given`). A storm position belongs to
       // no variation, so only `startFen` and the orientation are answerable,
@@ -36517,6 +36913,9 @@
       // Exit or Escape, and the review has to come back rather than leaving the
       // window on an empty stage.
       if (st.analysing && continuationActive && !continuationActive()) closeAnalyse();
+      // …and the same for the review's RETRY board (§14.10b), whose "Back to the
+      // review" is section 18's own Exit button.
+      if (st.retry && continuationActive && !continuationActive()) endRetry();
     }
 
     /**
@@ -36532,7 +36931,7 @@
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       // §14.10's review is walked with the arrows. Only there — during a storm
       // the board owns the keyboard, and there is nothing to step through.
-      if (st.over && st.history.length && !st.analysing) {
+      if (st.over && st.history.length && !st.analysing && !st.retry) {
         if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { reviewStep(-1); }
         else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { reviewStep(1); }
         else if (e.key === 'Home') { st.reviewIdx = 0; renderReview(); }
@@ -36541,6 +36940,10 @@
         // focused button in this window is pressed, and the review's rows are
         // buttons.
         else if (e.key === 'b' || e.key === 'B') { toggleBest(); }
+        // §14.10b, and 't' for the same reason 'b' is 'b': space and Enter are
+        // how a focused button in this window is pressed, and the review's rows
+        // are buttons.
+        else if (e.key === 't' || e.key === 'T') { toggleRetry(); }
         else if (e.key !== 'Escape') return;
         else { e.preventDefault(); e.stopPropagation(); closeStorm(); return; }
         e.preventDefault(); // the arrows would otherwise scroll the page

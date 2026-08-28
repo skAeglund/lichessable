@@ -6422,6 +6422,36 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
   color: #fff;
 }
 
+/* §14.13) START. A FILL, and the only one in this window — the row palette's
+   "the one thing to do next" (DESIGN-ui-inventory §3). Gather beside it keeps
+   its outline for exactly that reason: the two are now a real choice, and only
+   one of them is the storm.
+   Disabled it stays a fill rather than becoming an outline: the button does not
+   change what it is while the producer works, only whether it can be pressed
+   yet, and a control that changes shape as it becomes available reads as two
+   different buttons. */
+.clo-st-start {
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
+  color: #fff;
+  padding: 4px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.clo-st-start:hover:not(:disabled) { filter: brightness(1.12); }
+
+.clo-st-start:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.clo-st-start[hidden] { display: none; }
+
 .clo-st-stage {
   flex: 1;
   min-height: 0;
@@ -6596,6 +6626,10 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
 .clo-st-revrow--decent { border-left-color: var(--clo-attention-line); }
 .clo-st-revrow--miss   { border-left-color: var(--clo-danger); }
 .clo-st-revrow--unknown { border-left-color: var(--clo-bg-raised); }
+/* §14.10c: the card the storm ENDED on — no answer, so no verdict to colour.
+   The same neutral edge "unknown" wears, because both mean "nothing was
+   decided here"; what tells them apart is the move column, which reads "—". */
+.clo-st-revrow--unanswered { border-left-color: var(--clo-bg-raised); }
 
 .clo-st-revrow-n {
   color: var(--clo-text-faint);
@@ -6765,6 +6799,7 @@ html.clo-touch .clo-st-sel { font-size: 14px; }
 html.clo-touch .clo-st-sel { padding: 5px 7px; }
 html.clo-touch .clo-st-gather,
 html.clo-touch .clo-st-sync { font-size: 14px; padding: 7px 14px; }
+html.clo-touch .clo-st-start { font-size: 14px; padding: 7px 16px; }
 html.clo-touch .clo-st-sum-cost { font-size: 13px; }
 html.clo-touch .clo-st-revlegend { font-size: 13px; }
 html.clo-touch .clo-st-revrow { font-size: 15px; padding: 7px 8px; }

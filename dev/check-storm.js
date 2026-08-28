@@ -84,6 +84,7 @@ const src = [
   sliceDecl('stormPack'),
   sliceDecl('stormUnpack'),
   sliceDecl('stormRetain'),
+  sliceDecl('stormStoreDraw'),
   sliceDecl('stormWirePack'),
   sliceDecl('stormWireUnpack'),
   sliceDecl('stormWireMerge'),
@@ -99,7 +100,7 @@ const src = [
   'return { stormFrontiers, stormDrawFrontier, stormUserEval, stormPgnMoves,' +
   '         stormPickReject, stormMoveLoss, stormGrade, stormPoints,' +
   '         stormWalkGame, stormRandomLine, stormCandidate, stormAdvance,' +
-  '         stormCard, stormPack, stormUnpack, stormRetain,' +
+  '         stormCard, stormPack, stormUnpack, stormRetain, stormStoreDraw,' +
   '         stormWirePack, stormWireUnpack, stormWireMerge,' +
   '         stormCp, stormMoverCp,' +
   '         stormVerdictLine, stormBestLine,' +
@@ -130,6 +131,7 @@ const C = {
   spreadMinCp: num('spreadMinCp'), spreadMaxCp: num('spreadMaxCp'),
   goodCp: num('goodCp'), decentCp: num('decentCp'),
   goodPoints: num('goodPoints'), decentPoints: num('decentPoints'),
+  missPoints: num('missPoints'),
   // PER PROFILE since v0.134.0 (`{ desktop: 20, mobile: 18 }`), so it is no
   // longer a scalar — section 8 below asserts the shape and the two orderings
   // that fail silently.
@@ -251,14 +253,27 @@ eq('no number is no verdict', S.stormGrade(null, C), 'unknown');
 eq('NaN is no verdict', S.stormGrade(NaN, C), 'unknown');
 
 eq('the first good answer scores the base', S.stormPoints('good', 0, C), C.goodPoints);
-eq('a miss scores nothing', S.stormPoints('miss', 99, C), 0);
+eq('a miss costs missPoints', S.stormPoints('miss', 0, C), C.missPoints);
+// THE FLAT PENALTY, pinned. Multiplying it would make one lapse after twelve
+// right answers cost four times what the same lapse costs after none —
+// punishing the STREAK rather than the mistake, and it is invisible from the
+// outside: the score still moves in the right direction, just by the wrong
+// amount, and only on the answers hardest to reproduce deliberately.
+eq('…and costs exactly the same on a long streak',
+  S.stormPoints('miss', C.streakStep * 50, C), C.missPoints);
+eq('a pass is a miss, so it costs the same',
+  S.stormPoints('miss', C.streakStep, C), C.missPoints);
 eq('an ungradeable answer scores nothing', S.stormPoints('unknown', 99, C), 0);
+// §14.10c's card: never answered, so never charged for either.
+eq('the card the storm ended on scores nothing',
+  S.stormPoints('unanswered', 99, C), 0);
 eq('the multiplier steps at streakStep',
   S.stormPoints('good', C.streakStep, C), C.goodPoints * 2);
 eq('…and is capped',
   S.stormPoints('good', C.streakStep * 50, C), C.goodPoints * C.streakMax);
 eq('decent answers ride the same multiplier',
   S.stormPoints('decent', C.streakStep, C), C.decentPoints * 2);
+
 
 // ===========================================================================
 // 4) THE PICK RULES
@@ -320,6 +335,17 @@ const vars = [
   { oid: 5, name: 'Colourless', color: 'both', sans: ['d4', 'd5', 'c4', 'e6', 'Nc3'] },
   // An informational card (Chessable writes these with no moves).
   { oid: 6, name: 'Chapter intro', color: 'white', sans: [] },
+  // PAUSED / SKIPPED. Ordinary in every other respect — same colour, same
+  // length, a frontier a real game passes through — so ONLY the flag can be
+  // what excludes it. That is the point: a fixture that would have been
+  // dropped anyway proves nothing.
+  { oid: 7, name: 'Paused Italian', color: 'white', paused: true,
+    sans: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4'] },
+  // …and one that would converge on the SURVIVING frontier. It must not add to
+  // that frontier's weight or to its name list either: a paused line is not
+  // half-excluded.
+  { oid: 8, name: 'Paused Ruy', color: 'white', paused: true,
+    sans: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5'] },
 ];
 // ===========================================================================
 // 6) THE PGN READER
@@ -405,6 +431,25 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   const frontiers = await S.stormFrontiers(vars, C);
   eq('only the two real line ends survive', frontiers.length, 1);
   eq('…and they converge on ONE frontier', frontiers[0].n, 2);
+  // --- paused lines (2026-08-28) ------------------------------------------
+  // Chessable's own variation card reads `1 == e.paused` off the getList row,
+  // and its tooltip calls the same flag "PAUSED" or "SKIPPED" depending on
+  // `isPausable`. Both mean "do not prompt me about this line".
+  eq('a paused line contributes no frontier of its own',
+    frontiers.some((f) => f.names.indexOf('Paused Italian') >= 0), false);
+  eq('…nor its NAME to a frontier it shares',
+    frontiers[0].names.indexOf('Paused Ruy') >= 0, false);
+  eq('…nor its WEIGHT, which is what the draw is biased by', frontiers[0].n, 2);
+  eq('the count is reported so a refusal can say why', frontiers.paused, 2);
+  eq('a course with nothing paused reports zero',
+    (await S.stormFrontiers([vars[0]], C)).paused, 0);
+  // The flag is read as Chessable reads it: the wire carries 0/1, not a boolean.
+  eq('paused: 1 excludes the line', (await S.stormFrontiers(
+    [{ oid: 1, name: 'W', color: 'white', paused: 1, sans: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5'] }],
+    C)).length, 0);
+  eq('paused: 0 does not', (await S.stormFrontiers(
+    [{ oid: 1, name: 'W', color: 'white', paused: 0, sans: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5'] }],
+    C)).length, 1);
   eq('the frontier belongs to White', frontiers[0].side, 'w');
   eq('…and BLACK is to move there', frontiers[0].fen.split(' ')[1], 'b');
   eq('it names the lines that end there', frontiers[0].names.length, 2);
@@ -571,11 +616,37 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('a move graded through the child has no rank to name',
     S.stormVerdictLine({ verdict: 'miss', userSan: 'a3', rank: null, loss: 180, points: 0 }, cardOf()),
     'a3 · 180cp behind');
+  // SIGNED, since v0.139.0: a miss scores `missPoints`, and the old
+  // unconditional '+' rendered the penalty as "+-2" — a bug that survives
+  // every numeric assertion about `stormPoints` above.
+  eq('a penalty is printed with its own sign',
+    S.stormVerdictLine({ verdict: 'miss', userSan: 'a3', rank: null, loss: 180,
+      points: C.missPoints }, cardOf()),
+    'a3 · 180cp behind · ' + C.missPoints);
+  eq('…and a reward keeps its plus',
+    S.stormVerdictLine({ verdict: 'good', userSan: 'Bb5', rank: 1, loss: 0, points: 6 }, cardOf()),
+    'Bb5 · the top move · level with the best · +6');
   eq('a pass says what it was',
     S.stormVerdictLine({ verdict: 'miss', passed: true }, cardOf()), 'Passed — no answer given');
   eq('an ungradeable move claims nothing about the move',
     S.stormVerdictLine({ verdict: 'unknown', userSan: 'Nxh2' }, cardOf()),
     'Nxh2 — ChessDB cannot score it here');
+
+  // §14.10c: THE CARD THE STORM ENDED ON. It reaches the review with no rank,
+  // no loss and no points, which every other arm here would print as "your
+  // move" — a sentence claiming an answer that was never given. The arm has to
+  // come FIRST, above `passed`, since a card abandoned mid-grade is neither.
+  eq('the position the clock ran out on says so',
+    S.stormVerdictLine({ verdict: 'unanswered', unanswered: true, userSan: '',
+      loss: null, rank: null }, cardOf()),
+    'Not answered — the storm ended on this position');
+  eq('…and one abandoned mid-grade names the move instead',
+    S.stormVerdictLine({ verdict: 'unanswered', unanswered: true, userSan: 'Nf3',
+      loss: null, rank: null }, cardOf()),
+    'Nf3 — the storm ended before it was graded');
+  eq('an unanswered card still names the best move there was',
+    S.stormBestLine({ verdict: 'unanswered', unanswered: true, userSan: '' }, cardOf()),
+    'best Bb5 +0.32 · 54%');
 
   // THE BUG FOUND LIVE, pinned: the user's move is named only when it is a
   // DIFFERENT move from the best.
@@ -833,7 +904,8 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   const st2 = store();
   eq('a miss changes it too', S.stormRetain(st2, 'ck1', 'miss', C), true);
   eq('…but by KEEPING the position', Object.keys(st2).sort().join(), 'ck1,ck2');
-  eq('…and counting the failure, so it sorts ahead next time', st2.ck1.k, 1);
+  eq('…and counting the failure, which is what sends it to the BACK next time',
+    st2.ck1.k, 1);
   // An ungradeable answer is not the user's fault and taught them nothing, so
   // it must not drop the position either — otherwise eleven requests are spent
   // to meet the same silence again.
@@ -843,6 +915,43 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('a position the store does not hold changes nothing',
     S.stormRetain(store(), 'nope', 'good', C), false);
   eq('…and neither does an empty store', S.stormRetain({}, 'ck1', 'good', C), false);
+
+  // --- THE DRAW ORDER (§14.15, v0.137.0) ----------------------------------
+  // UNSEEN FIRST, misses behind them, most-missed last. Reversed from v0.130.0
+  // on the argument in `stormStoreDraw`'s own note, and asserted here because a
+  // flipped comparator is SILENT: every position is still returned, in a
+  // sequence that still looks deliberate.
+  //
+  // `rnd` is pinned so the within-tier shuffle cannot decide an assertion — the
+  // tiers are what is being tested, not the jitter.
+  const drawStore = {
+    fresh:  { f: fFen, n: 'Fresh',  m: [['g1f3', 12]], k: 0 },
+    once:   { f: fFen, n: 'Once',   m: [['g1f3', 12]], k: 1 },
+    thrice: { f: fFen, n: 'Thrice', m: [['g1f3', 12]], k: 3 },
+    never:  { f: fFen, n: 'Never',  m: [['g1f3', 12]] },   // no `k` at all
+  };
+  // The local store keeps its SANs, so build the moves the way stormPack does.
+  for (const k of Object.keys(drawStore)) drawStore[k].m = [['g1f3', 'Nf3', 12]];
+  const order = S.stormStoreDraw(drawStore, () => 0.5).map((x) => x.ck);
+  eq('every stored position is drawn', order.length, 4);
+  eq('a position never missed comes before one missed once',
+    order.indexOf('fresh') < order.indexOf('once'), true);
+  eq('…and one missed once before one missed three times',
+    order.indexOf('once') < order.indexOf('thrice'), true);
+  eq('the most-missed position is LAST', order[order.length - 1], 'thrice');
+  eq('a missing `k` counts as never missed, not as infinitely hard',
+    order.indexOf('never') < order.indexOf('once'), true);
+  // The tail is the harder half — the one sentence that describes the whole
+  // rule, asserted as the monotonic property rather than as a fixed sequence.
+  const ks = S.stormStoreDraw(drawStore, () => 0.5).map((x) => x.k);
+  eq('failure counts never decrease down the queue',
+    ks.every((v, i) => i === 0 || ks[i - 1] <= v), true);
+  eq('an empty store draws nothing', S.stormStoreDraw({}, () => 0.5).length, 0);
+  eq('no store at all draws nothing', S.stormStoreDraw(null, () => 0.5).length, 0);
+  // An unreadable entry is dropped rather than queued with no moves — the same
+  // refusal `stormUnpack` makes, reached through the draw.
+  eq('an entry that will not unpack is left out',
+    S.stormStoreDraw({ bad: { f: fFen, m: [] } }, () => 0.5).length, 0);
 
   // ===========================================================================
   // 16) THE WIRE (§14.12) — pack, unpack, merge

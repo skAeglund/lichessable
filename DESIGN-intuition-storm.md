@@ -523,17 +523,45 @@ skip them.
 
 Flat centipawn-loss bands, licensed by §5.2's spread filter:
 
-| loss vs best | verdict | effect |
-|---|---|---|
-| ≤ 30cp | **good** | full points, streak +1 |
-| ≤ 80cp | **decent** | points, streak held |
-| > 80cp | **miss** | streak reset |
+| loss vs best | verdict | points | effect |
+|---|---|---|---|
+| ≤ 30cp | **good** | +3 × multiplier | streak +1 |
+| ≤ 70cp | **decent** | +1 × multiplier | streak +1 |
+| > 70cp | **miss** | **−2, flat** | streak reset |
+| ungradeable | **unknown** | 0 | streak held |
+| never answered (§14.10c) | **unanswered** | 0 | — |
 
 The premise of the whole feature is in the first two rows: **a move within
 30cp of best is a good move, full stop.** Reward only the engine's first choice
 and this becomes an engine-agreement trainer, which is a different — and much
 less useful — exercise. The numbers are guesses and should be tuned the way §6
 tuned the others.
+
+`decentCp` was **80 until v0.139.0** and is now 70, and **a miss costs −2**
+where it used to cost nothing (both the author's own call). Three notes on the
+penalty:
+
+* **It is FLAT, never multiplied.** The streak multiplier is a reward for a run;
+  charging it against the answer that ENDS the run would make one lapse after
+  twelve right answers cost four times what the same lapse costs after none —
+  punishing the streak rather than the mistake, and giving a long streak a
+  reason to be protected by passing. (Passing is itself a miss, so that door is
+  shut either way.) The failure mode is invisible from outside: the score still
+  moves in the right direction, just by the wrong amount, and only on the
+  answers hardest to reproduce on purpose — hence
+  `dev/check-storm.js`'s "costs exactly the same on a long streak", which is
+  the only one of the three point assertions a multiplied penalty fails.
+* **The session score can go negative**, deliberately. Flooring it at zero makes
+  every miss after the first free, which is the opposite of what a penalty is
+  for. `missPoints: 0` is the way back to Puzzle Storm's shape.
+* **`unknown` and `unanswered` are still 0.** Neither is the user's doing, and
+  charging for a position ChessDB cannot score is the one unfair verdict
+  available here — the same argument that already keeps `unknown` out of the
+  streak reset.
+
+One rendering consequence, and it survives every numeric assertion:
+`stormVerdictLine` prints the figure SIGNED now. The old unconditional `'+'`
+rendered the penalty as `"+-2"`.
 
 After each answer, briefly: the user's move with its rank and loss, the best
 move, and ChessDB's `winrate` for both. The clock is running, so this is one
@@ -644,8 +672,9 @@ two directions and equally likely, so it cancels rather than accumulating.
   either way) but leaving the position out of `st.history`, so the one card
   most in mind was the one missing from the review that opens on it. The clock
   no longer ticks while `st.grading`, so it cannot end a session there. Exit
-  and a closed board still can, and still discard; that path is unchanged and
-  is deliberate — the user asked to leave.
+  and a closed board still can — and since v0.138.0 they no longer discard
+  either: §14.10c keeps whatever card is on the board on EVERY route out, and
+  `st.lastPlayed` is what lets the review name the move that was being graded.
 
 ### 8.3 The producer
 
@@ -1141,11 +1170,13 @@ fire here (nothing plays a blunder), so `decidedCp` and the unknown stop are wha
 bound it; and a candidate from here is MARKED `invented`, because "8 moves past
 the line" is a claim about somebody's game and here there is no game.
 
-**And every answered position is kept.** A timed exercise is one you cannot think
+**And every position is kept** — every one answered, and (since v0.138.0,
+§14.10c) the one the storm ended ON, which is the position most in mind and was
+the only one the review could not show. A timed exercise is one you cannot think
 during, so the thinking has to be available after it: the clock running out
 raises a review — the position, the move you found, the move there was, and the
 loss — walked with the arrows or by clicking, with section 19's analysis board
-one press away on any of them.
+one press away on any of them, and (§14.10b) the position itself playable again.
 
 Three things it rests on:
 
@@ -1202,6 +1233,95 @@ three buttons to two lines of four (29 px to 64 px), which the review's list —
 `'?'`, which that column already means ("the position could not be scored"); the
 faint/dim colour difference is #8a8a8a against #949494, i.e. a nudge, so the
 glyph is the signal.
+
+#### 14.10b Playing the position again (v0.138.0)
+
+A review that can only be READ is half of what the review is for. Four seconds
+was all the card allowed; the point of the list afterwards is that the thinking
+finally has somewhere to go — and until now the only thing that could be *done*
+with a position was to reveal its answer, which ends the thinking rather than
+housing it.
+
+So **"Try again" puts the position back on section 18's storm board** — the same
+board, the same `cr.mode = 'storm'`, the same single ply, the same three grading
+tiers — and lands the answer nowhere near the session.
+
+* **Nothing is scored and nothing is recorded.** No points, no streak, no clock
+  (it stopped when the session ended), no `storeNote`, and no second
+  `st.history` entry. The history is the record of the TIMED session, and a move
+  found at leisure afterwards is not one of its answers — which is also why the
+  row's own verdict, the move actually played under the clock, is left exactly
+  as it was. The panel says `· nothing is scored` under the prompt rather than
+  leaving the user to infer it from a clock they cannot see.
+* **ONE definition of what a move is worth.** `grade` split into `runGrade`
+  (watchdog, fail-open, verdict shape) and `gradeTiers` (§3.4's three sources),
+  with the two callers differing only in `alive()` and `finish()`. A second copy
+  of the tiers is a second place for them to fall out of step, which is the one
+  way this feature could come to grade two identical moves differently — and it
+  would do it silently, since both answers are plausible numbers.
+* **The attempt is numbered** (`st.retrySeq`). A retry is meant to be repeated —
+  "Try another move" puts the position back — and a grade still in flight from
+  the previous attempt would otherwise print its verdict over the position that
+  has just been reset. Same job as the alt check's `reqId` prefix, for the same
+  reason: the answer carries no identity of its own.
+* **The board is shut behind a verdict, exactly as a card's is.** The move
+  played is still ON the board, so a second try has to be a fresh card rather
+  than a second move on the same one; `continuationStormApi.next(card)` is what
+  does it, and it is already the timed loop's own "here is the next one".
+* **Exclusive with `analysing`, and each closes the other.** Both want the
+  stage's slots and section 18 runs one board at a time; pressing the second is
+  an unambiguous request for it, so refusing would be pedantry. Stepping to
+  another review row closes both, since each describes the position being left.
+* **No database beside it.** `panelSlot()` stays gated on `st.analysing`, so the
+  Lichess panel does not follow a retry board — the database's top move would
+  name the answer, which is section 20's rule for the drill and the card's own.
+* **Neutral, and first in the row.** The three neutral buttons all act on THIS
+  position and the green pair at the end acts on the session; within the three,
+  trying again is what happens *before* the answer is revealed. `t`, for the
+  reason `b` is `b` (§14.10a): space and Enter are how a focused button in this
+  window is pressed, and the review's rows are buttons.
+
+Measured in the harness, review card at a 420 px panel: the action row is
+**unchanged at 64 px / two lines** — the fifth button fits the space the fourth
+left. It costs a third line (99 px) only at a 340 px panel, which the list's
+`flex: 1` absorbs, and there is no horizontal overflow at 880 / 700 / 600 / 420 /
+340 px, desktop or `html.clo-touch`.
+
+#### 14.10c The position the clock stopped you on (v0.138.0)
+
+`st.history` is filled by `finishAnswer`, which an unanswered card never
+reaches — so the one position guaranteed to be in mind when the storm ends was
+the one position the review could not show, and its best move was simply gone.
+The review then opened on the *second* most interesting position of the session.
+
+So **`endSession` keeps whatever card is on the board**, before anything else it
+does clears it:
+
+* **Every route out**, not only the clock. "I stopped on a position I could not
+  solve" is the same wish as "the clock stopped me on one", so End storm and the
+  board being closed keep it too. The one exclusion is a card that never reached
+  a board — `nextCard` nulls `st.card` on its board-refused path, so the review
+  cannot show a position the user has not seen.
+* **A verdict shape of its own**, `{ verdict: 'unanswered', unanswered: true }`,
+  and `stormVerdictLine` needs an arm for it ABOVE `passed`. Without one it falls
+  through to the ordinary branch and prints **"your move"** — a sentence claiming
+  an answer that was never given. `dev/check-storm.js` pins both wordings; the
+  control (arm removed) fails on exactly those two assertions.
+* **Nothing is scored, and deliberately no `storeNote`**: the position keeps its
+  place in the store exactly as if it had never been drawn, which is right — it
+  taught nothing either way, the same reading §14.11's retention rule already
+  gives an ungradeable answer.
+* **A card abandoned MID-GRADE names its move.** The clock can no longer expire
+  there (§8.2), but Exit and a closed board still can, and `st.lastPlayed` costs
+  a two-field object to keep the review honest about it. `endSession` reads it
+  before dropping `st.grading`, which is why the push is the first thing in that
+  function.
+* Its row wears the same neutral edge `unknown` does — both mean "nothing was
+  decided here" — and what tells them apart is the move column, which reads "—".
+
+Everything else follows for free: `revMoves` finds the card's own `bestSan`, so
+`Best move` works on it, and §14.10b's `Try again` is the obvious thing to do
+with a position you ran out of time on.
 
 ### 14.11 The gathering is separable, and the store is the point
 
@@ -1272,3 +1392,180 @@ syncing on the options page, which this session could not reach — the browser
 tooling refuses `chrome-extension://` URLs. What WAS verified on the wire is the
 part that is new: a second informational card of the storm's own name, created,
 overwritten in place at 162 KB, read back byte-exact, and deleted.
+
+### 14.13 The pre-roll is a decision, not a wait (v0.135.0)
+
+Two things reported from a phone on 2026-08-28, one of which turned out to be a
+bug and the other of which was the feature working exactly as designed and being
+wrong anyway.
+
+**The bug: a pull that landed in a session it could not feed.** §14.12's
+exchange is fired from `startSession` and deliberately not awaited — the store's
+whole promise is that a session opens without waiting for a network. But
+`st.storeQueue = storeDraw()` runs on the line after it, so by the time nine
+positions arrive from the other device the store has ALREADY been drawn from,
+and nothing draws it again. The panel said *"9 taken from another device"* and
+then walked frontiers at ~11 ChessDB requests a position for the better part of
+a minute, with nine graded positions sitting in `storage.local`.
+
+The fix is three lines in `syncStore` and the only thing worth recording about
+it is why re-drawing the WHOLE store is safe: every key already queued is in
+`st.seen`, which is what `produceFromStore` filters on, so a re-draw cannot
+offer a position twice. There is no incremental bookkeeping to get wrong.
+
+The same hole existed after a **gather** pass. Gathering owns the pool and
+clears the queue (`gather()`'s pre-roll arm), and nothing refilled it when the
+pass ended — so the session it interrupted was left with an empty queue and no
+producer running. Invisible before, because there was nothing on screen whose
+state depended on it; with a Start button it is a button that never lights up.
+Same three lines, in `gather`'s `finally`.
+
+**The design error: the storm started itself.** The first card opened the
+moment the producer had one, and opening the first card starts the clock. So
+the pre-roll — the seconds in which a user decides whether to play or to spend
+the sitting filling the store instead — was a race against the producer, and
+`gather()` had to carry a whole arm (`if (st.endsAt && !st.over) endSession(…)`)
+for the case where it lost. `nextCard` had a matching one (`if (st.gathering)
+return;`). Two guards, in two functions, patching one missing state.
+
+So there is now a **Start** button and `st.started`, and the gate is a single
+`if (!st.started) { render(); return; }` at the top of `nextCard`. That is
+deliberately the ONLY gate: `produce`'s `finally`, the store path in
+`startSession` and the sync refill above all reach the first card through that
+one function, so barring it once bars every route. The `render()` inside the
+early return is what enables the button as the queue fills — the button's own
+enabled state is `st.queue.length > 0` and nothing else.
+
+* **It is a FILL, and the only one in this window.** The row palette's "the one
+  thing to do next" (DESIGN-ui-inventory §3). Gather keeps its green outline
+  precisely because the two are now a real choice and only one of them is the
+  storm.
+* **Disabled it stays a fill** rather than degrading to an outline. What changes
+  while the producer works is whether it can be pressed, not what it is; a
+  control that changes shape as it becomes available reads as two buttons.
+* **It is hidden once spent** (`st.started || st.over || st.gathering`). During
+  a session it would have nothing to do, and after one the summary's own "Storm
+  again" is the way back.
+* **The two old guards stay.** They are not made redundant by this — a gather
+  pressed mid-session still has to end it, and `nextCard` still must show
+  nothing while one runs. What the Start button removes is the case where the
+  user never got to make the choice at all.
+
+Everything before the press is untimed, however long it takes: the clock is
+started by `nextCard` on the card it shows, and nothing else touches `st.endsAt`.
+
+### 14.14 Paused lines are not stormed (v0.136.0)
+
+A line the user has **paused** is one they have told Chessable not to prompt
+them about. Asking what they would play the move *after* it is the same
+question one ply later, so the frontier walk skips it.
+
+**The field is `paused`, on a `getList` row, and it is not called what the app
+calls it.** Read out of the public bundle on 2026-08-28 (`main.765ca592.234.js`,
+no login needed — the same route `importSubvariationFromSource` and `importGame`
+were found by):
+
+* the variation card's own test is **`var a = 1 == e.paused`**, where `e` is the
+  getList row — so the wire field is `paused`, an integer, compared loosely
+  against 1. `reduceCourse` reads `Number(v.paused) === 1`, which agrees with it
+  on `1`, `"1"` and `true` and disagrees on nothing Chessable itself accepts;
+* the redux store **renames it `isPaused`**, and `isCPaused` is a third name —
+  optimistic local state after the toggle. Grepping for either would have found
+  the UI's name and missed the wire's;
+* **one flag, two words.** The tooltip reads *"PAUSED (you will not be prompted
+  to review this)"* when `isPausable`, and *"SKIPPED (you marked this as known
+  or as a line to skip)"* when not. Both are the user asking not to be asked, so
+  no second condition is needed;
+* the `list` object also carries **`allVariationsPaused`** and
+  `allChaptersPaused` beside the `isKeyMode` §25d already reads. `reduceCourse`
+  carries the first as `allPaused` and section 27 uses it **only to word a
+  refusal**. Its relationship to the per-variation flag was NOT established, and
+  a course-level flag that can HIDE lines must not be guessed at. If it is ever
+  measured, that is the moment to make it a filter.
+
+Not established, deliberately: `isPausable` (which of the two words a line gets),
+whether a paused CHAPTER sets the flag on its variations, and the endpoint the
+toggle posts to — none of them change what this filter does.
+
+**Where the filter is.** One line in `stormFrontiers`, above the walk, and it
+therefore covers **both** producers: a session's pool and the gather pass draw
+from the same function, so nothing paused can enter the store either. The count
+rides back on the returned array as `frontiers.paused` rather than changing the
+return type — every caller wants the pool, and exactly one wants this number.
+
+**Why the count exists at all.** Every other reason a course yields no frontiers
+is a property of the course and nothing the user can act on ("every line starts
+from a custom position"). A paused line is a decision they made and can unmake,
+and telling them their course is unsuitable instead would be a false answer to a
+question they could have fixed in one click.
+
+**The one thing it does not reach: the store.** `produceFromStore` runs *before*
+the course is read — that is §14.11's whole point, and what makes the first card
+arrive in ~3 s — so positions gathered from a line that has been paused *since*
+still come up. Bounded rather than fixed: nothing paused is ever added, and the
+retention rule (`stormRetain`) drops a position once it is answered well. Fixing
+it properly means storing the frontier's own `cacheKey` on each entry (`r`,
+alongside `n`) and filtering the queue once the pool lands — additive on the
+wire, so no `wireVersion` bump, since an entry without it is simply unfiltered.
+Deliberately not built yet: it is a store- and wire-shape change for a case that
+decays on its own.
+
+**Cost elsewhere:** `CONFIG.coverage.cacheKey` bumped a fourth time
+(`cloCourseListCache3` → `…4`), shared with sections 21, 24 and 25. A listing
+written by an older build parses fine and is silently missing `paused`, which
+reads as "nothing here is paused" — the same failure §25d's bump avoided, and a
+new key rather than a version check so old entries age out. **Only section 27
+reads the field**; whether the coverage report and the course tree should also
+honour it is a separate question with a different answer in each case.
+
+### 14.15 Misses go to the BACK of the queue (v0.137.0)
+
+Two halves of one question, and the first was already right.
+
+**A position answered well leaves the store.** `storeDropOn: ['good','decent']`
+— `stormRetain` deletes it and `storeNote` leaves a tombstone so §14.12's union
+merge cannot resurrect it from the other device. A **miss** stays and its `k`
+is incremented; an **ungradeable** answer stays too, because nothing was learned
+either way and dropping it would spend eleven requests to meet the same silence
+twice.
+
+**What changes is the order they come back in.** `stormStoreDraw` sorted
+`k` DESCENDING — hardest first — on the note "a position missed twice before is
+the one most worth asking again". That is the SRS argument, and this store is
+not an SRS queue. Two consequences it had:
+
+* **the head of the queue was a fixed set of failures.** Because the retention
+  rule already drops anything answered well, every entry with `k > 0` is by
+  construction a position the user has been shown and got wrong. Hardest-first
+  therefore opened *every* session with the same handful, in the same order, for
+  as long as they kept failing — and a three-minute session is perhaps twenty
+  cards;
+* **and it starved the fresh ones.** A gather pass stores hundreds of positions
+  at ~11 ChessDB requests each. With the misses in front, the material those
+  requests were spent on could go a long time unseen.
+
+So the comparator is `(a.k - b.k) || (a.r - b.r)`: **unseen first, then misses,
+most-missed last**, shuffled within a tier so two sessions running are not
+identical. A miss is not lost, it is queued behind the new material — which also
+makes the tail of a long session the harder half, which is the right shape for a
+timed exercise.
+
+An entry with **no `k` at all** (v0.130.0 wrote one, and the wire's
+`stormWireUnpack` defaults it) sorts as never-missed rather than as infinitely
+hard — `k || 0`, already there, but now it decides the opposite end of the
+queue, so it is asserted.
+
+**`storeDraw` became pure** (`stormStoreDraw(store, rnd)`, `stormDrawFrontier`'s
+shape and for its reason) so `dev/check-storm.js` can execute the comparator.
+That is not ceremony: **a reversed sort is completely silent.** It returns every
+position, in a sequence that still looks deliberate, and the only way to notice
+from the outside is to remember which positions a previous session asked. The
+control — the v0.130.0 comparator restored — fails on exactly the five
+assertions that cover the order and on no others (2026-08-28).
+
+**The wire's truncation order is NOT the same question and is deliberately left
+alone.** `stormWirePack` still sorts `k` descending before it fills the byte
+budget, because there the question is which positions are worth *carrying*: a
+failure count records something the other device learned and cannot be
+regenerated, while one fresh position is interchangeable with any other. Do not
+"align" the two — they are asking different things of the same field.

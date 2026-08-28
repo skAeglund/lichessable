@@ -3409,6 +3409,80 @@ body {
 
   <div class="hx-grid">
     <div class="hx-card" style="flex:1 1 100%">
+      <h3>The pre-roll &mdash; &sect;14.13's Start, waiting and ready</h3>
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:220px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Intermediate Starter Kit</span>
+            <span class="clo-st-clock clo-st-clock--off">3:00</span>
+            <span class="clo-st-stat">0 pts</span>
+            <span class="clo-st-stat">streak 0</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <div class="clo-st-note">Looking for positions&hellip; (21 lines left)</div>
+            <!-- Nothing is timed yet, so the whole settings row is up. The clock
+                 reads the full session and wears &mdash;off: it has not started. -->
+            <div class="clo-st-settings">
+              <span class="clo-st-set-label">Offer positions</span>
+              <select class="clo-st-sel"><option>1</option></select>
+              <span class="clo-st-set-label">to</span>
+              <select class="clo-st-sel"><option>16</option></select>
+              <span class="clo-st-set-label">moves past the end of a line</span>
+              <span class="clo-st-set-spacer"></span>
+              <span class="clo-st-ready">0 position(s) ready</span>
+              <!-- &sect;14.13 waiting: still a FILL, only not pressable. What changes
+                   while the producer works is whether it can be pressed, not what
+                   it is &mdash; a control that changes shape as it becomes available
+                   reads as two different buttons. -->
+              <button type="button" class="clo-st-start" disabled>Finding a position&hellip;</button>
+              <button type="button" class="clo-st-gather">Gather positions</button>
+              <button type="button" class="clo-st-sync">Sync</button>
+            </div>
+            <div class="clo-st-stage hx-slots">
+              <div class="clo-st-slot clo-st-slot--board" data-hx-slot="no board until Start"></div>
+              <div class="clo-st-slot clo-st-slot--panel" data-hx-slot=""></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:220px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Intermediate Starter Kit</span>
+            <span class="clo-st-clock clo-st-clock--off">3:00</span>
+            <span class="clo-st-stat">0 pts</span>
+            <span class="clo-st-stat">streak 0</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <div class="clo-st-note clo-st-syncnote">Synced &mdash; 9 of 9 carried, 9 taken from another device</div>
+            <div class="clo-st-settings">
+              <span class="clo-st-set-label">Offer positions</span>
+              <select class="clo-st-sel"><option>1</option></select>
+              <span class="clo-st-set-label">to</span>
+              <select class="clo-st-sel"><option>16</option></select>
+              <span class="clo-st-set-label">moves past the end of a line</span>
+              <span class="clo-st-set-spacer"></span>
+              <span class="clo-st-ready">9 position(s) ready</span>
+              <!-- &sect;14.13 ready: THE one fill in this window. Gather beside it keeps
+                   its green outline precisely because the two are a real choice and
+                   only one of them is the storm. -->
+              <button type="button" class="clo-st-start">Start</button>
+              <button type="button" class="clo-st-gather">Gather positions</button>
+              <button type="button" class="clo-st-sync">Sync</button>
+            </div>
+            <div class="clo-st-stage hx-slots">
+              <div class="clo-st-slot clo-st-slot--board" data-hx-slot="no board until Start"></div>
+              <div class="clo-st-slot clo-st-slot--panel" data-hx-slot=""></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="hx-card" style="flex:1 1 100%">
       <h3>Mid-session — the window and its two slots</h3>
       <div class="hx-stage">
         <div class="clo-st hx-pos" style="width:min(880px,100%);height:440px">
@@ -3579,11 +3653,22 @@ body {
                   <button type="button" class="clo-st-revrow clo-st-revrow--good">
                     <span class="clo-st-revrow-n">5</span><span class="clo-st-revrow-move">Nxd4</span>
                     <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">0</span></button>
+                  <!-- &sect;14.10c: the card the clock ran out ON. Kept because it is the
+                       position most in mind, and the only one the review used to be
+                       unable to show. No answer, so the move column reads "&mdash;" and the
+                       edge is the same neutral "nothing was decided here". -->
+                  <button type="button" class="clo-st-revrow clo-st-revrow--unanswered">
+                    <span class="clo-st-revrow-n">6</span><span class="clo-st-revrow-move">&mdash;</span>
+                    <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">?</span></button>
                 </div>
                 <div class="clo-st-revactions">
-                  <!-- &sect;14.10a. Neutral and FIRST: hiding the answer is only worth
-                       doing if asking for it is one press away. Reads "Hide best move"
-                       once it has been. -->
+                  <!-- &sect;14.10b. FIRST, because it is what to do BEFORE the answer is
+                       revealed. Neutral like the two beside it &mdash; all three act on THIS
+                       position, and the green pair at the end acts on the session.
+                       Reads "Back to the review" while the board is up. -->
+                  <button type="button" class="clo-st-analyse clo-st-retry">Try again</button>
+                  <!-- &sect;14.10a. Neutral: hiding the answer is only worth doing if asking
+                       for it is one press away. Reads "Hide best move" once it has been. -->
                   <button type="button" class="clo-st-analyse clo-st-best">Best move</button>
                   <button type="button" class="clo-st-analyse">Analyse this position</button>
                   <button type="button" class="clo-st-again">Storm again</button>
