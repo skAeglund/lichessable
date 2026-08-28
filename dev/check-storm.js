@@ -130,7 +130,21 @@ const C = {
   spreadMinCp: num('spreadMinCp'), spreadMaxCp: num('spreadMaxCp'),
   goodCp: num('goodCp'), decentCp: num('decentCp'),
   goodPoints: num('goodPoints'), decentPoints: num('decentPoints'),
-  engineDepth: num('engineDepth'), engineMateCp: num('engineMateCp'),
+  // PER PROFILE since v0.134.0 (`{ desktop: 20, mobile: 18 }`), so it is no
+  // longer a scalar — section 8 below asserts the shape and the two orderings
+  // that fail silently.
+  engineDepth: (() => {
+    const m = /\bengineDepth:\s*\{([^}]*)\}/.exec(cfgBody);
+    if (!m) throw new Error('CONFIG.storm.engineDepth not found (expected an object)');
+    const out = {};
+    for (const part of m[1].split(',')) {
+      const kv = /(\w+)\s*:\s*(\d+)/.exec(part);
+      if (kv) out[kv[1]] = Number(kv[2]);
+    }
+    return out;
+  })(),
+  engineTimeoutMs: num('engineTimeoutMs'), gradeTimeoutMs: num('gradeTimeoutMs'),
+  engineMateCp: num('engineMateCp'),
   wireVersion: num('wireVersion'), goneMax: num('goneMax'), goneDays: num('goneDays'),
   // Read out of the shipped file the same way, so the rule and the assertions
   // about it cannot disagree about which verdicts drop a position.
@@ -924,6 +938,43 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('…and what is in it is still readable',
     Object.keys(S.stormWireUnpack(cut, C).store).length, cut.n);
   eq('no budget carries everything', S.stormWirePack(big, {}, C, 0).n, 50);
+
+  // =========================================================================
+  // 8) THE ENGINE TIER'S DEPTH AND ITS TWO WATCHDOGS
+  // =========================================================================
+  // Every failure here is SILENT — the tier still runs, still answers, and just
+  // answers "No verdict" for ever, which looks exactly like ChessDB being
+  // ignorant. None of it is reachable from a sliced pure function, so these are
+  // assertions about the CONFIG, which is where the mistakes actually live.
+  //
+  // engine/engine.js caps with `Math.min(pendingDepth, prof.depth)` against the
+  // PROFILES table (30 desktop / 25 mobile). A storm depth above its own
+  // profile's ceiling is not an error: it is silently clamped, so the number in
+  // CONFIG stops being the number that runs.
+  const PROF = /desktop:\s*\{[^}]*depth:\s*(\d+)/.exec(
+    fs.readFileSync(path.join(__dirname, '..', 'engine', 'engine.js'), 'utf8'));
+  const PROF_M = /mobile:\s*\{[^}]*depth:\s*(\d+)/.exec(
+    fs.readFileSync(path.join(__dirname, '..', 'engine', 'engine.js'), 'utf8'));
+  eq('engineDepth names both profiles',
+    Object.keys(C.engineDepth).sort(), ['desktop', 'mobile']);
+  eq('desktop storm depth is under engine.js\'s desktop ceiling (else clamped silently)',
+    C.engineDepth.desktop <= Number(PROF[1]), true);
+  eq('mobile storm depth is under engine.js\'s mobile ceiling (else clamped silently)',
+    C.engineDepth.mobile <= Number(PROF_M[1]), true);
+  eq('mobile does not search deeper than desktop',
+    C.engineDepth.mobile <= C.engineDepth.desktop, true);
+
+  // ONE timer covers BOTH searches — it is armed when the job is created and
+  // never re-armed between phases (`stormEngineLoss`). And `gradeTimeoutMs` is
+  // armed EARLIER still, before the ChessDB tiers, so if it is not the larger
+  // of the two it fires first and the engine watchdog can never matter.
+  eq('gradeTimeoutMs leaves room for the whole engine job',
+    C.gradeTimeoutMs > C.engineTimeoutMs, true);
+  // A pair of searches at these depths in six seconds is not credible; the old
+  // 6000 was chosen for depth 14 and left behind when the depth moved. This is
+  // the ordering that would have made the raise a silent no-op.
+  eq('engineTimeoutMs was raised along with the depth',
+    C.engineTimeoutMs >= 15000, true);
 
   console.log('\n' + SRC_PATH);
   console.log(pass + ' passed, ' + fail + ' failed');

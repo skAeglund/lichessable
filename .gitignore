@@ -15,3 +15,7 @@ local-token.json
 # ours to redistribute, and the file is re-made from a live session in one
 # javascript_tool call — see the header of dev/probe-course-tree.js.
 dev/tmp-courses.json
+
+# Working state for dev/probe-chessdb-queue.js: FENs walked out of a course,
+# same "not ours to redistribute" reason as the dump above.
+dev/tmp-queue-probe.json

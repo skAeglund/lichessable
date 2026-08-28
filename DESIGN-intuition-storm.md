@@ -539,6 +539,59 @@ After each answer, briefly: the user's move with its rank and loss, the best
 move, and ChessDB's `winrate` for both. The clock is running, so this is one
 line, not a panel.
 
+### 8.1a Grading depth, and what it costs now the clock is paused
+
+Grading has three tiers (§3.4) and **only the third has a depth at all**:
+
+| tier | source | depth |
+|---|---|---|
+| the position's own scored list | ChessDB `learn=1` | none exists (DESIGN-chessdb.md §3.1) |
+| one `queryall` on the child | ChessDB `learn=1` | none exists |
+| two Stockfish searches | the vendored engine | `engineDepth` |
+
+So most cards are graded by a source of unmeasured strength — DESIGN-chessdb.md
+§10.1 / §12.3, still open, and sharper since §12.7b measured that tier 1 scores
+exactly the ~5 moves whose CHILD is in the graph.
+
+**`engineDepth` was a flat 14 and is now 20 desktop / 18 mobile** (v0.134.0, on
+the author's instruction: *correct results are more important than low wait
+time*). The original 14 was chosen when the session clock RAN during the grade,
+so every second of search was stolen from solving. v0.133.0 paused the clock for
+exactly this wait (§8.2), which removes the whole argument for searching
+shallow. What is left is a user watching a held board, and a wrong verdict costs
+more than a slow one — especially here, this being the tier reached only where
+ChessDB could not answer at all, i.e. the least-informed grade in the feature.
+
+For scale, the other engine users in this extension: the panel searches to 30
+(desktop) / 25 (mobile), the alt check to 20 with a two-minute watchdog. Both
+new values sit under the profile ceilings, so engine.js's
+`Math.min(pendingDepth, prof.depth)` passes them through rather than clamping.
+
+**THE WATCHDOGS HAD TO MOVE WITH IT, and this is the part that would fail
+silently.** `engineTimeoutMs` is armed once when the job is created and is never
+re-armed between phases, so one timer covers BOTH searches; at the old 6 s a
+depth-20 pair would simply never land, and the tier would degrade to "No
+verdict" every single time — strictly worse than searching shallow, because it
+then grades nothing at all. `gradeTimeoutMs` must in turn stay comfortably above
+`engineTimeoutMs`, or it fires first and the engine watchdog can never matter.
+
+```
+            was      now
+engineDepth       14   20 desktop / 18 mobile
+engineTimeoutMs  6 s   20 s     (one timer, both searches)
+gradeTimeoutMs   9 s   30 s     (armed before the ChessDB tiers too)
+```
+
+⚠️ **THE TWO TIMEOUTS ARE ESTIMATES, NOT MEASUREMENTS.** Depth is roughly
+exponential in nodes, and 14 → 20 is six plies; the figures above assume a
+depth-20 pair lands in a few seconds on the full build with 4 threads and a
+depth-18 pair in under ~20 s on the lite build with 2. Neither has been timed on
+real storm positions, and the mobile side is the one with no margin. **What to
+measure:** wall time for `stormEngineLoss` per profile over a session's worth of
+fallback grades, and how often the watchdog fires. If it fires at all often on
+mobile, the fix is a lower mobile depth rather than a longer timeout — a board
+held for 20 s is already at the edge of what a paused clock excuses.
+
 ### 8.2 The clock
 
 Puzzle Storm's shape: one session clock, a streak multiplier, a miss resets the
@@ -551,6 +604,48 @@ is where the value mostly is anyway — a shorter clock puts more of the sitting
 there. Nothing is derived from the number: `maxPositions` and `cdbMaxPerSession`
 sit far above what a session of any length reaches, and `reviewMax` is a memory
 bound, so it is safe to move again.
+
+**IT ONLY RUNS WHILE THE USER IS BEING ASKED SOMETHING** (v0.133.0, on the
+author's instruction). `solving()` is the predicate — a card up, no verdict
+line, not grading, not gathering — and the clock tick charges time only while
+it holds. Everything else on this board is the user WAITING:
+
+| state | typical cost | who is waiting |
+|---|---|---|
+| `st.grading` | up to `gradeTimeoutMs` 9 s | the board is held SHUT by §18 |
+| `st.verdict` | `verdictMs` 2.6 s per card | the verdict line is being read |
+| no `st.card` | a producer round trip | the next position is being fetched |
+| `st.gathering` | minutes | the store is being filled |
+
+Grading is what forced it. Section 18 holds the board shut from the moment the
+move is played until a verdict lands, so up to 9 seconds of a 180-second
+session were not merely unspent but **unspendable**, and a session was partly a
+measure of how fast ChessDB answered. With ChessDB's own latency measured in
+hundreds of ms and the engine tier capped at 6 s, that was real.
+
+**A DEADLINE THAT SLIDES, not a countdown that is decremented.** `paintClock`
+and the expiry test both already read `st.endsAt`, so pushing it forward by the
+time spent waiting pauses the clock in both at once; a second "remaining"
+counter is the version where the display and the expiry disagree. The tick that
+straddles a transition attributes its whole `dt` to whichever state it lands
+in, so each transition is up to `tickMs` (200 ms) out — opposite in sign in the
+two directions and equally likely, so it cancels rather than accumulating.
+
+**Two consequences worth knowing:**
+
+* **A three-minute session now yields noticeably more cards** — roughly 2.6 s
+  per answer comes back from the verdict line alone, plus whatever grading and
+  production cost. The number is unchanged and still safe to move (nothing is
+  derived from it), but it no longer means the same amount of screen time.
+* **THE CLOCK CAN NO LONGER EXPIRE MID-GRADE**, which closes a real hole for
+  free. `endSession` used to be reachable while a grade was in flight; the
+  verdict then landed on `st.card === null`, fell through `gradeInner`'s own
+  guard and was DISCARDED — costing no points (an ungraded card scores 0
+  either way) but leaving the position out of `st.history`, so the one card
+  most in mind was the one missing from the review that opens on it. The clock
+  no longer ticks while `st.grading`, so it cannot end a session there. Exit
+  and a closed board still can, and still discard; that path is unchanged and
+  is deliberate — the user asked to leave.
 
 ### 8.3 The producer
 
@@ -689,6 +784,152 @@ What it must look like:
    change to a store that syncs across devices — not something to bolt on.
 7. **Rate limits on any of the three APIs under storm-shaped bursts.** Nothing
    was hit; nothing was pushed either.
+7b. **Whether ChessDB's `queue` would recover the yield an overnight gather
+   loses** — asked and ANSWERED 2026-08-28. **NO. Do not build it.**
+   `dev/probe-chessdb-queue.js`, 29 positions on course 291847, queued vs
+   control, read back after 48 minutes.
+
+   ```
+   KIND     ARM      n    scored: baseline -> +48min     reached minScored 6
+   unknown  queued   5    0.0 -> 5.0                     0
+   unknown  control  4    0.0 -> 1.0                     0
+   thin     queued  10    3.7 -> 5.1                     1
+   thin     control 10    3.1 -> 5.0                     0
+
+   final scored counts, all 29:  1 1 1 1  5 5 5 ... 5 5 5  6
+   learn=0 (the real book), all 29:  1
+   ```
+
+   **THE CEILING IS FIVE, AND `minScored` IS SIX.** 25 of 29 positions landed
+   on exactly 5 scored moves. That is not a distribution, it is a stop.
+
+   **AND THE REASON IS STRUCTURAL, NOT A MATTER OF WAITING LONGER** — which is
+   the first thing to check, since §2.4's 25-minute success was a SEVEN-legal-
+   move pawn endgame and these positions have 19-48. Re-read at 76 minutes,
+   then probed child by child (`--children`):
+
+   ```
+   at 76 min:  unknown queued 0 -> 5.0     unknown control 0 -> 5.0
+               thin    queued 3.7 -> 5.1   thin    control 3.1 -> 5.0
+               learn=0 (the real book), all 29: still 1
+
+   one position, every child probed with learn=0:
+     legal moves 43   children in the book 5   parent scores 5
+     known child AND scored 5 | known not scored 0 | scored but unknown 0
+   ```
+
+   **`learn=1` SCORES EXACTLY THE MOVES WHOSE CHILD IS IN THE GRAPH.** A
+   perfect 1:1 on all 43. So the width of the answer is a property of the
+   CHILDREN, and `action=queue` on the parent cannot change it at any
+   timescale — widening one position means queueing its ~38 unknown children,
+   and a 200-position gather would be ~7600 writes. ChessDB's graph is
+   game-derived: at this depth only a handful of continuations have ever been
+   played, and that is a shape, not an analysis budget you can buy.
+
+   The 76-minute read also kills the acceleration argument: the CONTROL arm
+   caught up from 1.0 to 5.0 with no write at all. Queueing reached the same
+   endpoint sooner and nothing more — and the book never moved off 1 in either
+   arm, which is what says the queue work had not landed even at 76 minutes.
+
+   ⚠️ I FIRST CONCLUDED THIS AT 48 MINUTES ON THE WRONG EVIDENCE — "only 1 of
+   29 cleared the bar" — with `learn=0` sitting at 1 in both arms, which was
+   the plain sign that the queue had not finished. The conclusion survived; the
+   reasoning did not. Anyone revisiting this should re-run `--children` rather
+   than trust the headline.
+
+   **For `thin` the queue is noise**, at 48 and at 76 minutes alike: both arms
+   converged on the same five and the CONTROL arm widened MORE positions than
+   the queued one (5 vs 4).
+
+   ⚠️ **INCIDENTAL, AND IT REVISES DESIGN-chessdb.md §3.4.** That section says
+   *"`unknown` stays unknown"*, measured over minutes. Over 48 minutes it does
+   not: all four CONTROL positions — never written to — went from `unknown` to
+   answering `ok` with one scored move. A plain `queryall` read appears to be
+   enough to put a position into the graph. That is not licence to poll (it is
+   still someone's compute, arrived at by a side door), but it does mean the
+   storm's own gather pass ALREADY does everything queueing would do for the
+   `thin` class, for free, and this is worth re-measuring before anyone
+   proposes queueing again.
+
+   **What to do instead — `minScored` is off by one.** `stormCandidate` reads
+   the fifth move as `scored[Math.min(4, scored.length - 1)]`, so `spread5` is
+   EXACT at five scored moves; the filter demands six and consumes five. It
+   sits exactly one above the ceiling measured here. GRID RE-RUN 2026-08-28,
+   same seed and params as §6.1 (`--bid 291847 --n 14 --maxply 16 --seed 7`),
+   both thresholds over the SAME candidate set in one run:
+
+   ```
+   moves ChessDB scored, per candidate (74 candidates):
+     1:3   5:33   6:5  7:5  8:5  9:7  10:2  11:4  13:1  14:3  15:1  18:1  19:2  22:1  27:1
+
+   survivors     minScored=6            minScored=5
+     min5= 30      23  23  24  24         42  42  43  43
+     min5= 60      11  11  12  12         27  27  28  28     <- shipped bands
+     min5=100       7   7   8   8         19  19  20  20
+   ```
+
+   **At the shipped bands it is 11 -> 27 survivors, 2.45x, for nothing.** No
+   requests, no writes, no third party. Queueing, for comparison, got 1 of 29
+   positions over the bar.
+
+   THE DISTRIBUTION IS THE ARGUMENT, not the multiplier. Candidates score 1,
+   then FIVE, then a smooth tail from 6 up — **there is no 2, 3 or 4.** Five is
+   a quantum ChessDB stops on, 33 of 74 candidates sit exactly on it, and the
+   filter is set one above it. That is why "too few moves scored" is now 32 of
+   74 rejections (43%), up from 16 of 54: as positions get elaborated — by
+   time, and by our own reads — they pile up ON the bar rather than over it.
+
+   Two other things moved in the same run, both consistent with the database
+   having grown since §6.1: the `unknown` walk stop fell from 11 to 6, and
+   `max plies reached` appeared (3) because walks now run further.
+
+   STILL A HUMAN JUDGEMENT, and §6.3's standing one: the grid says how MANY,
+   never how GOOD. A five-move list is enough to compute `spread5` exactly and
+   §3.4 makes grading total regardless, so nothing is being approximated — but
+   whether a position whose fifth-best move is the last one ChessDB will name
+   is a position worth being asked is twenty FENs and a human. NOT CHANGED in
+   `CONFIG.storm` pending that look.
+
+   Caveats on the above: n=29, one course, one 48-minute window, and the
+   control arm's movement means "queue" and "read, then wait" cannot be fully
+   separated for the `thin` class. None of that changes the ceiling, which is
+   the load-bearing number and is unambiguous.
+
+   The framing that makes it worth asking at all: §2.4's objection to `queue`
+   is *"25-minute turnaround, and bursts of hundreds"*, and a gather pass left
+   running overnight defeats the first half of that. §6.2 says the binding
+   constraint on yield is ChessDB's elaboration, not chess — so this is the
+   one lever that moves the number.
+
+   It splits into TWO questions and only one of them is already answered:
+
+   * **UNKNOWN** (11 of 18 walk stops). §2.4 ground-truthed n=1: queued, and
+     ~25 minutes later fully scored. Very likely recoverable.
+   * **THIN** — `minScored` rejecting a position ChessDB *does* know because
+     `learn=1` returned a short list (§3.3's 36/36 decaying to 6/6). **16 of
+     54 rejections, the joint-largest single reason, and completely
+     unmeasured.** Whether `queue` WIDENS a thin list or only deepens the
+     scores already in it is the difference between a ~20% yield bump and
+     close to a doubling.
+
+   The probe collects both kinds under the storm's own stop rules — so the
+   sample is the storm's real losses, not a synthetic one — and splits them
+   into a QUEUED and a CONTROL arm, alternating within each kind so the arms
+   match on depth. **The control arm is not a nicety**: `learn=1` fill-ins are
+   computed on the spot and do not persist (DESIGN-chessdb.md §3.2), and the
+   book grows from everybody else's traffic anyway, so "I queued it and later
+   it was better" is not evidence.
+
+   ⚠️ It is the only file in this repository that writes to a third party. Dry
+   run is the default, `--queue` is required to send, each arm is capped at
+   10, and the calls are one per 1.1 s. If this ever becomes a feature it
+   stays behind an explicit press with its own cap, and `handleChessdbFetch`'s
+   allow-list is what keeps it out of every automatic path meanwhile.
+
+   Both bullets this entry originally carried — queue by shallowness, and
+   gather → queue → sleep → re-gather — are moot: there is nothing worth
+   scheduling. They are left out rather than left in, so nobody builds the
+   plumbing for a lever that does not move.
 8. **CLAUDE.md's contract surface.** When this is built it takes a section number
    and a bullet, and `py dev/check-contracts.py` will want every bridge named.
    None exist yet, so there is nothing to add — but the storm will almost

@@ -3240,7 +3240,13 @@ After touching section 27's producer — `stormFrontiers`, `stormDrawFrontier`,
 `stormWalkGame`, `stormRandomLine` or `stormCard` — or the verdict line it
 prints (`stormCp`, `stormVerdictLine`, `stormBestLine`), or the position store
 and its wire (`stormPack`, `stormUnpack`, `stormRetain`, `stormWirePack`,
-`stormWireUnpack`, `stormWireMerge`):
+`stormWireUnpack`, `stormWireMerge`) — or the ENGINE TIER's `CONFIG.storm`
+numbers (`engineDepth`, `engineTimeoutMs`, `gradeTimeoutMs`), whose every
+failure mode is a tier that still runs and silently answers "No verdict" for
+ever: a depth above engine.js's own `PROFILES` ceiling is CLAMPED rather than
+refused, one watchdog covers BOTH searches, and `gradeTimeoutMs` is armed
+before the ChessDB tiers so it must outlast `engineTimeoutMs` or the engine's
+own watchdog can never fire:
 
 ```
 node dev/check-storm.js

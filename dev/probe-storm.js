@@ -92,10 +92,19 @@ const TOKEN = (() => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const reqCount = { explorer: 0, pgn: 0, cdb: 0 };
 
+/**
+ * NEVER THROWS (2026-08-28). chessdb.cn goes unreachable for minutes at a time —
+ * measured 2 of 3 attempts timing out at 10 s — and an unhandled rejection here
+ * kills a ten-minute run outright.
+ */
 async function getJson(url, headers) {
-  const r = await fetch(url, { headers: headers || {} });
-  if (!r.ok) return { __status: r.status };
-  return r.json();
+  try {
+    const r = await fetch(url, { headers: headers || {} });
+    if (!r.ok) return { __err: 'HTTP ' + r.status };
+    return await r.json();
+  } catch (e) {
+    return { __err: String((e && e.cause && e.cause.code) || (e && e.message) || e) };
+  }
 }
 
 async function explorerGames(fen) {
@@ -105,7 +114,7 @@ async function explorerGames(fen) {
   });
   const d = await getJson('https://explorer.lichess.org/lichess?' + q,
     { Authorization: 'Bearer ' + TOKEN });
-  if (d.__status) return { err: 'explorer HTTP ' + d.__status, games: [], total: 0 };
+  if (d.__err) return { err: 'explorer ' + d.__err, games: [], total: 0 };
   return {
     games: [].concat(d.topGames || [], d.recentGames || []),
     total: (d.white || 0) + (d.draws || 0) + (d.black || 0),
@@ -119,12 +128,25 @@ async function gamePgn(id) {
   return r.ok ? r.text() : '';
 }
 
-/** Every move ChessDB will actually score here, best first, mover's perspective. */
+/**
+ * Every move ChessDB will actually score here, best first, mover's perspective.
+ *
+ * `null` MEANS "ChessDB HAS NO SCORE HERE" AND NOTHING ELSE. A transport failure
+ * returns `undefined` instead, because the walk records `null` as the stop reason
+ * "ChessDB has no score here" — counting a timeout as that would inflate the one
+ * number the elaboration argument rests on (§6.2). Retried before giving up.
+ */
 async function cdbScored(fen, learn) {
-  reqCount.cdb++;
   const q = new URLSearchParams({ action: 'queryall', board: fen, json: '1', learn: String(learn) });
-  const d = await getJson('https://www.chessdb.cn/cdb.php?' + q);
-  if (!d || d.__status || d.status !== 'ok') return null;
+  let d = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    reqCount.cdb++;
+    d = await getJson('https://www.chessdb.cn/cdb.php?' + q);
+    if (!d.__err) break;
+    if (attempt < 3) await sleep(2500 * (attempt + 1));
+  }
+  if (d.__err) return undefined;                       // unreachable, NOT unknown
+  if (d.status !== 'ok') return null;                  // genuinely not in the graph
   const moves = (d.moves || []).filter((m) => typeof m.score === 'number');
   moves.sort((a, b) => b.score - a.score);
   return moves;
@@ -174,6 +196,9 @@ async function walkGame(frontierFen, userSide, sans) {
 
     const scored = await cdbScored(fen, 1);
     await sleep(90);
+    // undefined = unreachable. Recording that as the elaboration stop would
+    // inflate the one count §6.2's whole argument rests on.
+    if (scored === undefined) { bump(stopReasons, 'ABANDONED: chessdb unreachable'); break; }
     if (!scored || !scored.length) { bump(stopReasons, 'ChessDB has no score here'); break; }
 
     const best = scored[0].score;                    // mover's perspective
@@ -233,10 +258,21 @@ function pickReject(c) {
   return null;
 }
 
-/** The same rules with the two spread bands swapped in, for the tuning grid. */
-function rejectAt(c, lo, hi) {
+/**
+ * The same rules with the two spread bands swapped in, for the tuning grid —
+ * and with `minScored` swappable too (default: the shipped value).
+ *
+ * WHY minScored IS A PARAMETER (2026-08-28). dev/probe-chessdb-queue.js measured
+ * that at the depth this walk loses positions, ChessDB elaborates to EXACTLY
+ * FIVE scored moves and stops (25 of 29 positions). `spread5` reads the fifth as
+ * `scored[Math.min(4, ...)]`, so it is exact at five — the filter demands six and
+ * consumes five, one above the ceiling. This is what lets the grid answer what
+ * closing that gap actually buys, on the SAME candidates, in one run.
+ */
+function rejectAt(c, lo, hi, ms) {
+  const minScored = (ms === undefined) ? C.minScored : ms;
   if (c.evalUser < C.userLoCp || c.evalUser > C.userHiCp) return true;
-  if (c.nScored < C.minScored) return true;
+  if (c.nScored < minScored) return true;
   if (c.inCheck || c.recapture) return true;
   return c.spread5 < lo || c.spread2 > hi;
 }
@@ -321,6 +357,7 @@ async function main() {
       for (const f of all) {
         const scored = await cdbScored(f.fen, 1);
         await sleep(90);
+        if (scored === undefined) { bump(rejects, 'ABANDONED: chessdb unreachable'); continue; }
         if (!scored || !scored.length) { bump(rejects, 'frontier unknown to ChessDB'); continue; }
         // The score is the MOVER's. Whether to flip it depends on whose move it
         // is in the frontier position, NOT on which colour the course is for —
@@ -414,15 +451,29 @@ async function main() {
       '  median ' + q(s2, .5) + '  p75 ' + q(s2, .75) + '  p90 ' + q(s2, .9));
     console.log('    best-5th : p10 ' + q(s5, .1) + '  p25 ' + q(s5, .25) +
       '  median ' + q(s5, .5) + '  p75 ' + q(s5, .75) + '  p90 ' + q(s5, .9));
-    console.log(NL + '  survivors at other band settings (rows = min best-5th, cols = max best-2nd):');
-    for (const lo of [30, 60, 100]) {
-      const row = [150, 200, 300, Infinity].map((hi) => {
-        let n = 0;
-        for (const c of cands) if (!rejectAt(c, lo, hi)) n++;
-        const head = hi === Infinity ? 'inf' : String(hi);
-        return head.padStart(4) + ':' + String(n).padStart(4);
-      });
-      console.log('    min5=' + String(lo).padStart(3) + '   ' + row.join('   '));
+    // How many moves ChessDB will actually grade here. The ceiling this shows
+    // is what `minScored` has to be set against — see rejectAt's note.
+    const nsDist = {};
+    for (const c of cands) nsDist[c.nScored] = (nsDist[c.nScored] || 0) + 1;
+    const nsKeys = Object.keys(nsDist).map(Number).sort((a, b) => a - b);
+    console.log(NL + '  moves ChessDB scored, per candidate:');
+    console.log('    ' + nsKeys.map((k) => k + ':' + nsDist[k]).join('  '));
+    const atFive = cands.filter((c) => c.nScored === 5).length;
+    console.log('    exactly 5: ' + atFive + ' of ' + cands.length +
+      '   (rejected by minScored 6, admitted by 5)');
+
+    for (const ms of [C.minScored, 5]) {
+      console.log(NL + '  survivors at minScored=' + ms +
+        ' (rows = min best-5th, cols = max best-2nd):');
+      for (const lo of [30, 60, 100]) {
+        const row = [150, 200, 300, Infinity].map((hi) => {
+          let n = 0;
+          for (const c of cands) if (!rejectAt(c, lo, hi, ms)) n++;
+          const head = hi === Infinity ? 'inf' : String(hi);
+          return head.padStart(4) + ':' + String(n).padStart(4);
+        });
+        console.log('    min5=' + String(lo).padStart(3) + '   ' + row.join('   '));
+      }
     }
 
     console.log(NL + '  sample survivors:');

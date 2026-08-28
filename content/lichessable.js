@@ -1712,11 +1712,28 @@
       // Stockfish would put the systematic offset between two evaluators —
       // easily the width of the whole `goodCp` band — straight into the verdict.
       engineFallback: true,
-      // Shallow and hard-capped, because the clock is running. The alt check
-      // searches to 20 with a two-minute watchdog; that is a popup the user is
-      // reading, this is a card they are waiting on.
-      engineDepth: 14,
-      engineTimeoutMs: 6000,
+      // PER PROFILE, and raised from a flat 14 in v0.134.0 on the author's
+      // instruction: "correct results are more important than low wait time".
+      //
+      // 14 was chosen when the session clock ran during the grade, so every
+      // second of search was a second stolen from solving. v0.133.0 paused the
+      // clock for exactly this wait (§8.2), which removes the entire argument
+      // for searching shallow — what is left is a user watching a held board,
+      // and a WRONG verdict costs more than a slow one. This tier only runs
+      // where ChessDB could not answer at all, so it is the least-informed
+      // grade in the feature and the one most worth spending on.
+      //
+      // Both sit under the profile ceilings (30 desktop / 25 mobile), so
+      // engine.js's `Math.min(pendingDepth, prof.depth)` passes them through
+      // unchanged; going above those would silently clamp instead.
+      engineDepth: { desktop: 20, mobile: 18 },
+      // ONE WATCHDOG FOR BOTH SEARCHES — it is armed when the job is created
+      // and never re-armed between phases, so it has to cover the pair. Raised
+      // with the depth: at 6 s a depth-20 pair would simply never land, and a
+      // fallback that always times out is strictly worse than a shallow one,
+      // because it degrades to "No verdict" and grades nothing at all.
+      // ESTIMATED, NOT MEASURED — see DESIGN-intuition-storm.md §8.1a.
+      engineTimeoutMs: 20000,
       // THE WHOLE GRADE, not just the engine half. Every source here can hang
       // rather than fail — a worker that never answers, an engine update that
       // never lands, a `fetch` that neither resolves nor rejects (seen live) —
@@ -1724,7 +1741,12 @@
       // move is played until a verdict arrives. So a grade that never finishes
       // is a board that never takes another move, for the rest of the session.
       // This is the backstop that makes that impossible.
-      gradeTimeoutMs: 9000,
+      //
+      // IT MUST STAY COMFORTABLY ABOVE `engineTimeoutMs`, or it fires first and
+      // the engine watchdog can never matter — the engine tier is reached only
+      // AFTER up to two ChessDB round trips, and this timer is armed before the
+      // first of them. Raised with the depth in v0.134.0.
+      gradeTimeoutMs: 30000,
       engineMateCp: 10000,  // centipawn stand-in for a mate, minus its distance
 
       // --- the position store (§14.11) --------------------------------------
@@ -33989,6 +34011,8 @@
       grading: false,    // a verdict is in flight (the child-negation request)
       gradeTimer: 0,     // …and the backstop that ends it whatever happens
       endsAt: 0,
+      lastTickAt: 0,     // …and when the clock last looked, so a pause can be
+                         // charged back to the deadline rather than to the user
       clockTimer: 0,
       nextTimer: 0,
       over: false,       // the clock or the pool ran out; the summary is up
@@ -35044,6 +35068,12 @@
           best: null, value: null,
           resolve,
           timer: 0,
+          // RESOLVED ONCE, HERE, and read back for both searches AND for the
+          // "is this update deep enough" test. Asking `engineProfile()` again
+          // per phase would be a second chance to disagree — and a depth the
+          // acceptance test does not share is one no update ever satisfies, so
+          // the job would hang to its watchdog every time.
+          depth: C.engineDepth[engineProfile()] || C.engineDepth.desktop,
         };
         st.eng = job;
         // The alt check's claim, for the alt check's reason: `syncEngine` must
@@ -35053,7 +35083,7 @@
         state.engineFen = null;
         engineSend({
           type: 'clo-engine-analyze', fen, profile: engineProfile(),
-          reqId: job.reqId + ':best', depth: C.engineDepth,
+          reqId: job.reqId + ':best', depth: job.depth,
         });
         pingEngineIfSilent();
         // A HARD cap, unlike the alt check's two minutes: that one is a popup
@@ -35085,7 +35115,7 @@
       const which = msg.reqId.slice(job.reqId.length + 1);
       const pv = (Array.isArray(msg.pvs) ? msg.pvs : []).find((p) => p.multipv === 1);
       if (!pv) return;
-      if (!(msg.done || msg.depth >= C.engineDepth)) return;
+      if (!(msg.done || msg.depth >= job.depth)) return;
 
       if (which === 'best' && job.phase === 'best') {
         job.best = stormMoverCp(pv, job.moverColor, C);
@@ -35099,7 +35129,7 @@
         job.phase = 'child';
         engineSend({
           type: 'clo-engine-analyze', fen: job.after, profile: engineProfile(),
-          reqId: job.reqId + ':child', depth: C.engineDepth,
+          reqId: job.reqId + ':child', depth: job.depth,
         });
         return;
       }
@@ -35783,12 +35813,55 @@
       st.nextTimer = setTimeout(() => { st.nextTimer = 0; nextCard(); }, C.verdictMs);
     }
 
+    /**
+     * IS THE USER ACTUALLY BEING ASKED SOMETHING RIGHT NOW?
+     *
+     * The clock only runs while this is true. Everything else on this board is
+     * the user WAITING — a grade in flight (which blocks the board outright),
+     * the verdict line being read, the producer fetching the next position, the
+     * gather pass — and charging any of it to a three-minute session means the
+     * session is partly a measure of how fast ChessDB answered.
+     *
+     * Grading is the one that made this necessary: it can cost up to
+     * `gradeTimeoutMs` of a 180 s session, and section 18 holds the board shut
+     * for every millisecond of it, so that time is unspendable by construction.
+     * (Deliberately not quoting the figure here — pausing the clock is what let
+     * v0.134.0 raise it from 9 s to 30 s, so the two move together.)
+     */
+    function solving() {
+      return st.running && !st.over && !st.gathering &&
+        Boolean(st.card) && !st.verdict && !st.grading;
+    }
+
+    /**
+     * A DEADLINE THAT MOVES, rather than a countdown that is decremented: every
+     * reader (`paintClock`, the expiry test) already works off `st.endsAt`, so
+     * pushing it forward by the time spent waiting pauses the clock everywhere
+     * at once and cannot leave two representations of "remaining" disagreeing.
+     */
     function startClock() {
       st.endsAt = Date.now() + C.sessionMs;
+      st.lastTickAt = Date.now();
       clearInterval(st.clockTimer);
       st.clockTimer = setInterval(() => {
         if (!st.running) { clearInterval(st.clockTimer); st.clockTimer = 0; return; }
-        if (Date.now() >= st.endsAt) { endSession('time'); return; }
+        const now = Date.now();
+        // Clamped at 0 because a system clock can go backwards, and a negative
+        // dt would hand the user time rather than charge it.
+        //
+        // The tick that STRADDLES a transition attributes its whole dt to
+        // whichever state it lands in, so each transition is up to `tickMs`
+        // (200 ms) out. The two directions are opposite in sign and equally
+        // likely, so it cancels rather than accumulating — not worth stamping
+        // every transition by hand to remove.
+        const dt = Math.max(0, now - st.lastTickAt);
+        st.lastTickAt = now;
+        if (!solving()) {
+          st.endsAt += dt;   // the deadline slides; `left` is unchanged
+          paintClock();
+          return;
+        }
+        if (now >= st.endsAt) { endSession('time'); return; }
         paintClock();
       }, C.tickMs);
     }
