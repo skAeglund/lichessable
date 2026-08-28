@@ -3323,6 +3323,34 @@ Currently working (v0.18.x).
     making. `gather`'s "end whatever is running" arm and `nextCard`'s
     `st.gathering` guard both STAY — they cover a gather pressed mid-session,
     which this does not.
+  * HOW OFTEN ANYBODY REACHES A LINE END WEIGHTS THE STORE (§14.19, v0.146.0) —
+    §4's other half, paid for out of a reply the storm already fetches:
+    `askGames` now hangs the position's own `white + draws + black` off its
+    returned array, `harvestFrontier` keeps it on the frontier, and `stormPack`
+    stores it as `g`. FOUR things an edit elsewhere can break:
+    - `stormStoreDraw`'S EXISTING KEYS ARE UNTOUCHED and the new term goes
+      BETWEEN them: `(a.k - b.k) || (b.reach - a.reach) || (a.r - b.r)`. §14.15
+      is the rule — a re-weighted comparator there is silent from the outside —
+      so `k` ascending stays primary and the random term stays last. It also
+      took `C` as a THIRD PARAMETER for the bucket's `reachTop`, rather than
+      closing over the module-level one, which is what keeps it executable in
+      `dev/check-storm.js`.
+    - UNKNOWN IS THE TOP BUCKET, deliberately. Absence means "not recorded" and
+      never "zero games" (§14.16's rule for an older build's entry) — and every
+      position stored before v0.146.0 is unknown, so demoting them would freeze
+      an existing store out of every session until it had been gathered again.
+      The same rule runs the whole way down: `askGames` answers null, not 0, on
+      a reply with none of the three fields, and `stormPack` writes `undefined`.
+    - IT RIDES THE WIRE with NO `wireVersion` bump — it is not re-derivable on
+      the far device without another explorer request, and absence is already
+      read as unknown everywhere, so an old payload stays valid. The merge takes
+      a figure the other device has and never overwrites one it holds; unlike
+      §15's counters there is nothing to double-count, this being a property of
+      the position's frontier rather than of the device.
+    - IT IS REPORTED, NEVER PUT ON A LIVE CARD. Two hosts only: the gather's
+      CONSOLE breakdown (a third reason table — it stays out of
+      `stormFunnelNote`'s one-sentence status for that function's own reason)
+      and the review row's TOOLTIP. A card has one job.
   * WALKING DEEPER IS REFUTED BY MEASUREMENT (§6.5) — `minPly` 6 left 291847's
     survivors at +1.62/+1.87/+1.08/+1.20 and tripled the cost per position,
     because a one-sided frontier HOLDS its advantage rather than dissipating it.
@@ -3550,7 +3578,9 @@ or the PERFORMANCE RECORD (§15:
 `stormStatsWirePack`, `stormStatsWireUnpack`), every one of whose failure modes
 is a plausible percentage — or the STORE'S DRAW ORDER (`stormStoreDraw`, §14.15: a
 reversed comparator returns every position in a plausible-looking sequence and
-is otherwise undetectable from the outside) — or the RETIREMENT rule
+is otherwise undetectable from the outside) — or the REACHABILITY term beside it
+(`stormReachBucket`, `stormReachLabel`, §14.19, whose UNKNOWN arm decides
+whether a store written by an older build is still reachable at all) — or the RETIREMENT rule
 (`stormDone`) and the random game pick (`stormPickGames`), §14.16, whose failing
 case needs a position answered WELL in one session and the same frontier drawn
 in the NEXT and so is close to unreachable from a live sitting — or the FUNNEL

@@ -48,6 +48,12 @@
  *   * `stormBestLine`'s same-move guard defeated          → 3 fail
  *   * §14.18's stub filter removed altogether            → 6 fail
  *   * §14.18.4's walk re-entry stop reverted             → 5 fail
+ *   * §14.19's UNKNOWN reachability read as bucket 0     → 4 fail
+ *   * …its term sorted in FRONT of the failure count     → 1 fail (§14.15
+ *     reversed in a new shape: every position still comes back, in an order
+ *     that still looks deliberate)
+ *   * …the figure dropped from the wire                  → 2 fail
+ *   * …a missing figure stored as 0 rather than unset    → 1 fail
  *   * …with its `pos.side !== userSide` guard removed    → 3 fail (the "tidy":
  *     it still stops walks and still looks plausible, and silently discards
  *     every position where the OPPONENT left the book first)
@@ -112,6 +118,8 @@ const src = [
   sliceDecl('harvestCandidates'),
   'let st = null; let C = null;',
   'function __setEnv(a, b) { st = a; C = b; }',
+  sliceDecl('stormReachBucket'),
+  sliceDecl('stormReachLabel'),
   sliceDecl('stormStoreDraw'),
   sliceDecl('stormWirePack'),
   sliceDecl('stormWireUnpack'),
@@ -148,6 +156,7 @@ const src = [
 '         stormReentered,' +
   '         stormCard, stormPack, stormUnpack, stormRetain, stormStoreDraw,' +
   '         stormDone, stormPickGames,' +
+'         stormReachBucket, stormReachLabel,' +
   '         stormFunnelBlank, stormFunnelBump, stormFunnelWhy,' +
   '         stormFunnelNote, stormFunnelLines,' +
   '         storeAdd, harvestCandidates, __setEnv,' +
@@ -219,6 +228,10 @@ const C = {
   storeDropOn: (cfgBody.match(/storeDropOn:\s*\[([^\]]*)\]/) || [, ''])[1]
     .split(',').map((x) => x.trim().replace(/'/g, '')).filter(Boolean),
   minPlyMax: num('minPlyMax'), maxPlyMin: num('maxPlyMin'), maxPlyMax: num('maxPlyMax'),
+  // §14.19's reachability bucket. UNKNOWN answers this value, so a wrong one
+  // here would make the 'no figure ties with the most reachable' assertion
+  // pass against a source that had changed its mind about that.
+  reachTop: num('reachTop'),
   randomTopN: num('randomTopN'), randomTopCp: num('randomTopCp'),
   randomMinPlies: num('randomMinPlies'),
   streakStep: num('streakStep'), streakMax: num('streakMax'),
@@ -1233,7 +1246,7 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   };
   // The local store keeps its SANs, so build the moves the way stormPack does.
   for (const k of Object.keys(drawStore)) drawStore[k].m = [['g1f3', 'Nf3', 12]];
-  const order = S.stormStoreDraw(drawStore, () => 0.5).map((x) => x.ck);
+  const order = S.stormStoreDraw(drawStore, () => 0.5, C).map((x) => x.ck);
   eq('every stored position is drawn', order.length, 4);
   eq('a position never missed comes before one missed once',
     order.indexOf('fresh') < order.indexOf('once'), true);
@@ -1244,15 +1257,79 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
     order.indexOf('never') < order.indexOf('once'), true);
   // The tail is the harder half — the one sentence that describes the whole
   // rule, asserted as the monotonic property rather than as a fixed sequence.
-  const ks = S.stormStoreDraw(drawStore, () => 0.5).map((x) => x.k);
+  const ks = S.stormStoreDraw(drawStore, () => 0.5, C).map((x) => x.k);
   eq('failure counts never decrease down the queue',
     ks.every((v, i) => i === 0 || ks[i - 1] <= v), true);
-  eq('an empty store draws nothing', S.stormStoreDraw({}, () => 0.5).length, 0);
-  eq('no store at all draws nothing', S.stormStoreDraw(null, () => 0.5).length, 0);
+  eq('an empty store draws nothing', S.stormStoreDraw({}, () => 0.5, C).length, 0);
+  eq('no store at all draws nothing', S.stormStoreDraw(null, () => 0.5, C).length, 0);
   // An unreadable entry is dropped rather than queued with no moves — the same
   // refusal `stormUnpack` makes, reached through the draw.
   eq('an entry that will not unpack is left out',
-    S.stormStoreDraw({ bad: { f: fFen, m: [] } }, () => 0.5).length, 0);
+    S.stormStoreDraw({ bad: { f: fFen, m: [] } }, () => 0.5, C).length, 0);
+
+  // --- REACHABILITY (§14.19, v0.146.0) ------------------------------------
+  // §4's "storming the frontier of a line you meet twice a year is a wasted
+  // rep", paid for out of a reply the storm already fetches. The failure modes
+  // here are all silent: a bucket that reads UNKNOWN as zero freezes an
+  // existing store out of every session, and a term put in front of `k`
+  // reverses §14.15 while still returning every position in a plausible order.
+  eq('under ten games is the bottom bucket', S.stormReachBucket(3, C), 0);
+  eq('tens', S.stormReachBucket(42, C), 1);
+  eq('hundreds', S.stormReachBucket(231, C), 2);
+  eq('thousands', S.stormReachBucket(7631, C), 3);
+  eq('ten thousand and over is one bucket', S.stormReachBucket(36363, C), C.reachTop);
+  eq('…and so is a million', S.stormReachBucket(1e6, C), C.reachTop);
+  eq('zero games is the bottom bucket, not unknown', S.stormReachBucket(0, C), 0);
+  // THE ONE THAT MATTERS. Absence means "not recorded", never "never played" —
+  // every position stored before v0.146.0 has no figure, and demoting them
+  // would freeze an existing store out of every session until it had been
+  // gathered again.
+  eq('a missing figure is UNKNOWN and ties with the most reachable',
+    S.stormReachBucket(undefined, C), C.reachTop);
+  eq('…and so is a null one', S.stormReachBucket(null, C), C.reachTop);
+  eq('…and so is a NaN', S.stormReachBucket(NaN, C), C.reachTop);
+
+  const reachStore = {
+    rare:    { f: fFen, n: 'Rare',    m: [['g1f3', 'Nf3', 12]], k: 0, g: 3 },
+    common:  { f: fFen, n: 'Common',  m: [['g1f3', 'Nf3', 12]], k: 0, g: 36363 },
+    unknown: { f: fFen, n: 'Unknown', m: [['g1f3', 'Nf3', 12]], k: 0 },
+    missed:  { f: fFen, n: 'Missed',  m: [['g1f3', 'Nf3', 12]], k: 2, g: 36363 },
+  };
+  const reachOrder = S.stormStoreDraw(reachStore, () => 0.5, C).map((x) => x.ck);
+  eq('a much-played line end is asked about before a rare one',
+    reachOrder.indexOf('common') < reachOrder.indexOf('rare'), true);
+  eq('…and a position with no figure is not demoted below either',
+    reachOrder.indexOf('unknown') < reachOrder.indexOf('rare'), true);
+  // §14.15 IS STILL THE PRIMARY KEY. A much-played position already missed
+  // twice must stay behind every unseen one, however reachable — this is the
+  // assertion a term inserted in front of `k` fails, and nothing else would.
+  eq('reachability never outranks the failure count',
+    reachOrder[reachOrder.length - 1], 'missed');
+  eq('the figure rides out on the drawn item, for the report',
+    S.stormStoreDraw(reachStore, () => 0.5, C)
+      .filter((x) => x.ck === 'common')[0].games, 36363);
+  eq('…and is null, never 0, where there is none',
+    S.stormStoreDraw(reachStore, () => 0.5, C)
+      .filter((x) => x.ck === 'unknown')[0].games, null);
+
+  // It is stored, and only when the frontier really carries one.
+  const packedReach = S.stormPack(
+    { fen: fFen, ply: 2, userColor: 'w', scored: [{ uci: 'g1f3', san: 'Nf3', score: 12 }] },
+    { names: ['Ruy'], oids: ['1'], games: 145 });
+  eq('the frontier’s game count is stored', packedReach.g, 145);
+  const packedNone = S.stormPack(
+    { fen: fFen, ply: 2, userColor: 'w', scored: [{ uci: 'g1f3', san: 'Nf3', score: 12 }] },
+    { names: ['Ruy'], oids: ['1'] });
+  eq('…and a frontier with no figure stores none, not a zero',
+    packedNone.g, undefined);
+
+  // The words, which are what the two report hosts print.
+  eq('the label says when nothing was recorded',
+    S.stormReachLabel(undefined), 'reach not recorded');
+  eq('…and names the order of magnitude otherwise',
+    S.stormReachLabel(231), '100-999 games at the line end');
+  eq('…counting exactly under ten', S.stormReachLabel(3), '3 game(s) at the line end');
+  eq('…and saying zero plainly', S.stormReachLabel(0), 'no games at the line end');
 
   // --- RETIREMENT (§14.16, v0.142.0) --------------------------------------
   // The half of the retention rule that was missing. `stormRetain` takes an
@@ -1332,6 +1409,9 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
     blank.retired + blank.dup + blank.frontiers + blank.games, 0);
   eq('…and has both reason tables', typeof blank.why + ' ' + typeof blank.stops,
     'object object');
+  // §14.19's third table. A new table must not disturb the conservation
+  // invariant below — it counts FRONTIERS, not candidates.
+  eq('…and the reachability one', typeof blank.reach, 'object');
   // Four candidates with four known fates, plus a fifth that repeats the
   // fourth's position — which is how a `dup` arises inside a single walk.
   // Each candidate needs a best move LEGAL on its own position: `stormCard`
@@ -1407,6 +1487,18 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
     lines.findIndex((l) => /ChessDB has no score here/.test(l)) <
     lines.findIndex((l) => /the opponent erred here/.test(l)), true);
   eq('no funnel breaks nothing', S.stormFunnelLines(null).length, 0);
+  // §14.19: reported in the console, not in the status sentence — a reason
+  // table is a dozen lines and `stormFunnelNote` has to fit four numbers.
+  const reachLines = S.stormFunnelLines(Object.assign({}, fn, { frontiers: 2,
+    reach: { '10000-99999 games at the line end': 3, 'reach not recorded': 1 } }));
+  eq('the breakdown names how reachable the line ends were',
+    reachLines.some((l) => /how often they are reached/.test(l)), true);
+  eq('…biggest first, like the other tables',
+    reachLines.findIndex((l) => /10000-99999/.test(l)) <
+    reachLines.findIndex((l) => /not recorded/.test(l)), true);
+  eq('…and it stays out of the one-sentence status line',
+    /reached/.test(S.stormFunnelNote(Object.assign({}, fn, { frontiers: 2,
+      reach: { 'reach not recorded': 1 } }))), false);
   // `stormFunnelBump` is null-safe because the PRODUCER runs with no funnel at
   // all — every call site would otherwise need a guard of its own.
   eq('bumping nothing is not an error',
@@ -1429,7 +1521,10 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   //    losing it in a merge is invisible.
   const wireStore = () => ({
     a1: { f: fFen, p: 3, c: 'w', n: 'Ruy', i: 0, a: ['f1b5', 'Bb5'], t: 1000, k: 2,
+      g: 145,
       m: [['a7a6', 'a6', 30, 54], ['g8f6', 'Nf6', 12], ['b8e5', '??', -5]] },
+    // …and one with NO reachability figure, which is what every entry written
+    // before v0.146.0 looks like (§14.19).
     a2: { f: fFen, p: 5, c: 'w', n: 'Ruy', i: 1, a: null, t: 2000, k: 0,
       m: [['a7a6', 'a6', 8]] },
   });
@@ -1457,6 +1552,16 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('the win rate survives where there was one', un.store.a1.m[0][3], 54);
   eq('…and is not invented where there was none', un.store.a1.m[1].length, 3);
   eq('the tombstones come back too', Object.keys(un.gone), ['dead1']);
+  // §14.19: the reachability figure RIDES, as an OPTIONAL field and with no
+  // version bump — it is not re-derivable on the far device without another
+  // explorer request, and absence is already read as "not known" everywhere.
+  eq('the reachability figure is on the wire', packedWire.p.a1.g, 145);
+  eq('…and comes back', un.store.a1.g, 145);
+  eq('…while an entry that never had one still has none, not a zero',
+    un.store.a2.g, undefined);
+  eq('a payload written before it existed is still valid',
+    Boolean(S.stormWireUnpack({ v: C.wireVersion, at: 1, g: {},
+      p: { z: { f: fFen, p: 2, c: 'w', m: [['a7a6', 12]] } } }, C).store.z), true);
   // A card written by a newer build is refused rather than half-read.
   eq('a newer payload is refused',
     S.stormWireUnpack(Object.assign({}, packedWire, { v: C.wireVersion + 1 }), C), null);
@@ -1482,6 +1587,20 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   })(), false);
   // A position only THEY have really is added.
   const bare = { a1: wireStore().a1 };
+  // §14.19: a figure the OTHER device has and this one does not is taken. It
+  // is a property of the position's frontier and not of the device, so the two
+  // can only disagree by one of them not knowing — there is nothing to
+  // reconcile and nothing to double-count, unlike §15's counters.
+  const noReach = wireStore();
+  delete noReach.a1.g;
+  S.stormWireMerge(noReach, wireStore(), {}, {});
+  eq('a merge takes a reachability figure the local store lacks', noReach.a1.g, 145);
+  const hasReach = wireStore();
+  S.stormWireMerge(hasReach, (() => {
+    const r = wireStore(); r.a1.g = 9; return r;
+  })(), {}, {});
+  eq('…and does not overwrite one it already has', hasReach.a1.g, 145);
+
   const res2 = S.stormWireMerge(bare, wireStore(), {}, {});
   eq('a position only the other device has is added', Boolean(bare.a2), true);
   eq('…and counted', res2.added, 1);

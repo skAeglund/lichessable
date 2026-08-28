@@ -2151,6 +2151,136 @@ entirely plausible, and it silently discards the positions where the opponent
 left the book first.
 
 
+### 14.19 How often anybody reaches the line end (v0.146.0)
+
+§4 stage 0 says the sample should be weighted two ways: by how many variations
+converge on a frontier, and by **how likely the line is to be reached at all** —
+*"storming the frontier of a line you meet twice a year is a wasted rep"*.
+`stormDrawFrontier` has always done the first (`f.n`) and its own comment records
+the second as deliberately not built, because section 21's reachability ranking
+is a product over the opponent plies' Lichess shares, i.e. one explorer request
+per distinct position of every line.
+
+**The cheap half was already paid for.** `askGames` fetches the explorer AT the
+frontier and kept only the game list; the same reply carries the position's own
+`white` / `draws` / `black`, which is exactly "how often does anybody reach this
+line end". Verified before anything was built on it (2026-08-29, `curl`, the
+storm's own parameters including `moves: '0'`):
+
+```
+lichess   keys: black draws moves opening recentGames topGames white
+          white/draws/black: 77701287 6553430 67547406      moves len: 0
+masters   keys: black draws moves opening topGames white
+          white/draws/black: 46418 85714 29902
+```
+
+Both paths, and a deep frontier answers `1 0 0` rather than omitting the fields.
+No second request was improvised to get them; that is the cost §4 declined to
+pay and it is still not paid.
+
+#### 14.19.1 It weights the STORE, not the pool draw
+
+The figure arrives one request **after** `stormDrawFrontier` has already chosen,
+so it cannot bias the pool draw on the pass that discovers it. That is fine,
+because the pool draw is no longer where a session gets its positions: since
+§14.11 a session draws from the STORE and only falls through to walking. So the
+figure is stored on the entry and read by `stormStoreDraw`.
+
+**`stormStoreDraw`'s existing keys are untouched.** §14.15 is explicit that a
+re-weighted comparator there is silent from the outside — every position still
+comes back, in a plausible-looking sequence — so reachability goes in as a
+separate term with the old ones in their old places:
+
+```js
+out.sort((a, b) => (a.k - b.k) || (b.reach - a.reach) || (a.r - b.r));
+```
+
+`k` ascending stays the primary key (unseen before most-missed), the random term
+stays last so equal positions still come round in a different order every
+session, and all this adds is: *among positions nobody has answered, ask first
+about the line ends real games actually reach.* The assertion that catches a term
+inserted in front of `k` is "a much-played position already missed twice stays
+behind every unseen one", and nothing else would.
+
+#### 14.19.2 A bucket, and what UNKNOWN means
+
+`stormReachBucket` is `floor(log10(games))` clamped to `reachTop` (4), so five
+buckets: under ten, tens, hundreds, thousands, ten thousand and over.
+
+**A bucket and not the count**, because the count would make the draw fully
+deterministic inside a failure-count group and take away the variety the random
+term exists for. The question is "twice a year or twice a week", which an order
+of magnitude states exactly and a raw integer overstates.
+
+**UNKNOWN IS THE TOP BUCKET, and that is a decision.** §14.16's rule for a field
+an older build did not write is that absence means "not known" and never zero —
+here that matters twice over:
+
+* demoting an unknown position would be inventing a fact about it;
+* and *every* position stored before v0.146.0 is unknown, so demoting them would
+  freeze an existing store out of every session until it had been gathered
+  again. At the top they tie with the most reachable and fall through to the
+  random term, which is exactly the behaviour they had before this existed.
+
+The same absence-is-not-zero rule runs all the way down: `askGames` answers
+`null` when the reply carries none of the three fields, `harvestFrontier` leaves
+`f.games` unset on a failed lookup, and `stormPack` writes `undefined` rather
+than `0`.
+
+#### 14.19.3 It rides the wire, with no version bump
+
+Pre-decided and worth stating: the figure **is** carried between devices
+(`stormWirePack`/`Unpack`), as an optional field and with `wireVersion`
+unchanged. Two reasons — it is not re-derivable on the far device without another
+explorer request, which is the whole cost this exists to avoid paying twice; and
+absence is already handled as "not known" by every reader, so an old payload and
+a new one are both valid and a bump would refuse perfectly good cards.
+
+The merge takes a figure the other device has and this one lacks, and never
+overwrites one it already has. Unlike §15's counters there is nothing to
+double-count: this is a property of the position's frontier, not of the device,
+so the two can only disagree by one of them not knowing. ~8 bytes an entry
+against a 162 KB budget.
+
+#### 14.19.4 Reported, never on a live card
+
+A frontier's popularity is not a spoiler — it says nothing about the position or
+the move — but **a card has one job**, so it appears in exactly two places:
+
+* the **gather's console breakdown**, as a third reason table
+  (`stormFunnelWhy(fn, 'reach', …)`), which answers a question the other four
+  numbers cannot: whether a pass spent its budget on line ends real games reach
+  or on ones nobody plays. It stays out of `stormFunnelNote`'s one-sentence
+  status line for that function's own stated reason — a reason table is a dozen
+  lines and the sentence has to fit four numbers.
+* the **review row's tooltip**, beside the line name and the centipawn figure.
+  A tooltip and not a column: the row is read for four things and this is not
+  one of them.
+
+#### 14.19.5 The checks, and what was not done
+
+`dev/check-storm.js` covers the bucket, the draw order, the pack and the wire.
+Controls run 2026-08-29, each failing on exactly its own assertions and no
+others:
+
+| control | fails |
+|---|---|
+| UNKNOWN read as bucket 0 instead of the top | **4** |
+| reachability sorted in FRONT of the failure count | **1** |
+| the figure dropped from the wire | **2** |
+| a missing figure stored as `0` rather than left unset | **1** |
+
+The second is the §14.15 failure in a new shape and the one worth having: it
+still returns every position, in a plausible order.
+
+**Not done, deliberately:** the pool draw itself is still weighted by `f.n`
+alone. Weighting it by reachability would need the figure before the frontier is
+chosen, i.e. an explorer request per frontier up front — which is §4's expensive
+half wearing a cheaper hat. **And nothing is re-gathered:** the store's existing
+positions carry no figure and simply keep their old place in the queue until
+they age out or are answered.
+
+
 ## 15. The performance record (v0.140.0)
 
 A storm ends with a score, and a score is forgotten by the next one. The

@@ -1589,6 +1589,12 @@
 
       // --- stage 1: the games --------------------------------------------
       gamesPerFrontier: 2,
+      // §14.19) THE TOP REACHABILITY BUCKET. `stormReachBucket` is
+      // floor(log10(games)) clamped here, so 4 means "ten thousand games and
+      // over is one bucket" — five buckets in all, which is the resolution the
+      // question deserves: "twice a year or twice a week", not a ranking. It is
+      // also what UNKNOWN answers, deliberately (see the function).
+      reachTop: 4,
       // …AND MORE OF THEM ON A GATHER PASS (v0.143.0). The two numbers exist
       // because the two passes are paying with different things. A SESSION
       // spends the user's own waiting time — the ~11 ChessDB lookups a usable
@@ -34363,6 +34369,14 @@
         // ordering below, and because a position missed three times is worth
         // more than one never seen.
         k: 0,
+        // §14.19) How many games the explorer has AT THE FRONTIER this position
+        // was walked from — how often anybody reaches this line at all. UNDEFINED
+        // rather than 0 where it is not known: an entry written before v0.146.0,
+        // or a frontier walked on the invented-line path, has no figure, and
+        // `stormReachBucket` reads absence as unknown rather than as "never
+        // played". (`g` on an ENTRY; the wire envelope's own `g` is the tombstone
+        // map, a different namespace.)
+        g: (f && typeof f.games === 'number') ? f.games : undefined,
       };
     }
 
@@ -34433,6 +34447,12 @@
         if (!e || !Array.isArray(e.m)) continue;
         out.p[ck] = {
           f: e.f, p: e.p, c: e.c, n: e.n, i: e.i, a: e.a, t: e.t, k: e.k,
+          // §14.19: it RIDES, as an optional field and with NO `wireVersion`
+          // bump — absence is already handled as "not known" everywhere that
+          // reads it, so an old payload and a new one are both valid. It is not
+          // re-derivable on the far device without another explorer request,
+          // which is the whole reason it is worth the ~8 bytes.
+          g: e.g,
           // uci and score only; the san goes.
           m: e.m.map((m) => (typeof m[3] === 'number' ? [m[0], m[2], m[3]] : [m[0], m[2]])),
         };
@@ -34470,7 +34490,11 @@
         }
         if (!m.length) continue;
         store[ck] = { f: e.f, p: e.p || 1, c: e.c, n: e.n || '', i: e.i || 0,
-          a: e.a || null, t: e.t || blob.at || Date.now(), k: e.k || 0, m };
+          a: e.a || null, t: e.t || blob.at || Date.now(), k: e.k || 0,
+          // §14.19, and `undefined` on a payload written before v0.146.0 —
+          // which every reader treats as "not known", never as zero.
+          g: typeof e.g === 'number' ? e.g : undefined,
+          m };
       }
       const gone = {};
       for (const ck of Object.keys(blob.g || {})) gone[ck] = blob.g[ck];
@@ -34503,6 +34527,13 @@
         if (!mine) { local[ck] = remote[ck]; added++; continue; }
         const theirs = remote[ck].k || 0;
         if (theirs > (mine.k || 0)) { mine.k = theirs; bumped++; }
+        // §14.19: a figure the other device has and this one does not is worth
+        // taking — it cost an explorer request over there. It is a property of
+        // the POSITION's frontier and not of the device, so the two can only
+        // disagree by one of them not knowing; there is nothing to reconcile.
+        if (typeof mine.g !== 'number' && typeof remote[ck].g === 'number') {
+          mine.g = remote[ck].g;
+        }
       }
       return { added, dropped, bumped, gone };
     }
@@ -34963,6 +34994,13 @@
         stored: 0,        // …new
         why: {},          // first failing pick rule -> count
         stops: {},        // where a walk stopped -> count
+        // §14.19) …and how reachable the line ends walked actually were, by
+        // order of magnitude. It answers a question the other three cannot:
+        // whether a pass spent its budget on lines real games reach or on ones
+        // nobody plays. In the CONSOLE only, for `stormFunnelNote`'s own
+        // reason — a reason table is a dozen lines and the status line has to
+        // fit four numbers.
+        reach: {},        // reachability bucket -> count
       };
     }
 
@@ -35036,6 +35074,8 @@
       if (why.length) out.push('  rejected because:', ...why);
       const stops = table(f.stops);
       if (stops.length) out.push('  walks stopped on:', ...stops);
+      const reach = table(f.reach);
+      if (reach.length) out.push('  line ends by how often they are reached:', ...reach);
       return out;
     }
 
@@ -35581,6 +35621,10 @@
           // counted, under one "line not recorded" row.
           oid: (frontier && frontier.oids && frontier.oids[0]) || '',
           plyPast: cand.ply,
+          // §14.19) How reachable the frontier is. It is NOT on the live card —
+          // a frontier's popularity is not a spoiler, but a card has one job —
+          // and is read only by the review row's tooltip and the gather report.
+          games: (frontier && typeof frontier.games === 'number') ? frontier.games : null,
         },
       };
     }
@@ -35756,24 +35800,68 @@
      * what makes the tail of a long session the harder half.
      *
      * Pure and rnd-injected, `stormDrawFrontier`'s shape and for its reason:
-     * `dev/check-storm.js` executes it. The ORDER is the whole of what this
-     * function decides, and a reversed comparator is silent — it still returns
-     * every position, still in a plausible-looking sequence.
+     * `dev/check-storm.js` executes it. `C` is a parameter for the same reason
+     * — §14.19's bucket reads `reachTop` — and closing over the module-level
+     * one instead would make this the only function in the group that cannot be
+     * executed without the module. The ORDER is the whole of what this function
+     * decides, and a reversed comparator is silent — it still returns every
+     * position, still in a plausible-looking sequence.
      */
-    function stormStoreDraw(store, rnd) {
+    /**
+     * §14.19) HOW REACHABLE A FRONTIER IS, as a coarse bucket — 0 for under ten
+     * games in the explorer, up to `reachTop` for ten thousand and over.
+     *
+     * A BUCKET AND NOT THE COUNT, because the count would make the draw fully
+     * deterministic inside a failure-count group and take away the variety
+     * `stormStoreDraw`'s random term exists for. The question this answers is
+     * "twice a year or twice a week", which an order of magnitude states
+     * exactly and a raw integer overstates.
+     *
+     * UNKNOWN IS THE TOP BUCKET, and that is a decision rather than a default.
+     * Absence means "no reachability data" and never "zero games" — so
+     * demoting it would be inventing a fact — and every position stored before
+     * v0.146.0 is unknown, so demoting them would freeze an existing store out
+     * of every session until it had been gathered again. At the top they tie
+     * with the most reachable and fall through to the random term, which is
+     * exactly the behaviour they had before this existed.
+     */
+    function stormReachBucket(games, C) {
+      if (typeof games !== 'number' || !Number.isFinite(games)) return C.reachTop;
+      return Math.max(0, Math.min(C.reachTop, Math.floor(Math.log10(Math.max(1, games)))));
+    }
+
+    /** …and as words, for the two places that report it (§14.19). */
+    function stormReachLabel(games) {
+      if (typeof games !== 'number' || !Number.isFinite(games)) return 'reach not recorded';
+      if (games <= 0) return 'no games at the line end';
+      if (games < 10) return games + ' game(s) at the line end';
+      const lo = Math.pow(10, Math.floor(Math.log10(games)));
+      return lo + '-' + (lo * 10 - 1) + ' games at the line end';
+    }
+
+    function stormStoreDraw(store, rnd, C) {
       if (!store) return [];
       const out = [];
       for (const ck of Object.keys(store)) {
         const cand = stormUnpack(store[ck]);
         if (!cand) continue;
         out.push({ ck, cand, k: store[ck].k || 0, r: rnd(),
-          name: store[ck].n || '', oid: store[ck].o || '' });
+          name: store[ck].n || '', oid: store[ck].o || '',
+          games: typeof store[ck].g === 'number' ? store[ck].g : null,
+          reach: stormReachBucket(store[ck].g, C) });
       }
-      out.sort((a, b) => (a.k - b.k) || (a.r - b.r));
+      // §14.19: REACHABILITY IS A SEPARATE TERM AND IT IS NOT THE PRIMARY KEY.
+      // `k` ascending stays first — unseen before most-missed, §14.15, which is
+      // the ordering a reversed comparator would break silently — and the
+      // random term stays last, so positions of equal failure count and equal
+      // reachability still come round in a different order every session. All
+      // this adds is: among positions nobody has answered, ask first about the
+      // line ends real games actually reach.
+      out.sort((a, b) => (a.k - b.k) || (b.reach - a.reach) || (a.r - b.r));
       return out;
     }
 
-    function storeDraw() { return stormStoreDraw(st.store, Math.random); }
+    function storeDraw() { return stormStoreDraw(st.store, Math.random, C); }
 
     // ----------------------------------------------------------------------
     // The wire. Three services, all read-only, all paced.
@@ -35866,6 +35954,15 @@
      * `topGames`/`recentGames` are ON here and must stay OFF on the panel's own
      * path (`fetchExplorerData`), which fetches on every position change and
      * wants nothing it will not draw.
+     *
+     * §14.19) IT ALSO ANSWERS HOW OFTEN ANYBODY REACHES THE FRONTIER AT ALL —
+     * `out.total`, the position's own `white + draws + black`, which is in this
+     * reply already and was being discarded. That is the free half of §4's
+     * "storming the frontier of a line you meet twice a year is a wasted rep";
+     * the expensive half (section 21's product over the opponent plies' Lichess
+     * shares) is still deliberately not paid for. Verified 2026-08-29 that both
+     * paths carry the three totals under `moves: '0'`, which is what this sends
+     * — masters included, where they are the master-game counts.
      */
     async function askGames(fen, masters) {
       await pace('lastExplorerAt', C.explorerGapMs);
@@ -35883,8 +35980,17 @@
       if (!reply) throw new Error('no reply from background worker');
       if (!reply.ok) throw new Error(reply.error || 'HTTP ' + reply.status);
       const d = reply.data || {};
-      return [].concat(d.topGames || [], d.recentGames || [])
+      const out = [].concat(d.topGames || [], d.recentGames || [])
         .filter((g) => g && g.id);
+      // Hung off the array like `stormFrontiers`'s counts, for the same reason:
+      // every caller wants the games and one wants this. A reply missing all
+      // three fields answers `null` — "not known", never zero (§14.16's rule
+      // for an entry an older build wrote, applied at the source).
+      const w = d.white, dr = d.draws, b = d.black;
+      out.total = (typeof w === 'number' || typeof dr === 'number' || typeof b === 'number')
+        ? (w || 0) + (dr || 0) + (b || 0)
+        : null;
+      return out;
     }
 
     /**
@@ -36117,10 +36223,17 @@
       let games = [];
       try {
         games = await askGames(f.fen, st.mastersOnly);
+        // §14.19: how often anybody reaches this line end at all, out of the
+        // reply we were fetching anyway. Left UNSET on a failure rather than
+        // written as 0 — every reader treats absence as "not known".
+        if (typeof games.total === 'number') f.games = games.total;
       } catch (err) {
         warn('storm: explorer lookup failed at a frontier:', err);
         games = [];
       }
+      // …reported as a bucket, in the funnel's own reason-table shape, so a
+      // gather pass says what kind of material it spent its budget on (§14.17.2).
+      stormFunnelWhy(fn, 'reach', stormReachLabel(f.games));
       // NO GAMES AT ALL, which §6.4 measured at 5 of 14 frontiers even with the
       // filters relaxed. Rather than lose the line, invent a continuation from
       // ChessDB's own best moves — a fallback and never a preference, since a
@@ -36240,7 +36353,8 @@
           st.storeDirty = true;
           continue;
         }
-        const card = stormCard(item.cand, { names: [item.name], oids: [item.oid] });
+        const card = stormCard(item.cand,
+          { names: [item.name], oids: [item.oid], games: item.games });
         if (!card) { delete st.store[item.ck]; st.storeDirty = true; continue; }
         st.seen.add(item.ck);
         st.queue.push(card);
@@ -38204,6 +38318,12 @@
           typeof v.wp === 'number' ? (v.wp < 0.05 ? '0' : '−' + stormWp(v.wp)) : '?'));
         row.title = (item.card.storm.from || '') +
           (item.card.storm.cand.invented ? ' · invented continuation' : '') +
+          // §14.19: how often anybody reaches the line end this came from. In
+          // the TOOLTIP and not a column — it says nothing about the position
+          // or the answer, so it must not compete with the four things this row
+          // is read for.
+          (typeof item.card.storm.games === 'number'
+            ? ' · ' + stormReachLabel(item.card.storm.games) : '') +
           (typeof v.loss === 'number' ? ' · ' + v.loss + 'cp' : '');
         row.addEventListener('click', () => {
           if (st.reviewIdx === i) return;
