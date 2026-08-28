@@ -1654,10 +1654,15 @@
       // Every answered position, kept so the session can be walked through
       // afterwards: the whole point of a timed exercise is that you cannot
       // think during it, so the thinking has to be available after.
-      reviewMax: 60,      // positions kept; a 5-minute storm answers ~20
+      reviewMax: 60,      // positions kept; a 3-minute storm answers ~12
 
       // --- the clock (§8.2) -----------------------------------------------
-      sessionMs: 5 * 60 * 1000,
+      // THREE minutes, the author's own call (2026-08-28): five was long enough
+      // that the last stretch is answered tired, and the review afterwards is
+      // where the value mostly is. Nothing is DERIVED from this number — the
+      // producer's own ceilings (`maxPositions`, `cdbMaxPerSession`) sit far
+      // above what a session of any length reaches, so it is safe to change.
+      sessionMs: 3 * 60 * 1000,
       // Whether a miss also costs time is a tuning question, not a design one
       // (§8.2). It costs none until somebody measures that it should.
       missPenaltyMs: 0,
@@ -35766,8 +35771,8 @@
       if (st.card) storeNote(st.card.startFen, v.verdict);
       // KEPT FOR THE REVIEW (§14.10). The card carries its own scored list, so
       // nothing has to be fetched again to show the best move afterwards — and
-      // the cap is a memory bound rather than a policy: a five-minute storm
-      // answers about twenty.
+      // the cap is a memory bound rather than a policy: a three-minute storm
+      // answers about a dozen.
       if (st.card) {
         st.history.push({ card: st.card, verdict: v });
         if (st.history.length > C.reviewMax) st.history.shift();
@@ -36021,6 +36026,13 @@
       const revLegend = el('div', 'clo-st-revlegend');
       const revList = el('div', 'clo-st-revlist');
       const revActions = el('div', 'clo-st-revactions');
+      // §14.10a: the best move is HIDDEN until this is pressed. Neutral, like
+      // Analyse beside it — the one thing to do on a review position is look
+      // at it, and a filled button saying "Best move" is an invitation to
+      // press it before doing that.
+      const revBest = el('button', 'clo-st-analyse clo-st-best', 'Best move');
+      revBest.type = 'button';
+      revBest.addEventListener('click', toggleBest);
       const revAnalyse = el('button', 'clo-st-analyse', 'Analyse this position');
       revAnalyse.type = 'button';
       revAnalyse.title = 'Open the analysis board here — play it out, with the engine and ' +
@@ -36032,7 +36044,7 @@
       const revDone = el('button', 'clo-st-done', 'Close');
       revDone.type = 'button';
       revDone.addEventListener('click', closeStorm);
-      revActions.append(revAnalyse, revAgain, revDone);
+      revActions.append(revBest, revAnalyse, revAgain, revDone);
       revSide.append(revHead, revLegend, revList, revActions);
       review.append(revBoard, revSide);
       body.append(status, note, syncNote, settings, stage, review, summary);
@@ -36043,7 +36055,7 @@
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
         settings, minSel, maxSel, gatherBtn, ready, syncBtn, syncNote,
         review, revBoard, revGrid, revLayer, revShapes, revHead, revLegend, revList,
-        revActions, revAnalyse, dbSlot };
+        revActions, revBest, revAnalyse, dbSlot };
       syncSettings();
     }
 
@@ -36204,6 +36216,32 @@
 
     const revItem = () => st.history[st.reviewIdx] || null;
 
+    /**
+     * §14.10a: WHETHER THIS POSITION'S BEST MOVE IS ON SCREEN. It is a flag on
+     * the ITEM, not on the module, so it is per position and the answer
+     * survives stepping away and back — and a position arrived at for the
+     * first time is always hidden, which is the whole point: the review is
+     * where the thinking a timed card had no room for actually happens, and a
+     * green arrow already on the board answers the question before it is asked.
+     *
+     * Three surfaces hide it and all three must agree, or the one that does
+     * not is the only one anybody reads: the board's GREEN arrow, the
+     * `stormBestLine` half of the legend, and the list's own best column —
+     * which names the best move of every position at once, so leaving it
+     * spoils the whole review rather than one card.
+     *
+     * The user's own move is never hidden. It is theirs, they have seen it,
+     * and the verdict line above already says whether it was the top one.
+     */
+    const revShown = () => Boolean(revItem() && revItem().shown);
+
+    function toggleBest() {
+      const item = revItem();
+      if (!item) return;
+      item.shown = !item.shown;
+      renderReview();
+    }
+
     /** The two moves a review row is about. `best` is whatever GRADED the
      *  answer, so an engine-graded card names the engine's move — the same
      *  rule the verdict line follows, for the same reason. */
@@ -36263,9 +36301,12 @@
         const m = uci ? CloSan.uciToMove(pos, uci) : (san ? CloSan.uciToMove(pos, sanToUci(pos, san) || '') : null);
         if (m) shapes.appendChild(boardShapeArrow(m.from, m.to, view, colour));
       };
-      draw(mv.bestUci, mv.bestSan, 'g');
+      // §14.10a: not until it is asked for.
+      if (item.shown) draw(mv.bestUci, mv.bestSan, 'g');
       // Only where the two differ: two arrows on one pair of squares is a
-      // thicker arrow, not a second claim.
+      // thicker arrow, not a second claim. Drawn whether or not the best move
+      // is showing — it is the user's own move, and hiding it would leave an
+      // empty board with nothing to think ABOUT.
       if (mv.userSan && mv.userSan !== mv.bestSan) draw(mv.userUci, mv.userSan, 'r');
     }
 
@@ -36281,7 +36322,11 @@
         row.append(el('span', 'clo-st-revrow-n', String(i + 1)));
         const mv = revMoves(item);
         row.append(el('span', 'clo-st-revrow-move', mv.userSan || '—'));
-        row.append(el('span', 'clo-st-revrow-best', mv.bestSan || '?'));
+        // §14.10a: '…' rather than '?', which this column already means "the
+        // position could not be scored".
+        const bestCell = el('span', 'clo-st-revrow-best', item.shown ? (mv.bestSan || '?') : '…');
+        bestCell.classList.toggle('clo-st-revrow-best--hidden', !item.shown);
+        row.append(bestCell);
         row.append(el('span', 'clo-st-revrow-loss',
           typeof v.loss === 'number' ? (v.loss ? '−' + v.loss : '0') : '?'));
         row.title = (item.card.storm.from || '') +
@@ -36303,10 +36348,20 @@
         ? 'Position ' + (st.reviewIdx + 1) + ' of ' + st.history.length
         : '';
       const v = (item && item.verdict) || {};
-      st.ui.revLegend.textContent = item
-        ? stormVerdictLine(v, item.card.storm) + '   ·   ' + stormBestLine(v, item.card.storm)
-        : '';
+      // §14.10a: the verdict line stays — it is about the move the user PLAYED,
+      // and "42cp behind" is what makes the position worth thinking about at
+      // all. Only `stormBestLine`, which names the move, waits to be asked for.
+      const shown = revShown();
+      st.ui.revLegend.textContent = !item ? ''
+        : shown
+          ? stormVerdictLine(v, item.card.storm) + '   ·   ' + stormBestLine(v, item.card.storm)
+          : stormVerdictLine(v, item.card.storm);
       st.ui.revLegend.classList.toggle('clo-cdb--est', Boolean(item));
+      st.ui.revBest.disabled = !item;
+      st.ui.revBest.textContent = shown ? 'Hide best move' : 'Best move';
+      st.ui.revBest.title = shown
+        ? 'Hide it again (b)'
+        : 'Show the best move here — work it out first (b)';
       st.ui.revAnalyse.disabled = !item;
       st.ui.revAnalyse.textContent = st.analysing ? 'Back to the review' : 'Analyse this position';
       renderReviewList();
@@ -36409,6 +36464,10 @@
         else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { reviewStep(1); }
         else if (e.key === 'Home') { st.reviewIdx = 0; renderReview(); }
         else if (e.key === 'End') { st.reviewIdx = st.history.length - 1; renderReview(); }
+        // §14.10a. 'b' rather than space or Enter: both of those are how a
+        // focused button in this window is pressed, and the review's rows are
+        // buttons.
+        else if (e.key === 'b' || e.key === 'B') { toggleBest(); }
         else if (e.key !== 'Escape') return;
         else { e.preventDefault(); e.stopPropagation(); closeStorm(); return; }
         e.preventDefault(); // the arrows would otherwise scroll the page

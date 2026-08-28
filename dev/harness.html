@@ -3547,32 +3547,44 @@ body {
             <div class="clo-st-review">
               <!-- The GREEN arrow is the best move, the RED one is what was
                    played. Two arrows and no more: the board is read-only, and
-                   the comparison is the whole of what it has to say. -->
+                   the comparison is the whole of what it has to say.
+                   &sect;14.10a: the GREEN one waits for "Best move", so the state
+                   drawn here &mdash; the one a review OPENS on &mdash; has the red arrow
+                   alone. Swap in "arrow:f1:b5:g|" to measure the revealed one. -->
               <div class="clo-cr-mini clo-st-revboard hx-pos"
                    data-hx-board="r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w"
-                   data-hx-shapes="arrow:f1:b5:g|arrow:b1:c3:r"></div>
+                   data-hx-shapes="arrow:b1:c3:r"></div>
               <div class="clo-st-revside">
                 <div class="clo-st-revhead">Position 4 of 14</div>
-                <div class="clo-st-revlegend clo-cdb--est">Nf3 &middot; #4 of 31 &middot; 42cp behind &middot; +1
-                  &nbsp;&middot;&nbsp; best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Nf3 -0.10 &middot; 49%</div>
+                <!-- &sect;14.10a: the verdict line stays (it is about the move that was
+                     PLAYED); only the "best &hellip;" half waits to be asked for. Revealed,
+                     it continues:
+                     &nbsp;&middot;&nbsp; best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Nf3 -0.10 &middot; 49% -->
+                <div class="clo-st-revlegend clo-cdb--est">Nf3 &middot; #4 of 31 &middot; 42cp behind &middot; +1</div>
                 <div class="clo-st-revlist">
                   <button type="button" class="clo-st-revrow clo-st-revrow--good">
                     <span class="clo-st-revrow-n">1</span><span class="clo-st-revrow-move">cxd4</span>
-                    <span class="clo-st-revrow-best">cxd4</span><span class="clo-st-revrow-loss">0</span></button>
+                    <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">0</span></button>
+                  <!-- Revealed earlier and stepped away from: the flag is per POSITION,
+                       so a mixed list is the ordinary state. -->
                   <button type="button" class="clo-st-revrow clo-st-revrow--miss">
                     <span class="clo-st-revrow-n">2</span><span class="clo-st-revrow-move">Qxb2</span>
                     <span class="clo-st-revrow-best">Qd8</span><span class="clo-st-revrow-loss">&minus;779</span></button>
                   <button type="button" class="clo-st-revrow clo-st-revrow--unknown">
                     <span class="clo-st-revrow-n">3</span><span class="clo-st-revrow-move">Nxh2</span>
-                    <span class="clo-st-revrow-best">Qe8</span><span class="clo-st-revrow-loss">?</span></button>
+                    <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">?</span></button>
                   <button type="button" class="clo-st-revrow clo-st-revrow--decent clo-st-revrow--on">
                     <span class="clo-st-revrow-n">4</span><span class="clo-st-revrow-move">Nf3</span>
-                    <span class="clo-st-revrow-best">Bb5</span><span class="clo-st-revrow-loss">&minus;42</span></button>
+                    <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">&minus;42</span></button>
                   <button type="button" class="clo-st-revrow clo-st-revrow--good">
                     <span class="clo-st-revrow-n">5</span><span class="clo-st-revrow-move">Nxd4</span>
-                    <span class="clo-st-revrow-best">Nxd4</span><span class="clo-st-revrow-loss">0</span></button>
+                    <span class="clo-st-revrow-best clo-st-revrow-best--hidden">&hellip;</span><span class="clo-st-revrow-loss">0</span></button>
                 </div>
                 <div class="clo-st-revactions">
+                  <!-- &sect;14.10a. Neutral and FIRST: hiding the answer is only worth
+                       doing if asking for it is one press away. Reads "Hide best move"
+                       once it has been. -->
+                  <button type="button" class="clo-st-analyse clo-st-best">Best move</button>
                   <button type="button" class="clo-st-analyse">Analyse this position</button>
                   <button type="button" class="clo-st-again">Storm again</button>
                   <button type="button" class="clo-st-done">Close</button>

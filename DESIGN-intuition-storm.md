@@ -545,6 +545,13 @@ Puzzle Storm's shape: one session clock, a streak multiplier, a miss resets the
 streak. Whether a miss also costs time is a tuning question, not a design one.
 The session ends on the clock, and the score is points.
 
+**Three minutes** (`sessionMs`, lowered from five in v0.132.0 on the author's own
+call): five was long enough that the last stretch was answered tired, and §14.10
+is where the value mostly is anyway — a shorter clock puts more of the sitting
+there. Nothing is derived from the number: `maxPositions` and `cdbMaxPerSession`
+sit far above what a session of any length reaches, and `reviewMax` is a memory
+bound, so it is safe to move again.
+
 ### 8.3 The producer
 
 The author's instinct — start on two positions and fill the rest in while the
@@ -912,6 +919,48 @@ Three things it rests on:
   engine and the repertoire badges arrive with no new UI. That third slot exists
   only while the board does: during a card the database's top move would name
   the answer.
+
+#### 14.10a The best move waits to be asked for (v0.132.0)
+
+The review opened with the answer already on it — the green arrow drawn, the best
+move named in the legend, and the best move of **every** position sitting in the
+list's third column. So the one part of this feature with no clock on it handed
+its answer over before the user had looked at the position, which is the opposite
+of what a review is for: four seconds was all the card allowed, and the thinking
+was supposed to happen here.
+
+So the best move is **hidden until a `Best move` button is pressed** (or `b`),
+and that is the whole change. Four notes:
+
+* **The flag is on the ITEM, not on the module** (`item.shown`), so it is per
+  position: stepping away and back keeps the answer where it was left, and a
+  position arrived at for the first time is always hidden. A mixed list — some
+  revealed, most not — is therefore the ordinary state, which is what
+  `dev/harness.html` now draws.
+* **Three surfaces hide it and all three have to agree**, or the one that does
+  not is the only one anybody reads: the board's green arrow, the
+  `stormBestLine` half of the legend, and the list's own best column. The list is
+  the one that would otherwise spoil the *whole* review rather than one card.
+* **The user's own move is never hidden** — not the red arrow, not the verdict
+  line. It is theirs, they have already seen it, and "#4 of 31 · 42cp behind" is
+  precisely what makes the position worth thinking about; a review that hid
+  whether the move was even wrong would be a list of positions with no question
+  in it. The one thing that leaks is agreement: play the top move and the verdict
+  line says so, so there is nothing left to hide.
+* **Neutral, and first in the row.** Hiding an answer is only worth doing if
+  asking for it is one press away, and `.clo-st-analyse`'s neutral outline is the
+  right tier — a filled button labelled "Best move" is an invitation to press it
+  before looking at the board. It toggles back ("Hide best move"), which costs
+  nothing and makes the reveal recoverable. `b` rather than space or Enter: both
+  of those are how a focused button in this window is pressed, and the review's
+  rows are buttons.
+
+Measured in the harness at a 420 px card: the action row goes from one line of
+three buttons to two lines of four (29 px to 64 px), which the review's list —
+`flex: 1` over a scroll container — absorbs. The masked cell is `'…'` and not
+`'?'`, which that column already means ("the position could not be scored"); the
+faint/dim colour difference is #8a8a8a against #949494, i.e. a nudge, so the
+glyph is the signal.
 
 ### 14.11 The gathering is separable, and the store is the point
 

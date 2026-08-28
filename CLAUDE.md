@@ -3060,6 +3060,14 @@ Currently working (v0.18.x).
     colour KEY or a CSS value and dropped anything else SILENTLY until v0.80.0.
     `dev/harness.html`'s own arrow helper now resolves the same keys, or a
     replica could not be written in the terms the code is.
+    THE BEST MOVE IS HIDDEN UNTIL ASKED FOR (§14.10a, v0.132.0): a "Best move"
+    button, or `b`. THREE SURFACES HIDE IT AND ALL THREE MUST AGREE — the green
+    arrow, the `stormBestLine` half of the legend, and the LIST's own best
+    column, which is the one that would otherwise spoil every position at once
+    rather than the one being looked at. The flag is on the ITEM
+    (`item.shown`), so it is per position and a position seen for the first
+    time is always hidden. The user's OWN move is never hidden — the red arrow
+    and `stormVerdictLine` are what make the position worth thinking about.
   * `stormCp`, `stormVerdictLine` AND `stormBestLine` ARE TOP LEVEL AND MUST
     STAY THERE. Section 18's panel prints that line while a card is up and
     section 27's review prints it again afterwards — two closures, so a helper

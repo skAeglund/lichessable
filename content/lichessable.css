@@ -6612,6 +6612,13 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
 
 .clo-st-revrow-best { color: var(--clo-text-dim); }
 
+/* §14.10a: the best move of every row at once is the whole review spoiled, so
+   the column waits to be asked for, one position at a time. THE '…' IS THE
+   SIGNAL — faint against dim is #8a8a8a against #949494, measured, i.e. a nudge
+   and not a difference anybody reads. The grid above fixes the column's width,
+   so revealing one row moves nothing. */
+.clo-st-revrow-best--hidden { color: var(--clo-text-faint); }
+
 .clo-st-revrow-loss {
   color: var(--clo-text-faint);
   font-variant-numeric: tabular-nums;
