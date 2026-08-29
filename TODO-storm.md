@@ -547,24 +547,53 @@ spend eleven ChessDB lookups per position.
 
 ---
 
-## 10 A no-clock practice mode
+## 10 A no-clock practice mode — **DONE (v0.150.0), and it grew a shape**
 
-The retry board (§14.10b) and the review already provide most of the machinery; a
-clockless run is a small variation on `solving()` and suits a different mood than
-a storm. Cheap, low risk, genuinely different exercise.
+Shipped as **the SET** — `DESIGN-intuition-storm.md` §17. It is more than this
+item asked for, because the author asked for more: unlimited time AND a mistake
+that must be retried or analysed rather than passed.
 
-> `solving()` is the predicate the clock charges against, and `startClock` /
-> `paintClock` / `st.endsAt` are the whole clock. A practice mode is "never arm
-> `st.endsAt`", plus `syncStormUi` wording, plus an end condition (the queue runs
-> out, or a press).
->
-> Decide explicitly whether it SCORES and whether it feeds §15's record. The
-> retry board's answer is "nothing is scored, nothing is recorded, the row's own
-> verdict is left as it was" — copy that unless there is a reason not to, since
-> two scoring rules for one exercise is how a record stops meaning one thing.
->
-> `storeNote` / retention is the harder call: a practice answer that drops a
-> position from the store spends material with no score attached.
+The three open questions above were all answered, two of them the way this item
+guessed and one not:
+
+* **It does not score and does not feed §15's record** — as advised, and for
+  §15.2's reason.
+* **`storeNote` IS called**, on the first answer of the first round only, which
+  this item leaned against. The reasoning is that the two are different
+  subjects: §15's record is about how a repertoire is read *under the storm's
+  conditions*, while retention asks whether a POSITION still has something to
+  teach — and an unhurried first answer settles that exactly as a hurried one
+  does. A retry (last verdict on screen) and the second pass (minutes after a
+  reveal) write nothing.
+* **The end condition** is neither "the queue runs out" nor a press: the set is
+  CLEARED. §17.1 is why endless and survival were both refused.
+
+### ⚠️ NOT VERIFIED LIVE
+
+Every check in CLAUDE.md is green and `dev/check-storm.js` §11 covers the four
+pure rules with three controls — but §14.23 is the standing lesson that a whole
+live pass missed a tier which had never once answered. `DESIGN-intuition-storm.md`
+§17.9 lists what only a session can settle:
+
+1. that a held card actually holds, and "Try again" puts the position back with
+   the board taking a move;
+2. that the second pass runs, asks the right positions, and ends;
+3. that the analysis board opens on a live held card and that closing it puts
+   that card's board back — including via section 19's OWN Exit, which the set's
+   ticker has to notice rather than be told about (`setBoardBack`);
+4. whether `setSize: 12` and `setRetryMax: 3` are the right numbers. Both are
+   guesses and only sittings can answer them.
+
+### Open, recorded in §17.10
+
+* The review shows the outcome only in a row's tooltip and the head's totals.
+  "Which ones did I have to be shown" is the takeaway of a set and probably wants
+  a COLUMN — which means re-measuring §14.10's five-column grid.
+* A mistake in the second pass ends the position anyway (`missed`), there being
+  no third pass. Whether it should re-arm the hold is a question for somebody who
+  has run twenty sets.
+* **The set has never been introduced to §16b's pinned mistakes.** A position
+  missed twice in one set is exactly what that store is for.
 
 ---
 
