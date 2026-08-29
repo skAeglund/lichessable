@@ -14,38 +14,52 @@ e498993  Print the FENs the minScored decision is about, …                part
 3084f1a  Stop the storm walking back into your own repertoire             part 2
 ```
 
-### FOR YOU TO CHECK LIVE
+### VERIFIED LIVE, and one defect found
 
-Nothing below was seen in a signed-in Chessable tab — the whole session ran on
-`dev/check-storm.js`, `dev/harness.html` and two live probe runs. In rough order
-of how likely a problem is:
+All four items were checked in a signed-in tab on 2026-08-29, on both courses.
+`DESIGN-intuition-storm.md` **§14.22** is the record.
 
-1. **A chapter-scoped storm end to end** (v0.148.0). Open the tree → storm →
-   stats → *Group by chapter* → open a chapter → **Storm this chapter**. Check
-   that the subtitle names it, that the positions really are from that chapter,
-   that *Storm again* keeps the scope, and that *Storm the whole course* drops
-   it. The starvation path is the one most worth poking: pick a chapter with one
-   or two lines and see whether the refusal reads as an explanation.
-2. **The grading-source label** (v0.147.0). It is on the second line of the
-   verdict; the engine tier should read `· by Stockfish d20`, wear no dimming
-   and carry a tooltip naming the depth. The engine tier only fires where
-   ChessDB can score neither the move nor its child, so it may take a few
-   deliberately odd moves to see one.
-3. **The reachability figure** (v0.146.0). Hover a review row: the tooltip
-   should end with e.g. `· 100-999 games at the line end`. A gather pass's
-   console breakdown should print a `line ends by how often they are reached:`
-   table. Positions already in your store carry no figure and say
-   `reach not recorded` — that is correct, not a bug.
-4. **The walk re-entry stop** (v0.145.0). Look for
-   `your own course answers this position` in a gather's `walks stopped on:`
-   table. If it never appears on a course with transposition stubs, the index is
-   not reaching the walks.
+1. **A chapter-scoped storm (v0.148.0) — PASSED end to end.** Subtitle read
+   `Testing course › sicil test`, six consecutive cards came from that
+   chapter's three lines and nothing else, the exhausted pool said so, *Storm
+   again* kept the scope, the current chapter's row read "This is the chapter
+   you are storming.", `Not in a chapter` had no button, and *Storm the whole
+   course* dropped the scope.
+2. **The grading-source label (v0.147.0) — PASSED for both ChessDB tiers**
+   (`· ChessDB’s ranking here`, with the verdict line above it unchanged and
+   the `.clo-cdb--est` tooltip behind it). **The ENGINE tier could not be
+   exercised — see the defect below.**
+3. **The reachability figure (v0.146.0) — PASSED in both hosts.** The gather's
+   console printed the full bucket ramp, and a review tooltip read
+   `Scotch 4...Nxd4?! #2 · 10000-99999 games at the line end`. The
+   absence-is-not-zero rule was exercised for real by an explorer outage: eight
+   frontiers that answered HTTP 429 came back `reach not recorded`, not "0".
+4. **The walk re-entry stop (v0.145.0) — NEVER FIRED, in 123 real-game walks**
+   across both courses, with every walk accounted for by another stop reason.
+   Most likely a true negative (§14.22.2 argues why), and the same `cont` index
+   demonstrably works for the stub filter beside it — but live evidence cannot
+   separate "never fired" from "index never arrived", so it stays on this list.
+
+### ⚠️ DEFECT FOUND: the engine tier answers nothing
+
+**§3.4's third grading source produced `No verdict` on every attempt** — two
+positions, two hanging moves, live card and review retry alike, in 12-14 s.
+Not a timeout, not a missing build (the panel's own engine reached depth 18 on
+the same page), not a boot problem. Pre-existing: the whole v0.145.0-v0.148.0
+diff touches that path only on the success branch it never reaches.
+
+The cost is quiet — every card whose move ChessDB cannot score is graded
+`unknown`, which scores nothing and holds the streak, so it reads as ChessDB
+being ignorant rather than as a bug. **§14.22.4 lists where to look. Fix it
+before block 3 tries to time it.**
 
 ### STILL ONLY A PROBE OR A LIVE SESSION CAN ANSWER
 
-* **Block 3** — engine-tier timing per profile. `engineTimeoutMs` 20 s and
-  `gradeTimeoutMs` 30 s are still estimates, and part 4's new label makes an
-  engine-graded card identifiable at a glance, which helps.
+* **Block 3** — engine-tier timing per profile. **Now blocked on the defect
+  above**: there is no point timing a tier that is not answering.
+  `engineTimeoutMs` 20 s and `gradeTimeoutMs` 30 s are still estimates, and
+  part 4's new label will make an engine-graded card identifiable at a glance
+  once one exists.
 * **Block 2** — whether a `learn=1` fill-in is good enough to grade with. Part
   4 makes this legible from real use (the review now says which tier answered
   each row) but does not measure it.
@@ -149,7 +163,13 @@ are measuring the wrong thing and no amount of interface work matters.
 
 ---
 
-## 3 Time the engine tier per profile
+## 3 Time the engine tier per profile — **BLOCKED: fix §14.22.4 first**
+
+> Live 2026-08-29: the tier answers `No verdict` on every attempt, in 12-14 s,
+> with a working engine and both watchdogs untouched. Timing it is meaningless
+> until it runs. `DESIGN-intuition-storm.md` §14.22.4 has the reproduction and
+> the three places to look.
+
 
 §8.1a, and the doc flags it in capitals: `engineTimeoutMs` 20 s and
 `gradeTimeoutMs` 30 s are **estimates, not measurements**, chosen when

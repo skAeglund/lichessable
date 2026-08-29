@@ -2509,6 +2509,163 @@ Measured in `dev/harness.html` at panel widths 880 / 560 / 360, desktop and
   `dev/check-storm.js`; a real chapter-scoped session needs a signed-in tab.
 
 
+### 14.22 The live run of 2026-08-29, and the one thing it broke
+
+Everything v0.145.0-v0.148.0 shipped was checked in a signed-in tab, on both
+courses. **Four of the five parts behave exactly as designed; the fifth could not
+be exercised, because the ENGINE TIER does not produce a verdict at all** — see
+§14.22.4, which is a defect this run found rather than one it introduced.
+
+#### 14.22.1 What passed
+
+**§14.21, the chapter scope — verified end to end** on 453453. Nine passes were
+recorded to fill §15's table, *Group by chapter* placed 5 lines in 2 chapters,
+and the *sicil test* group's fold carried the launcher under it:
+
+* the subtitle read `Testing course › sicil test`;
+* six consecutive cards came from that chapter's own three lines and from
+  nothing else — the unscoped run before it had freely offered
+  `Sicilian: 2...Nc6 3.d4`, `test alternative2`, `1` and `4`, and not one of
+  those reappeared;
+* the scoped pool ran out and said so (*"Looking for positions… (0 lines
+  left)"*) rather than hanging;
+* **Storm again kept the scope**, the current chapter's row read *"This is the
+  chapter you are storming."* instead of offering a button, `Not in a chapter`
+  had no button at all, and **Storm the whole course dropped it** (subtitle back
+  to `Testing course`).
+
+**§14.19, reachability — verified in both hosts.** The gather's console
+breakdown printed the new table with the whole ramp:
+
+```
+line ends by how often they are reached:
+    11  10-99 games at the line end          5  10000-99999 games at the line end
+     8  reach not recorded                   4  100-999 games at the line end
+     5  1000-9999 games at the line end      3  1 game(s) at the line end
+```
+
+…and a review row's tooltip on a freshly gathered position read
+`Scotch 4...Nxd4?! #2 · 10000-99999 games at the line end`. **The
+absence-is-not-zero rule was exercised for real**: on the first pass the
+explorer answered `HTTP 429` at eight frontiers, and all eight came back as
+`reach not recorded` rather than as "0 games" — which is the whole of §14.19.2,
+tested by an outage instead of by a fixture.
+
+**§14.20's label — verified for both ChessDB tiers.** An answered card's second
+line read `best Nf6 -0.20   · ChessDB’s ranking here`, with the verdict line
+above it carrying no source clause, the legend wearing `.clo-cdb--est` and the
+ChessDB tooltip behind it. A verdict with NO source (an ungraded card) printed
+`best Bf3 +1.62` and claimed nothing, which is the assertion this file makes
+about `stormSourceLabel({})`. The playing-the-top-move-once fix also still
+holds: `Nf6 · the top move · level with the best · +2` over a second line naming
+Nf6 once.
+
+**§14.18's stub filter** reported 8 excluded line ends on 453453 and 9 on
+291847, against the 8 and 8 measured offline — i.e. it is doing on a live course
+exactly what the fixture says.
+
+#### 14.22.2 §14.18.4 fired zero times in 123 walks
+
+Two gather passes walked **67 real games on 453453 and 56 on 291847**, and the
+`walks stopped on:` tables account for every one of them without the re-entry
+stop appearing once:
+
+```
+453453   36 ply limit · 19 unknown · 6 opponent erred · 5 you erred · 1 game ended   = 67
+291847   28 ply limit · 13 unknown · 6 opponent erred · 5 you erred                  = 52 (+4 unusable)
+```
+
+**This is most likely a true negative rather than a broken rule.** A frontier is
+by v0.144.0 a position no line of the repertoire continues from; for the stop to
+fire, a real game leaving that leaf has to transpose back onto a position the
+same repertoire plays a move from, with the user to move. On a single-repertoire
+course that is genuinely rare.
+
+But it is worth being precise about what has and has not been shown. The index
+is demonstrably BUILT correctly — the stub filter, which reads the same `cont`,
+excluded 8 and 9 line ends on the two courses. What live evidence cannot
+separate is "the rule never fired" from "the index never arrived", since
+`frontierCovered` returning null produces an identical, silent result. That is
+the failure mode §14.18.4 was written to warn about, and the assertions in
+`dev/check-storm.js` are what cover it.
+
+**If it ever needs settling:** one temporary `log()` in `frontierCovered`
+reporting `covered && covered.size` answers it in one gather pass. Not added —
+a debug line in a shipped hot path is worse than the doubt.
+
+#### 14.22.3 Two smaller observations, neither acted on
+
+* **A gather pass can rate-limit the explorer.** The first pass on 453453 hit
+  `HTTP 429` on every frontier that had games, so all 62 line ends fell through
+  to the invented-line path and the pass stored 1 position for 86 ChessDB
+  requests. A second pass minutes later walked 67 games and stored 16. Note that
+  `st.mastersOnly` does NOT catch this: it flips on a PGN failure, not an
+  explorer one, so a 429 storm has no fallback and simply degrades to invented
+  lines. Worth a rule of its own if it recurs; one observation is not a
+  measurement.
+* **"N position(s) ready" is not scope-aware.** Under a chapter scope the
+  readiness figure still counts the whole store (19), while the session will
+  only draw on that chapter's share. Cosmetic, and the honest fix is
+  `stormFilterStore`'s own count — which `storeDraw` already computes into
+  `st.storeCut`.
+
+#### 14.22.4 THE ENGINE TIER RETURNS NO VERDICT — a live defect
+
+**§3.4's third source did not produce a single verdict, on two positions, with a
+demonstrably working engine.** This is the tier §14.8 says is not optional.
+
+Reproduction, twice, on 291847:
+
+| position | move played | outcome | elapsed |
+|---|---|---|---|
+| Scotch 4...Qh4?!, +2 past the line | `Bh6` (hangs the bishop) | `No verdict` | ~12 s |
+| Scotch 4...Nxd4?! #2, +6 past | `Ba6` (hangs the bishop) | `No verdict` | ~14 s |
+
+Both moves are exactly what tier 3 exists for: outside ChessDB's scored list,
+with a child position no game has reached. The same position was also re-run
+through the review's *Try again* (§14.10b), with the same result — so it is not
+a clock or a session-state effect.
+
+**It is not a timeout.** `engineTimeoutMs` is 20 s and `gradeTimeoutMs` 30 s;
+both grades resolved in 12-14 s. Whatever `stormEngineLoss` did, it answered
+`null` early rather than being cut off.
+
+**It is not a missing engine.** `engine/vendor/` holds both Stockfish 18 pairs,
+and the panel's own Engine toggle, opened on 24g's analysis board on the same
+page moments later, reached **depth 18 with three PV lines and the ChessDB
+companion column** in seconds. Booting the engine FIRST and then storming made
+no difference — the second reproduction above was run that way.
+
+**No warning was logged.** `pingEngineIfSilent`'s "engine silent after analyze"
+never fired, which says something answered inside 3 s.
+
+**It is not a regression from this work.** The whole diff over
+v0.145.0-v0.148.0 touches that path in exactly two places, both on the SUCCESS
+branch that was never reached: `endEngineJob`'s answer gained `depth: job.depth`
+and `gradeTiers`'s engine arm gained `depth: eng.depth`. Everything else in
+`stormEngineLoss`, `onStormEngineUpdate` and `endEngineJob` is byte-identical to
+v0.144.0.
+
+**Where to start looking**, in order of suspicion:
+
+1. `onStormEngineUpdate`'s acceptance test, `msg.done || msg.depth >= job.depth`
+   — `job.depth` is `C.engineDepth[engineProfile()]` (20 desktop), and if the
+   updates arrive tagged with a depth that never reaches it and `done` never
+   comes, the job dies on its watchdog. That would be 20 s, not 12, so this
+   fits only if something else resolves first.
+2. `stormMoverCp` returning null for one of the two searches — the explicit
+   `typeof job.best !== 'number' || typeof childBest !== 'number'` guard calls
+   `endEngineJob(job, null)`, which is an EARLY null and matches the timing. A
+   pv carrying neither `cp` nor `mate` would do it.
+3. The reqId prefix match (`msg.reqId.startsWith(job.reqId + ':')`) silently
+   dropping every update, leaving the job to its watchdog — again 20 s, so less
+   likely.
+
+This makes TODO block 3 (§8.1a's engine-tier timing) both more urgent and
+differently shaped: there is no point timing a tier that is not answering.
+**Fix it before measuring it.**
+
+
 ## 15. The performance record (v0.140.0)
 
 A storm ends with a score, and a score is forgotten by the next one. The

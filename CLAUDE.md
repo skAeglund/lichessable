@@ -2993,6 +2993,19 @@ Currently working (v0.18.x).
     in a row on course 291847 were ungradeable without the third tier, because
     §3.2's 98% coverage is a measurement over REAL continuations and the child
     of an ARBITRARY move is a position no game ever reached.
+    - ⚠️ IT IS NOT ANSWERING (§14.22.4, live 2026-08-29). Two positions on
+      course 291847, two deliberately hanging moves, once through a live card
+      and once through the review's Try again: **`No verdict` every time, in
+      12-14 s**. Not a timeout (`engineTimeoutMs` 20 s, `gradeTimeoutMs` 30 s),
+      not a missing build (the panel's own toggle reached depth 18 with three
+      PV lines on the same page minutes later), and not a boot problem (booting
+      the engine first changed nothing). So EVERY storm card whose move ChessDB
+      cannot score is currently graded `unknown`, which scores nothing and
+      holds the streak — the failure is quiet and looks like ChessDB being
+      ignorant. §14.22.4 lists where to look; the likeliest is `stormMoverCp`
+      answering null for one of the two searches, whose explicit guard calls
+      `endEngineJob(job, null)` early and matches the timing. FIX THIS BEFORE
+      MEASURING IT — TODO block 3 times a tier that is not currently running.
     - IT IS TWO SEARCHES, NEVER ONE. A loss is a SUBTRACTION, and taking
       `best(P)` from ChessDB's book while taking `best(P after m)` from
       Stockfish puts the systematic offset between two evaluators — easily wider
