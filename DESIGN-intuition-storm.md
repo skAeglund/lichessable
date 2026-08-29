@@ -3556,18 +3556,74 @@ never been answered. Fixed with the clear, which the set needed anyway.
   `stormBestLine` is two. No overflow at 300 or 260px, desktop or touch; the
   three-button row wraps to two lines under touch and at 260px desktop.
 
-**NOT measured, and it needs a live session.** Everything below is behaviour, and
-`node --check` cannot see any of it — §14.23's lesson is that a whole live
-verification pass missed a tier that had never answered:
+### 17.9a VERIFIED LIVE, 2026-08-29
 
-* that a held card actually holds, and that "Try again" puts the position back
-  with the board accepting a move;
-* that the second pass runs, asks the right positions, and ends;
-* that the analysis board opens on a live held card and that closing it puts the
-  card's board back (`setBoardBack`), including via section 19's own Exit, which
-  the set's ticker has to NOTICE rather than be told about;
-* that `setSize` of 12 is the right size, and that three attempts is the right
-  cap. Both are guesses; only sittings can answer them.
+Course 453453, signed-in Chrome, v0.150.0 confirmed in the startup log. **Every
+behavioural claim in §17.2-17.6 was exercised and passed**, and no console error
+was raised at any point.
+
+**The hold.** `Qh4??` (hanging the queen to `Nxh4`) graded **`Blunder · 42% of
+the game`**, and the card did not advance. The second line read *"Play it again —
+2 attempts left, then the move is shown"* — i.e. **`stormBestLine` was off the
+panel**, which is §17.3 — while the line above kept the user's own move and its
+loss. Buttons: `Show the move` / `Try again (2)` / `End set`.
+
+**Try again.** Put the position back exactly: queen returned to d8, h4 empty, 32
+pieces, panel back to `Find a good move`, board accepting input. The counter
+decremented `(2)` → `(1)` with correct singular/plural on the line above.
+
+**The cap.** After the third blunder (`Qf6??`) the line read *"No attempts left —
+show the move to move on"* and **`Try again` was hidden**, leaving only
+`Show the move`.
+
+**The reveal.** `best Bg7 -0.22   Qf6 -5.66   · by Stockfish d19`, with NO
+`.clo-cdb--est` and the engine tooltip — §14.20's rule holding on this panel too.
+Buttons became `Analyse` / `Next position`. (This also exercised §14.23's engine
+tier for real, on a position ChessDB could score neither side of.)
+
+**Analyse, and the teardown.** The analysis board opened on the LIVE held card
+with the database (`Bg7 92% · 517 games`), the engine and all three writes.
+Closing it with **section 19's OWN Exit** — the path the set's ticker has to
+NOTICE rather than be told about — put the held card's board back with its
+verdict, its revealed best line and both doors intact, and hid the db slot again.
+Nothing was scored: the tally stayed `0 / 12`.
+
+**"No idea".** In a set it is a request for the answer, as designed: verdict line
+`Passed — no answer given`, best move revealed at once, revealed-pair buttons,
+nothing scored.
+
+**The second pass.** Run at `setSize: 2` (temporarily, then reverted). Round 1
+asked two positions; the subtitle then became `Testing course › second pass` and
+the SAME two positions were re-asked in order — identified by their best-move
+lines, `best Nf6 +1.40` then `best d6 -0.14` — after which the session **ended by
+itself**, the review opened, the subtitle dropped the round, and the clock froze.
+Result line: `0 of 2 first time · 2 shown · 0 of 2 on the second pass`, with each
+row's tooltip carrying `shown, missed again on the second pass`. Answering the
+second pass correctly (playing the `Nf6` that had been shown) resolved the card
+and moved on, so the clean path works there too.
+
+**The storm is unharmed.** Same build: clock counting DOWN from 3:00, `0 pts` /
+`streak 0`, `End storm`, and `No idea` scoring `Blunder −2 pts` with the best
+move printed immediately and an automatic advance after `verdictMs`. No hold, no
+extra buttons.
+
+**Two things the session changed:**
+
+* `saveStormMode` called only `syncSettings`, so picking the set left **`3:00`
+  and `0 pts`** in the header — a clock and a score belonging to the other mode —
+  until the first card. It calls `render()` now.
+* One thing that looked like a defect and was not: a "third card" apparently
+  appearing in a two-position set. The probe was reading a **hidden, stale**
+  `.clo-cr-panel` — `offsetParent` is null for the `position: fixed` panel, so
+  the visibility test was inverted. Recorded because the next person to drive
+  this window from automation will write the same probe: test
+  `getBoundingClientRect().width > 0`, never `offsetParent`.
+
+### 17.9b Still open after the live run
+
+* **`setSize: 12` and `setRetryMax: 3` are still guesses.** Both were exercised
+  but neither was JUDGED — that needs sittings, not a test.
+* Whether the second pass should re-arm the hold on a miss (§17.10).
 
 ### 17.10 Open
 

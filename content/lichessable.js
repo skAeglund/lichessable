@@ -38844,7 +38844,11 @@
      *  setting is in force either way, it just may not survive the tab. */
     function saveStormMode(m) {
       applyStormMode(m);
-      syncSettings();
+      // `render`, not `syncSettings` alone: the header's clock and its two stat
+      // slots are what the mode changes MOST visibly, and a row that had only
+      // re-synced left "3:00" and "0 pts" sitting over a mode with no clock and
+      // no points until the first card. Seen live 2026-08-29.
+      render();
       try {
         chrome.storage.local.set({ [C.setModeKey]: st.mode }).catch(() => {});
       } catch (err) { /* orphaned content script */ }

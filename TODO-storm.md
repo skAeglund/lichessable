@@ -568,21 +568,25 @@ guessed and one not:
 * **The end condition** is neither "the queue runs out" nor a press: the set is
   CLEARED. §17.1 is why endless and survival were both refused.
 
-### ⚠️ NOT VERIFIED LIVE
+### VERIFIED LIVE 2026-08-29 — all four behaviours passed
 
-Every check in CLAUDE.md is green and `dev/check-storm.js` §11 covers the four
-pure rules with three controls — but §14.23 is the standing lesson that a whole
-live pass missed a tier which had never once answered. `DESIGN-intuition-storm.md`
-§17.9 lists what only a session can settle:
+Course 453453, signed-in Chrome, no console error at any point.
+`DESIGN-intuition-storm.md` **§17.9a** is the record. In short: the hold holds
+(`Qh4?? → Blunder · 42%`, best move off the panel), Try again restores the
+position and decrements, the cap hides the button, the reveal prints
+`best Bg7 -0.22 … by Stockfish d19` with §14.20's treatment right, the analysis
+board opens on the LIVE card and section 19's own Exit is NOTICED (board back,
+verdict intact, nothing scored), and the second pass re-asks exactly the same
+positions in order and then ends by itself.
 
-1. that a held card actually holds, and "Try again" puts the position back with
-   the board taking a move;
-2. that the second pass runs, asks the right positions, and ends;
-3. that the analysis board opens on a live held card and that closing it puts
-   that card's board back — including via section 19's OWN Exit, which the set's
-   ticker has to notice rather than be told about (`setBoardBack`);
-4. whether `setSize: 12` and `setRetryMax: 3` are the right numbers. Both are
-   guesses and only sittings can answer them.
+The ordinary storm was re-checked on the same build and is unharmed.
+
+**One defect found and fixed:** `saveStormMode` called only `syncSettings`, so
+picking the set left `3:00` and `0 pts` — the other mode's clock and score — in
+the header until the first card.
+
+**Still guesses, and only sittings can judge them:** `setSize: 12` and
+`setRetryMax: 3`. Both were exercised; neither was assessed.
 
 ### Open, recorded in §17.10
 
