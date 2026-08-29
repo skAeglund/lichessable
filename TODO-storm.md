@@ -40,26 +40,46 @@ All four items were checked in a signed-in tab on 2026-08-29, on both courses.
    demonstrably works for the stub filter beside it — but live evidence cannot
    separate "never fired" from "index never arrived", so it stays on this list.
 
-### ⚠️ DEFECT FOUND: the engine tier answers nothing
+### ~~⚠️ DEFECT FOUND: the engine tier answers nothing~~ — **FIXED (v0.149.0)**
 
-**§3.4's third grading source produced `No verdict` on every attempt** — two
-positions, two hanging moves, live card and review retry alike, in 12-14 s.
-Not a timeout, not a missing build (the panel's own engine reached depth 18 on
-the same page), not a boot problem. Pre-existing: the whole v0.145.0-v0.148.0
-diff touches that path only on the success branch it never reaches.
+`DESIGN-intuition-storm.md` **§14.23** is the write-up. It was §14.22.4's FIRST
+suspicion, and the one part of that report pointing the wrong way was the
+12-14 s timing: instrumented, the job runs its 20 s watchdog out in full.
 
-The cost is quiet — every card whose move ChessDB cannot score is graded
-`unknown`, which scores nothing and holds the streak, so it reads as ChessDB
-being ignorant rather than as a bug. **§14.22.4 lists where to look. Fix it
-before block 3 tries to time it.**
+**What it was.** Depth-20 MultiPV-3 takes longer than 20 s on this machine —
+measured, one search reached depth 17 in 20.7 s — and the tier needs TWO such
+searches under ONE 20 s watchdog. Unsatisfiable by arithmetic, on every card,
+since v0.130.0. Worse, every update short of the target depth was DISCARDED, so
+the job died holding a perfectly good depth-17 evaluation and answered null.
+
+**The fix.** `engineDepth` is now a CEILING and `enginePhaseMs` (8000) the real
+limit: a budget per search, after which the search is TAKEN at the depth it
+reached. The reply is capped at what the position itself reached (a subtraction
+across two depths is the cross-evaluator mistake one size down), a pair further
+apart than `engineDepthSlack` is refused, and §14.20's label now names the depth
+that ran rather than the ceiling.
+
+**Verified live** on 291847, two hanging moves: `Blunder −34%` and `−42%` in
+9.3 s at depth 12, where before both were `No verdict` at 20.7 s. Three
+controls, 5/1/1.
+
+**How it hid for four releases, including through a live verification pass:** a
+slow machine and an ignorant ChessDB print the identical thing. So
+`dev/check-storm.js` **§10** now drives the whole state machine with the budgets
+shrunk to milliseconds — the second place in that file to execute impure code,
+for §14.17's reason.
 
 ### STILL ONLY A PROBE OR A LIVE SESSION CAN ANSWER
 
-* **Block 3** — engine-tier timing per profile. **Now blocked on the defect
-  above**: there is no point timing a tier that is not answering.
-  `engineTimeoutMs` 20 s and `gradeTimeoutMs` 30 s are still estimates, and
-  part 4's new label will make an engine-graded card identifiable at a glance
-  once one exists.
+* **Block 3** — engine-tier timing per profile. **UNBLOCKED and still owed**
+  (§14.23.5). `enginePhaseMs` 8000 is an estimate exactly as `engineTimeoutMs`
+  20000 was, but it now fails SOFT — a shallower verdict — rather than hard.
+  What wants measuring: the depth each profile reaches in the budget (one
+  desktop position reached 12, and one is not a measurement), how often
+  `engineDepthSlack` refuses a pair, and above all MOBILE on the lite build's
+  two threads, where the answer may be a SHORTER phase rather than a longer one.
+  Part 4's label makes an engine-graded card identifiable at a glance, and
+  §14.23's console line reports both depths and the elapsed time on every job.
 * **Block 2** — whether a `learn=1` fill-in is good enough to grade with. Part
   4 makes this legible from real use (the review now says which tier answered
   each row) but does not measure it.
@@ -163,12 +183,18 @@ are measuring the wrong thing and no amount of interface work matters.
 
 ---
 
-## 3 Time the engine tier per profile — **BLOCKED: fix §14.22.4 first**
+## 3 Time the engine tier per profile — **UNBLOCKED (v0.149.0), still owed**
 
-> Live 2026-08-29: the tier answers `No verdict` on every attempt, in 12-14 s,
-> with a working engine and both watchdogs untouched. Timing it is meaningless
-> until it runs. `DESIGN-intuition-storm.md` §14.22.4 has the reproduction and
-> the three places to look.
+> The defect is fixed (`DESIGN-intuition-storm.md` §14.23) and the tier answers.
+> What changed for this block: the number to measure is now `enginePhaseMs`
+> (8000, per search) rather than `engineTimeoutMs`, the failure it causes is a
+> SHALLOWER verdict rather than none at all, and every job already logs both
+> depths and its elapsed time, so a session's worth of grades can be read off
+> the console instead of instrumented. §14.23.5 is the list.
+>
+> `engineDepth` is a CEILING now, so "lower the mobile depth" is no longer the
+> lever it was — on mobile the lever is a shorter PHASE, or accepting that the
+> depth reached in the budget is what the verdict is worth.
 
 
 §8.1a, and the doc flags it in capitals: `engineTimeoutMs` 20 s and

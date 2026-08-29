@@ -2665,6 +2665,143 @@ This makes TODO block 3 (§8.1a's engine-tier timing) both more urgent and
 differently shaped: there is no point timing a tier that is not answering.
 **Fix it before measuring it.**
 
+**ANSWERED AND FIXED in v0.149.0 — §14.23. It was suspicion 1**, and the
+timings in the table above were the one part of this report that pointed the
+wrong way: instrumented, the job runs its watchdog out in full.
+
+
+### 14.23 The engine tier, fixed (v0.149.0)
+
+§14.22.4's defect, diagnosed by making every silent exit of the tier say which
+one it was, then reproduced live on course 291847.
+
+#### 14.23.1 What it actually was
+
+One console line settles it:
+
+```
+storm: engine tier gave up — st1787985550174-1 ended in phase best after
+20708 ms · 0 update(s) taken, 8 too shallow (deepest 17 of 20), 0 with no pv,
+0 for another request
+```
+
+**Eight updates arrived, every one of them was thrown away, and the job died
+still in its FIRST phase.** So it was §14.22.4's first suspicion —
+`msg.done || msg.depth >= job.depth` — but not in the shape that paragraph
+guessed at. Nothing was wrong with the tagging, the relay or the perspective:
+the search was simply still working. Depth-20 MultiPV-3 on this machine takes
+longer than 20 s, and the tier needs **two** such searches under **one**
+20 s watchdog. It was unsatisfiable by arithmetic, for every position, on every
+card, from v0.130.0 to v0.148.0.
+
+The half that makes it a defect rather than a mis-set number is the discard: an
+update short of the target depth was dropped, so when the watchdog fired the job
+was holding a perfectly good depth-17 evaluation of the position and answered
+`null` anyway.
+
+#### 14.23.2 The fix
+
+`engineDepth` becomes a CEILING and `enginePhaseMs` (8000) becomes the real
+limit — a budget **per search**, after which the search is TAKEN at whatever
+depth it has reached. §8.1a's own note is the whole argument: *a fallback that
+always times out is strictly worse than a shallow one, because it degrades to
+"No verdict" and grades nothing at all.*
+
+Three rules come with it, and each is a way the change could have been wrong:
+
+* **THE REPLY IS CAPPED AT WHAT THE POSITION ACTUALLY REACHED**
+  (`job.childTarget = job.bestDepth`). A loss is a subtraction (§3.4), so the
+  two sides must be of the same strength; asking the reply for depth 20 when
+  the position itself managed 15 both costs longer and puts the difference
+  between two depths straight into the verdict. It is the same mistake as
+  mixing two evaluators, one size down.
+* **A PAIR TOO FAR APART IS REFUSED** (`engineDepthSlack`, 3). The cap above
+  means the reply can only come back EQUAL or SHALLOWER, and shallower
+  *flatters* the move played — the opponent's resources are what a deeper
+  search finds. This bounds the case where even the lowered target was not
+  reached in budget. A JUDGEMENT, not a measurement: what it is traded against
+  is the `No verdict` the whole change removes, so it is deliberately loose
+  rather than tight.
+* **THE DEPTH §14.20 NAMES IS NOW THE ONE THAT RAN** —
+  `Math.min(bestDepth, childDepth)`, the weaker of the two, since that is what
+  the comparison is worth. CLAUDE.md's rule ("off the job, never from
+  `CONFIG.storm.engineDepth`") is unchanged and now buys more than it did: the
+  ceiling is usually not what happened.
+
+`engineTimeoutMs` (20 s) survives as a BACKSTOP for the shapes of failure a
+phase budget cannot see — a worker that answers nothing at all. It has to stay
+above two phase budgets or it fires first and the phase budget can never matter,
+and `gradeTimeoutMs` still has to stay above IT, with two ChessDB round trips in
+front of both. 8000 is chosen from that chain: 16 s for the pair leaves 14 s of
+the 30 s grade budget for the fetches.
+
+#### 14.23.3 Measured, live, 2026-08-29
+
+Same course, same shape of move — a deliberately hanging piece, twice:
+
+| | before (v0.148.0) | after (v0.149.0) |
+|---|---|---|
+| outcome | `No verdict` | `Blunder`, −34% and −42% of the game |
+| elapsed | 20.7 s (watchdog) | 9.3 s |
+| depth used | none — discarded at 17 | 12, both searches |
+
+```
+storm: engine tier taking the position at depth 12 — it did not reach 20 within 8000 ms
+storm: engine tier answered — … ended in phase child after 9344 ms ·
+position depth 12 of 20, reply depth 12 · 0 update(s) with no pv, 0 for another request
+storm: graded c1h6 by engine
+```
+
+§14.20's tooltip reads *"…graded by two local Stockfish searches to depth 12"*,
+i.e. the depth that ran, and the row does NOT wear `.clo-cdb--est`. Both review
+rows carry a real win-probability loss where they would have carried `?`.
+
+Note the second search: capped at 12 rather than 20, it finished in ~1.3 s. The
+adaptive cap is most of why the pair now costs half of what one search used to.
+
+#### 14.23.4 Why it is executed rather than eyeballed
+
+`dev/check-storm.js` §10 drives the whole state machine — `stormEngineLoss`,
+`armEnginePhase`, `startEngineChild`, `finishEngineJob`, `endEngineJob`,
+`onStormEngineUpdate` and the two `keepEngine*` helpers, sliced out and fed
+updates in `engine/engine.js`'s own shape with the budgets shrunk to
+milliseconds. It is the second place in that file to execute IMPURE code
+(§14.17's funnel is the first) and for the same reason: **the property lives in
+the control flow and nowhere else.**
+
+It also cannot be seen from outside. A slow machine and an ignorant ChessDB
+produce the identical output — "No verdict" — whether this works or not, which
+is exactly how it survived four releases and a live verification pass.
+
+Controls run 2026-08-29, each failing on exactly its own assertions and no
+others:
+
+* v0.148.0's discard rule restored (an update below the target thrown away)
+  → **5 fail**, all five the budget-expiry case;
+* the reply asked for the ceiling instead of the depth the position reached
+  → **1 fail**;
+* the `engineDepthSlack` guard defeated → **1 fail** (a depth-18 position
+  subtracted from a depth-10 reply, which returns a plausible number).
+
+#### 14.23.5 What this does NOT settle
+
+**Block 3 (§8.1a) is now unblocked and still owed.** `enginePhaseMs` 8000 is
+an estimate exactly as `engineTimeoutMs` 20000 was — but it now fails SOFT (a
+shallower verdict) rather than hard (no verdict at all), which is the whole
+difference. What wants measuring over a session's worth of fallback grades:
+
+* the depth each profile reaches in the budget — one desktop position reached
+  12, and one is not a measurement;
+* how often `engineDepthSlack` refuses a pair, which should be near never;
+* **mobile**, on the lite build's 2 threads, where the depth reached may be low
+  enough that the verdict is not worth the 16 s. §8.2's ceiling on a held board
+  is the constraint, and the answer there may be a shorter phase rather than a
+  longer one.
+
+Two things the diagnosis ruled out and that nothing needs to look at again: the
+reqId tagging (`0 for another request` on every run) and the pv shape
+(`0 with no pv`).
+
 
 ## 15. The performance record (v0.140.0)
 

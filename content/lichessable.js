@@ -1803,12 +1803,33 @@
       // Both sit under the profile ceilings (30 desktop / 25 mobile), so
       // engine.js's `Math.min(pendingDepth, prof.depth)` passes them through
       // unchanged; going above those would silently clamp instead.
+      // …AND SINCE v0.149.0 A CEILING RATHER THAN A TARGET. Measured live
+      // 2026-08-29 on course 291847: the FIRST of the two searches reached
+      // depth 17 in 20.7 s, i.e. one search alone outlasted the whole pair's
+      // watchdog, so this tier answered `No verdict` on every card it was ever
+      // reached on. What ends a search now is `enginePhaseMs`; this is where it
+      // stops early when the machine is quick enough (§14.23).
       engineDepth: { desktop: 20, mobile: 18 },
-      // ONE WATCHDOG FOR BOTH SEARCHES — it is armed when the job is created
-      // and never re-armed between phases, so it has to cover the pair. Raised
-      // with the depth: at 6 s a depth-20 pair would simply never land, and a
-      // fallback that always times out is strictly worse than a shallow one,
-      // because it degrades to "No verdict" and grades nothing at all.
+      // THE REAL LIMIT: a budget PER SEARCH, after which the search is TAKEN at
+      // whatever depth it has reached rather than thrown away. Two of these
+      // plus the relay has to fit inside `gradeTimeoutMs` with both ChessDB
+      // round trips in front of it, which is what fixes it at 8 s: 16 s for the
+      // pair leaves 14 s for the two fetches.
+      //
+      // ESTIMATED, NOT MEASURED, exactly as the ceiling below is — but it now
+      // fails SOFT (a shallower verdict) instead of hard (no verdict at all),
+      // which is what block 3's measurement is for. §8.1a, §14.23.
+      enginePhaseMs: 8000,
+      // How far apart the two searches' depths may be before the subtraction is
+      // refused. The reply is capped at the depth the position itself reached,
+      // so it can only come back EQUAL or SHALLOWER; this bounds the case where
+      // even that was not reached in budget. A JUDGEMENT, not a measurement —
+      // §14.23 records what it is traded against.
+      engineDepthSlack: 3,
+      // THE PAIR'S CEILING, and now a BACKSTOP rather than the operative limit:
+      // it is armed when the job is created and never re-armed between phases,
+      // so it has to cover both. It exists for the shapes of failure the phase
+      // budget cannot see — a worker that never answers at all.
       // ESTIMATED, NOT MEASURED — see DESIGN-intuition-storm.md §8.1a.
       engineTimeoutMs: 20000,
       // THE WHOLE GRADE, not just the engine half. Every source here can hang
@@ -36205,26 +36226,47 @@
      * goes through `endEngineJob`.
      */
     function stormEngineLoss(fen, uci) {
-      if (!C.engineFallback) return Promise.resolve(null);
-      if (st.eng) return Promise.resolve(null); // one claim at a time
+      // §14.22.4) EVERY null out of this tier used to be SILENT, and a silent
+      // null is indistinguishable from ChessDB not knowing the position — which
+      // is exactly how a tier that answered nothing at all read as the book
+      // being ignorant, live, for four releases. Each refusal says which one it
+      // was, and the job counts what it saw so the two remaining shapes of
+      // failure (updates that never arrive, updates that arrive untagged) can
+      // be told apart from one console line.
+      const bail = (why) => {
+        log('storm: engine tier stood down —', why);
+        return Promise.resolve(null);
+      };
+      if (!C.engineFallback) return bail('the fallback is switched off');
+      if (st.eng) return bail('the engine is already claimed by another grade');
       const after = fenAfterUci(fen, uci);
       const pos = CloSan.parseFen(fen);
-      if (!after || !pos) return Promise.resolve(null);
+      if (!after || !pos) return bail('the position or the move could not be read');
       return new Promise((resolve) => {
         const job = {
           reqId: 'st' + Date.now() + '-' + (++st.engSeq),
           phase: 'best',
           moverColor: pos.side,
           fen, after,
-          best: null, value: null,
           resolve,
           timer: 0,
-          // RESOLVED ONCE, HERE, and read back for both searches AND for the
-          // "is this update deep enough" test. Asking `engineProfile()` again
-          // per phase would be a second chance to disagree — and a depth the
-          // acceptance test does not share is one no update ever satisfies, so
-          // the job would hang to its watchdog every time.
+          phaseTimer: 0,
+          // THE DEPTH CAP, resolved ONCE here. Asking `engineProfile()` again
+          // per phase would be a second chance to disagree. Since v0.149.0 it
+          // is a CEILING rather than a target: what the searches actually reach
+          // is `bestDepth` / `childDepth` below, and that is what the verdict is
+          // made of and what §14.20's label names.
           depth: C.engineDepth[engineProfile()] || C.engineDepth.desktop,
+          // THE DEEPEST EACH SEARCH HAS PRODUCED, and the whole of §14.22.4's
+          // fix: a budget that runs out mid-search leaves a real evaluation
+          // behind, and throwing it away is what made this tier answer nothing.
+          best: null, bestDepth: 0, bestSan: '',
+          childBest: null, childDepth: 0, childTarget: 0,
+          // Bookkeeping, read only by `endEngineJob`'s one log line — the
+          // failure this tier had was invisible for four releases.
+          startedAt: Date.now(),
+          nopv: 0,
+          foreign: 0,
         };
         st.eng = job;
         // The alt check's claim, for the alt check's reason: `syncEngine` must
@@ -36237,11 +36279,109 @@
           reqId: job.reqId + ':best', depth: job.depth,
         });
         pingEngineIfSilent();
-        // A HARD cap, unlike the alt check's two minutes: that one is a popup
-        // being read, this is a card the user is waiting on with a clock
-        // running. A search that has not landed by now is worth less than the
-        // seconds it is costing.
-        job.timer = setTimeout(() => endEngineJob(job, null), C.engineTimeoutMs);
+        armEnginePhase(job);
+        // THE PAIR'S HARD CEILING, and since v0.149.0 a BACKSTOP rather than
+        // the operative limit: `enginePhaseMs` is what actually ends a search.
+        // Unlike the alt check's two minutes, this is a card the user is
+        // waiting on with a clock running.
+        job.timer = setTimeout(() => {
+          warn('storm: the engine tier hit its ceiling of', C.engineTimeoutMs,
+            'ms in phase', job.phase);
+          endEngineJob(job, null);
+        }, C.engineTimeoutMs);
+      });
+    }
+
+    /**
+     * §14.22.4) A BUDGET PER SEARCH, and the measurement that forced it: on the
+     * machine this was written on the FIRST of the two searches reached depth
+     * 17 of 20 in 20.7 s — longer than the whole pair's watchdog — so the tier
+     * answered `No verdict` for EVERY card it was ever reached on, from
+     * v0.130.0 to v0.148.0, and read as ChessDB being ignorant rather than as a
+     * defect of ours.
+     *
+     * `engineDepth` is therefore a CEILING and this is the real limit: when it
+     * expires the search is TAKEN at whatever depth it has reached. §8.1a's own
+     * note is the argument — "a fallback that always times out is strictly
+     * worse than a shallow one, because it degrades to No verdict and grades
+     * nothing at all".
+     */
+    function armEnginePhase(job) {
+      clearTimeout(job.phaseTimer);
+      job.phaseTimer = setTimeout(() => {
+        if (st.eng !== job) return;
+        if (job.phase === 'best') {
+          log('storm: engine tier taking the position at depth', job.bestDepth,
+            '— it did not reach', job.depth, 'within', C.enginePhaseMs, 'ms');
+          startEngineChild(job);
+          return;
+        }
+        log('storm: engine tier taking the reply at depth', job.childDepth,
+          '— it did not reach', job.childTarget, 'within', C.enginePhaseMs, 'ms');
+        finishEngineJob(job);
+      }, C.enginePhaseMs);
+    }
+
+    /**
+     * The SECOND search, capped at what the FIRST actually reached rather than
+     * at the profile depth.
+     *
+     * A loss is a subtraction (§3.4), so the two sides must be of the same
+     * strength — asking the reply for depth 20 when the position itself only
+     * managed 15 would both cost longer and put the difference between two
+     * depths straight into the verdict.
+     */
+    function startEngineChild(job) {
+      // THE ONE GUARD, and it is here rather than at either caller: both the
+      // budget expiring and the target being reached lead through this
+      // function, and a `childTarget` of 0 reads in engine.js as "no cap" —
+      // i.e. a full-depth search of the reply with nothing to subtract it from.
+      if (typeof job.best !== 'number') {
+        warn('storm: the engine gave no score for the position itself —',
+          'nothing to subtract the reply from');
+        endEngineJob(job, null);
+        return;
+      }
+      job.phase = 'child';
+      job.childTarget = job.bestDepth;
+      armEnginePhase(job);
+      engineSend({
+        type: 'clo-engine-analyze', fen: job.after, profile: engineProfile(),
+        reqId: job.reqId + ':child', depth: job.childTarget,
+      });
+    }
+
+    /** The pair, subtracted — or refused where the two halves are not
+     *  comparable. */
+    function finishEngineJob(job) {
+      if (typeof job.best !== 'number' || typeof job.childBest !== 'number') {
+        warn('storm: the engine tier got no usable score — position', job.best,
+          'reply', job.childBest);
+        endEngineJob(job, null);
+        return;
+      }
+      // A SUBTRACTION ACROSS TWO DEPTHS IS THE SAME MISTAKE AS ONE ACROSS TWO
+      // EVALUATORS, one size down. The child is capped at the position's own
+      // achieved depth so it can only come back EQUAL or SHALLOWER, and
+      // shallower FLATTERS the move played — the opponent's resources are what
+      // a deeper search finds. `engineDepthSlack` is a judgement rather than a
+      // measurement (DESIGN-intuition-storm.md §14.23), and what it is traded
+      // against is the `No verdict` this whole change exists to remove.
+      const gap = Math.abs(job.bestDepth - job.childDepth);
+      if (gap > C.engineDepthSlack) {
+        warn('storm: the engine tier searched the two positions to depth',
+          job.bestDepth, 'and', job.childDepth, '— too far apart to subtract');
+        endEngineJob(job, null);
+        return;
+      }
+      endEngineJob(job, {
+        best: job.best,
+        value: -job.childBest,
+        bestSan: job.bestSan,
+        // §14.20) THE DEPTH THE PAIR ACTUALLY RAN TO — the weaker of the two,
+        // since that is what the comparison is worth. Read off the job, never
+        // from `CONFIG.storm.engineDepth`, which is now only a ceiling.
+        depth: Math.min(job.bestDepth, job.childDepth),
       });
     }
 
@@ -36251,6 +36391,12 @@
       if (st.eng !== job) return;
       clearTimeout(job.timer);
       st.eng = null;
+      clearTimeout(job.phaseTimer);
+      log('storm: engine tier', answer ? 'answered' : 'gave up', '—', job.reqId,
+        'ended in phase', job.phase, 'after', Date.now() - job.startedAt,
+        'ms · position depth', job.bestDepth, 'of', job.depth + ', reply depth',
+        job.childDepth, '·', job.nopv, 'update(s) with no pv,', job.foreign,
+        'for another request');
       if (state.altCheckBusy) {
         state.altCheckBusy = false;
         engineSend({ type: 'clo-engine-stop' });
@@ -36262,47 +36408,61 @@
 
     function onStormEngineUpdate(msg) {
       const job = st.eng;
-      if (!job || typeof msg.reqId !== 'string' || !msg.reqId.startsWith(job.reqId + ':')) return;
+      if (!job) return;
+      // An update carrying no reqId, or another request's, is COUNTED rather
+      // than dropped in silence: "the searches ran and nothing was tagged for
+      // us" and "nothing came back at all" are two different defects that look
+      // identical from the outside (§14.22.4's third suspicion).
+      if (typeof msg.reqId !== 'string' || !msg.reqId.startsWith(job.reqId + ':')) {
+        job.foreign++;
+        return;
+      }
       const which = msg.reqId.slice(job.reqId.length + 1);
       const pv = (Array.isArray(msg.pvs) ? msg.pvs : []).find((p) => p.multipv === 1);
-      if (!pv) return;
-      if (!(msg.done || msg.depth >= job.depth)) return;
+      if (!pv) { job.nopv++; return; }
 
       if (which === 'best' && job.phase === 'best') {
-        job.best = stormMoverCp(pv, job.moverColor, C);
-        // …and WHICH move it is, because a verdict graded here must name the
-        // engine's best rather than ChessDB's: the two numbers beside each
-        // other would be the cross-source comparison this tier exists to avoid.
-        // `pv.uci` is what engine.js sends beside its numbered `san` string
-        // (section 26 added it); resolving it here spells it for this position.
-        const bestPos = CloSan.parseFen(job.fen);
-        job.bestSan = (bestPos && pv.uci && CloSan.moveToSan(bestPos, pv.uci)) || '';
-        job.phase = 'child';
-        engineSend({
-          type: 'clo-engine-analyze', fen: job.after, profile: engineProfile(),
-          reqId: job.reqId + ':child', depth: job.depth,
-        });
+        keepEngineBest(job, pv, msg.depth);
+        // The TARGET is still the ceiling; reaching it early is the good case
+        // and ends the search here rather than at the phase budget.
+        if (msg.done || msg.depth >= job.depth) startEngineChild(job);
         return;
       }
       if (which === 'child' && job.phase === 'child') {
-        // The child's mover is the OPPONENT, so this is read from THEIR side and
-        // negated — §3.4's `best(P) + best(P after m)`, with the negation
-        // written where it can be seen rather than folded into a sign.
-        const opponent = job.moverColor === 'w' ? 'b' : 'w';
-        const childBest = stormMoverCp(pv, opponent, C);
-        if (typeof job.best !== 'number' || typeof childBest !== 'number') {
-          endEngineJob(job, null);
-          return;
-        }
-        endEngineJob(job, {
-          best: job.best, value: -childBest, bestSan: job.bestSan,
-          // §14.20: the depth BOTH searches ran to, carried out so the verdict
-          // can name it. Read off the job rather than re-asked of
-          // `engineProfile()` — the job resolved it once for exactly the reason
-          // that two answers could disagree.
-          depth: job.depth,
-        });
+        keepEngineChild(job, pv, msg.depth);
+        if (msg.done || msg.depth >= job.childTarget) finishEngineJob(job);
       }
+    }
+
+    /**
+     * Keeps the DEEPEST evaluation each search has produced.
+     *
+     * Every update used to be DISCARDED unless it already met the target depth,
+     * which is why a budget that ran out left the tier with nothing at all to
+     * answer with (§14.22.4). The score is kept from the mover's side here, and
+     * so is the engine's own best move: a verdict graded by the engine must
+     * name the ENGINE's best rather than ChessDB's, or the two numbers beside
+     * each other are the cross-source comparison this tier exists to avoid.
+     * `pv.uci` is what engine.js sends beside its numbered `san` string.
+     */
+    function keepEngineBest(job, pv, depth) {
+      const cp = stormMoverCp(pv, job.moverColor, C);
+      if (typeof cp !== 'number' || !(depth > job.bestDepth)) return;
+      job.best = cp;
+      job.bestDepth = depth;
+      const bestPos = CloSan.parseFen(job.fen);
+      job.bestSan = (bestPos && pv.uci && CloSan.moveToSan(bestPos, pv.uci)) || '';
+    }
+
+    /** The same for the reply, whose mover is the OPPONENT — the negation that
+     *  makes §3.4's `best(P) + best(P after m)` an ADDITION is applied once, in
+     *  `finishEngineJob`, where it can be seen. */
+    function keepEngineChild(job, pv, depth) {
+      const opponent = job.moverColor === 'w' ? 'b' : 'w';
+      const cp = stormMoverCp(pv, opponent, C);
+      if (typeof cp !== 'number' || !(depth > job.childDepth)) return;
+      job.childBest = cp;
+      job.childDepth = depth;
     }
 
     chrome.runtime.onMessage.addListener((msg) => {
@@ -37591,6 +37751,11 @@
           };
         }
       }
+      // §14.22.4) WHICH TIER ANSWERED, in one line. The user is told (§14.20)
+      // but the console was not, so "ChessDB is ignorant here" and "the third
+      // tier is broken" produced the same silence — and they are the two
+      // readings of an `unknown` verdict that most need telling apart.
+      log('storm: graded', uci, got ? 'by ' + got.source : '— no source could answer');
       return got;
     }
 

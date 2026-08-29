@@ -132,6 +132,19 @@ const src = [
   sliceDecl('harvestCandidates'),
   'let st = null; let C = null;',
   'function __setEnv(a, b) { st = a; C = b; }',
+  // §14.23's engine tier. IMPURE, like the funnel above and for the same
+  // reason: the property worth asserting — that a search which runs out of
+  // budget is TAKEN at the depth it reached rather than thrown away — lives in
+  // this state machine's control flow and nowhere else. `__setEnv` supplies
+  // `st` and `C`; the six page-world bindings come in as parameters.
+  sliceDecl('stormEngineLoss'),
+  sliceDecl('armEnginePhase'),
+  sliceDecl('startEngineChild'),
+  sliceDecl('finishEngineJob'),
+  sliceDecl('endEngineJob'),
+  sliceDecl('onStormEngineUpdate'),
+  sliceDecl('keepEngineBest'),
+  sliceDecl('keepEngineChild'),
   sliceDecl('stormReachBucket'),
   sliceDecl('stormReachLabel'),
   sliceDecl('stormStoreDraw'),
@@ -178,6 +191,7 @@ const src = [
   '         stormFunnelBlank, stormFunnelBump, stormFunnelWhy,' +
   '         stormFunnelNote, stormFunnelLines,' +
   '         storeAdd, harvestCandidates, __setEnv,' +
+  '         stormEngineLoss, onStormEngineUpdate, endEngineJob,' +
   '         stormWirePack, stormWireUnpack, stormWireMerge,' +
   '         stormStatBlank, stormStatApply, stormStatPlus, stormStatSum,' +
   '         stormStatGraded,' +
@@ -191,8 +205,25 @@ const src = [
   '         sanToUci, fenAfterUci };',
 ].join('\n');
 // eslint-disable-next-line no-new-func
-const S = new Function('CloSan', 'squareName', 'cacheKey', 'START_FEN', 'warn', 'sleepMs', src)(
-  CloSan, squareName, cacheKey, START_FEN, warn, sleepMs);
+// The engine tier's six page-world bindings. `engineHost` is rebound by
+// section 10; everything above it never reaches them.
+const engineHost = {
+  state: {},
+  sent: [],
+  send(msg) { engineHost.sent.push(msg); },
+  profile: () => 'desktop',
+  ping: () => {},
+  sync: () => { engineHost.synced++; },
+  synced: 0,
+};
+const S = new Function('CloSan', 'squareName', 'cacheKey', 'START_FEN', 'warn', 'log',
+  'sleepMs', 'state', 'engineSend', 'engineProfile', 'pingEngineIfSilent', 'syncEngine', src)(
+  CloSan, squareName, cacheKey, START_FEN, warn, warn, sleepMs,
+  engineHost.state,
+  (msg) => engineHost.send(msg),
+  () => engineHost.profile(),
+  () => engineHost.ping(),
+  () => engineHost.sync());
 
 // CONFIG.storm, read out of the shipped file so the thresholds cannot drift.
 const SRC = fs.readFileSync(SRC_PATH, 'utf8');
@@ -240,6 +271,8 @@ const C = {
     return out;
   })(),
   engineTimeoutMs: num('engineTimeoutMs'), gradeTimeoutMs: num('gradeTimeoutMs'),
+  // §14.23: the two that actually decide whether the tier ever answers.
+  enginePhaseMs: num('enginePhaseMs'), engineDepthSlack: num('engineDepthSlack'),
   engineMateCp: num('engineMateCp'),
   wireVersion: num('wireVersion'), goneMax: num('goneMax'), goneDays: num('goneDays'),
   // Read out of the shipped file the same way, so the rule and the assertions
@@ -2000,6 +2033,160 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
     Object.keys(S.stormStatsWireUnpack(cutStats, C).stats['1'].lines).length, cutStats.n);
 
   }
+
+  // =========================================================================
+  // 10) THE ENGINE TIER (§3.4's third source, §14.23)
+  // =========================================================================
+  // THIS TIER SHIPPED DEAD FROM v0.130.0 TO v0.148.0 and nothing said so.
+  // Measured live 2026-08-29 on course 291847: the FIRST of the two searches
+  // reached depth 17 of 20 in 20.7 s, i.e. one search alone outlasted the whole
+  // pair's watchdog — and every update short of the target depth was DISCARDED,
+  // so the job died on its watchdog with a perfectly good depth-17 evaluation
+  // in hand. Every card ChessDB could not score was graded `unknown`, which
+  // scores nothing and holds the streak, and read as the book being ignorant.
+  //
+  // The property below is the fix and it cannot be seen from outside: a slow
+  // machine and an ignorant ChessDB produce IDENTICAL output — "No verdict" —
+  // whether this works or not. So it is executed, with the budgets shrunk to
+  // milliseconds and the updates fed in by hand.
+  {
+  const FEN = 'r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3';
+  const UCI = 'a7a6';   // …a6, so the reply is a WHITE-to-move position
+  const AFTER = 'r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4';
+  const CEIL = 20;
+  // Real timers, tiny budgets: the state machine's whole subject is what
+  // happens when one expires.
+  const EC = Object.assign({}, C, {
+    engineFallback: true,
+    engineDepth: { desktop: CEIL, mobile: 18 },
+    enginePhaseMs: 40,
+    engineTimeoutMs: 400,
+    engineDepthSlack: 3,
+    engineMateCp: 10000,
+  });
+  const stEng = { eng: null, engSeq: 0 };
+  S.__setEnv(stEng, EC);
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  // engine/engine.js's own update shape: White-normalised cp, `pv.uci`, and a
+  // `done` flag set only by the bestmove fence.
+  const upd = (fen, reqId, depth, cp, done, uci) => ({
+    type: 'clo-engine-update', fen, reqId, depth, done: Boolean(done),
+    pvs: [{ multipv: 1, cp, san: 'x', uci: uci || 'b5c6' }],
+  });
+  const begin = () => {
+    engineHost.sent.length = 0;
+    engineHost.state.altCheckBusy = false;
+    engineHost.synced = 0;
+    const promise = S.stormEngineLoss(FEN, UCI);
+    return { promise, job: stEng.eng, req: stEng.eng && stEng.eng.reqId };
+  };
+
+  // --- the good case: both searches reach the ceiling ---------------------
+  {
+    const r = begin();
+    eq('the first analyze is capped at the profile depth',
+      engineHost.sent[0] && engineHost.sent[0].depth, CEIL);
+    eq('…and it claims the shared engine', engineHost.state.altCheckBusy, true);
+    S.onStormEngineUpdate(upd(FEN, r.req + ':best', CEIL, -60, true, 'a7a6'));
+    const child = engineHost.sent[engineHost.sent.length - 1];
+    eq('reaching the ceiling starts the reply search', child.reqId, r.req + ':child');
+    eq('…on the position after the move', child.fen, AFTER);
+    S.onStormEngineUpdate(upd(AFTER, r.req + ':child', CEIL, 90, true));
+    const got = await r.promise;
+    // Black to move, so the mover's score is the negated White figure: the
+    // position is +60 for Black, and White's best reply is +90 for White, i.e.
+    // −90 for us. loss = 60 − (−90) = 150.
+    eq('the position is scored from the MOVER side', got && got.best, 60);
+    eq('…and the reply negated into the same side', got && got.value, -90);
+    eq('…and the depth reported is the one both ran to', got && got.depth, CEIL);
+    eq('the engine is given back', stEng.eng, null);
+    eq('…and the panel told to resume', engineHost.synced, 1);
+  }
+
+  // --- THE REGRESSION: neither search reaches the ceiling -----------------
+  // This is the one assertion the shipped v0.148.0 fails. Everything arrives
+  // below the target, exactly as it did live, and the tier must still answer.
+  {
+    const r = begin();
+    S.onStormEngineUpdate(upd(FEN, r.req + ':best', 12, -50, false, 'a7a6'));
+    S.onStormEngineUpdate(upd(FEN, r.req + ':best', 15, -70, false, 'a7a6'));
+    await wait(EC.enginePhaseMs + 30);
+    const child = engineHost.sent[engineHost.sent.length - 1];
+    eq('a search that runs out of budget is TAKEN, not thrown away',
+      child && child.reqId, r.req + ':child');
+    // …AND THE REPLY IS CAPPED AT WHAT THE POSITION ACTUALLY REACHED. A
+    // subtraction across two depths is the same mistake as one across two
+    // evaluators, one size down.
+    eq('…and the reply is asked for the depth the position reached, not the ceiling',
+      child && child.depth, 15);
+    S.onStormEngineUpdate(upd(AFTER, r.req + ':child', 15, 40, true));
+    const got = await r.promise;
+    eq('the pair still produces a verdict', Boolean(got), true);
+    eq('…from the DEEPEST update each search managed', got && got.best, 70);
+    eq('…and it names the depth that actually ran, never the ceiling',
+      got && got.depth, 15);
+  }
+
+  // --- the budget expiring with nothing at all -----------------------------
+  {
+    const r = begin();
+    await wait(EC.enginePhaseMs + 30);
+    const got = await r.promise;
+    eq('a search that produced nothing answers null', got, null);
+    eq('…and still gives the engine back', engineHost.state.altCheckBusy, false);
+    eq('…and never asks for the reply',
+      engineHost.sent.filter((m) => m.type === 'clo-engine-analyze').length, 1);
+  }
+
+  // --- the two halves too far apart ---------------------------------------
+  {
+    const r = begin();
+    S.onStormEngineUpdate(upd(FEN, r.req + ':best', 18, -50, false, 'a7a6'));
+    await wait(EC.enginePhaseMs + 30);
+    S.onStormEngineUpdate(upd(AFTER, r.req + ':child', 10, 40, false));
+    await wait(EC.enginePhaseMs + 30);
+    const got = await r.promise;
+    eq('a pair searched to depth 18 and 10 is refused rather than subtracted',
+      got, null);
+    eq('…and the claim is released anyway', stEng.eng, null);
+  }
+
+  // --- an update belonging to somebody else --------------------------------
+  {
+    const r = begin();
+    S.onStormEngineUpdate(upd(FEN, 'ac999:pre', CEIL, -50, true, 'a7a6'));
+    S.onStormEngineUpdate(upd(FEN, r.req + ':best', CEIL, -50, true, 'a7a6'));
+    eq("another module's update does not drive this job", r.job.foreign, 1);
+    eq('…and ours still starts the reply search', r.job.phase, 'child');
+    S.onStormEngineUpdate(upd(AFTER, r.req + ':child', CEIL, 50, true));
+    await r.promise;
+  }
+
+  // --- one claim at a time --------------------------------------------------
+  {
+    const r = begin();
+    eq('a second grade does not start a second search while one is claimed',
+      await S.stormEngineLoss(FEN, UCI), null);
+    S.onStormEngineUpdate(upd(FEN, r.req + ':best', CEIL, -50, true, 'a7a6'));
+    S.onStormEngineUpdate(upd(AFTER, r.req + ':child', CEIL, 50, true));
+    await r.promise;
+    eq('…and once it is over the next one can', Boolean(begin().job), true);
+    S.endEngineJob(stEng.eng, null);
+  }
+
+  // --- the ceiling is still a backstop -------------------------------------
+  // The phase budget only fires while updates are flowing sensibly; a worker
+  // that answers nothing at all for a whole phase and then goes quiet has to
+  // be caught by something. `engineTimeoutMs` must stay above a full pair of
+  // phases or it fires first and the phase budget can never matter.
+  eq('the pair ceiling outlasts two phase budgets',
+    C.engineTimeoutMs >= 2 * C.enginePhaseMs, true);
+  eq('…and the whole grade outlasts the pair ceiling',
+    C.gradeTimeoutMs > C.engineTimeoutMs, true);
+  eq('the depth slack is small enough to mean something',
+    C.engineDepthSlack > 0 && C.engineDepthSlack <= 4, true);
+  }
+
   console.log('\n' + SRC_PATH);
   console.log(pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);

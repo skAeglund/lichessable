@@ -2993,19 +2993,23 @@ Currently working (v0.18.x).
     in a row on course 291847 were ungradeable without the third tier, because
     §3.2's 98% coverage is a measurement over REAL continuations and the child
     of an ARBITRARY move is a position no game ever reached.
-    - ⚠️ IT IS NOT ANSWERING (§14.22.4, live 2026-08-29). Two positions on
-      course 291847, two deliberately hanging moves, once through a live card
-      and once through the review's Try again: **`No verdict` every time, in
-      12-14 s**. Not a timeout (`engineTimeoutMs` 20 s, `gradeTimeoutMs` 30 s),
-      not a missing build (the panel's own toggle reached depth 18 with three
-      PV lines on the same page minutes later), and not a boot problem (booting
-      the engine first changed nothing). So EVERY storm card whose move ChessDB
-      cannot score is currently graded `unknown`, which scores nothing and
-      holds the streak — the failure is quiet and looks like ChessDB being
-      ignorant. §14.22.4 lists where to look; the likeliest is `stormMoverCp`
-      answering null for one of the two searches, whose explicit guard calls
-      `endEngineJob(job, null)` early and matches the timing. FIX THIS BEFORE
-      MEASURING IT — TODO block 3 times a tier that is not currently running.
+    - `engineDepth` IS A CEILING, `enginePhaseMs` IS THE LIMIT (§14.23,
+      v0.149.0). A search that runs out of its budget is TAKEN at whatever depth
+      it has reached, never discarded — which is what this tier used to do, and
+      why it answered `No verdict` on EVERY card from v0.130.0 to v0.148.0.
+      Measured live 2026-08-29: one depth-20 MultiPV-3 search took 20.7 s on the
+      author's desktop, so a PAIR of them under one 20 s watchdog was
+      unsatisfiable by arithmetic, and the job died holding a perfectly good
+      depth-17 evaluation. The failure is silent by construction — a slow
+      machine and an ignorant ChessDB both print "No verdict" — so
+      `dev/check-storm.js` §10 executes the whole state machine.
+      Three rules follow and each is a way the fix could be wrong:
+      THE REPLY IS CAPPED AT `job.bestDepth`, what the position ACTUALLY
+      reached, because a subtraction across two depths is the cross-evaluator
+      mistake one size down; a pair further apart than `engineDepthSlack` is
+      REFUSED (the cap means the reply can only be equal or shallower, and
+      shallower FLATTERS the move played); and the depth §14.20 names is
+      `Math.min` of the two, the one that ran and never the ceiling.
     - IT IS TWO SEARCHES, NEVER ONE. A loss is a SUBTRACTION, and taking
       `best(P)` from ChessDB's book while taking `best(P after m)` from
       Stockfish puts the systematic offset between two evaluators — easily wider
@@ -3017,11 +3021,13 @@ Currently working (v0.18.x).
       sends no stop), and `endEngineJob` is the ONE place that gives it back —
       on the answer, on the timeout, on an engine error and on `endSession`. A
       leaked claim is a panel whose engine never starts again.
-    - ITS WATCHDOG IS SECONDS, NOT MINUTES (`engineTimeoutMs`), unlike the alt
-      check's: that one is a popup being read, this is a card with a clock
-      running. A search that has not landed by then is worth less than the
-      seconds it costs, and the verdict degrades to "No verdict", which scores
-      nothing and holds the streak.
+    - ITS WATCHDOGS ARE SECONDS, NOT MINUTES, unlike the alt check's: that one
+      is a popup being read, this is a card with a clock running. There are TWO
+      and the ordering is load-bearing — `enginePhaseMs` per search,
+      `engineTimeoutMs` over the pair as a BACKSTOP for a worker that answers
+      nothing at all, and `gradeTimeoutMs` over the whole grade with two ChessDB
+      round trips in front of it. Each must outlast the one inside it or the
+      inner one can never fire; `dev/check-storm.js` §10 asserts the chain.
   * THE CARD CARRIES EXACTLY ONE PLY, the position's own best move, and that is
     load-bearing rather than decorative: `startLine` ends in `step()`, and an
     EMPTY ply list reads there as "this line is already finished", so the card
@@ -3662,13 +3668,17 @@ failure mode is the same silence, plus two asymmetries an edit is likely to
 be a SOURCE) — or the WALK's own re-entry stop (`stormReentered`, §14.18.4,
 whose failure mode is the same silence again and whose side-scoping guard, if
 "tidied" away, still stops walks and still looks plausible) — or the ENGINE
-TIER's `CONFIG.storm`
-numbers (`engineDepth`, `engineTimeoutMs`, `gradeTimeoutMs`), whose every
-failure mode is a tier that still runs and silently answers "No verdict" for
-ever: a depth above engine.js's own `PROFILES` ceiling is CLAMPED rather than
-refused, one watchdog covers BOTH searches, and `gradeTimeoutMs` is armed
-before the ChessDB tiers so it must outlast `engineTimeoutMs` or the engine's
-own watchdog can never fire:
+TIER (§14.23: `stormEngineLoss`, `armEnginePhase`, `startEngineChild`,
+`finishEngineJob`, `endEngineJob`, `onStormEngineUpdate`, `keepEngineBest`,
+`keepEngineChild`, and the `CONFIG.storm` numbers `engineDepth`,
+`enginePhaseMs`, `engineDepthSlack`, `engineTimeoutMs`, `gradeTimeoutMs`),
+whose every failure mode is a tier that still runs and silently answers
+"No verdict" for ever — which is exactly what it did from v0.130.0 to v0.148.0,
+through a whole live verification pass, because a slow machine and an ignorant
+ChessDB print the same thing: a depth above engine.js's own `PROFILES` ceiling
+is CLAMPED rather than refused, each watchdog must outlast the one inside it,
+and an update short of the target depth must be KEPT rather than discarded or a
+budget that expires has nothing to answer with:
 
 ```
 node dev/check-storm.js
