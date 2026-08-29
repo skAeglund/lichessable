@@ -2931,7 +2931,13 @@ Currently working (v0.18.x).
   rules, §6 the probe's measurements (every threshold in `CONFIG.storm` is one
   of them) and §7 the eval band. `dev/probe-storm.js` still runs the entire
   pipeline against the live APIs and is how any rule change is re-measured;
-  `--frontiers` is the cheapest question in the file to ask of a new course.
+  `--frontiers` is the cheapest question in the file to ask of a new course, and
+  `--dump-fens` feeds `dev/probe-cdb-quality.js`, which is §12.3b's measurement
+  of whether a ChessDB score is good enough to GRADE with — 174 moves against a
+  local search: 70% same band, 42 of the 52 disagreements ChessDB being HARSHER,
+  and NOT ONE move scored good that the engine called a mistake. So the bands
+  are sound as they stand; do not widen them, and do not add a `learn=0` gate to
+  the grade (the fill-ins measured marginally BETTER than the book entries).
   What follows is only what an edit ELSEWHERE can break.
   * **IT MUST NEVER CALL CHESSDB'S `queue` OR `store`, and this is the single
     most tempting place in the codebase to break that rule.** The walk stops on

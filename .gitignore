@@ -19,3 +19,8 @@ dev/tmp-courses.json
 # Working state for dev/probe-chessdb-queue.js: FENs walked out of a course,
 # same "not ours to redistribute" reason as the dump above.
 dev/tmp-queue-probe.json
+
+# Survivor positions dumped by `dev/probe-storm.js --dump-fens`, for
+# dev/probe-cdb-quality.js. Walked out of a course, so the same "not ours to
+# redistribute" reason as the two dumps above.
+dev/tmp-storm-fens*.json

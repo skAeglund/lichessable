@@ -799,11 +799,127 @@ What it must look like:
    still outstanding.
 2. **Where the §7 stage-0 cap goes** — +100 or +200. Not a measurement; a
    decision about which exercise is wanted. Option 3 is now closed (§6.5).
-3. **Whether a `learn=1` fill-in score is good enough to grade a move.** This is
-   DESIGN-chessdb.md §10.1's open question arriving from a second direction, and
-   it matters more here: there it decorates a column, here it decides whether the
-   user was right. The probe to run is the same one — 20 positions, fill-in score
-   vs local depth 30, report the spread.
+3. **Whether a `learn=1` fill-in score is good enough to grade a move** — asked
+   and **ANSWERED 2026-08-29, YES**, see §12.3b. This is DESIGN-chessdb.md
+   §10.1's open question arriving from a second direction, and it matters more
+   here: there it decorates a column, here it decides whether the user was
+   right. The probe to run was 20 positions, fill-in score vs a local search,
+   report the spread; `dev/probe-cdb-quality.js` is that probe.
+3b. **The run** (2026-08-29). §12.3 is the feature's core claim: tier 1 of §3.4
+   grades most cards straight out of `queryall(P, learn=1)`, and §12.7b
+   established that that list is exactly the moves whose CHILD is in ChessDB's
+   graph — a game-derived number of unmeasured strength, not a search. If it is
+   wrong by more than a band width often enough, §16's five bands are measuring
+   the wrong thing and no amount of interface work matters.
+
+   ```
+   node dev/probe-storm.js --bid 453453 --n 16 --seed 7 --dump-fens dev/tmp-storm-fens-453453b.json
+   node dev/probe-storm.js --bid 453453 --n  8 --seed 1 --dump-fens dev/tmp-storm-fens.json
+   node dev/probe-storm.js --bid 291847 --n  8 --seed 1 --dump-fens dev/tmp-storm-fens-291847.json
+   node dev/probe-cdb-quality.js --fens <the three, merged and deduped> --n 22 \
+       --depth 24 --capms 120000 --moves 10 --threads 6 --build full
+   ```
+
+   **22 storm SURVIVOR positions** (20 from 453453, 2 from 291847 — the
+   composition is the pipeline's, not a choice: §12.7c's 10-vs-23 is why the
+   bought course contributes so few), **174 moves**, ChessDB `learn=1` against
+   the vendored Stockfish 18 full build at 6 threads, MultiPV over the sampled
+   moves. Depth reached 19-23, median 20.
+
+   **The headline.**
+
+   ```
+   |ChessDB - engine|, cp   <25: 125 (72%)   <50: 32 (18%)   <100: 17 (10%)   100+: 0 (0%)
+     in book         n= 23  <25:  15 (65%)   <50:  5 (22%)   <100:  3 (13%)
+     fill-in         n=151  <25: 110 (73%)   <50: 27 (18%)   <100: 14 ( 9%)
+
+   VERDICT BAND (stormGrade of the same move, both sides)
+     same band           122   70%
+     one band out         45   26%
+     two bands or more     7    4%
+
+   collapsed to what the answer DOES (scores / nothing / costs)
+     same outcome        129   74%
+     scores <-> costs      3
+
+   ChessDB's best move == the engine's best of the set:  18 of 22
+   ```
+
+   **Four findings, in order of how much they decide.**
+
+   * **THE DANGEROUS DIRECTION IS EMPTY.** Not one of the 174 moves was scored
+     `great`/`good` by ChessDB and called `bad`/`blunder` by the engine. The
+     three sign reversals all run the other way — a move graded a mistake that
+     the engine likes. **The feature never tells the user a bad move was the
+     move**, which is the only failure that would make it actively harmful.
+   * **AND THE ERROR IS BIASED THAT WAY THROUGHOUT.** Of the 52 band
+     disagreements, **42 are ChessDB being HARSHER** than the engine and 10
+     more lenient. A grade that is occasionally too strict is the one to have.
+   * **THE FILL-INS ARE NOT THE WEAK HALF** — they are marginally the better
+     one (73% within 25cp against the book's 65%, n=151 vs 23). So
+     DESIGN-chessdb.md §3.3's rule — never *present* a fill-in as a book eval —
+     stands as a rule about honesty, not about accuracy, and §14.20's label
+     naming the tier is the right shape of answer to it. **Nothing here argues
+     for a `learn=0` gate on the grade.**
+   * **THE ERROR IS PER-MOVE NOISE, NOT A PER-POSITION OFFSET.** The obvious
+     tidy explanation — every move of a position read the same amount too high,
+     so the loss (a difference) cancels it — is **wrong**: the median
+     per-position offset is 0cp (range −72 to +10), and removing each
+     position's own offset moves the <25cp figure only from 72% to 74%. So
+     ChessDB is not "a poor evaluator that still ranks well". It is a
+     reasonable evaluator, move by move, with a spread of about 20cp.
+
+   **Where it does go wrong, it goes wrong at the anchor.** The clearest case,
+   position 8 of the run (`r1b1kb1r/pp1ppppp/1qn2n2/8/4P3/1NN5/PPP2PPP/R1BQKB1R
+   b KQkq - 4 6`): every one of its ten moves is within 67cp and most within
+   25, but ChessDB reads its own top move `e6` at −19 where the engine reads
+   −79, and that 60cp of optimism about the BEST move is subtracted from every
+   other move's loss — so seven of the ten land a band low, all in the harsh
+   direction. Across the whole run the top-ranked move's error (median 19cp) is
+   not much worse than any other move's (median 12cp); it simply costs more,
+   because it is the one number every verdict in the position is measured
+   against.
+
+   **In the units the verdict is stated in** (§16), the two sources disagree by
+   a median of 1.72 points of win probability, p90 5.17, max 9.18 — against
+   band widths of 3, 3, 4 and 10. That is the honest statement of the noise:
+   roughly half a band typically, a whole band at the tenth percentile. Only 3
+   of the 52 band disagreements are a threshold straddle (the two losses within
+   1 wp point of each other); the rest are real differences of about that size.
+
+   **THREE DEPARTURES FROM §12.3'S SPECIFICATION**, each a decision:
+
+   1. **Depth 19-23, not 30.** Measured on the author's desktop, MultiPV-8
+      depth 24 alone is 220 s and depth 30 is tens of minutes *per position*;
+      22 of those is not a probe. So the budget is a wall clock and the depth
+      reached is REPORTED — v0.149.0's own rule for the shipped engine tier
+      (§14.23), arrived at here for the same reason. A depth-20 Stockfish 18 is
+      not the binding constraint on an answer whose resolution is a 33cp band.
+   2. **The moves sampled are a SPREAD over ChessDB's own scored list**, not
+      "the top 8 plus a few plausible developing and capturing moves". §12.7b
+      is why: `learn=1` scores exactly the moves whose child is in the graph, so
+      a plausible developing move is very often not in the list at all — and a
+      move ChessDB does not score is not tier 1's business, it falls to tier 2
+      or 3. The population this question is about is precisely ChessDB's scored
+      list, and the sample takes its top four plus the rest evenly spaced down
+      to the worst move it names, so the bad moves a human actually plays are
+      in it.
+   3. **The metric is bands as well as centipawns.** §12.3 asked for the
+      spread; the spread does not by itself say whether the feature is sound,
+      because a band is a band regardless of how wide the error is inside it.
+      Both are reported, and the collapse to scores/nothing/costs is the one to
+      argue from.
+
+   **What this closes and what it does not.** It closes §12.3: the grade is
+   sound enough, the bands are not measuring the wrong thing, and **nothing
+   should be widened** — TODO-storm.md block 2 said explicitly that if fill-ins
+   were poor the answer would be to reach the engine tier more often, and they
+   are not poor. What it does not answer: the sample is 22 positions from
+   effectively one course, the engine reference is restricted to the sampled
+   moves (so where the true best lies outside them, every engine loss is
+   understated by the same amount, biasing the report TOWARDS agreement), and
+   nothing here says anything about tier 2 (`best(P) + best(P after m)`), which
+   is a different arithmetic on the same data.
 4. **Whether relaxing `lichessFilters` recovers the 5-in-14 frontiers with no
    games** (§6.4), and what it costs in position quality.
 5. **The bulk export endpoint.** Lichess is believed to expose a
@@ -1186,6 +1302,20 @@ it the cheapest question in this file to ask of a new course.
 
 `--seed` makes the frontier sample reproducible; changing it is how to check
 that a number is not an artefact of which fourteen lines were drawn.
+
+`--dump-fens <path>` writes the run's SURVIVORS to JSON, which is the input to
+`dev/probe-cdb-quality.js` (§12.3b) — the one probe here that needs an engine as
+well as the two APIs. It drives the vendored WASM Stockfish from node, and three
+things about doing that are in its header rather than here: `locateFile` must
+answer by extension (it is asked for `stockfish.worker.js` too), output arrives
+on `listener` and not on `print`, and **the glue does a bare `fetch = null`** on
+node, so any HTTP client used after the engine boots must have been captured
+before it.
+
+```bash
+node dev/probe-storm.js --bid 453453 --n 16 --seed 7 --dump-fens dev/tmp-storm-fens.json
+node dev/probe-cdb-quality.js --n 22 --depth 24 --capms 120000 --moves 10 --build full
+```
 
 The three wire facts of §2 need no extension, no Chessable and no browser:
 

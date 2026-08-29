@@ -69,6 +69,24 @@ slow machine and an ignorant ChessDB print the identical thing. So
 shrunk to milliseconds — the second place in that file to execute impure code,
 for §14.17's reason.
 
+### BLOCK 2 RAN NEXT — 2026-08-29, and it closes the feature's core claim
+
+`DESIGN-intuition-storm.md` **§12.3b**. A ChessDB `learn=1` score IS good enough
+to grade with: 174 moves against a local Stockfish search, 70% the same verdict
+band, 74% the same outcome, and **not one move scored good that the engine called
+a mistake** — 42 of the 52 disagreements are ChessDB being harsher, which is the
+safe direction. **So the bands stay as they are and no `learn=0` gate belongs on
+the grade** (the fill-ins measured marginally better than the real book entries).
+No extension code changed, so no version bump; `dev/probe-cdb-quality.js` is new
+and `dev/probe-storm.js` gained `--dump-fens` to feed it. Block 2 below has the
+numbers.
+
+One incidental find worth keeping: the vendored WASM Stockfish **does** run in
+node, so a probe no longer has to borrow the extension's engine through a live
+session. Three things it needs — `locateFile` answering by extension, output on
+`listener` rather than `print`, and the glue's bare `fetch = null` clobbering the
+global — are in `dev/probe-cdb-quality.js`'s header.
+
 ### STILL ONLY A PROBE OR A LIVE SESSION CAN ANSWER
 
 * **Block 3** — engine-tier timing per profile. **UNBLOCKED and still owed**
@@ -80,9 +98,9 @@ for §14.17's reason.
   two threads, where the answer may be a SHORTER phase rather than a longer one.
   Part 4's label makes an engine-graded card identifiable at a glance, and
   §14.23's console line reports both depths and the elapsed time on every job.
-* **Block 2** — whether a `learn=1` fill-in is good enough to grade with. Part
-  4 makes this legible from real use (the review now says which tier answered
-  each row) but does not measure it.
+* ~~**Block 2** — whether a `learn=1` fill-in is good enough to grade with.~~
+  **MEASURED 2026-08-29** (§12.3b, and the section above). Part 4's tier label
+  still makes it legible from real use; it no longer needs to.
 * **The `minScored` decision itself.** Part 1 set it up; it is yours to take —
   see `DESIGN-intuition-storm.md` §12.7c, where the 21 FENs are written down.
 
@@ -146,7 +164,46 @@ Nothing in it blocks on the author; the one item that is genuinely a judgement
 
 ---
 
-## 2 Measure whether a `learn=1` fill-in is good enough to grade a move
+## 2 Measure whether a `learn=1` fill-in is good enough to grade a move — **DONE 2026-08-29, and the answer is YES**
+
+Written up as `DESIGN-intuition-storm.md` **§12.3b**. No extension code changed,
+so **no version bump** — same shape as block 1.1. The probe is
+`dev/probe-cdb-quality.js`, and `dev/probe-storm.js` gained `--dump-fens` to
+feed it.
+
+```
+22 storm survivor positions, 174 moves, ChessDB learn=1 vs Stockfish 18 at d19-23
+
+  |cdb - engine|      <25cp: 72%   <50cp: 18%   <100cp: 10%   100cp+: 0%
+  same verdict band     70%    one band out 26%    two or more 4%
+  same outcome          74%    (scores / nothing / costs)
+  scores <-> costs       3 of 174, ALL of them cdb harsh and the engine kind
+```
+
+**The finding that decides it: the dangerous direction is empty.** Not one of
+the 174 moves was graded `great`/`good` by ChessDB and called `bad`/`blunder` by
+the engine, and 42 of the 52 band disagreements are ChessDB being HARSHER. The
+feature never tells the user a bad move was the move.
+
+Two consequences for the list below: **the bands stay as they are** (this block
+said explicitly that a wide spread would mean reaching the engine tier more
+often — it is not wide), and **the fill-ins are not the weak half** — they
+measured marginally BETTER than the real book entries (73% vs 65% within 25cp),
+so DESIGN-chessdb.md §3.3's rule is about honesty and not accuracy, and no
+`learn=0` gate belongs on the grade.
+
+Three departures from §12.3's specification, argued in §12.3b: depth 19-23
+rather than 30 (measured: d24 MultiPV-8 is 220 s per position, d30 is tens of
+minutes), the moves sampled as a spread over ChessDB's own scored list rather
+than "top 8 plus plausible developing moves" (§12.7b: a move ChessDB does not
+score is not tier 1's business), and the metric reported in bands as well as
+centipawns.
+
+*Not verified: nothing to verify — no extension code changed. The sample is 22
+positions from effectively one course, and the engine reference is restricted to
+the sampled moves, which biases the report TOWARDS agreement.*
+
+<details><summary>the original brief</summary>
 
 §12.3, and it is the feature's core claim. Most cards are graded by tier 1, and
 §12.7b established that tier 1 scores exactly the ~5 moves whose CHILD is in
@@ -180,6 +237,8 @@ are measuring the wrong thing and no amount of interface work matters.
 > If fill-ins turn out to be poor, the answer is NOT to widen the bands — it is
 > to reach the engine tier more often, which is a `gradeTiers` change and wants
 > §8.1a's timing (block 3) done first.
+
+</details>
 
 ---
 

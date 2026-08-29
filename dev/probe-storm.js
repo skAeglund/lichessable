@@ -37,6 +37,7 @@
  * explorer's Bearer token.
  *
  *   node dev/probe-storm.js [--bid 453453] [--n 8] [--minply 2] [--maxply 16] [--seed 1]
+ *   node dev/probe-storm.js --bid 453453 --dump-fens dev/tmp-storm-fens.json
  */
 'use strict';
 const fs = require('fs');
@@ -361,6 +362,19 @@ function arg(name, dflt) {
 let seed = Number(arg('seed', 1)) >>> 0;
 const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
 
+/**
+ * --dump-fens <path>: write every SURVIVOR to a JSON file, so the positions
+ * this pipeline produces can be fed to another probe without re-walking the
+ * network. dev/probe-cdb-quality.js is the one consumer — §12.3 asks whether
+ * a `learn=1` score is good enough to GRADE with, and the honest sample for
+ * that question is exactly the positions the storm would actually offer.
+ *
+ * Survivors only, deliberately: a rejected candidate is one the user never
+ * sees, so its grading accuracy is not the question being asked.
+ */
+const dumpPath = arg('dump-fens', '');
+const dumped = [];
+
 async function main() {
   let courses;
   try {
@@ -494,6 +508,13 @@ async function main() {
           const withSrc = Object.assign({ from: label, game: g.id }, c);
           cands.push(withSrc);
           if (!c.reject) survivors.push(withSrc);
+          if (dumpPath && !c.reject) {
+            dumped.push({
+              bid, fen: c.fen, ply: c.ply, evalUser: c.evalUser,
+              nScored: c.nScored, spread2: c.spread2, spread5: c.spread5,
+              from: label, game: g.id,
+            });
+          }
         }
         const strip = walked.out.map((c) => (c.reject ? '.' : '#')).join('');
         console.log('      ' + g.id + ' ' + String(g.white.rating).padStart(4) + '/' +
@@ -634,6 +655,11 @@ async function main() {
       console.log('      top: ' + s.best.join('  ') + '   [' + s.from + ' / ' + s.game + ']');
     }
     console.log();
+  }
+
+  if (dumpPath) {
+    fs.writeFileSync(dumpPath, JSON.stringify(dumped, null, 1));
+    console.log('wrote ' + dumped.length + ' survivor positions to ' + dumpPath);
   }
 }
 
