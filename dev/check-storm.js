@@ -166,6 +166,14 @@ const src = [
   sliceDecl('stormStatsPrune'),
   sliceDecl('stormStatsWirePack'),
   sliceDecl('stormStatsWireUnpack'),
+  // §17's SET rules. Pure, and every one of them fails silently: a hold rule
+  // that never fires is a mode that quietly behaves like a storm with no
+  // clock, and an outcome rule that mis-files an attempt still produces a
+  // plausible tally.
+  sliceDecl('stormSetClean'),
+  sliceDecl('stormSetHeld'),
+  sliceDecl('stormSetOutcome'),
+  sliceDecl('stormSetTally'),
   sliceDecl('stormCandidate'),
   sliceDecl('stormAdvance'),
   sliceDecl('stormReentered'),
@@ -200,6 +208,7 @@ const src = [
   '         stormStatsWirePack, stormStatsWireUnpack,' +
   '         stormCp, stormWp, stormMoverCp,' +
   '         stormWinPct, stormWpLoss,' +
+  '         stormSetClean, stormSetHeld, stormSetOutcome, stormSetTally,' +
   '         stormEstimated, stormSourceLabel, stormSourceTitle,' +
 '         stormVerdictLine, stormBestLine,' +
   '         sanToUci, fenAfterUci };',
@@ -280,6 +289,13 @@ const C = {
   storeDropOn: (cfgBody.match(/storeDropOn:\s*\[([^\]]*)\]/) || [, ''])[1]
     .split(',').map((x) => x.trim().replace(/'/g, '')).filter(Boolean),
   minPlyMax: num('minPlyMax'), maxPlyMin: num('maxPlyMin'), maxPlyMax: num('maxPlyMax'),
+  // §17's set. `setCleanOn` is read the same way `storeDropOn` above is, and
+  // section 11 asserts the two still say the same thing — they answer different
+  // questions and are written out twice on purpose, so a change to either must
+  // be a deliberate change to both.
+  setSize: num('setSize'), setRetryMax: num('setRetryMax'),
+  setCleanOn: (cfgBody.match(/setCleanOn:\s*\[([^\]]*)\]/) || [, ''])[1]
+    .split(',').map((x) => x.trim().replace(/'/g, '')).filter(Boolean),
   // §14.19's reachability bucket. UNKNOWN answers this value, so a wrong one
   // here would make the 'no figure ties with the most reachable' assertion
   // pass against a source that had changed its mind about that.
@@ -2185,6 +2201,106 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
     C.gradeTimeoutMs > C.engineTimeoutMs, true);
   eq('the depth slack is small enough to mean something',
     C.engineDepthSlack > 0 && C.engineDepthSlack <= 4, true);
+  }
+
+  // ==========================================================================
+  // 11) §17) THE SET's RULES
+  //
+  // The no-clock mode, whose whole subject is what happens after a MISTAKE — so
+  // the rules below decide, for every answer, whether the session stops. Three
+  // ways they fail and all three are silent:
+  //
+  //  * A HOLD RULE THAT NEVER FIRES leaves a mode that behaves exactly like a
+  //    storm with no clock: every card still appears, every verdict still
+  //    prints, and the one thing the mode exists for simply never happens.
+  //  * `unknown` HELD would trap the user on a position ChessDB cannot score,
+  //    with no answer to reveal and no way to satisfy the hold — and it is the
+  //    obvious thing to lose, since `unknown` is not clean either.
+  //  * AN OUTCOME MIS-FILED still produces a plausible tally: "8 of 12 first
+  //    time" reads the same whether or not the retries were counted as first
+  //    attempts.
+  // ==========================================================================
+  {
+    const SC = { setCleanOn: ['great', 'good'], setRetryMax: 3 };
+
+    // --- what settles a position, and what stops the session ---------------
+    eq('a great move is clean', S.stormSetClean('great', SC), true);
+    eq('a good move is clean', S.stormSetClean('good', SC), true);
+    // The author's own boundary: more than 6% of the game given up. `ok` is
+    // the first band past `goodWp`, so it is where the mode starts acting.
+    eq('an inaccuracy is NOT clean', S.stormSetClean('ok', SC), false);
+    eq('a mistake is not clean', S.stormSetClean('bad', SC), false);
+    eq('a blunder is not clean', S.stormSetClean('blunder', SC), false);
+    eq('…and neither is an ungradeable answer', S.stormSetClean('unknown', SC), false);
+
+    eq('an inaccuracy holds the session', S.stormSetHeld('ok', SC), true);
+    eq('a mistake holds it', S.stormSetHeld('bad', SC), true);
+    eq('a blunder holds it', S.stormSetHeld('blunder', SC), true);
+    eq('a good move does not', S.stormSetHeld('good', SC), false);
+    eq('a great move does not', S.stormSetHeld('great', SC), false);
+    // THE ONE THAT IS NOT `!clean`. An ungradeable answer is a verdict about
+    // ChessDB, not about the user: there is no mistake to correct and no best
+    // move to reveal, so holding on it is a position that can never be
+    // satisfied. §15's record excludes it from both halves of its fraction for
+    // the same reason.
+    eq('an UNGRADEABLE answer does not hold it', S.stormSetHeld('unknown', SC), false);
+    eq('…and neither does a missing verdict', S.stormSetHeld(null, SC), false);
+
+    // --- how a resolved position is filed ----------------------------------
+    eq('found with the first move played', S.stormSetOutcome(1, 'great', false, SC), 'first');
+    eq('…and a good move counts the same', S.stormSetOutcome(1, 'good', false, SC), 'first');
+    eq('found on the second attempt', S.stormSetOutcome(2, 'good', false, SC), 'retry');
+    eq('found on the third', S.stormSetOutcome(3, 'great', false, SC), 'retry');
+    // REVEALED BEATS EVERYTHING BELOW IT. Once the move has been shown, nothing
+    // played afterwards says whether the position was known — which is exactly
+    // why a revealed position is what the second pass exists to re-ask.
+    eq('a shown answer is `shown` however good the move that follows',
+      S.stormSetOutcome(1, 'great', true, SC), 'shown');
+    eq('…and however many attempts came first',
+      S.stormSetOutcome(3, 'good', true, SC), 'shown');
+    // …EXCEPT for `unknown`, which is above it: a position ChessDB could not
+    // score was never shown an answer, because there was no answer to show.
+    eq('an ungradeable answer is not filed as shown',
+      S.stormSetOutcome(1, 'unknown', true, SC), 'unknown');
+    eq('a still-wrong answer that resolves anyway is `missed`',
+      S.stormSetOutcome(2, 'blunder', false, SC), 'missed');
+
+    // --- the tally, which is the mode's whole score ------------------------
+    const mk = (outcome, secondOutcome) =>
+      ({ card: {}, first: null, second: null, attempts: 1, outcome, secondOutcome });
+    const set = [
+      mk('first'), mk('first'), mk('retry'), mk('shown', 'first'),
+      mk('shown', 'missed'), mk('unknown'), mk(null),
+    ];
+    const t = S.stormSetTally(set);
+    eq('every entry is asked', t.asked, 7);
+    eq('…and the one still in play is not resolved', t.resolved, 6);
+    eq('two found first time', t.first, 2);
+    eq('one on a retry', t.retry, 1);
+    eq('two shown', t.shown, 2);
+    eq('one ungradeable', t.unknown, 1);
+    // THE SECOND PASS IS COUNTED SEPARATELY AND NEVER FOLDED IN. `first` and
+    // `retry` say how a position went the FIRST time it was ever seen, which is
+    // the question the mode is about; a position found only after being shown
+    // the move must not be able to climb into them.
+    eq('two came back on the second pass', t.again, 2);
+    eq('…and one of those was found', t.againClean, 1);
+    eq('the second pass did not inflate the first-time count', t.first, 2);
+
+    // --- the two thresholds hold their meaning ------------------------------
+    // The hold boundary IS `goodWp`, the author's own instruction, and the two
+    // must not drift apart: if `setCleanOn` ever admitted the `ok` band, "more
+    // than 6% of the game" would silently become "more than 10%".
+    eq('the clean set is exactly the two bands that score in a storm',
+      C.setCleanOn.join(','), 'great,good');
+    eq('…which is the same membership the store drops on',
+      C.setCleanOn.join(','), C.storeDropOn.join(','));
+    // A cap of one would make "try again" a single guess and a cap in the tens
+    // would let ~30 legal moves be searched rather than thought about.
+    eq('the retry cap leaves room to think and not to search',
+      C.setRetryMax >= 2 && C.setRetryMax <= 5, true);
+    eq('a set is about one storm\'s worth of material',
+      C.setSize >= 6 && C.setSize <= 30, true);
   }
 
   console.log('\n' + SRC_PATH);

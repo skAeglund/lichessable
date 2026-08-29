@@ -24,3 +24,4 @@ dev/tmp-queue-probe.json
 # dev/probe-cdb-quality.js. Walked out of a course, so the same "not ours to
 # redistribute" reason as the two dumps above.
 dev/tmp-storm-fens*.json
+__pycache__/

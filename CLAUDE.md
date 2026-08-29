@@ -2921,7 +2921,8 @@ Currently working (v0.18.x).
 
 - Intuition storm on the repertoire's frontier (section 27, v0.130.0): the
   positions your own course lines END on, carried forward by REAL games, one
-  at a time against a clock — Chessable teaches a line and stops, and this asks
+  at a time against a clock — or, in the SET mode (§17, v0.150.0), with no
+  clock at all and no mistake left behind — Chessable teaches a line and stops, and this asks
   what you do on the move after it stops. A move is graded for being DECENT
   rather than for matching an engine. Launched from the COURSE TREE's header
   (24), on a full-window panel of its own; the board is section 18's overlays in
@@ -3540,6 +3541,57 @@ Currently working (v0.18.x).
       oversight — a line leaves this record only by `stormStatsPrune`, a
       function of its own timestamp that every device applies to the same
       numbers, so the union converges by itself.
+  * THE SET — no clock, and no mistake left behind (§17, v0.150.0): a second
+    exercise on the same material, chosen from a selector in the pre-roll row.
+    Up to `setSize` positions, each of which must be RESOLVED before the next is
+    offered, then a SECOND PASS re-asking whatever was not found first time. The
+    producer, the store, the grading tiers and the board are all shared and know
+    nothing about it; `st.mode` is read only where a clock is. **READ
+    DESIGN-intuition-storm.md §17 BEFORE CHANGING IT** — §17.1 is why it is a set
+    rather than an endless run or a survival mode, and §17.9 is what a live
+    session still has to answer. What an edit ELSEWHERE can break:
+    - THE BEST MOVE IS OFF THE PANEL WHILE A POSITION IS HELD AND THE ANSWER HAS
+      NOT BEEN ASKED FOR, and that is the whole mechanism rather than a nicety:
+      `stormBestLine` NAMES THE MOVE, so a "try again" offered underneath it is a
+      lookup and not an exercise. §14.10a's rule moved onto a live card, and it
+      inherits that rule's split exactly — the line ABOVE, which is the USER's own
+      move with its rank and its loss, STAYS. It is theirs, they have seen it, and
+      it is what makes the position worth another attempt; a card hiding whether
+      the move was even wrong is a board with no question on it. TWO surfaces have
+      to agree, not §14.10a's three: the panel's second line, and
+      `.clo-cdb--est` on it — that class is a claim about where a number came
+      from, and a masked line carries an INSTRUCTION, not a number.
+    - `stormSetHeld` IS DELIBERATELY NOT `!stormSetClean`. An `unknown` verdict is
+      settled and is not clean: ChessDB could not score the move, so there is no
+      mistake to correct and no best move to reveal, and a hold on one could never
+      be satisfied — the user trapped on a position with two doors, neither of
+      which leads anywhere. §15's record and §16's score both exclude `unknown`
+      for the same reason. It is the arm most likely to be "tidied" away, and
+      `dev/check-storm.js` §11 is what fails when it is.
+    - `setCleanOn` AND `storeDropOn` HAVE THE SAME MEMBERSHIP AND ARE WRITTEN OUT
+      TWICE. They answer "may we move on" and "has this position taught what it
+      can", and a change to either must be a deliberate change to the other. The
+      check asserts they still agree, so the duplication cannot silently become a
+      divergence.
+    - §15's RECORD IS NOT WRITTEN, and the STORE IS — on the first answer of the
+      first round only. That record counts how a repertoire is read under the
+      storm's own conditions (four seconds, one attempt) and an unhurried answer
+      with three attempts behind it is not that measurement; the store asks a
+      question about the POSITION, which the clock has nothing to do with. A
+      retry is played with the last verdict on screen and the second pass minutes
+      after a reveal, so neither is evidence about anything.
+    - IT REVEALS BEFORE IT ANALYSES. Section 19's board arrives with the engine
+      and the database beside it, both of which name the move within a second, so
+      "analyse blind" is not a state that exists — making the reveal explicit and
+      counted is the honest version of what would otherwise happen one panel over.
+    - `nextCard` NULLS `st.card` BEFORE IT PICKS, and the storm needs that too:
+      §14.10c's push otherwise saw the card just ANSWERED and put it in the review
+      a second time as `unanswered`. Every storm that ran out of positions did
+      this (§17.8).
+    - IT ADDS NO BRIDGE. `stormApi` grew four members (`isSet`, `retry`, `reveal`,
+      `advance`, `analyse`) and section 18 grew `cr.stormHold`, which is a verdict
+      the session has not accepted yet — the board is already shut behind one, so
+      nothing about the board changed.
 
 - SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
@@ -3689,6 +3741,18 @@ budget that expires has nothing to answer with:
 ```
 node dev/check-storm.js
 ```
+
+…and after touching §17's SET rules — `stormSetClean`, `stormSetHeld`,
+`stormSetOutcome`, `stormSetTally`, or `CONFIG.storm`'s `setCleanOn` /
+`setRetryMax` / `setSize`. All four fail SILENTLY: a hold rule that never fires
+leaves a mode behaving exactly like a storm with no clock (every card still
+appears, every verdict still prints, and the one thing the mode exists for simply
+never happens), `unknown` held traps the user on a position with no answer to
+reveal, and an outcome mis-filed still produces a plausible tally — "8 of 12
+first time" reads the same whether or not the retries were counted as first
+attempts. Controls run 2026-08-29, each failing on exactly its own assertions and
+no others: `stormSetHeld` written as `!stormSetClean` → 2; `stormSetOutcome`
+ignoring `revealed` → 2; the second pass folded into the first-time count → 2.
 
 …and after touching the verdict line it prints — `stormCp`, `stormVerdictLine`,
 `stormBestLine`, or §14.20's `stormEstimated` / `stormSourceLabel` /

@@ -1747,6 +1747,39 @@
       lowTimeMs: 30000,  // the clock goes amber under this
       tickMs: 200,       // the clock's own repaint
 
+      // --- THE SET: the no-clock mode (§17) --------------------------------
+      // A second exercise on the same material, and a different question. The
+      // storm asks "what do you play in four seconds"; the set asks "can you
+      // still not find this one", and refuses to move on until you can.
+      //
+      // ITS UNIT IS A POSITION CLEARED, NOT A POSITION SHOWN, which is what
+      // makes a size here mean something a session length never could: twelve
+      // is one storm's worth of material (§8.2's "a 3-minute storm answers
+      // about a dozen"), so the two modes spend the store at the same rate and
+      // `queueTarget`, `maxPositions` and `cdbMaxPerSession` all need no
+      // second value.
+      setSize: 12,
+      // HOW MANY BLIND ATTEMPTS BEFORE THE ANSWER OPENS. Not a difficulty
+      // dial: with ~30 legal moves and a first grading tier that costs no
+      // request at all (§3.4), unlimited hidden retries can be SEARCHED rather
+      // than thought about, and a mode that allows that will get it at
+      // eleven at night. Three is "think, think again, then look".
+      setRetryMax: 3,
+      // WHAT COUNTS AS SETTLED, and so what does NOT hold the position back.
+      // It is the same membership as `storeDropOn` and it is written out again
+      // deliberately: that list answers "has this position taught what it can"
+      // and this one answers "may we move on", and a later change to either
+      // question must not silently be a change to the other.
+      //
+      // The boundary is `goodWp` — more than 6% of the game given up — which
+      // is the author's own instruction and happens to be the line the bands
+      // were already drawn at. `unknown` is not in it and is not held either:
+      // ChessDB could not score the move, so there is no mistake to correct
+      // and nothing to reveal. (§15's record makes the same exclusion, for the
+      // same reason: it is a verdict about the book, not about the user.)
+      setCleanOn: ['great', 'good'],
+      setModeKey: 'cloStormMode',
+
       // --- the producer (§8.3) --------------------------------------------
       // ITS UNIT IS A FRONTIER, NOT A POSITION: one frontier yields two game
       // walks and, at the measured rate, one to three survivors — which is the
@@ -18149,6 +18182,14 @@
       // the same single ply — only the three sentences the panel prints, since
       // "No idea" and "End storm" both name a session that is already over.
       stormRetry: false,
+      // …and, in the SET mode (section 27 §17), whether this verdict is one the
+      // session is REFUSING TO MOVE PAST — `{ revealed, left }`, handed in
+      // beside the verdict itself. It is what turns the two action buttons into
+      // the two doors out of a mistake, and while `revealed` is false it is
+      // also what keeps `stormBestLine` off this panel: §14.10a's rule, that an
+      // answer handed over before the user has looked is the opposite of what
+      // the position is for.
+      stormHold: null,
       // --- analysis board (section 19) -------------------------------------
       an: blankAnalysis(),
       // Lead-in typed for "Add as line" ("An example continuation:"). Lives
@@ -18238,6 +18279,7 @@
         cr.hostKind = 'storm';
         cr.mode = 'storm';
         cr.stormRetry = Boolean(opts && opts.retry);
+        cr.stormHold = null;
         cr.queue = [card];
         if (!showOverlays()) {
           // The mode and the host must not outlive a board that never opened,
@@ -18247,6 +18289,7 @@
           cr.hostKind = '';
           cr.mode = 'quiz';
           cr.stormRetry = false;
+          cr.stormHold = null;
           cr.queue = [];
           return false;
         }
@@ -18266,6 +18309,7 @@
         clearTimer();
         cr.busy = false;
         cr.stormVerdict = null;
+        cr.stormHold = null;
         cr.queue = [card];
         startLine(0);
         applyStormArrival(card);
@@ -18273,9 +18317,14 @@
       },
       /** §8.1's line. Section 27 owns the words; this owns the element, and
        *  holds the board shut for as long as the verdict is up. */
-      verdict(v) {
+      verdict(v, hold) {
         if (!cr.active || cr.mode !== 'storm') return;
         cr.stormVerdict = v || null;
+        // §17) A HOLD IS A VERDICT THE SESSION HAS NOT ACCEPTED YET. The board
+        // stays shut either way — the refused move is still on it — but the
+        // panel says something quite different, and section 27 is what decides
+        // which.
+        cr.stormHold = (v && hold) ? hold : null;
         cr.busy = Boolean(v);
         syncUi();
       },
@@ -22483,6 +22532,16 @@
       hint.textContent = 'Hint';
       hint.title = 'Show the move this line plays here';
       hint.addEventListener('click', () => {
+        // §17) IN A HELD SET CARD THIS BUTTON IS THE OTHER DOOR — "show me the
+        // move", and once the move is out, "analyse it". Both belong to section
+        // 27, which owns the hold; `cr.busy` is true throughout a hold (the
+        // refused move is still on the board), so the guard below has to be
+        // reached only after this.
+        if (cr.mode === 'storm' && cr.stormHold && stormApi) {
+          if (cr.stormHold.revealed) stormApi.analyse();
+          else stormApi.reveal();
+          return;
+        }
         if (cr.busy) return;
         cr.hint = true;
         syncUi();
@@ -22501,7 +22560,22 @@
         // being refilled from the network while the user answers — so passing
         // is its decision to take. It counts as a MISS there, which is what
         // stops "pass until an easy one turns up" being the way to a streak.
-        if (cr.mode === 'storm') { if (stormApi) stormApi.pass(); return; }
+        //
+        // §17) …and in a HELD set card it is not a pass at all: it is "try
+        // again" while blind attempts remain, and "next position" once the move
+        // has been shown. Three meanings for one button because all three are
+        // what a user means by pressing it in that state — which is the same
+        // argument §14.10b already made for the second.
+        if (cr.mode === 'storm') {
+          if (!stormApi) return;
+          if (cr.stormHold) {
+            if (cr.stormHold.revealed) stormApi.advance();
+            else stormApi.retry();
+            return;
+          }
+          stormApi.pass();
+          return;
+        }
         nextLine();
       });
 
@@ -23010,6 +23084,8 @@
       // stopped, so only the words change — and they must, since every one of
       // the three below names a session that is over.
       const retry = cr.stormRetry;
+      // §17) A HELD card, i.e. a mistake the set will not move past.
+      const hold = cr.stormHold;
       cr.ui.title.textContent = v ? (words[v.verdict] || 'Answered')
         : (retry ? 'Try this one again' : 'Find a good move');
       // TWO TREATMENTS FOR FIVE BANDS, and that is deliberate: this line is
@@ -23038,13 +23114,32 @@
         cr.ui.progress.removeAttribute('title');
       } else {
         cr.ui.prompt.textContent = stormVerdictLine(v, s);
-        cr.ui.progress.textContent = stormBestLine(v, s);
+        // §17) THE BEST MOVE IS OFF THIS LINE WHILE THE POSITION IS HELD AND
+        // THE ANSWER HAS NOT BEEN ASKED FOR — §14.10a's rule, moved from the
+        // review onto a live card, and the single mechanical thing this mode
+        // rests on: a "try again" offered underneath the move to play is a
+        // lookup, not an exercise.
+        //
+        // The line ABOVE stays exactly as it is, and that is the same split
+        // §14.10a made. It is about the move the USER played — its rank, and
+        // how much of the game it gave up — which is theirs, which they have
+        // already seen, and which is precisely what makes the position worth a
+        // second attempt. Hiding whether the move was even wrong would leave a
+        // board with no question on it.
+        const masked = Boolean(hold) && !hold.revealed;
+        cr.ui.progress.textContent = masked
+          ? (hold.left > 0
+              ? 'Play it again — ' + hold.left + ' attempt' + (hold.left === 1 ? '' : 's') +
+                ' left, then the move is shown'
+              : 'No attempts left — show the move to move on')
+          : stormBestLine(v, s);
         // §14.20: NO LONGER UNCONDITIONAL. `.clo-cdb--est` means "ChessDB
         // computed this for us just now", which is true of both its tiers and
         // false of the engine one — and the engine tier is precisely where a
-        // number needs a different sentence, not a fainter one.
-        cr.ui.progress.classList.toggle('clo-cdb--est', stormEstimated(v));
-        cr.ui.progress.title = stormSourceTitle(v);
+        // number needs a different sentence, not a fainter one. A MASKED line
+        // is neither: it is an instruction, and carries no claim at all.
+        cr.ui.progress.classList.toggle('clo-cdb--est', !masked && stormEstimated(v));
+        cr.ui.progress.title = masked ? '' : stormSourceTitle(v);
       }
 
       // A storm has no line to walk, no answer to hint at, and Skip means "I
@@ -23055,17 +23150,48 @@
       // position back for another move — the one thing a review board can offer
       // that a timed card cannot.
       cr.ui.browseBtn.hidden = true;
+      // §17) THE TWO DOORS OUT OF A MISTAKE, on the two buttons this panel
+      // already has. Before the reveal they are "try again" and "show me"; once
+      // the move is out they are "next" and "analyse", which are the only two
+      // things left to do with a position whose answer is known.
+      if (hold) {
+        const blind = !hold.revealed;
+        cr.ui.hint.hidden = false;
+        cr.ui.hint.disabled = false;
+        cr.ui.hint.textContent = blind ? 'Show the move' : 'Analyse';
+        cr.ui.hint.title = blind
+          ? 'Give up on this one and see the best move. It still has to be cleared, ' +
+            'and it comes back in the second pass.'
+          : 'Open the analysis board here — play it out, with the engine and the ' +
+            'database beside it.';
+        // Hidden rather than disabled once the attempts are spent: a button
+        // that cannot be pressed and says how many tries are left is two
+        // messages where the line above already carries one.
+        cr.ui.skip.hidden = blind && hold.left <= 0;
+        cr.ui.skip.textContent = blind
+          ? 'Try again (' + hold.left + ')'
+          : 'Next position';
+        cr.ui.skip.title = blind
+          ? 'Put the position back and play a different move — the best move stays hidden'
+          : 'This one is done with; go on to the next position in the set';
+        cr.ui.exit.textContent = 'End set';
+        cr.ui.exit.title = 'Stop here and see how the set went';
+        return;
+      }
       cr.ui.hint.hidden = true;
       cr.ui.skip.hidden = retry ? !v : Boolean(v);
       cr.ui.skip.textContent = retry ? 'Try another move' : 'No idea';
       cr.ui.skip.title = retry
         ? 'Put the position back and play something else — still nothing is scored'
-        : 'Move on without answering — it counts as a miss, so the streak goes ' +
-          'back to zero and it costs points';
-      cr.ui.exit.textContent = retry ? 'Back to the review' : 'End storm';
+        : (stormApi && stormApi.isSet()
+            ? 'Show me the move — nothing is scored either way, and it comes back ' +
+              'in the second pass'
+            : 'Move on without answering — it counts as a miss, so the streak goes ' +
+              'back to zero and it costs points');
+      cr.ui.exit.textContent = (stormApi && stormApi.isSet()) ? 'End set' : 'End storm';
       cr.ui.exit.title = retry
         ? 'Stop playing this position and go back to the list'
-        : 'Stop the storm and see the score';
+        : 'Stop and see how it went';
     }
 
     /** Variation names run long, and the panel is one column wide. */
@@ -23515,6 +23641,7 @@
       cr.mode = 'quiz';
       cr.browse = false;
       cr.stormVerdict = null; // section 27's line, which belongs to the run that has gone
+      cr.stormHold = null;    // …and the hold it was being held by (§17)
       cr.stormRetry = false;  // …and whether that run was a review retry (§14.10b)
       cr.sgAgain.clear();
       cr.view = null;
@@ -34312,6 +34439,22 @@
       score: 0,
       streak: 0,
       bestStreak: 0,
+      // --- §17) THE SET: the no-clock mode ---------------------------------
+      // `mode` is the whole switch, and it is read in exactly the places a
+      // clock is: `startClock`, `solving`, the finish handler `grade` picks,
+      // and the wording. Everything else — the producer, the store, the
+      // grading tiers, the board — is shared and knows nothing about it.
+      mode: 'storm',     // 'storm' | 'set'
+      startedAt: 0,      // …and the count-UP a set shows instead of a deadline
+      endedAt: 0,        // …frozen here, or the elapsed figure grows under the summary
+      set: [],           // [{ card, first, second, attempts, outcome }] in ask order
+      cur: null,         // the entry the card on the board belongs to
+      round: 1,          // 1 = the first pass, 2 = the re-ask of what was missed
+      pass2: [],         // …and the entries queued for it
+      // THE HOLD: a missed position the session will not move past.
+      // `{ attempts, revealed }` — `revealed` is what §14.10a's rule turns on,
+      // and while it is false the best move is off ALL of its surfaces.
+      hold: null,
       verdict: null,     // what §8.1's line prints, or null before an answer
       history: [],       // [{ card, verdict }] — every position answered (§14.10)
       reviewIdx: 0,      // which of them the review is standing on
@@ -34402,12 +34545,21 @@
       if (st.maxPly < st.minPly) st.maxPly = st.minPly;
     }
 
+    /** §17) The mode is a SETTING, like the ply range and for the same reason:
+     *  the row that holds its control is shown during the pre-roll, i.e. AFTER
+     *  `startSession` has run, so it cannot be part of what that function
+     *  resets. Anything but the literal 'set' is a storm. */
+    function applyStormMode(m) {
+      st.mode = (m === 'set') ? 'set' : 'storm';
+    }
+
     (async () => {
       try {
-        const got = await chrome.storage.local.get([C.minPlyKey, C.maxPlyKey]);
+        const got = await chrome.storage.local.get([C.minPlyKey, C.maxPlyKey, C.setModeKey]);
         applyPlyRange(
           Object.prototype.hasOwnProperty.call(got, C.minPlyKey) ? got[C.minPlyKey] : C.minPly,
           Object.prototype.hasOwnProperty.call(got, C.maxPlyKey) ? got[C.maxPlyKey] : C.maxPly);
+        applyStormMode(got[C.setModeKey]);
         syncSettings();
       } catch (err) {
         // An orphaned content script, or a profile with no storage: the
@@ -35485,6 +35637,83 @@
       if (base < 0) return base;
       const mult = Math.min(C.streakMax, 1 + Math.floor(Math.max(0, streak) / C.streakStep));
       return base * mult;
+    }
+
+    // --- §17) THE SET -------------------------------------------------------
+    //
+    // Pure, and up here with the other pure rules for the reason all of them
+    // are: `dev/check-storm.js` slices them out and executes them, and the
+    // three failure modes below are silent. A hold rule that never fires is a
+    // mode that quietly behaves like a storm with no clock; an outcome rule
+    // that mis-files an attempt still produces a plausible tally.
+    // ----------------------------------------------------------------------
+
+    /** Did this answer SETTLE the position — may the session move on?
+     *
+     *  `unknown` is settled and is deliberately not "clean": ChessDB could not
+     *  score the move, so there is no mistake to correct and no best move to
+     *  reveal, and holding the user on it would be charging them for the
+     *  book's ignorance. §15's record makes the same exclusion for the same
+     *  reason. */
+    function stormSetClean(verdict, C) {
+      return C.setCleanOn.indexOf(verdict) >= 0;
+    }
+
+    /** …and the other half: must the session STOP here? Everything that is
+     *  neither clean nor ungradeable, i.e. the author's own "more than 6% of
+     *  the game given up". Written as its own function rather than as
+     *  `!stormSetClean(...)` because the `unknown` arm is exactly the thing a
+     *  reader would otherwise assume away. */
+    function stormSetHeld(verdict, C) {
+      if (!verdict || verdict === 'unknown') return false;
+      return !stormSetClean(verdict, C);
+    }
+
+    /**
+     * How a position was resolved, in four words the summary can count.
+     *
+     * `attempts` is the number of moves played at it THIS round, so 1 is the
+     * first move played. `revealed` beats everything below it: once the answer
+     * has been shown, nothing played afterwards is evidence about whether the
+     * position was known — which is also why a revealed position is what the
+     * second pass exists to re-ask.
+     */
+    function stormSetOutcome(attempts, verdict, revealed, C) {
+      if (verdict === 'unknown') return 'unknown';
+      if (revealed) return 'shown';
+      if (stormSetClean(verdict, C)) return attempts <= 1 ? 'first' : 'retry';
+      // Not clean, not revealed, and still resolved: only the round-2 arm ends
+      // a position that way, and only because there is no round 3.
+      return 'missed';
+    }
+
+    /**
+     * The whole session in one object — what the header shows while it runs and
+     * what the summary prints when it ends.
+     *
+     * THE SCORE OF A SET IS "HOW MANY FIRST TIME", not points: a point total
+     * measures how many cards a clock allowed through, while this measures the
+     * same thing every session however long it took, which is the one number
+     * two sittings can be compared on.
+     */
+    function stormSetTally(set) {
+      const t = { asked: 0, resolved: 0, first: 0, retry: 0, shown: 0,
+        missed: 0, unknown: 0, again: 0, againClean: 0 };
+      for (let i = 0; i < set.length; i++) {
+        const e = set[i];
+        t.asked++;
+        if (!e.outcome) continue;
+        t.resolved++;
+        if (t[e.outcome] !== undefined) t[e.outcome]++;
+        // The second pass, counted separately and never folded into the four
+        // above: those describe how the position went the first time it was
+        // ever seen, which is the question the mode is about.
+        if (e.secondOutcome) {
+          t.again++;
+          if (e.secondOutcome === 'first' || e.secondOutcome === 'retry') t.againClean++;
+        }
+      }
+      return t;
     }
 
     /**
@@ -37188,6 +37417,13 @@
       if (!st.running || st.over || st.started || st.gathering) return;
       if (!st.queue.length) return;
       st.started = true;
+      // §17) A set has no deadline, so its clock counts UP — and it is armed
+      // HERE rather than at the first card, unlike `startClock`'s deadline.
+      // The two differ because they measure different things: a storm's clock
+      // is a budget the producer's opening round trip must not eat into, and
+      // this one is simply how long the sitting took.
+      st.startedAt = Date.now();
+      if (setModeOn()) startClock();
       st.viewStats = false;  // §15.4: the stage is what a press of Start means
       render();
       nextCard();
@@ -37357,6 +37593,11 @@
        *  what a user means by pressing it in that state. */
       pass() {
         if (st.retry) { retryAnother(); return; }
+        // §17) IN A SET, "no idea" IS A REQUEST FOR THE ANSWER, not a miss.
+        // There is no score for a pass to cost and no streak for it to break,
+        // and the position still has to be cleared and still comes back in the
+        // second pass — so the honest reading of the button is "show me".
+        if (setModeOn()) { setGiveUp(); return; }
         if (!st.card || st.verdict || st.grading) return;
         // §16: THE WORST BAND, deliberately. "I have no idea" costing less than
         // a bad move would make passing the way to protect a streak, which is
@@ -37365,6 +37606,14 @@
           wp: null, loss: null, rank: null });
       },
       close() { endSession('closed'); },
+      // §17) THE SET's OWN DOORS, all four called from section 18's two action
+      // buttons and all four no-ops outside a hold — which is what lets that
+      // panel route a press without knowing which state the session is in.
+      isSet() { return setModeOn(); },
+      retry() { setRetryHold(); },
+      reveal() { setReveal(); },
+      advance() { setAdvance(); },
+      analyse() { setAnalyse(); },
     };
 
     async function startSession(spec) {
@@ -37406,6 +37655,18 @@
       st.score = 0;
       st.streak = 0;
       st.bestStreak = 0;
+      // §17) THE SET. `st.mode` is deliberately NOT reset here — it is a
+      // setting whose control lives in the pre-roll row, i.e. is shown after
+      // this function has run — so only an explicit `spec.mode` moves it, which
+      // is what lets `stormAgain` keep the mode the way it keeps the scope.
+      if (spec.mode) applyStormMode(spec.mode);
+      st.set = [];
+      st.cur = null;
+      st.round = 1;
+      st.pass2 = [];
+      st.hold = null;
+      st.startedAt = 0;
+      st.endedAt = 0;
       st.exhausted = false;
       st.boardUp = false;
       st.funnel = null;   // §14.17: the producer counts nothing; a gather does
@@ -37569,27 +37830,48 @@
       // reach here, so barring it once bars every route into the first card.
       // `render()` is what enables the button as the queue fills.
       if (!st.started) { render(); return; }
+      // §17) A HELD POSITION IS THE ONE THING THAT STOPS THIS LOOP, and it has
+      // to be checked here rather than at each caller: a stale verdict timer, a
+      // sync refill and `produce`'s own finally all reach this function, and
+      // advancing past a mistake the user has not dealt with is the single
+      // thing the set mode exists to prevent.
+      if (st.hold) return;
       st.verdict = null;
-      const card = st.queue.shift();
+      // CLEARED BEFORE THE PICK, not after it. Every route out of the picks
+      // below can call `endSession`, which since §14.10c keeps whatever card is
+      // on `st.card` — and the card sitting there is the one just ANSWERED,
+      // already in the history. Without this the last position of every
+      // exhausted session appeared in the review twice, the second time
+      // claiming it was never answered.
+      st.card = null;
+      const card = setModeOn() ? setPick() : st.queue.shift();
       if (!card) {
         // Nothing ready. If more can still be produced this is a pause; if not,
         // the session is over — an empty queue ENDS it cleanly rather than
-        // stalling on a spinner (§8.3).
-        if (st.exhausted && !st.producing) {
+        // stalling on a spinner (§8.3). A set answers its own version of this
+        // inside `setPick`, which is why it can only arrive here waiting.
+        if (!setModeOn() && st.exhausted && !st.producing) {
           endSession(st.shown ? 'out of positions' : 'nothing to storm',
             st.shown ? '' : 'No position on this course’s frontier could be graded — ' +
               'ChessDB has not seen them, or the games there run out too quickly.');
           return;
         }
-        st.card = null;
-        render();
-        produce();
+        if (!st.over) { render(); produce(); }
         return;
       }
+      showCard(card);
+    }
+
+    /** Putting a card on the board — the tail both modes share. Returns false
+     *  when the board refused, having already ended the session. */
+    function showCard(card) {
       st.card = card;
       st.lastPlayed = null;
       st.shown++;
-      if (!st.endsAt) startClock();
+      // A SET ARMS NO DEADLINE. Its clock counts up and is started by the press
+      // of Start, since it measures the sitting rather than a budget the
+      // producer's opening round trip must not eat into.
+      if (!setModeOn() && !st.endsAt) startClock();
       const ok = st.boardUp
         ? (continuationStormApi && continuationStormApi.next(card))
         : (continuationStormApi && continuationStormApi.open(card, slots));
@@ -37598,12 +37880,81 @@
         // board (§14.10c). This one never reached a board, so putting it in the
         // review would show a position the user has not seen.
         st.card = null;
+        st.cur = null;
         endSession('board refused', 'The storm board could not be opened here.');
-        return;
+        return false;
       }
       st.boardUp = true;
       render();
       produce(); // top the queue up while the user thinks
+      return true;
+    }
+
+    // --- §17) the set's own control flow ------------------------------------
+    //
+    // TWO ROUNDS. The first asks up to `setSize` positions, each of which must
+    // be RESOLVED before the next is offered; the second re-asks the ones that
+    // were not found first time. There is no third: after a reveal the answer
+    // is known, so a third pass would measure how long the user's short-term
+    // memory is rather than whether they can read the position.
+    // ----------------------------------------------------------------------
+
+    const setModeOn = () => st.mode === 'set';
+
+    /** Which position the set asks next, or null while the producer is still
+     *  working. Every ending goes through `setFinish`. */
+    function setPick() {
+      if (st.round === 1) {
+        if (st.set.length < C.setSize) {
+          const card = st.queue.shift();
+          if (card) {
+            const entry = { card, first: null, second: null, attempts: 0,
+              outcome: null, secondOutcome: null };
+            st.set.push(entry);
+            st.cur = entry;
+            return card;
+          }
+          // A SET SIZE IS A TARGET, NOT A PROMISE. If nothing more can be
+          // produced the first round simply ends short — the same answer the
+          // storm gives an empty queue — which is why `setSize` needs no
+          // relationship to what a course can actually supply.
+          if (!(st.exhausted && !st.producing)) return null;
+        }
+        return setSecondPass();
+      }
+      return setPass2Next();
+    }
+
+    /** The re-ask, and the point of the mode: a position corrected two minutes
+     *  ago with its verdict on screen is not a position you know.
+     *
+     *  `unknown` is left out. ChessDB will not score it the second time either,
+     *  so asking again could only produce the same non-answer. */
+    function setSecondPass() {
+      st.round = 2;
+      st.pass2 = st.set.filter((e) =>
+        e.outcome === 'retry' || e.outcome === 'shown' || e.outcome === 'missed');
+      // SAID IN THE SUBTITLE, not through `setNote`: `produce`'s finally clears
+      // the note and `showCard` calls it one statement later, so an
+      // announcement made here would be wiped before it was read. The subtitle
+      // is redrawn every tick and is where the rest of what a session IS
+      // already lives (§14.21's chapter scope).
+      return setPass2Next();
+    }
+
+    function setPass2Next() {
+      const entry = st.pass2.shift();
+      if (!entry) { setFinish(); return null; }
+      entry.attempts = 0;
+      st.cur = entry;
+      return entry.card;
+    }
+
+    function setFinish() {
+      const t = stormSetTally(st.set);
+      endSession('set cleared', t.asked ? '' :
+        'No position on this course’s frontier could be graded — ' +
+        'ChessDB has not seen them, or the games there run out too quickly.');
     }
 
     /**
@@ -37641,7 +37992,13 @@
       st.grading = true;
       st.lastPlayed = { uci, san };
       render();
-      await runGrade(card, uci, san, () => st.running && st.card === card, finishAnswer);
+      // §17) ONE GRADER, TWO THINGS TO DO WITH THE ANSWER — the split §14.10b
+      // already made, used a third time. The tiers, the watchdog and the
+      // fail-open are `runGrade`'s and are identical in both modes; what a
+      // storm does with a verdict (points, streak, the record) and what a set
+      // does with it (hold, or resolve and move on) is all that differs.
+      await runGrade(card, uci, san, () => st.running && st.card === card,
+        setModeOn() ? finishSetAnswer : finishAnswer);
     }
 
     /**
@@ -37804,6 +38161,182 @@
       st.nextTimer = setTimeout(() => { st.nextTimer = 0; nextCard(); }, C.verdictMs);
     }
 
+    // --- §17) what a SET does with a verdict --------------------------------
+    //
+    // NO POINTS, NO STREAK, AND NOTHING IN §15's RECORD. That record counts how a
+    // repertoire is read under the storm's own conditions — four seconds and one
+    // attempt — and an unhurried answer with three attempts behind it is not
+    // that measurement. One record with two scoring rules stops meaning one
+    // thing (§15.2's discipline, applied before it can be broken).
+    //
+    // THE STORE IS A DIFFERENT SUBJECT and IS written. `storeNote` answers "has
+    // this position taught what it can", and an unhurried FIRST answer settles
+    // that exactly as a hurried one does — which is why it fires on the first
+    // answer of the first round and on nothing else: a retry is played with the
+    // last attempt's verdict on screen, and the second pass is played minutes
+    // after being shown the move.
+    // ----------------------------------------------------------------------
+
+    function finishSetAnswer(v) {
+      const entry = st.cur;
+      st.verdict = v;
+      if (!entry) { render(); return; }
+      entry.attempts++;
+      if (entry.attempts === 1) {
+        if (st.round === 1) entry.first = v; else entry.second = v;
+        if (st.round === 1 && st.card) storeNote(st.card.startFen, v.verdict);
+      }
+      if (stormSetHeld(v.verdict, C)) {
+        // HELD. Nothing is scheduled — no verdict timer, no next card — and the
+        // best move is off every surface until it is asked for (§14.10a's rule,
+        // whose whole argument is that an answer handed over before the user has
+        // looked is the opposite of what the position is for).
+        st.hold = { attempts: entry.attempts, revealed: false };
+        if (continuationStormApi) continuationStormApi.verdict(v, setHoldState());
+        render();
+        // A HOLD IS THE LONGEST STATE THIS MODE HAS and nothing is waiting on
+        // the network during it, so it is the best moment in either mode to top
+        // the queue up. `showCard` is the only other caller and a held card
+        // never reaches it.
+        produce();
+        return;
+      }
+      setResolve(v, false, false);
+    }
+
+    /** What section 18 needs to know about the hold: whether the answer is out,
+     *  and whether another blind attempt is available. */
+    function setHoldState() {
+      if (!st.hold) return null;
+      return {
+        revealed: Boolean(st.hold.revealed),
+        left: Math.max(0, C.setRetryMax - st.hold.attempts),
+      };
+    }
+
+    /**
+     * The position is done with. `revealed` is what makes the difference
+     * between "found it" and "was shown it", and `now` skips the verdict pause
+     * for a resolution the user asked for by pressing a button.
+     */
+    function setResolve(v, revealed, now) {
+      const entry = st.cur;
+      st.hold = null;
+      if (entry) {
+        const outcome = stormSetOutcome(entry.attempts, v.verdict, revealed, C);
+        if (st.round === 1) {
+          entry.outcome = outcome;
+          // ONE ROW PER POSITION IN THE REVIEW, carrying the answer given the
+          // first time it was ever seen — the only one that says anything about
+          // whether it was known. The second pass updates nothing here.
+          st.history.push({ card: entry.card, verdict: entry.first || v });
+          if (st.history.length > C.reviewMax) st.history.shift();
+        } else {
+          entry.secondOutcome = outcome;
+        }
+      }
+      st.answered++;
+      if (continuationStormApi) continuationStormApi.verdict(v, null);
+      render();
+      clearTimeout(st.nextTimer);
+      if (now) { st.nextTimer = 0; nextCard(); return; }
+      st.nextTimer = setTimeout(() => { st.nextTimer = 0; nextCard(); }, C.verdictMs);
+    }
+
+    /** ONE MORE BLIND ATTEMPT. Section 18 holds the board shut behind a verdict
+     *  and the refused move is still on it, so this is a fresh card on the same
+     *  position — §14.10b's mechanism, and the timed loop's own `next`. */
+    function setRetryHold() {
+      if (!st.hold || st.hold.revealed || !st.card) return;
+      if (st.hold.attempts >= C.setRetryMax) return;
+      st.hold = null;
+      st.verdict = null;
+      st.lastPlayed = null;
+      st.grading = false;
+      clearTimeout(st.gradeTimer);
+      st.gradeTimer = 0;
+      if (st.eng) endEngineJob(st.eng, null);
+      if (continuationStormApi) continuationStormApi.next(st.card);
+      render();
+    }
+
+    /** ...and the other door. The position stays HELD — being shown the move is
+     *  not the same as being finished with it — so `Next` is still a press away
+     *  and the analysis board is now offered beside it. */
+    function setReveal() {
+      if (!st.hold || st.hold.revealed) return;
+      st.hold.revealed = true;
+      if (continuationStormApi) continuationStormApi.verdict(st.verdict, setHoldState());
+      render();
+    }
+
+    /** "I have no idea", before any move — which in a set is a request for the
+     *  answer rather than a miss, there being no score for it to cost. */
+    function setGiveUp() {
+      if (!st.card || st.hold || st.grading || st.verdict) return;
+      const entry = st.cur;
+      // The band is only what the review row will word itself with — nothing
+      // scores it — and `stormVerdictLine` reads `passed` before it reads any of
+      // this.
+      const v = { verdict: 'blunder', passed: true, userSan: '', userUci: '',
+        wp: null, loss: null, rank: null };
+      st.verdict = v;
+      if (entry && entry.attempts === 0) {
+        if (st.round === 1) entry.first = v; else entry.second = v;
+        if (st.round === 1) storeNote(st.card.startFen, v.verdict);
+      }
+      st.hold = { attempts: (entry && entry.attempts) || 0, revealed: true };
+      if (continuationStormApi) continuationStormApi.verdict(v, setHoldState());
+      render();
+    }
+
+    function setAdvance() {
+      if (!st.hold) return;
+      setResolve(st.verdict || { verdict: 'unknown' }, Boolean(st.hold.revealed), true);
+    }
+
+    /** §17) THE OTHER DOOR OUT OF A MISTAKE: section 19's analysis board, on
+     *  the live card, in the set's own slots.
+     *
+     *  IT REVEALS FIRST, and that is a rule rather than a convenience: the board
+     *  arrives with the engine and the database beside it, both of which name
+     *  the move within a second. Analysing "blind" is not a state that exists —
+     *  so the reveal is made explicit and counted, rather than happening
+     *  invisibly one panel over. */
+    function setAnalyse() {
+      if (!st.hold || !st.card || !continuationStormApi) return;
+      if (!st.hold.revealed) setReveal();
+      const card = st.card;
+      continuationStormApi.close();
+      st.boardUp = false;
+      st.analysing = true;
+      render();
+      const given = { startFen: card.startFen, userColor: card.userColor };
+      if (!continuationStormApi.analyse(given, slots)) {
+        st.analysing = false;
+        render();
+        setStatus('The analysis board could not be opened here.', 'warn');
+        setBoardBack();
+        return;
+      }
+      setStatus('', '');
+      // The Lichess panel follows the board rather than a poll later — 24g's
+      // `openExplore` does the same, for the same reason.
+      topPanelTick();
+    }
+
+    /** ...and back to the held card, with its verdict where it was. */
+    function setBoardBack() {
+      if (!st.card || !continuationStormApi) { render(); return; }
+      if (!continuationStormApi.open(st.card, slots)) {
+        endSession('board refused', 'The storm board could not be reopened here.');
+        return;
+      }
+      st.boardUp = true;
+      if (st.verdict) continuationStormApi.verdict(st.verdict, setHoldState());
+      render();
+    }
+
     /**
      * IS THE USER ACTUALLY BEING ASKED SOMETHING RIGHT NOW?
      *
@@ -37824,6 +38357,18 @@
         Boolean(st.card) && !st.verdict && !st.grading;
     }
 
+    /** §17) IS SOMETHING RUNNING? — which is not the same question as
+     *  `solving()`, and is the one the two surfaces that must not appear over a
+     *  live card are asking. It was `Boolean(st.endsAt)`, which a set never
+     *  sets. */
+    function timing() {
+      return (st.started || Boolean(st.endsAt)) && !st.over;
+    }
+
+    /** Is this card already in the review's list? The second pass asks a
+     *  position that is, and nothing may put it there twice. */
+    const historyHas = (card) => st.history.some((h) => h.card === card);
+
     /**
      * A DEADLINE THAT MOVES, rather than a countdown that is decremented: every
      * reader (`paintClock`, the expiry test) already works off `st.endsAt`, so
@@ -37831,6 +38376,26 @@
      * at once and cannot leave two representations of "remaining" disagreeing.
      */
     function startClock() {
+      // §17) A SET HAS NO DEADLINE, so nothing here is charged and nothing
+      // expires — but the interval still runs, because the header says how long
+      // the sitting has taken. `solving()` is not consulted at all: there is no
+      // budget for a slow grade to eat into, which is the whole reason that
+      // predicate exists.
+      if (setModeOn()) {
+        st.endsAt = 0;
+        clearInterval(st.clockTimer);
+        st.clockTimer = setInterval(() => {
+          if (!st.running || st.over) { clearInterval(st.clockTimer); st.clockTimer = 0; return; }
+          // …AND IT NOTICES A TEARDOWN RATHER THAN BEING TOLD ABOUT ONE (24g's
+          // rule): section 19's own Exit closes the analysis board without
+          // going through `closeAnalyse`, and in a REVIEW that merely leaves a
+          // flag set, while here it would leave a live set with no board and no
+          // way back to the card it is holding.
+          if (st.analysing && continuationActive && !continuationActive()) closeAnalyse();
+          paintClock();
+        }, C.tickMs);
+        return;
+      }
       st.endsAt = Date.now() + C.sessionMs;
       st.lastTickAt = Date.now();
       clearInterval(st.clockTimer);
@@ -37882,15 +38447,25 @@
       // the same wish as "the clock stopped me on one". Nothing is scored: no
       // points, no streak, and deliberately no `storeNote`, so the position
       // keeps its place in the store exactly as if it had never been drawn.
-      if (st.card) {
+      if (st.card && !historyHas(st.card)) {
         const played = st.grading ? st.lastPlayed : null;
-        st.history.push({ card: st.card, verdict: {
+        // §17) A SET's card may already have been ANSWERED and merely not
+        // RESOLVED — that is what a hold is — so the verdict it earned is what
+        // the review should carry, rather than a sentence saying nothing was
+        // given. And the `historyHas` guard is the SECOND PASS's: a position
+        // asked again is already in the list from round 1, and a session ended
+        // on one must not show it twice.
+        const v = (setModeOn() && st.verdict) ? st.verdict : {
           verdict: 'unanswered', unanswered: true,
           userSan: (played && played.san) || '', userUci: (played && played.uci) || '',
           loss: null, rank: null,
-        } });
+        };
+        st.history.push({ card: st.card, verdict: v });
         if (st.history.length > C.reviewMax) st.history.shift();
       }
+      st.hold = null;
+      st.cur = null;
+      if (st.startedAt && !st.endedAt) st.endedAt = Date.now();
       clearInterval(st.clockTimer);
       st.clockTimer = 0;
       clearTimeout(st.nextTimer);
@@ -37935,7 +38510,11 @@
       const wasRunning = st.running;
       // Before endSession, which calls `continuationStormApi.close()` itself —
       // this is what keeps the flag from outliving the board it names.
-      if (st.analysing) closeAnalyse();
+      //
+      // §17) EXPLICITLY WITHOUT THE REOPEN. A set analyses its LIVE card, so
+      // the ordinary close puts that card's board back — which here would open
+      // a board two statements before `endSession` tears it down again.
+      if (st.analysing) closeAnalyse(false);
       if (st.retry) endRetry();
       stopGather();
       endSession('closed by hand');
@@ -37950,6 +38529,13 @@
       st.analysing = false;
       st.retry = null;
       st.lastPlayed = null;
+      st.hold = null;
+      st.cur = null;
+      st.set = [];
+      st.pass2 = [];
+      st.round = 1;
+      st.startedAt = 0;
+      st.endedAt = 0;
       if (st.panel) st.panel.hidden = true;
       if (wasRunning) render();
     }
@@ -38099,7 +38685,28 @@
       };
       const minSel = mkSel(1, C.minPlyMax, () => savePlyRange(minSel.value, maxSel.value));
       const maxSel = mkSel(C.maxPlyMin, C.maxPlyMax, () => savePlyRange(minSel.value, maxSel.value));
+      // §17) THE MODE, and it is FIRST in the row because it is the largest
+      // thing in it: everything to its right describes which positions are
+      // offered, and this says what happens when one is. A `<select>` rather
+      // than a second button, because DESIGN-ui-inventory §3 allows this window
+      // exactly one primary and Start is it — two fills would be two things to
+      // press where there is one decision and one action.
+      const modeSel = document.createElement('select');
+      modeSel.className = 'clo-st-sel clo-st-modesel';
+      [['storm', 'Storm · 3 minutes'],
+       ['set', 'Set of ' + C.setSize + ' · no clock']].forEach(([val, label]) => {
+        const o = document.createElement('option');
+        o.value = val;
+        o.textContent = label;
+        modeSel.appendChild(o);
+      });
+      modeSel.title = 'Storm: as many positions as three minutes allows, scored, ' +
+        'and a miss simply goes past.\nSet: no clock — every position has to be ' +
+        'answered well before the next one, a mistake is played again (or the move ' +
+        'is shown), and what you did not find first time comes back at the end.';
+      modeSel.addEventListener('change', () => saveStormMode(modeSel.value));
       settings.append(
+        modeSel,
         el('span', 'clo-st-set-label', 'Offer positions'), minSel,
         el('span', 'clo-st-set-label', 'to'), maxSel,
         el('span', 'clo-st-set-label', 'moves past the end of a line'),
@@ -38208,7 +38815,7 @@
       document.body.appendChild(panel);
       st.panel = panel;
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
-        settings, minSel, maxSel, startBtn, gatherBtn, ready, syncBtn, syncNote,
+        settings, modeSel, minSel, maxSel, startBtn, gatherBtn, ready, syncBtn, syncNote,
         review, revBoard, revGrid, revLayer, revShapes, revHead, revLegend, revList,
         revActions, revRetry, revBest, revAnalyse, dbSlot,
         statsBtn, stats, statsHead, statsChapters, statsSync, statsNote, statsBody };
@@ -38233,6 +38840,16 @@
       } catch (err) { /* orphaned content script */ }
     }
 
+    /** §17) …and the mode beside them, on the same best-effort terms: the
+     *  setting is in force either way, it just may not survive the tab. */
+    function saveStormMode(m) {
+      applyStormMode(m);
+      syncSettings();
+      try {
+        chrome.storage.local.set({ [C.setModeKey]: st.mode }).catch(() => {});
+      } catch (err) { /* orphaned content script */ }
+    }
+
     /** The selectors follow the state, never the other way round — including
      *  after `applyPlyRange` has clamped an inverted pair. */
     /** How many positions this course has ready — the one number that says
@@ -38246,6 +38863,8 @@
       st.ui.ready.hidden = !st.store;
       st.ui.minSel.value = String(st.minPly);
       st.ui.maxSel.value = String(st.maxPly);
+      st.ui.modeSel.value = st.mode;
+      st.ui.modeSel.disabled = st.gathering;
       // The button IS the stop button while it runs — one control, because
       // "gather" and "stop gathering" are the two halves of one intention
       // (section 9's rule, and the tree's Read/Cancel does the same).
@@ -38255,10 +38874,16 @@
       const haveCard = Boolean(st.queue && st.queue.length);
       st.ui.startBtn.hidden = st.started || st.over || st.gathering;
       st.ui.startBtn.disabled = !haveCard;
-      st.ui.startBtn.textContent = haveCard ? 'Start' : 'Finding a position…';
+      st.ui.startBtn.textContent = haveCard
+        ? (setModeOn() ? 'Start the set' : 'Start') : 'Finding a position…';
       st.ui.startBtn.title = haveCard
-        ? 'Begin. The clock starts with the first card — ' + st.queue.length +
-          ' position(s) are ready and the rest are found while you play.'
+        ? (setModeOn()
+          ? 'Begin. Up to ' + C.setSize + ' positions, no clock, and none of them is ' +
+            'left behind: more than 6% of the game given up and the position is played ' +
+            'again until it is found or the move is shown. ' + st.queue.length +
+            ' position(s) are ready and the rest are found while you play.'
+          : 'Begin. The clock starts with the first card — ' + st.queue.length +
+          ' position(s) are ready and the rest are found while you play.')
         : 'Nothing is ready yet. Finding a position costs about eleven ChessDB ' +
           'lookups; "Gather positions" pays that in advance, and syncing brings ' +
           'over what another device already found.';
@@ -38280,7 +38905,7 @@
       st.ui.maxSel.disabled = st.gathering;
       // Only while nothing is being timed: see the note where this is built.
       // A gather pass is never timed, so its own control cannot hide under it.
-      st.ui.settings.hidden = Boolean(st.endsAt) && !st.over && !st.gathering;
+      st.ui.settings.hidden = timing() && !st.gathering;
     }
 
     function setNote(text) {
@@ -38297,6 +38922,16 @@
 
     function paintClock() {
       if (!st.ui) return;
+      // §17) COUNTING UP, and never amber: there is nothing to run out of. It
+      // is shown at all because a sitting having a size is worth knowing, and
+      // frozen at the end so the summary does not go on counting.
+      if (setModeOn()) {
+        const spent = st.startedAt ? (st.endedAt || Date.now()) - st.startedAt : 0;
+        st.ui.clock.textContent = mmss(spent);
+        st.ui.clock.classList.remove('clo-st-clock--low');
+        st.ui.clock.classList.toggle('clo-st-clock--off', !st.startedAt || st.over);
+        return;
+      }
       const left = st.endsAt ? st.endsAt - Date.now() : C.sessionMs;
       st.ui.clock.textContent = mmss(left);
       st.ui.clock.classList.toggle('clo-st-clock--low', st.endsAt > 0 && left <= C.lowTimeMs);
@@ -38315,12 +38950,32 @@
       // the course name rather than in a status line that other things
       // overwrite.
       st.ui.sub.textContent = (st.name || '') +
-        (st.lid && st.lidName ? ' › ' + st.lidName : '');
+        (st.lid && st.lidName ? ' › ' + st.lidName : '') +
+        // §17) …and which ROUND, for the same reason: the second pass is part
+        // of what this session is, and it is the half that means something.
+        (setModeOn() && st.round === 2 && !st.over ? ' › second pass' : '');
       paintClock();
-      st.ui.score.textContent = st.score + (st.score === 1 ? ' pt' : ' pts');
-      const mult = multiplier();
-      st.ui.streak.textContent = 'streak ' + st.streak + (mult > 1 ? ' ×' + mult : '');
-      st.ui.streak.classList.toggle('clo-st-stat--hot', mult > 1);
+      if (setModeOn()) {
+        // §17) THE SCORE OF A SET IS "HOW MANY FIRST TIME". Points measure how
+        // many cards a clock allowed through; this measures the same thing
+        // every session however long it took, which is the one figure two
+        // sittings can be compared on.
+        const t = stormSetTally(st.set);
+        const target = Math.max(t.asked, st.exhausted ? t.asked : C.setSize);
+        st.ui.score.textContent = t.resolved + ' / ' + target;
+        st.ui.score.title = 'Positions cleared out of the set. A position is not ' +
+          'cleared until it has been answered well, or the move has been shown.';
+        st.ui.streak.textContent = t.first + ' first time';
+        st.ui.streak.classList.toggle('clo-st-stat--hot', t.resolved > 0 && t.first === t.resolved);
+        st.ui.streak.title = 'Found without a retry and without being shown the move.';
+      } else {
+        st.ui.score.textContent = st.score + (st.score === 1 ? ' pt' : ' pts');
+        st.ui.score.title = '';
+        const mult = multiplier();
+        st.ui.streak.textContent = 'streak ' + st.streak + (mult > 1 ? ' ×' + mult : '');
+        st.ui.streak.classList.toggle('clo-st-stat--hot', mult > 1);
+        st.ui.streak.title = '';
+      }
       // THREE views, and exactly one is up: the card stage while playing, the
       // REVIEW once it is over and something was answered, and the bare summary
       // when nothing was. `analysing` and `retry` are two further states INSIDE
@@ -38337,7 +38992,11 @@
       // shown, which is not tidiness: between two cards `st.card` is null for a
       // moment, and a table that came back over the stage there would flash
       // once per card.
-      const onStats = st.viewStats && !st.card && (!st.endsAt || st.over);
+      // §17) `timing()` rather than `st.endsAt`: a set arms no deadline, so the
+      // old test read "nothing is running" for a whole session and would have
+      // let the stats table come up over a live card — which section 18's board
+      // is pinned to the slots of.
+      const onStats = st.viewStats && !st.card && !timing();
       st.ui.stats.hidden = !onStats;
       st.ui.stage.hidden = onStats || !(!st.over || (reviewable && onStage));
       // The database slot exists for the analysis board and for nothing else —
@@ -38355,15 +39014,37 @@
       else if (st.over) renderSummary();
     }
 
+    /** §17) HOW THE SET WENT, in one line, and it is the whole score of the
+     *  mode: how many were found without a retry and without being shown. */
+    function setResultLine() {
+      const t = stormSetTally(st.set);
+      const bits = [t.first + ' of ' + t.resolved + ' first time'];
+      if (t.retry) bits.push(t.retry + ' on a retry');
+      if (t.shown) bits.push(t.shown + ' shown');
+      if (t.unknown) bits.push(t.unknown + ' ungradeable');
+      // The second pass is counted separately and never folded into the four
+      // above: those say how a position went the first time it was ever seen,
+      // which is the question the mode is about.
+      if (t.again) bits.push(t.againClean + ' of ' + t.again + ' on the second pass');
+      return bits.join(' · ');
+    }
+
     function renderSummary() {
       const box = st.ui.summary;
       while (box.firstChild) box.removeChild(box.firstChild);
+      if (setModeOn()) {
+        const t = stormSetTally(st.set);
+        box.append(el('div', 'clo-st-sum-score', t.resolved + ' of ' + t.asked + ' cleared'));
+        box.append(el('div', 'clo-st-sum-line',
+          t.resolved ? setResultLine() : 'No positions were answered.'));
+      } else {
       box.append(el('div', 'clo-st-sum-score', st.score + (st.score === 1 ? ' point' : ' points')));
       const line = st.answered
         ? st.answered + ' position' + (st.answered === 1 ? '' : 's') + ' answered · best streak ' +
           st.bestStreak
         : 'No positions were answered.';
       box.append(el('div', 'clo-st-sum-line', line));
+      }
       // The cost, stated. This feature spends a volunteer network's compute and
       // a stranger's bandwidth; a session that never says how much is one that
       // makes that invisible.
@@ -38639,8 +39320,11 @@
      * whole course included, is chosen.
      */
     function stormAgain(spec) {
+      // §17) THE MODE RIDES ALONG WITH THE SCOPE, and for the same reason: both
+      // are part of what the session the user just finished WAS, and "again"
+      // means again.
       const next = spec && spec.bid ? spec : { bid: st.bid, name: st.name,
-        lid: st.lid, lidName: st.lidName };
+        lid: st.lid, lidName: st.lidName, mode: st.mode };
       closeStorm();
       startSession(next);
     }
@@ -38793,7 +39477,12 @@
           // is read for.
           (typeof item.card.storm.games === 'number'
             ? ' · ' + stormReachLabel(item.card.storm.games) : '') +
-          (typeof v.loss === 'number' ? ' · ' + v.loss + 'cp' : '');
+          (typeof v.loss === 'number' ? ' · ' + v.loss + 'cp' : '') +
+          // §17) …and how the SET resolved it, which is the one thing a set's
+          // review knows that a storm's does not. In the tooltip rather than a
+          // sixth column: the row is already read for four things, and adding a
+          // fifth would mean re-measuring the whole grid.
+          setOutcomeNote(item.card);
         row.addEventListener('click', () => {
           if (st.reviewIdx === i) return;
           st.reviewIdx = i;
@@ -38806,11 +39495,26 @@
       });
     }
 
+    /** " · found on the second try", or nothing at all outside a set. */
+    function setOutcomeNote(card) {
+      if (!setModeOn()) return '';
+      const e = st.set.find((x) => x.card === card);
+      if (!e || !e.outcome) return '';
+      const words = { first: 'found first time', retry: 'found on a retry',
+        shown: 'shown', missed: 'not found', unknown: 'ungradeable' };
+      const second = e.secondOutcome
+        ? (e.secondOutcome === 'first' || e.secondOutcome === 'retry'
+            ? ', found on the second pass' : ', missed again on the second pass')
+        : '';
+      return ' · ' + (words[e.outcome] || e.outcome) + second;
+    }
+
     function renderReview() {
       if (!st.ui) return;
       const item = revItem();
       st.ui.revHead.textContent = st.history.length
-        ? 'Position ' + (st.reviewIdx + 1) + ' of ' + st.history.length
+        ? (setModeOn() ? setResultLine() + '   ·   ' : '') +
+          'Position ' + (st.reviewIdx + 1) + ' of ' + st.history.length
         : '';
       const v = (item && item.verdict) || {};
       // §14.10a: the verdict line stays — it is about the move the user PLAYED,
@@ -38960,12 +39664,17 @@
       topPanelTick();
     }
 
-    function closeAnalyse() {
+    function closeAnalyse(reopen) {
       if (!st.analysing) return;
       st.analysing = false;
+      st.boardUp = false;
       if (continuationStormApi) continuationStormApi.close();
       render();
       topPanelTick();
+      // §17) A SET opens this board on the card it is HOLDING, not on a review
+      // row, so closing it puts that card's own board back — the list it would
+      // otherwise return to is not up, and will not be until the set ends.
+      if (reopen !== false && setModeOn() && !st.over && st.card) { setBoardBack(); return; }
       renderReview();
     }
 

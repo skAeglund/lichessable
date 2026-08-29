@@ -6368,6 +6368,16 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
 
 .clo-st-sel:disabled { opacity: 0.5; }
 
+/* §17) The mode selector, first in the settings row and the largest decision in
+   it — everything to its right says WHICH positions are offered and this says
+   what happens when one is. Given a little air after it rather than a colour:
+   DESIGN-ui-inventory §3 allows this window one primary and Start is it, so a
+   control that competed for attention here would be a second. */
+.clo-st-modesel {
+  margin-right: 10px;
+  color: var(--clo-text-bright);
+}
+
 /* Pushes the gather control to the far end of the row: it is not part of the
    sentence beside it, and reading "…past the end of a line Gather positions"
    as one phrase is what the gap prevents. */

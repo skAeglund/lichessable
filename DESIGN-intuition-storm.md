@@ -3378,3 +3378,206 @@ the record itself is one version old (§15 shipped in v0.140.0), so in practice
 there is nothing to reconcile. On a record with real history there would be, and
 the honest answer would still be to leave it: a verdict is a statement about
 what the grader said at the time.
+
+---
+
+## 17. The set: no clock, and no mistake left behind (v0.150.0)
+
+A second exercise on the same material, and a different question. The storm asks
+*what do you play in four seconds*; the set asks *can you still not find this
+one*, and refuses to move on until you can.
+
+Asked for by the author 2026-08-29: **unlimited time, and a mistake must be
+retried or analysed rather than passed.** The structure below — a fixed set
+cleared rather than an endless run, a second pass, and a cap of three blind
+attempts — was chosen with them and is recorded here as the shape that shipped.
+
+### 17.1 Why a SET rather than an endless run or a survival mode
+
+Three shapes were on the table and the material chose between them.
+
+**Endless was refused because the supply cannot keep the promise.** Finding a
+position costs ~11 ChessDB requests (§6.1); a session draws from the store
+(§14.11) and `nextCard` already ends cleanly when the queue empties. So an
+"endless" run ends when the store runs out — its length decided by network
+economics rather than by the user — and it has no finish line, which is exactly
+what a mode with no clock most needs.
+
+**Survival was refused because it contradicts the request.** Lives are a clock
+by another name: they re-import the punishment the clock was providing, which is
+the thing being removed. And they are incoherent beside forced correction — a
+mistake cannot both cost a life and be required to be repaired. (Punishment is
+also already answered: §16's five bands and the flat `missPoints` are the
+storm's version, and they belong there.)
+
+**The set is what the cost profile actually wants.** Re-asking a position
+already in hand is the CHEAP operation here — §3.4's first tier grades off the
+card's own scored list and costs no request at all — while a new position is the
+expensive one. A mode built on repetition of the same position therefore inverts
+this feature's economics in the user's favour, which no amount of arguing about
+motivation would have.
+
+### 17.2 The loop
+
+One session is up to `setSize` (12) positions — one storm's worth of material,
+so the two modes spend the store at the same rate and none of the producer's
+ceilings needed a second value.
+
+| the answer | what happens |
+|---|---|
+| `great` / `good` | resolved. The verdict prints with the best move, and the next position follows after `verdictMs`. |
+| `unknown` | resolved. See below — this is the arm that is not `!clean`. |
+| `ok` / `bad` / `blunder` | **HELD.** Nothing is scheduled and nothing advances. |
+
+A held card offers two doors, and they differ in whether the answer comes with
+them: **Try again** (up to `setRetryMax`, the best move still hidden) and **Show
+the move**. Once the move is out, the two become **Next position** and
+**Analyse**, which are the only two things left to do with a position whose
+answer is known.
+
+Then **the second pass**: every position not found first time is asked again, in
+order, with nothing carried over. It is announced in the window's SUBTITLE
+(`Course › second pass`) rather than through `setNote` — the note is cleared by
+`produce`'s own finally, which `showCard` reaches one statement later, so an
+announcement made there is wiped before it can be read. The subtitle is redrawn
+every tick and is where the rest of what a session IS already lives (§14.21). There is no third — after a reveal the answer
+is known, so a third pass would measure how long the user's short-term memory is
+rather than whether they can read the position.
+
+The score is not points. It is **how many were found first time**, which measures
+the same thing every session however long it took — the one figure two sittings
+can be compared on, where a point total mostly measures how many cards a clock
+allowed through.
+
+### 17.3 The one mechanical thing this rests on
+
+**The best move is off the panel while a position is held and the answer has not
+been asked for.** `stormBestLine` names the move, and a "try again" offered
+underneath the move to play is a lookup, not an exercise.
+
+This is §14.10a's rule moved from the review onto a live card, and it inherits
+that rule's split exactly: the line ABOVE — the user's own move, its rank, and
+how much of the game it gave up — **stays**. It is theirs, they have already seen
+it, and "#6 of 31 · 13% of the game" is precisely what makes the position worth a
+second attempt. A card that hid whether the move was even wrong would be a board
+with no question on it.
+
+It also inherits the *number* of surfaces that have to agree. Here there are
+two rather than §14.10a's three — the panel's second line, and
+`.clo-cdb--est` on it, which is a claim about where a number came from and must
+not be worn by an instruction.
+
+### 17.4 `unknown` is settled, and is not clean
+
+`stormSetHeld` is deliberately not `!stormSetClean`, and this is the arm most
+likely to be "tidied" away. An ungradeable answer is a verdict about ChessDB, not
+about the user: there is no mistake to correct and no best move to reveal, so a
+hold on one could never be satisfied — the user would be trapped on a position
+with two doors, neither of which leads anywhere. §15's record excludes `unknown`
+from both halves of its fraction for the same reason, and §16 scores it nothing.
+
+### 17.5 The cap of three, which is not a difficulty dial
+
+With ~30 legal moves and a first grading tier that costs no request, unlimited
+hidden retries can be **searched** rather than thought about — and a mode that
+allows that will get it at eleven at night. `setRetryMax: 3` is "think, think
+again, then look".
+
+Nothing enforces this beyond the button disappearing; it is not a security
+boundary and does not need to be. It is a default that makes the honest use the
+easy one.
+
+### 17.6 What it writes, and what it deliberately does not
+
+**Nothing goes into §15's performance record.** That record counts how a
+repertoire is read under the storm's own conditions — four seconds, one attempt —
+and an unhurried answer with three attempts behind it is not that measurement.
+§15.2's discipline is that one record with two meanings stops meaning either;
+this is that rule applied before it could be broken rather than after.
+
+**The store IS written**, and on the first answer of the first round only. §14.11's
+retention rule answers "has this position taught what it can", and an unhurried
+FIRST answer settles that exactly as a hurried one does — the two questions have
+different subjects, and only one of them is about the clock. A retry is played
+with the last attempt's verdict on screen and the second pass minutes after being
+shown the move; neither is evidence about anything.
+
+`setCleanOn` and `storeDropOn` therefore have the same membership and are written
+out twice. That is on purpose: they answer "may we move on" and "has this taught
+what it can", and a later change to one must be a deliberate change to the other.
+`dev/check-storm.js` §11 asserts they still agree, so the duplication cannot
+silently become a divergence.
+
+### 17.7 What it cost
+
+Almost nothing new, which was the argument for putting it here rather than
+building a second exercise:
+
+* **The grader** is `runGrade`/`gradeTiers` unchanged — the split §14.10b made,
+  used a third time. The two callers differ only in `finish`.
+* **The board** is section 18's storm mode unchanged. A held card is a verdict
+  the session has not accepted yet (`cr.stormHold`), and the board is already
+  shut behind a verdict; "try again" is `continuationStormApi.next(sameCard)`,
+  which is the timed loop's own "here is the next one".
+* **The two doors** are the two action buttons the panel already has. `hint` was
+  hidden in storm mode (it would name the answer) and is now "Show the move" /
+  "Analyse"; `skip` already meant two different things and now means three.
+* **The analysis board** is section 19's, on the live card, in the set's own
+  slots — `continuationStormApi.analyse`, which §14.10 built for the review.
+* **The review afterwards** is §14.10's, unchanged, with the set's result line in
+  its head and each row's outcome in its tooltip.
+
+New: `CONFIG.storm`'s four values, ~250 lines in section 27, one CSS rule, and
+the four pure rules `dev/check-storm.js` §11 executes.
+
+### 17.8 A defect found on the way
+
+`nextCard` did not clear `st.card` before deciding what to show next, so on the
+path where the queue is empty and the producer is exhausted, `endSession`'s
+§14.10c push saw the card just ANSWERED still sitting there and added it to the
+history a second time — as `unanswered`. Every storm that ran out of positions
+showed its last position twice in the review, the second time claiming it had
+never been answered. Fixed with the clear, which the set needed anyway.
+
+### 17.9 What was measured, and what was not
+
+**Measured** (`dev/harness.html`, stylesheet cache busted, 2026-08-29):
+
+* The mode selector is 125px and costs the settings row **24px → 54px in two of
+  its seven states** (the two widest: a "Gather"/"Stop gathering" row carrying
+  the ready count). Zero horizontal overflow in all seven, at 880 / 700 / 560 /
+  420px and under `html.clo-touch` (32px → 70px there). The row is shown only
+  when nothing is timed, and what sits under it is the review's list, which is
+  `flex: 1`. Shortening the labels does not help: with the selector at 63px those
+  two rows still wrap, so the row was already at capacity and any control costs
+  the line.
+* The held panel at 300px is **150px with a one-line action row** — shorter than
+  the answered panel beside it (172px), because the masked line is one line where
+  `stormBestLine` is two. No overflow at 300 or 260px, desktop or touch; the
+  three-button row wraps to two lines under touch and at 260px desktop.
+
+**NOT measured, and it needs a live session.** Everything below is behaviour, and
+`node --check` cannot see any of it — §14.23's lesson is that a whole live
+verification pass missed a tier that had never answered:
+
+* that a held card actually holds, and that "Try again" puts the position back
+  with the board accepting a move;
+* that the second pass runs, asks the right positions, and ends;
+* that the analysis board opens on a live held card and that closing it puts the
+  card's board back (`setBoardBack`), including via section 19's own Exit, which
+  the set's ticker has to NOTICE rather than be told about;
+* that `setSize` of 12 is the right size, and that three attempts is the right
+  cap. Both are guesses; only sittings can answer them.
+
+### 17.10 Open
+
+* **The review does not show the outcome in a column**, only in the row's
+  tooltip and the head's totals. "Which ones did I have to be shown" is the
+  takeaway of a set and probably wants the column — which means re-measuring the
+  five-column grid §14.10 measured.
+* **A mistake in the second pass ends the position anyway** (`missed`), because
+  there is no third pass. Whether that should instead re-arm the hold is a
+  question for somebody who has run twenty sets.
+* **The set does not know about §16b's pinned mistakes.** A position missed twice
+  in one set is exactly what that store is for, and the two have never been
+  introduced.

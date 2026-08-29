@@ -3432,6 +3432,11 @@ body {
             <!-- Nothing is timed yet, so the whole settings row is up. The clock
                  reads the full session and wears &mdash;off: it has not started. -->
             <div class="clo-st-settings">
+              <!-- &sect;17) the mode, first in the row: everything to its right says
+                   WHICH positions are offered, and this says what happens when one
+                   is. A select rather than a second button &mdash; this window gets
+                   one primary and Start is it. -->
+              <select class="clo-st-sel clo-st-modesel"><option>Storm &middot; 3 minutes</option></select>
               <span class="clo-st-set-label">Offer positions</span>
               <select class="clo-st-sel"><option>1</option></select>
               <span class="clo-st-set-label">to</span>
@@ -3467,6 +3472,11 @@ body {
           <div class="clo-st-body">
             <div class="clo-st-note clo-st-syncnote">Synced &mdash; 9 of 9 carried, 9 taken from another device</div>
             <div class="clo-st-settings">
+              <!-- &sect;17) the mode, first in the row: everything to its right says
+                   WHICH positions are offered, and this says what happens when one
+                   is. A select rather than a second button &mdash; this window gets
+                   one primary and Start is it. -->
+              <select class="clo-st-sel clo-st-modesel"><option>Storm &middot; 3 minutes</option></select>
               <span class="clo-st-set-label">Offer positions</span>
               <select class="clo-st-sel"><option>1</option></select>
               <span class="clo-st-set-label">to</span>
@@ -3514,6 +3524,11 @@ body {
                  working on a full store rather than as one finding nothing. -->
             <div class="clo-st-note">Gathering&hellip; 2 stored of 210 examined, 12 line ends left, 486 ChessDB lookups</div>
             <div class="clo-st-settings">
+              <!-- &sect;17) the mode, first in the row: everything to its right says
+                   WHICH positions are offered, and this says what happens when one
+                   is. A select rather than a second button &mdash; this window gets
+                   one primary and Start is it. -->
+              <select class="clo-st-sel clo-st-modesel"><option>Storm &middot; 3 minutes</option></select>
               <span class="clo-st-set-label">Offer positions</span>
               <select class="clo-st-sel"><option>1</option></select>
               <span class="clo-st-set-label">to</span>
@@ -3547,6 +3562,11 @@ body {
                  via `stormFunnelLines`. -->
             <div class="clo-st-status">Stored 2 new position(s) &mdash; 41 ready on this course. Walked 47 line end(s) (6 unscored, 5 off-band, 9 with no games) and 108 game(s). 210 position(s) examined: 121 rejected, 18 already answered, 69 already stored, 2 new. 2 paused or skipped variation(s) are not walked.</div>
             <div class="clo-st-settings">
+              <!-- &sect;17) the mode, first in the row: everything to its right says
+                   WHICH positions are offered, and this says what happens when one
+                   is. A select rather than a second button &mdash; this window gets
+                   one primary and Start is it. -->
+              <select class="clo-st-sel clo-st-modesel"><option>Storm &middot; 3 minutes</option></select>
               <span class="clo-st-set-label">Offer positions</span>
               <select class="clo-st-sel"><option>1</option></select>
               <span class="clo-st-set-label">to</span>
@@ -3581,6 +3601,11 @@ body {
                  note line above the stage. The selectors are disabled &mdash; the pass
                  is walking with the range it started on. -->
             <div class="clo-st-settings">
+              <!-- &sect;17) the mode, first in the row: everything to its right says
+                   WHICH positions are offered, and this says what happens when one
+                   is. A select rather than a second button &mdash; this window gets
+                   one primary and Start is it. -->
+              <select class="clo-st-sel clo-st-modesel"><option>Storm &middot; 3 minutes</option></select>
               <span class="clo-st-set-label">Offer positions</span>
               <select class="clo-st-sel" disabled><option>1</option></select>
               <span class="clo-st-set-label">to</span>
@@ -3698,6 +3723,62 @@ body {
       </div>
     </div>
 
+    <div class="hx-card">
+      <h3>&hellip;and HELD, in the set mode (&sect;17)</h3>
+      <p>The no-clock mode refuses to move past a mistake &mdash; anything worse than
+        the <code>good</code>/<code>ok</code> boundary, i.e. more than 6% of the game
+        given up. The card stays up and the two action buttons become the two doors
+        out of it.</p>
+      <p><strong>The second line is the whole mechanism.</strong> While the answer has
+        not been asked for, <code>stormBestLine</code> is <em>off</em> this panel and an
+        instruction stands in its place &mdash; &sect;14.10a's rule, moved from the
+        review onto a live card: a &ldquo;try again&rdquo; offered underneath the move
+        to play is a lookup, not an exercise. The line <em>above</em> it is unchanged
+        and deliberately so, exactly as in the review: it is about the move the USER
+        played, which is theirs, which they have seen, and which is what makes the
+        position worth a second attempt. It also carries no
+        <code>.clo-cdb--est</code> while masked &mdash; that class is a claim about
+        where a number came from, and an instruction is not a number.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px;align-items:flex-start">
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Mistake</div>
+          <div class="clo-cr-prompt clo-cr-prompt--bad">Re1 &middot; #6 of 31 &middot; 13% of the game</div>
+          <div class="clo-cr-progress">Play it again &mdash; 2 attempts left, then the move is shown</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Show the move</button>
+            <button type="button" class="clo-cr-btn">Try again (2)</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">End set</button>
+          </div>
+        </div>
+        <!-- The attempts spent: "Try again" is HIDDEN rather than disabled. A
+             button that cannot be pressed and still says how many tries are left
+             is two messages where the line above already carries one. -->
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Blunder</div>
+          <div class="clo-cr-prompt clo-cr-prompt--bad">h3 &middot; #9 of 31 &middot; 24% of the game</div>
+          <div class="clo-cr-progress">No attempts left &mdash; show the move to move on</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Show the move</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">End set</button>
+          </div>
+        </div>
+        <!-- REVEALED. The second line goes back to being `stormBestLine`, wearing
+             its ordinary provenance treatment, and the two buttons become the only
+             two things left to do with a position whose answer is known. -->
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Mistake</div>
+          <div class="clo-cr-prompt clo-cr-prompt--bad">Re1 &middot; #6 of 31 &middot; 13% of the game</div>
+          <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Re1 &minus;0.55 &middot; 47%&nbsp;&nbsp;
+            &middot; ChessDB&rsquo;s ranking here</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Analyse</button>
+            <button type="button" class="clo-cr-btn">Next position</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">End set</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="hx-card" style="flex:1 1 100%">
       <h3>The ply range (&sect;14.9) &mdash; and the review (&sect;14.10)</h3>
       <p>The range shows only when NO clock is running &mdash; before the first card and
@@ -3722,6 +3803,11 @@ body {
           </div>
           <div class="clo-st-body">
             <div class="clo-st-settings">
+              <!-- &sect;17) the mode, first in the row: everything to its right says
+                   WHICH positions are offered, and this says what happens when one
+                   is. A select rather than a second button &mdash; this window gets
+                   one primary and Start is it. -->
+              <select class="clo-st-sel clo-st-modesel"><option>Storm &middot; 3 minutes</option></select>
               <span class="clo-st-set-label">Offer positions</span>
               <select class="clo-st-sel"><option>1</option></select>
               <span class="clo-st-set-label">to</span>
@@ -3879,6 +3965,11 @@ body {
           </div>
           <div class="clo-st-body">
             <div class="clo-st-settings">
+              <!-- &sect;17) the mode, first in the row: everything to its right says
+                   WHICH positions are offered, and this says what happens when one
+                   is. A select rather than a second button &mdash; this window gets
+                   one primary and Start is it. -->
+              <select class="clo-st-sel clo-st-modesel"><option>Storm &middot; 3 minutes</option></select>
               <span class="clo-st-set-label">Offer positions</span>
               <select class="clo-st-sel"><option>1</option></select>
               <span class="clo-st-set-label">to</span>
