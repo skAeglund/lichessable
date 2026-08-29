@@ -87,17 +87,44 @@ session. Three things it needs — `locateFile` answering by extension, output o
 `listener` rather than `print`, and the glue's bare `fetch = null` clobbering the
 global — are in `dev/probe-cdb-quality.js`'s header.
 
+### BLOCK 3 RAN NEXT — 2026-08-29, and it says the expectation was backwards
+
+`DESIGN-intuition-storm.md` **§14.24**. The engine tier is timed per profile, in
+node, by `dev/probe-engine-tier.js` — which drives the SHIPPED state machine
+(sliced out as `dev/check-storm.js` §10 slices it) against a real vendored
+Stockfish, with the budgets read out of `CONFIG.storm` and the sizing out of
+`engine/engine.js`'s `PROFILES`. Block 2's incidental find is what made it
+possible without a live session.
+
+```
+12 storm survivor positions, seed 11, i7-1065G7 · every row answered
+
+profile   build/threads  ceiling  phase   pair mean   position depth   reached ceiling
+desktop   full / 4         20     8000     14.1 s     mean 18.0        1 of 12
+mobile    lite / 2         18     8000      5.2 s     18.0, every one 12 of 12
+
+engineDepthSlack refused 0 of 48 pairs · the 20 s backstop fired 0 times
+```
+
+**Mobile is not the profile at risk — desktop is.** The lite build on two
+threads reaches its ceiling every time in ~5 s; the full build on four spends
+its whole budget and still lands on depth 18, so `engineDepth.desktop` 20 is
+reached once in twelve and what it buys is 2.4 s per card of reaching for it.
+No extension code changed and **no version bump**; §14.24.3 has the grid,
+including what a lower ceiling and a shorter phase each cost.
+
 ### STILL ONLY A PROBE OR A LIVE SESSION CAN ANSWER
 
-* **Block 3** — engine-tier timing per profile. **UNBLOCKED and still owed**
-  (§14.23.5). `enginePhaseMs` 8000 is an estimate exactly as `engineTimeoutMs`
-  20000 was, but it now fails SOFT — a shallower verdict — rather than hard.
-  What wants measuring: the depth each profile reaches in the budget (one
-  desktop position reached 12, and one is not a measurement), how often
-  `engineDepthSlack` refuses a pair, and above all MOBILE on the lite build's
-  two threads, where the answer may be a SHORTER phase rather than a longer one.
-  Part 4's label makes an engine-graded card identifiable at a glance, and
-  §14.23's console line reports both depths and the elapsed time on every job.
+* ~~**Block 3** — engine-tier timing per profile.~~ **MEASURED 2026-08-29**
+  (§14.24, and block 3 below) — in node, against the shipped state machine, so
+  it needed neither a live session nor an instrumented build.
+  `engineDepthSlack` refuses nothing and no watchdog fires; the profile with no
+  margin is the DESKTOP one, not mobile, and `engineDepth.desktop` 20 is reached
+  once in twelve. `CONFIG.storm` unchanged, with the grid recorded so the
+  decision is a number to move.
+  **What still needs a device**: mobile on real phone hardware. The probe runs
+  the lite build on two threads, which is the build-and-threads half of that
+  profile and not the machine.
 * ~~**Block 2** — whether a `learn=1` fill-in is good enough to grade with.~~
   **MEASURED 2026-08-29** (§12.3b, and the section above). Part 4's tier label
   still makes it legible from real use; it no longer needs to.
@@ -242,7 +269,48 @@ are measuring the wrong thing and no amount of interface work matters.
 
 ---
 
-## 3 Time the engine tier per profile — **UNBLOCKED (v0.149.0), still owed**
+## 3 Time the engine tier per profile — **MEASURED 2026-08-29, and mobile is not the problem**
+
+Written up as `DESIGN-intuition-storm.md` **§14.24**. No extension code changed,
+so **no version bump** — the same shape as blocks 1.1 and 2. The probe is
+`dev/probe-engine-tier.js`, and it drives the SHIPPED state machine
+(`stormEngineLoss` and the seven functions around it, sliced out as
+`dev/check-storm.js` §10 slices them) against a real vendored Stockfish in node,
+with the budgets read out of `CONFIG.storm` and the sizing out of
+`engine/engine.js`'s own `PROFILES`.
+
+```
+12 storm survivor positions, seed 11, i7-1065G7 · every row answered
+
+profile   build/threads  ceiling  phase   pair mean   position depth   reached ceiling
+desktop   full / 4         20     8000     14.1 s     mean 18.0        1 of 12
+desktop   full / 4         18     8000     11.7 s     mean 17.8       11 of 12
+desktop   full / 4         20     5000      8.4 s     mean 16.4        0 of 12
+mobile    lite / 2         18     8000      5.2 s     18.0, every one 12 of 12
+
+engineDepthSlack refused 0 of 48 pairs · the 20 s backstop fired 0 times
+```
+
+**§14.23.5 expected mobile to be the profile with no margin. It is the
+opposite, by a factor of three**: the lite build on two threads reaches its full
+ceiling of 18 on every position in ~5 s, while the full build on four threads
+spends its whole budget on eleven positions in twelve and still averages depth
+18. So `engineDepth.desktop` 20 is very nearly decorative — reached once in
+twelve — and what it buys is 2.4 s per card of budget spent reaching for it.
+
+**`CONFIG.storm` is UNCHANGED**, block 1.1's rule: one machine's numbers are not
+what a shipped constant should move on. The grid above is there so the decision
+is a number you move. Best ratio: `engineDepth.desktop` 20 → 18 (0.2 ply of mean
+depth for 17% of the wall clock). Largest effect: `enginePhaseMs` 8000 → 5000
+(1.6 ply for 40%).
+
+*Not verified: it is not a phone — `--profile mobile` is the build-and-threads
+half of that profile on a laptop CPU, and §14.23.5's third bullet stays open.
+It is also node rather than the offscreen document, and §14.23.3's live figures
+are both shallower and slower per ply, so the probe is an upper bound on depth
+and a lower bound on time — which only strengthens the finding.*
+
+<details><summary>the original brief</summary>
 
 > The defect is fixed (`DESIGN-intuition-storm.md` §14.23) and the tier answers.
 > What changed for this block: the number to measure is now `enginePhaseMs`
@@ -281,6 +349,8 @@ ChessDB said nothing — the least-informed grade in the feature.
 > Keep `gradeTimeoutMs` comfortably above `engineTimeoutMs` whatever changes: it
 > is armed BEFORE the two ChessDB round trips, so if it fires first the engine
 > watchdog can never matter.
+
+</details>
 
 ---
 

@@ -610,6 +610,16 @@ engineTimeoutMs  6 s   20 s     (one timer, both searches)
 gradeTimeoutMs   9 s   30 s     (armed before the ChessDB tiers too)
 ```
 
+**MEASURED 2026-08-29 — §14.24**, which supersedes the paragraph below on two
+points and confirms the rest. `enginePhaseMs` (which replaced `engineTimeoutMs`
+as the operative limit in v0.149.0) is spent in full on nearly every DESKTOP
+card and on none of the mobile ones; the watchdog fires never, and
+`engineDepthSlack` refused 0 of 48 pairs. **The expectation that mobile is the
+profile with no margin is wrong** — the lite build on two threads is three times
+faster than the full build on four, and it is `engineDepth.desktop` 20 that is
+reached once in twelve. `CONFIG.storm` is unchanged; §14.24.3 is the grid to
+move a number from.
+
 ⚠️ **THE TWO TIMEOUTS ARE ESTIMATES, NOT MEASUREMENTS.** Depth is roughly
 exponential in nodes, and 14 → 20 is six plies; the figures above assume a
 depth-20 pair lands in a few seconds on the full build with 4 threads and a
@@ -2915,6 +2925,10 @@ others:
 
 #### 14.23.5 What this does NOT settle
 
+**Block 3 (§8.1a) was unblocked by this and has since been DONE — §14.24.**
+What follows is the brief it was run against; the answers are there, and the
+headline is that the profile at risk is the DESKTOP one.
+
 **Block 3 (§8.1a) is now unblocked and still owed.** `enginePhaseMs` 8000 is
 an estimate exactly as `engineTimeoutMs` 20000 was — but it now fails SOFT (a
 shallower verdict) rather than hard (no verdict at all), which is the whole
@@ -2931,6 +2945,121 @@ difference. What wants measuring over a session's worth of fallback grades:
 Two things the diagnosis ruled out and that nothing needs to look at again: the
 reqId tagging (`0 for another request` on every run) and the pv shape
 (`0 with no pv`).
+
+
+### 14.24 The engine tier, timed (block 3, 2026-08-29)
+
+§14.23.5 left three questions and TODO-storm.md block 3 is them: *what depth
+does each profile reach in `enginePhaseMs`, how often does `engineDepthSlack`
+refuse a pair, and is mobile the one with no margin?* They are answerable now
+only because v0.149.0 made the tier fail SOFT — before it, every profile
+"reached" nothing at all and the honest answer to all three was `No verdict`.
+
+`dev/probe-engine-tier.js` is the measurement. It drives **the shipped state
+machine** — `stormEngineLoss`, `armEnginePhase`, `startEngineChild`,
+`finishEngineJob`, `endEngineJob`, `onStormEngineUpdate` and both `keepEngine*`
+helpers, sliced out by `dev/slice-source.js` exactly as `dev/check-storm.js` §10
+executes them — against a **real vendored Stockfish** in node, with the budgets
+read out of `CONFIG.storm` and the sizing read out of `engine/engine.js`'s own
+`PROFILES`. Nothing in it is transcribed, so it cannot answer about a tier
+nobody ships.
+
+#### 14.24.1 What it measures, and the four things that make it faithful
+
+* **`engine/engine.js`'s protocol, not "a Stockfish".** Updates are coalesced
+  into one per `THROTTLE_MS` window, so the depth the tier SEES lags the depth
+  the engine has printed by up to 400 ms — reading the raw info lines would
+  over-report what the tier gets. An analyze arriving mid-search sends `stop`
+  and waits for the `bestmove` FENCE, and that wait is part of the pair's wall
+  clock; it is paid on nearly every position, because phase 1 usually ends on
+  its budget rather than on its ceiling. A per-request depth only ever LOWERS
+  the profile depth.
+* **THE UPDATE IS DELIVERED ASYNCHRONOUSLY**, and that is fidelity rather than
+  tidiness. In the extension an update crosses a Worker boundary, then the
+  service worker, then `chrome.tabs.sendMessage`, so the tier's reaction — which
+  is another UCI command — can never re-enter the engine from inside its own
+  output callback. Delivered synchronously it does exactly that, and the
+  vendored build silently drops the `go` that follows: measured while building
+  this probe, the reply search was started and never produced one info line, and
+  nothing threw.
+* **The move graded is a RANDOM LEGAL one, seeded.** That is the population
+  §14.8 describes: this tier is reached precisely where ChessDB knows neither
+  the move nor its child, i.e. for arbitrary human moves. A move out of the book
+  is one the tier is never asked about.
+* **The positions are storm survivors** — `dev/tmp-storm-fens-all.json`, the
+  same dump §12.3b used, 12 of them, seed 11 so both profiles are asked the
+  identical question.
+
+#### 14.24.2 The numbers
+
+Author's machine, an i7-1065G7 (4 cores / 8 threads, a 15 W laptop part), node
+24. Twelve positions each; every row answered.
+
+| profile | build / threads | ceiling | phase | pair mean | pair max | position depth | reached the ceiling |
+|---|---|---|---|---|---|---|---|
+| **desktop** (shipped) | full / 4 | 20 | 8000 | **14.1 s** | 16.0 s | mean 18.0 (16-20) | **1 of 12** |
+| desktop | full / 4 | 18 | 8000 | 11.7 s | 15.3 s | mean 17.8 (16-18) | 11 of 12 |
+| desktop | full / 4 | 20 | 5000 | 8.4 s | 10.0 s | mean 16.4 (14-19) | 0 of 12 |
+| **mobile** (shipped) | lite / 2 | 18 | 8000 | **5.2 s** | 7.3 s | **18.0, every one** | 12 of 12 |
+
+* **`engineDepthSlack` refused nothing: 0 of 48 pairs**, across all four
+  configurations. The largest gap seen was 3, at the limit and inside it; 40 of
+  48 pairs had a gap of 0 or 1. The cap introduced in v0.149.0 (`childTarget =
+  bestDepth`) is what makes that true, and it is doing its job.
+* **`engineTimeoutMs`'s 20 s backstop fired 0 times**, as it should: with a
+  per-search budget of 8000 the pair's arithmetic ceiling is ~16 s plus two
+  fences, and the worst pair measured was 16.0 s.
+* **`gradeTimeoutMs` has 14 s of headroom** in the worst shipped case, for two
+  ChessDB round trips that cost a few hundred milliseconds. The chain
+  (§14.23.2) holds with room.
+
+#### 14.24.3 The finding: it is DESKTOP that has no margin, not mobile
+
+§14.23.5 expected mobile on two threads to be the profile at risk. It is the
+opposite, and by a factor of nearly three: on one machine, the lite build at two
+threads reaches its full ceiling of 18 on every position in ~5 s, while the full
+build at four threads spends its entire budget on eleven positions in twelve and
+still averages depth 18.
+
+Two things follow, and only the first is about the profiles:
+
+1. **`engineDepth.desktop` 20 is very nearly decorative.** It was reached once
+   in twelve. What actually decides the desktop verdict's depth is
+   `enginePhaseMs`, exactly as §14.23.2 intended — but that means the ceiling is
+   not buying the extra strength it names, it is buying 2.4 s per card of budget
+   spent reaching for it. Lowering it to 18 costs **0.2 ply of mean depth** and
+   saves **17% of the pair's wall clock**, and the grid row above is the whole
+   evidence for it.
+2. **The full build is the expensive half of the desktop profile**, not the
+   thread count. Same machine, same target depth of 18: lite/2 does it in 5.2 s,
+   full/4 in 11.7 s. That is a fact about NNUE evaluation cost, and it is the
+   reason a "stronger" profile is the slow one here.
+
+**Nothing in `CONFIG.storm` was changed on the strength of this**, for §12.7c's
+reason: it is one machine, and the numbers a shipped constant is moved on should
+be the author's to move. The grid is written down so that it is a number to
+move rather than a measurement to re-run. The change with the best ratio is
+`engineDepth.desktop` 20 → 18; the change with the largest effect is
+`enginePhaseMs` 8000 → 5000, which takes the pair to 8.4 s at a cost of 1.6 ply.
+
+#### 14.24.4 What it does not settle, and the direction of its error
+
+* **It is not a phone.** `--profile mobile` runs the lite build on two threads
+  on a laptop CPU: the build-and-threads half of the profile, and not the
+  device. §14.23.5's third bullet stays open and needs a phone to close.
+* **It is node, not the extension's offscreen document, and it flatters the
+  extension.** §14.23.3's live figures — depth 12 in 9.3 s, in a browser, on the
+  same author's machine — are both shallower AND slower per ply than anything
+  here. So this probe is an UPPER bound on depth and a LOWER bound on time, and
+  the conclusion it supports is only made stronger by that: if the desktop
+  ceiling of 20 is out of reach in node, it is further out of reach where it
+  runs.
+* **A card is held for 14 s on the shipped desktop profile** and §8.2 puts the
+  edge of what a paused clock excuses at 20 s. That is not a defect and it is
+  not comfortable either; it is the number a shorter phase would buy back.
+* **Twelve positions from two courses.** The spread of depths (16-20) is wide
+  enough that a different dozen would move the means; it is not wide enough to
+  make a ceiling reached once in twelve look reachable.
 
 
 ## 15. The performance record (v0.140.0)
