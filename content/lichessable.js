@@ -1962,6 +1962,10 @@
       storeKey: 'cloStormPositions',
       storeMax: 900,       // positions kept per COURSE, oldest first out
       storeTtlMs: 30 * 24 * 60 * 60 * 1000, // a month: a course's lines move
+      // §22) How long "Clear positions" waits for its confirming press. Section
+      // 13's number and section 13's reason: long enough to be deliberate,
+      // short enough that a confirm cannot sit armed behind a change of mind.
+      clearArmMs: 4000,
       // THE RETENTION RULE, and it is the user's own: a position answered WELL
       // has been learned and leaves; one MISSED stays, to come round again. An
       // ungradeable one stays too — nothing was learned from it either way.
@@ -34681,6 +34685,12 @@
       syncNote: '',       // one line: what the exchange did, or why it could not
       lastPull: 0,
       gathered: 0,        // positions it has added
+      // §22) "Clear positions" is a two-press confirm, section 13's shape: a
+      // press arms it, a second within `clearArmMs` does it, and anything that
+      // takes the button off screen drops the arm — a confirm the user can
+      // neither complete nor see they owe is section 9's own rule.
+      clearArmed: false,
+      clearTimer: 0,
       // --- §14.24) the BACKGROUND top-up ------------------------------------
       // Its own everything, deliberately: sharing the gather pass's flag would
       // make `tick`, `nextCard` and `syncSettings` all treat a quiet trickle as
@@ -36619,7 +36629,11 @@
           entries = entries.slice(0, C.storeMax);
           st.store = Object.fromEntries(entries);
         }
-        all[st.bid] = st.store;
+        // §22) An EMPTY slice is deleted rather than written as `{}`. Only a
+        // clear (or a course whose every position aged out) can produce one,
+        // and in both cases the honest record is that this course has nothing
+        // stored — not that it has a store containing nothing.
+        if (entries.length) all[st.bid] = st.store; else delete all[st.bid];
         await chrome.storage.local.set({ [C.storeKey]: all });
       } catch (err) {
         // A full quota is the likely cause, and it is not fatal: the session
@@ -38481,6 +38495,72 @@
       setNote('');
     }
 
+    /**
+     * §22) THROW THIS COURSE'S GATHERED POSITIONS AWAY.
+     *
+     * The store is the expensive half of this feature — ~11 ChessDB requests a
+     * position on the frontier source — so nothing may drop it silently and
+     * nothing did, which is the problem: a position keeps the shape it was
+     * written in, and the fields a later build adds it simply does not have.
+     * §20's lead-in is the case that produced this button (an entry written
+     * before v0.153.0 cannot say which move made its position, so the analysis
+     * board opens on the position itself), and it will not be the last.
+     *
+     * REFUSED WHILE A GATHER IS RUNNING rather than stopping it: that pass is
+     * writing into the very object this empties, and "cleared, then filled by
+     * the thing you had already started" is a state nobody asked for. Said in
+     * words, since the button is right beside the one that started it.
+     *
+     * THE TOMBSTONES ARE KEPT, deliberately (§14.16). They record positions
+     * ANSWERED WELL, which is knowledge and not gathered material — and keeping
+     * them is what stops a re-gather walking the user back through everything
+     * they have already learned. "Clear the positions waiting to be asked" is
+     * the whole of what this does; the performance record (§15) is a third
+     * thing again and is untouched.
+     *
+     * BOTH SOURCES, because there is one store. The ready chip beside this is
+     * source-scoped and would report a clear as partial, so the sentence says
+     * the wider number itself.
+     */
+    async function clearStore() {
+      if (st.gathering) {
+        setStatus('Stop gathering first — that pass is still writing positions.', 'warn');
+        return;
+      }
+      // The row is hidden while anything is timed, so this is the guard for the
+      // paths that are not a press — section 20's rule, for section 20's reason.
+      if (st.card || st.hold) return;
+      const had = storeTotal();
+      if (!had) { setStatus('Nothing is stored for this course.', ''); return; }
+      st.store = {};
+      st.storeQueue = [];
+      st.storeDirty = true;
+      // The producer's own notion of what it has already offered is about THIS
+      // session and is left alone: every key in it has just gone, so it can
+      // filter nothing, and clearing it would let a walk re-offer a position
+      // already seen on screen.
+      await saveStore();
+      setStatus(had + ' stored position(s) cleared. "Gather positions" fills it ' +
+        'again, and what you have already answered well stays retired.', '');
+      syncSettings();
+      render();
+    }
+
+    function armClearStore() {
+      st.clearArmed = true;
+      clearTimeout(st.clearTimer);
+      st.clearTimer = setTimeout(() => { st.clearTimer = 0; disarmClearStore(); }, C.clearArmMs);
+      syncSettings();
+    }
+
+    function disarmClearStore() {
+      if (!st.clearArmed && !st.clearTimer) return;
+      st.clearArmed = false;
+      clearTimeout(st.clearTimer);
+      st.clearTimer = 0;
+      if (st.ui) syncSettings();
+    }
+
     function setGatherNote() {
       // §14.17: what it has LOOKED AT, beside what it has kept. "0 stored" over
       // a growing examined count is a pass working perfectly on a course whose
@@ -39640,6 +39720,19 @@
       const gatherBtn = el('button', 'clo-st-gather', 'Gather positions');
       gatherBtn.type = 'button';
       gatherBtn.addEventListener('click', gather);
+      // §22) …and its inverse, beside it. NEUTRAL outline (`.clo-st-sync`'s
+      // vocabulary), never green and never a fill: the green in this window is
+      // spent on "storm" and "gather", which are the two things it is FOR, and
+      // this is the opposite of both. The armed state is the only time it is
+      // coloured, and then it is `--clo-attention` — "you have something
+      // outstanding", which a confirm waiting for its second press is.
+      const clearBtn = el('button', 'clo-st-sync clo-st-clearbtn', 'Clear positions');
+      clearBtn.type = 'button';
+      clearBtn.addEventListener('click', () => {
+        if (!st.clearArmed) { armClearStore(); return; }
+        disarmClearStore();
+        clearStore();
+      });
 
       // §14.12. Beside the gather control because it is the same subject — what
       // is in the store — and a NEUTRAL outline because it is the action away
@@ -39757,7 +39850,8 @@
         el('span', 'clo-st-set-label', 'of the games there or more'));
       settings.append(
         modeSel, sourceSel, plyGroup, uncGroup,
-        el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, bgBtn, syncBtn, statsBtn);
+        el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, clearBtn, bgBtn,
+        syncBtn, statsBtn);
       const stage = el('div', 'clo-st-stage');
       const boardSlot = el('div', 'clo-st-slot clo-st-slot--board');
       const panelSlot = el('div', 'clo-st-slot clo-st-slot--panel');
@@ -39883,7 +39977,7 @@
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
         settings, modeSel, sourceSel, plyGroup, uncGroup, shareSel,
         statsTabA, statsTabB,
-        minSel, maxSel, startBtn, gatherBtn, bgBtn, ready, syncBtn, syncNote,
+        minSel, maxSel, startBtn, gatherBtn, clearBtn, bgBtn, ready, syncBtn, syncNote,
         review, revBoard, revGrid, revLayer, revShapes, revHead, revLegend, revList,
         revActions, revRetry, revBest, revAnalyse, dbSlot,
         statsBtn, stats, statsHead, statsChapters, statsSync, statsNote, statsBody };
@@ -40057,6 +40151,30 @@
           ' ChessDB lookups per window. Press to switch it off.'
         : 'Nothing is fetched unless you press "Gather positions" or start a ' +
           'storm. Press to let this window fill the store in its idle moments.';
+      // §22) The clear, and the one rule its arming needs: anything that takes
+      // it off screen drops the arm. It is hidden while the pass that fills the
+      // store is running (it refuses then anyway, and a control that can only
+      // say no is worse than one that is not there) and once a session has
+      // started, where the row itself is gone.
+      const canClear = !st.gathering && !st.started && !st.over;
+      if (!canClear && st.clearArmed) disarmClearStore();
+      st.ui.clearBtn.hidden = !canClear;
+      st.ui.clearBtn.disabled = !storeTotal();
+      st.ui.clearBtn.textContent = st.clearArmed ? 'Clear positions?' : 'Clear positions';
+      st.ui.clearBtn.classList.toggle('clo-st-clearbtn--armed', st.clearArmed);
+      st.ui.clearBtn.title = st.clearArmed
+        ? 'Press again to throw away all ' + storeTotal() + ' stored position(s) for ' +
+          'this course. This does nothing else — the record of how you answered ' +
+          'them is kept, and so is every position you have already answered well.'
+        : (storeTotal()
+          ? 'Throw away the ' + storeTotal() + ' position(s) gathered for this course, ' +
+            'both sources, so they are found again from scratch. Worth doing after ' +
+            'an update that stores something new about a position — positions ' +
+            'gathered before v0.153.0 cannot show the opponent’s move that made ' +
+            'them on the analysis board. Finding one costs requests again, so it ' +
+            'is not free. Your performance record and everything you have answered ' +
+            'well are untouched.'
+          : 'Nothing is stored for this course yet.');
       st.ui.gatherBtn.textContent = st.gathering ? 'Stop gathering' : 'Gather positions';
       st.ui.gatherBtn.classList.toggle('clo-st-gather--on', st.gathering);
       st.ui.gatherBtn.title = st.gathering

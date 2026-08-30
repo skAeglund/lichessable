@@ -4397,3 +4397,126 @@ the tables and in each row's `n` tooltip.
 nothing, and a press a moment later worked. `endSession` clears `st.card`
 synchronously, so this is a race with the teardown render rather than
 `toggleStats`'s guard, and it predates this change.
+
+---
+
+## 22. Clearing the gathered positions (v0.155.0)
+
+Asked after §20 shipped: *will the analyse-with-the-prior-move work on positions
+gathered before the fix? If not, is there a way to clear gathered positions? If
+not, add one.*
+
+**No, it will not.** §20's `before` is a stored field and it is the one thing
+about an arrival that cannot be recomputed — a capture loses the captured piece,
+so a FEN cannot be un-played. An entry written before v0.153.0 has a two-element
+`a`, `stormUnpack` reads that as "not known", and `analysisGiven` falls back to
+the card's own position. It fails softly and correctly; it just does not do the
+new thing.
+
+And nothing else fixes it. The store's own retention rule drops a position only
+when it is answered WELL, the producer serves the store before it walks anything
+(§14.11), and §14.16's tombstones are about retirement rather than shape. A
+position gathered in August is served in October exactly as it was written.
+
+### 22.1 Why a button rather than a migration
+
+**Dropping the shapeless entries at load** was the first idea and is wrong: it
+is a silent deletion of ~11 ChessDB requests a position, unasked, for a feature
+the user may not care about. Worse, §14.16's determinism means they would be
+re-harvested by the next pass — so the cost is paid whether or not anyone wanted
+it, and the only visible sign is a session that suddenly has nothing ready.
+
+**A blunt clear is the honest shape.** The store is expensive, the decision to
+throw it away is a real one with a real price, and the user is the only one who
+can weigh it. That is what an armed button is for.
+
+It is also the answer to a question larger than §20. A stored position keeps the
+shape it was written in, and the fields a later build adds it does not have.
+§14.19's reachability figure was the same story (mitigated by reading absence as
+"unknown"), §19's `u` the same again, §20's `before` the third. This is the first
+one that could not be papered over, and it is the last time it needs its own
+argument: there is a way to start again now.
+
+### 22.2 What it does, and the three things it does not
+
+`clearStore()` empties this course's slice of `cloStormPositions` and writes it
+back. That is all.
+
+| left alone | why |
+|---|---|
+| the tombstones (§14.16) | they record positions answered WELL, which is knowledge and not gathered material. Keeping them is what stops a re-gather walking the user back through everything they have already learned. |
+| the performance record (§15) | a third subject again — how the repertoire was READ. Throwing away the positions must not throw away what they taught. |
+| every other course | one store, keyed by `bid`, and the window is about one course. |
+
+**Both sources**, because there is one store. The ready chip beside the button is
+source-scoped and would report a clear as partial, so the button's own sentences
+carry `storeTotal()` and say "both sources" in as many words.
+
+**Refused while a gather is running**, in words rather than by stopping it: that
+pass writes into the very object this empties, and "cleared, then re-filled by
+the thing you had already started" is a state nobody asked for. The BACKGROUND
+top-up (§14.24) is deliberately not refused — it is not something the user just
+started, and what it puts back is written in the current shape, which is the
+point of clearing.
+
+### 22.3 The control
+
+Two presses, section 13's shape: `Clear positions` → `Clear positions?` →
+cleared, with `clearArmMs` (4 s) and the arm dropped by anything that takes the
+button off screen — a confirm the user can neither complete nor see they owe is
+section 9's own rule.
+
+Neutral outline, `.clo-st-sync`'s vocabulary. The green in this window is spent
+on "storm" and "gather", the two things it is FOR, and this is the opposite of
+both. The armed state is the only time it is coloured, and then it is amber —
+`--clo-attention`, "you have something outstanding", which a confirm waiting for
+its second press is. Never red: nothing is wrong.
+
+`saveStore` now DELETES an empty slice rather than writing `{}`. Only a clear (or
+a course whose every position aged out) can produce one, and in both cases the
+honest record is that the course has nothing stored — not that it has a store
+containing nothing.
+
+### 22.4 What was measured
+
+**In the harness** (`node dev/serve.js`, stylesheet cache busted, 2026-08-30),
+across all seven settings-row replicas and eight width/touch combinations:
+
+| panel width | without | with | 
+|---|---|---|
+| 858px desktop | 52,54,52,54,52,52,52 | identical |
+| 858px touch | 68 ×7 | identical |
+| 700px desktop | 52 ×7 | 82 on two |
+| 560px desktop | 80 ×7 | 110 on three |
+| 420px desktop | 110 ×7 | identical |
+
+Zero horizontal overflow in every state. So it costs **nothing at the width the
+window actually is** — it is `inset: 16px`, so on a desktop the row has 858px and
+more — and one wrapped line at intermediate widths, which is §17.9's finding that
+this row is at capacity and any control costs the line. The armed button is 112px
+against 105px idle, so the confirm does not reflow the row.
+
+### 22.5 VERIFIED LIVE, 2026-08-30
+
+Course 453453, and it closed §20's live gap as well.
+
+* The button read *"Throw away the 48 position(s) gathered for this course, both
+  sources…"* with 13 ready on the current source — the two numbers doing exactly
+  what they are for.
+* One press armed it: `Clear positions?`, `rgb(217,169,66)`.
+* The second cleared it: *"49 stored position(s) cleared…"* — 49 rather than 48
+  because the session's own producer had stored one more while the button was
+  armed.
+* It PERSISTED: closing and reopening the storm logged `store holds 1
+  position(s) for 453453` against `48` on the open before it, so the write went
+  to `chrome.storage.local` and not merely to `st.store`.
+* The 1 was a position the producer found after the clear — and starting a set on
+  it, passing, and pressing Analyse opened section 19's board reading **"Move 1
+  of 1 · 8.Nf3"**, with `8.Nf3` in the move list and Black to play. That is §20
+  working end to end on a freshly gathered position, which is the whole reason
+  this button exists.
+
+**Not verified.** The write that follows — whether "Add as puzzle" from that
+board produces a course variation starting on the position before 8.Nf3. The
+move list IS what 19d writes, so this is sound by construction, but it is not a
+measurement.

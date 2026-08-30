@@ -3597,6 +3597,29 @@ Currently working (v0.18.x).
       `advance`, `analyse`) and section 18 grew `cr.stormHold`, which is a verdict
       the session has not accepted yet — the board is already shut behind one, so
       nothing about the board changed.
+  * THE STORE CAN BE CLEARED (§22, v0.155.0), and it needed to be: a stored
+    position keeps the SHAPE it was written in, and §20's `before` is the first
+    field a later build added that absence cannot paper over — an entry written
+    before v0.153.0 simply cannot say which move made its position. Nothing else
+    fixes it: the retention rule drops a position only when it is answered WELL,
+    and `produceFromStore` runs before any walk.
+    - IT CLEARS THE POSITIONS AND NOTHING ELSE. The TOMBSTONES stay (§14.16 —
+      they record what was answered well, which is knowledge, and keeping them is
+      what stops a re-gather walking the user back through it) and so does §15's
+      RECORD (a third subject: how the repertoire was read). BOTH SOURCES, since
+      there is one store — the ready chip beside it is source-scoped and would
+      report a clear as partial, so the button's own sentences use `storeTotal()`.
+    - REFUSED WHILE A GATHER RUNS, in words. That pass writes into the object
+      this empties. The BACKGROUND top-up (§14.24) is deliberately not refused:
+      nobody just started it, and what it puts back is in the current shape.
+    - TWO PRESSES, section 13's shape and `clearArmMs`, with the arm dropped by
+      anything that takes the button off screen. Neutral outline idle, AMBER
+      armed — never green (this window's green is "storm" and "gather", the two
+      things it is for) and never red (nothing is wrong).
+    - `saveStore` NOW DELETES AN EMPTY SLICE rather than writing `{}`. Only a
+      clear or a fully aged-out course produces one, and in both the honest
+      record is "nothing stored", not "a store containing nothing".
+
   * A SET'S ANSWERS ARE LABELLED, NOT SEGREGATED (§21, v0.154.0). §15's counters
     gained ONE integer, `s` — how many of `n` were answered WITHOUT A CLOCK — and
     a parallel `sv` map was deliberately rejected: it would touch every one of

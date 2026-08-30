@@ -6419,6 +6419,19 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
 .clo-st-sync:hover:not(:disabled) { color: var(--clo-text-bright); }
 .clo-st-sync:disabled { opacity: 0.5; cursor: default; }
 
+/* §22) The armed half of "Clear positions" — AMBER, which in this file means
+   "you have something outstanding" (the trainer row's rule, and a confirm
+   waiting for its second press is exactly that). Never red: nothing is wrong,
+   and never a fill, which would claim to be the thing to do next in a window
+   whose one green control is what it is FOR. Doubled so it outranks the
+   `:hover` rule above, which would otherwise take the colour back on the way
+   to the second press. */
+.clo-st-clearbtn.clo-st-clearbtn--armed,
+.clo-st-clearbtn.clo-st-clearbtn--armed:hover:not(:disabled) {
+  color: var(--clo-attention);
+  border-color: var(--clo-attention-line);
+}
+
 /* The count of what is waiting. Quiet: it is a fact, not a control, and it sits
    beside the button that changes it. */
 .clo-st-ready {
