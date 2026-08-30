@@ -153,7 +153,18 @@ Currently working (v0.18.x).
   multi-threaded WASM pairs (`stockfish-18.js` + `.wasm`, 108 MB;
   `stockfish-18-lite.js` + `.wasm`, ~7 MB) — gitignored, downloaded manually
   per README.
-- `options/` — Lichess API token entry + Test button.
+- `options/` — Lichess API token entry + Test button. NO NATIVE `<select>` LIVES HERE, and that is not a style choice: Android never opens a select
+  popup on this page, so every dropdown setting was unreachable from the
+  phone — "Auto" included, which is the one value a phone must change
+  (engine-build detection reads it as a desktop and asks for the full
+  Stockfish build). `<clo-pick>` at the top of `options.js` is a radio group
+  wearing the `<select>` API its consumers already use (`.value`, a `change`
+  event), so nothing else changed; `renderSync` is the one caller that builds
+  its list at runtime and calls `setOptions()`. The manifest's `open_in_tab`
+  and the page's `color-scheme: light` are the same repair: the embedded
+  extensions-UI dialog is where the popup fails, and a page declaring a text
+  colour and no background is dark-on-dark under Chrome's Android auto-dark.
+  Any `<select>` added here is a control the phone cannot use.
 - `dev/harness.html` — UI harness. Open it in any browser (no extension, no
   Chessable, no server): it loads the REAL `content/lichessable.css` and renders
   a static replica of every `.clo-` surface, with toggles for `html.clo-touch`,

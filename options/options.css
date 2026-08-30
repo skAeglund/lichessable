@@ -1,11 +1,23 @@
 /* LiChessable options page — kept small and legible in Chrome's embedded dialog. */
 
+/* The page sets a text colour and no background, which is dark-on-dark the
+   moment anything darkens the canvas underneath — and on Android something
+   routinely does: Chrome's "auto dark theme for web contents" force-darkens
+   any page that has not said which schemes it supports. Declaring light opts
+   out of that, and the explicit background is what makes the declaration true
+   rather than a request. */
+:root {
+  color-scheme: light;
+}
+
 body {
   font-family: system-ui, sans-serif;
   font-size: 14px;
   color: #222;
+  background: #fff;
   margin: 16px;
-  min-width: 360px;
+  /* No min-width: this page opens as a full tab (manifest `open_in_tab`), and
+     on a phone a floor wider than the screen is a page that scrolls sideways. */
   max-width: 480px;
 }
 
@@ -18,7 +30,8 @@ p {
   line-height: 1.45;
 }
 
-label {
+label,
+.pick-label {
   display: block;
   font-weight: 600;
   margin: 12px 0 4px;
@@ -42,12 +55,53 @@ label.inline {
   border-radius: 3px;
 }
 
-#engineBuild {
-  padding: 5px 8px;
-  font-size: 13px;
-  border: 1px solid #bbb;
-  border-radius: 3px;
+/* --- <clo-pick>: the radio group standing in for a <select> ---------------
+   Android cannot open a native select popup on this page, so these settings
+   were unreachable there — see the comment on CloPick in options.js. Rows are
+   drawn as one bordered list so the group still reads as a single control. */
+
+clo-pick {
+  display: block;
+  margin: 4px 0 0;
+}
+
+clo-pick .opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 7px 9px;
+  font-weight: 400;
+  border: 1px solid #ccc;
   background: #fff;
+  cursor: pointer;
+}
+
+clo-pick .opt + .opt { margin-top: -1px; }
+clo-pick .opt:first-child { border-radius: 4px 4px 0 0; }
+clo-pick .opt:last-child { border-radius: 0 0 4px 4px; }
+clo-pick .opt:only-child { border-radius: 4px; }
+
+/* The checked row wins the shared border, so it must outrank the -1px overlap
+   of the row after it. */
+clo-pick .opt.on {
+  position: relative;
+  z-index: 1;
+  border-color: #5c9d31;
+  background: #f2f8ee;
+}
+
+clo-pick input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+}
+
+/* A finger, not a mouse: the row is the tap target and wants the full 44px. */
+@media (pointer: coarse) {
+  clo-pick .opt { padding: 12px 10px; }
+  clo-pick input { width: 20px; height: 20px; }
 }
 
 .buttons {

@@ -25,3 +25,7 @@ dev/tmp-queue-probe.json
 # redistribute" reason as the two dumps above.
 dev/tmp-storm-fens*.json
 __pycache__/
+
+# Packed builds: pack-and-push.ps1 (.crx) and pack-mobile.ps1 (.zip) both
+# write here. Build output, never source.
+dist/

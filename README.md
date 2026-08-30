@@ -152,7 +152,51 @@ Two things to know:
 
 `pack-and-push.ps1` packs the whole extension directory, so this file rides
 along in the `.crx`. It is inert (nothing references it, no permissions, no
-`chrome.*`) and a few tens of KB; delete `dev/` before packing if that matters.
+`chrome.*`) and a few tens of KB; use `pack-mobile.ps1` (below) if that matters.
+
+## Packing a trimmed build (`pack-mobile.ps1`)
+
+`pack-mobile.ps1` writes a `.zip` to `dist/` holding only the files the
+extension loads at runtime — no `dev/`, no `DESIGN-*.md`, and by default no
+108 MB full Stockfish build. About 6 MB with the lite engine, 0.8 MB without.
+
+    .\pack-mobile.ps1                 # lite engine only
+    .\pack-mobile.ps1 -NoEngine       # no Stockfish at all
+    .\pack-mobile.ps1 -Full           # both builds
+    .\pack-mobile.ps1 -NoToken        # leave local-token.json out
+
+The file list is **derived from `manifest.json`**, then the HTML pages among
+those are scanned for their own local `src`/`href` (which is how
+`engine/engine.js` and `options/options.js` get in) — so a new content script or
+stylesheet needs no edit to the script. Anything referenced but missing is a
+hard failure with the path named, never a quietly smaller zip.
+
+`local-token.json` **is** included, so the phone needs no visit to the options
+page to get a working explorer. That means the zip is as private as the token
+is — `-NoToken` for a build going anywhere but your own device.
+
+**On a phone, set Engine build to "Lite"** on the options page. Auto-detection
+reads a phone in Chrome's "Desktop site" mode as a desktop, asks for the full
+build that is not in the zip, and reports `missing-build (desktop)` — there is
+deliberately no fallback to the other build.
+
+## The options page on a phone
+
+Three things there are for the phone specifically, all since v0.157.0:
+
+- **The settings are radio groups, not dropdowns** (`<clo-pick>`, defined at the
+  top of `options/options.js`). Android never opens a native `<select>` popup on
+  this page, so every one of these was stuck on whatever a desktop visit last
+  left it at — "Auto" included, which is the one value a phone has to change.
+  The control keeps the `<select>` API it replaced (`.value`, a `change` event),
+  so its consumers are unchanged; do not "simplify" it back to a `<select>`.
+- **The page opens as a full tab** (`open_in_tab` in the manifest) rather than in
+  the embedded dialog of the extensions UI, which is where an Android fork hosts
+  it and where popups fail; it also gives a page this long room to breathe.
+- **It declares `color-scheme: light` and an explicit background.** It sets a
+  text colour and used to set no background, which is dark-on-dark the moment
+  anything darkens the canvas — and Chrome on Android force-darkens any page
+  that has not said which schemes it supports.
 
 ## Install (load unpacked)
 

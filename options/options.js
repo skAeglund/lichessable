@@ -60,6 +60,97 @@ const DIFFICULT_DEFAULT_THRESHOLD = 90;
 const DIFFICULT_DEFAULT_RECENT_DAYS = 7;
 const $ = (id) => document.getElementById(id);
 
+/**
+ * <clo-pick> — a <select> that works where a native one does not.
+ *
+ * ANDROID CANNOT OPEN THE DROPDOWNS ON THIS PAGE. The native select popup
+ * never appears, so every setting here was stuck on whatever the last desktop
+ * visit left it at — "Auto" included, and Auto is precisely the value a phone
+ * has to change: engine-build detection reads a phone in Chrome's "Desktop
+ * site" mode as a desktop and asks for the full Stockfish build, which is not
+ * in a mobile package at all (README, "Packing a trimmed build"). A settings
+ * page whose settings cannot be reached is worse than no settings page, so the
+ * control must not depend on a popup existing.
+ *
+ * A radio group is ordinary DOM: no popup, no platform behaviour to fail. This
+ * wraps one in the <select> API its consumers already use — `.value` reads and
+ * writes, and a 'change' event fired on the element itself — so every listener
+ * and every `.value` in this file is unchanged. The one exception is
+ * renderSync(), whose list is built at runtime and calls setOptions() instead
+ * of appending <option> nodes; emulating HTMLSelectElement's options/remove as
+ * well would be pretending to be a select rather than replacing one.
+ *
+ * Declarative options are still <option> children in the markup, read once at
+ * upgrade and replaced by the rows. Defined BEFORE the listeners below, since
+ * those run at parse time and would otherwise bind to an un-upgraded element.
+ */
+class CloPick extends HTMLElement {
+  connectedCallback() {
+    if (this._built) return;
+    this._built = true;
+    const opts = [];
+    for (const el of Array.from(this.children)) {
+      if (el.tagName === 'OPTION') {
+        opts.push({ value: el.getAttribute('value') || '', label: el.textContent });
+      }
+    }
+    this.setOptions(opts);
+  }
+
+  /** @param {{value: string, label: string}[]} opts */
+  setOptions(opts) {
+    this.textContent = '';
+    this._inputs = [];
+    // Radios are grouped by NAME, so it has to be unique per control on the page.
+    const group = 'pick-' + (this.id || String(this._inputs.length));
+    for (const o of opts) {
+      const row = document.createElement('label');
+      row.className = 'opt';
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = group;
+      input.value = o.value;
+      const span = document.createElement('span');
+      span.textContent = o.label;
+      row.appendChild(input);
+      row.appendChild(span);
+      this.appendChild(row);
+      this._inputs.push(input);
+      input.addEventListener('change', () => {
+        if (!input.checked) return;
+        this._paint();
+        this.dispatchEvent(new Event('change'));
+      });
+    }
+    // A rebuild must not silently drop the selection: renderSync sets the value
+    // after its own setOptions, but the second pass there re-sets a list that
+    // already had one chosen.
+    if (this._want !== undefined) this.value = this._want;
+    else this._paint();
+  }
+
+  /** '' when nothing matched — which is what the callers test for. */
+  get value() {
+    for (const input of this._inputs || []) if (input.checked) return input.value;
+    return '';
+  }
+
+  set value(v) {
+    const want = String(v === null || v === undefined ? '' : v);
+    this._want = want;
+    for (const input of this._inputs || []) input.checked = input.value === want;
+    this._paint();
+  }
+
+  /** A class rather than :has(), which an older Chromium fork may not have. */
+  _paint() {
+    for (const input of this._inputs || []) {
+      input.parentNode.className = input.checked ? 'opt on' : 'opt';
+    }
+  }
+}
+customElements.define('clo-pick', CloPick);
+
 // NOTE: there is deliberately no reload hook on this page. An options page
 // opened programmatically lands in a background tab, and Chrome defers loading
 // those indefinitely (measured: still unloaded after 4 minutes), so the hook
@@ -305,21 +396,15 @@ async function renderSync() {
   const pref = stored[PIN_SYNC_KEY] || {};
   const courses = stored[PIN_SYNC_COURSES] || [];
   const status = stored[PIN_SYNC_STATUS];
-  while (sel.options.length > 1) sel.remove(1);
-  for (const c of courses) {
-    const opt = document.createElement('option');
-    opt.value = c.bid;
-    opt.textContent = c.name;
-    sel.appendChild(opt);
-  }
+  const opts = [{ value: '', label: 'Off — pins stay on this device' }];
+  for (const c of courses) opts.push({ value: String(c.bid), label: c.name });
+  sel.setOptions(opts);
   sel.value = (pref.on && pref.bid) ? String(pref.bid) : '';
   // A course the picker has never heard of (the list is published by whichever
   // device last visited Chessable) must not read as "off".
   if (pref.on && pref.bid && sel.value !== String(pref.bid)) {
-    const opt = document.createElement('option');
-    opt.value = String(pref.bid);
-    opt.textContent = 'Course ' + pref.bid;
-    sel.appendChild(opt);
+    opts.push({ value: String(pref.bid), label: 'Course ' + pref.bid });
+    sel.setOptions(opts);
     sel.value = String(pref.bid);
   }
   $('syncCoursesNote').textContent = courses.length

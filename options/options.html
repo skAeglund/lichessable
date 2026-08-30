@@ -2,6 +2,9 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <!-- Without this an extension page in an Android tab lays out at ~980 CSS px
+       and renders at phone-unreadable scale. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LiChessable settings</title>
   <link rel="stylesheet" href="options.css">
 </head>
@@ -28,12 +31,12 @@
 
   <p id="status" aria-live="polite"></p>
 
-  <label for="engineSource">Analysis source</label>
-  <select id="engineSource">
+  <div class="pick-label" id="engineSourceLabel">Analysis source</div>
+  <clo-pick id="engineSource" role="radiogroup" aria-labelledby="engineSourceLabel">
     <option value="auto">Auto — Stockfish, with ChessDB beside it (recommended)</option>
     <option value="chessdb">ChessDB only — never start Stockfish</option>
     <option value="local">Stockfish only</option>
-  </select>
+  </clo-pick>
 
   <p class="fineprint">
     ChessDB (<code>chessdb.cn</code>) is a cloud analysis book: for opening
@@ -48,12 +51,12 @@
     this machine.
   </p>
 
-  <label for="engineBuild">Engine build</label>
-  <select id="engineBuild">
+  <div class="pick-label" id="engineBuildLabel">Engine build</div>
+  <clo-pick id="engineBuild" role="radiogroup" aria-labelledby="engineBuildLabel">
     <option value="auto">Auto (recommended)</option>
     <option value="full">Full</option>
     <option value="lite">Lite</option>
-  </select>
+  </clo-pick>
 
   <p class="fineprint">
     Auto runs the lite Stockfish build on low-power devices (phones, ≤4 cores
@@ -62,12 +65,12 @@
     the README's "Local engine" section.
   </p>
 
-  <label for="touchUi">Interface size</label>
-  <select id="touchUi">
+  <div class="pick-label" id="touchUiLabel">Interface size</div>
+  <clo-pick id="touchUi" role="radiogroup" aria-labelledby="touchUiLabel">
     <option value="auto">Auto (recommended)</option>
     <option value="touch">Touch — always phone/tablet sizing</option>
     <option value="desktop">Desktop — never phone/tablet sizing</option>
-  </select>
+  </clo-pick>
 
   <p class="fineprint" id="touchUiState"></p>
 
@@ -99,10 +102,10 @@
 
   <h2>Pinned mistakes on more than one device</h2>
 
-  <label for="syncCourse">Carry pins through this course</label>
-  <select id="syncCourse">
+  <div class="pick-label" id="syncCourseLabel">Carry pins through this course</div>
+  <clo-pick id="syncCourse" role="radiogroup" aria-labelledby="syncCourseLabel">
     <option value="">Off — pins stay on this device</option>
-  </select>
+  </clo-pick>
   <p class="fineprint" id="syncCoursesNote"></p>
   <p class="fineprint">
     A device that has never been set up here adopts a course called
