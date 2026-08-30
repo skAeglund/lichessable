@@ -182,6 +182,9 @@ const src = [
   sliceDecl('stormStatsPrune'),
   sliceDecl('stormStatsWirePack'),
   sliceDecl('stormStatsWireUnpack'),
+  // §21's sentence. Pure, and it is the entire point of the `s` counter: a
+  // figure made of two conditions has to say so, and this is where it says it.
+  sliceDecl('statUnhurriedNote'),
   // §17's SET rules. Pure, and every one of them fails silently: a hold rule
   // that never fires is a mode that quietly behaves like a storm with no
   // clock, and an outcome rule that mis-files an attempt still produces a
@@ -226,7 +229,7 @@ const src = [
   '         stormStatGraded,' +
   '         stormStatRoll, stormStatRate, stormStatLoss,' +
   '         stormStatsMerge, stormStatsPrune,' +
-  '         stormStatsWirePack, stormStatsWireUnpack,' +
+  '         stormStatsWirePack, stormStatsWireUnpack, statUnhurriedNote,' +
   '         stormCp, stormWp, stormMoverCp,' +
   '         stormWinPct, stormWpLoss,' +
   '         stormSetClean, stormSetHeld, stormSetOutcome, stormSetTally,' +
@@ -719,6 +722,18 @@ const gameLine = (() => {
 })();
 const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
 
+/**
+ * §20) Does this arrival's own `before` position, with its move played, really
+ * land on `fen`? Written to REPORT rather than throw when the field is missing
+ * — that is exactly the control's shape, and a control that dies on the first
+ * assertion says nothing about the rest.
+ */
+const leadsTo = (arrived, fen) => {
+  if (!arrived || !arrived.before || !arrived.uci) return false;
+  const after = S.fenAfterUci(arrived.before, arrived.uci);
+  return Boolean(after) && cacheKey(after) === cacheKey(fen);
+};
+
 (async () => {
   const frontiers = await S.stormFrontiers(vars, C);
   eq('only the two real line ends survive', frontiers.length, 1);
@@ -822,6 +837,18 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('the weight orders the draw', S.stormDrawFrontier(weighted, () => 0.99).tag, 'thin');
 
   const fFen = frontiers[0].fen;
+  // §20) …and the position it was reached FROM, which is the lead-in the
+  // analysis board opens on.
+  const preFen = (() => {
+    let fen = START_FEN;
+    let prev = null;
+    for (const san of gameSans) {
+      if (cacheKey(fen) === cacheKey(fFen)) break;
+      prev = fen;
+      fen = S.fenAfterUci(fen, S.sanToUci(CloSan.parseFen(fen), san));
+    }
+    return prev;
+  })();
 
   // --- §14.21: A CHAPTER SCOPE (v0.148.0) ---------------------------------
   // §15 built "which part of my repertoire do I not understand one move past
@@ -893,6 +920,18 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('an ordinary walk offers something', ordinary.out.some((c) => !c.reject), true);
   eq('a candidate carries the move that led to it',
     Boolean(ordinary.out[0].arrived && ordinary.out[0].arrived.uci), true);
+  // §20) …AND THE POSITION IT WAS PLAYED FROM, which is the one field of an
+  // arrival that cannot be recomputed: a capture loses the captured piece, so a
+  // FEN cannot be un-played. It is what lets the analysis board open one ply
+  // earlier and play the opponent's move in, so an added puzzle carries the
+  // move that MADE the position. The property worth asserting is not that the
+  // field is filled but that it is the RIGHT position — a `before` that does
+  // not lead here opens the board a ply short with the wrong side to move,
+  // which is this feature's one plausible silent failure.
+  eq('…and the position that move was played FROM, which really leads here',
+    leadsTo(ordinary.out[0].arrived, ordinary.out[0].fen), true);
+  eq('…for every position the walk offers',
+    ordinary.out.every((c) => leadsTo(c.arrived, c.fen)), true);
   eq('…and the whole scored list, so grading needs no second request',
     ordinary.out[0].scored.length, LADDER.length);
   eq('the walk runs to the end of the game', ordinary.stop, 'the game ended');
@@ -923,6 +962,16 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
     fFen, 'b', gameSans, book(20), Object.assign({}, C, { minPly: 1 }));
   eq('the frontier position knows its own arriving move',
     atFrontier.out[0].arrived.san, 'Bb5');
+  // §20) …and the position it came from, which the loop above never visits:
+  // that ply is played in the fast-forward, before the walk proper begins, so
+  // it is the one `before` a naive implementation loses.
+  eq('…and the position that move was played from',
+    leadsTo(atFrontier.out[0].arrived, fFen), true);
+  // The same ply, read off the FRONTIER rather than off a game — this is what
+  // the invented-line walk is seeded with when the explorer has no games.
+  eq('a frontier carries the course’s own last move and where it was played from',
+    leadsTo({ before: frontiers[0].lastFen, uci: frontiers[0].lastUci }, frontiers[0].fen),
+    true);
 
   // --- a game that never reaches the frontier -----------------------------
   const elsewhere = await S.stormWalkGame(
@@ -1375,6 +1424,7 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('…a quiet move captures nothing', adv.prevCapSq, null);
   eq('…and gives no check', adv.gaveCheck, false);
   eq('…and it names the move it played', adv.arrived.uci, 'a7a6');
+  eq('…and the position it played it from', adv.arrived.before, fFen);
   eq('an illegal move advances nowhere', S.stormAdvance(fFen, ctxPos, 'a1a8', ''), null);
 
   // ===========================================================================
@@ -1392,6 +1442,20 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('…the ply it is at', back.ply, usable.ply);
   eq('…whose move it is', back.userColor, usable.userColor);
   eq('…and the move that led there', back.arrived.uci, usable.arrived.uci);
+  // §20) The lead-in, which is the ONLY field here that cannot be recomputed
+  // from the others — losing it in the store is a position that can be analysed
+  // from the frontier walk and not from the store, i.e. a feature that works
+  // for three seconds and then does not.
+  eq('…and the position that move was played from',
+    back.arrived.before, usable.arrived.before);
+  eq('…which still leads to the stored position', leadsTo(back.arrived, back.fen), true);
+  // An entry written before v0.153.0 has a two-element `a`. It must read as
+  // "not known" — never as an empty-string FEN, which parses as nothing and
+  // would be handed to the board.
+  eq('a pre-v0.153.0 entry has no lead-in rather than a broken one',
+    S.stormUnpack(Object.assign({}, packed, { a: ['f1b5', 'Bb5'] })).arrived.before, null);
+  eq('…and one with an empty third element is no lead-in either',
+    S.stormUnpack(Object.assign({}, packed, { a: ['f1b5', 'Bb5', ''] })).arrived.before, null);
   eq('EVERY scored move survives, not just the top few',
     back.scored.length, usable.scored.length);
   eq('…each with its uci, san and score',
@@ -1755,7 +1819,7 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   //  * THE FAILURE COUNT decides how soon a position comes round again, and
   //    losing it in a merge is invisible.
   const wireStore = () => ({
-    a1: { f: fFen, p: 3, c: 'w', n: 'Ruy', i: 0, a: ['f1b5', 'Bb5'], t: 1000, k: 2,
+    a1: { f: fFen, p: 3, c: 'w', n: 'Ruy', i: 0, a: ['f1b5', 'Bb5', preFen], t: 1000, k: 2,
       g: 145,
       m: [['a7a6', 'a6', 30, 54], ['g8f6', 'Nf6', 12], ['b8e5', '??', -5]] },
     // …and one with NO reachability figure, which is what every entry written
@@ -1768,6 +1832,12 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('the wire says which version wrote it', packedWire.v, C.wireVersion);
   eq('…and how many positions it carries', packedWire.n, 2);
   eq('the SAN is NOT on the wire', packedWire.p.a1.m[0].length, 3);
+  // §20) …but the LEAD-IN is, and unlike a SAN it has to be: a FEN cannot be
+  // un-played, so a device that received a position without it could only
+  // analyse from the position itself. It rides at a price — ~60 of an entry's
+  // ~450 characters — which the budget check below spends as fewer positions
+  // carried, never as a failed exchange.
+  eq('the lead-in position IS on the wire', packedWire.p.a1.a[2], preFen);
   eq('…nor on a move without a win rate', packedWire.p.a2.m[0].length, 2);
   eq('the tombstones ride along', Object.keys(packedWire.g), ['dead1']);
   // Hardest first, so a payload cut to fit keeps the positions most worth
@@ -1779,6 +1849,9 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   eq('…with its own position', un.store.a1.f, fFen);
   eq('…its failure count', un.store.a1.k, 2);
   eq('…whether it was invented', un.store.a2.i, 1);
+  eq('…and the lead-in that led to it', un.store.a1.a[2], preFen);
+  eq('…which still reaches the position',
+    leadsTo(S.stormUnpack(un.store.a1).arrived, un.store.a1.f), true);
   eq('…and the move that led there', un.store.a1.a[1], 'Bb5');
   eq('the SAN is RECOMPUTED, not carried',
     un.store.a1.m.map((m) => m[1]).join(), 'a6,Nf6');
@@ -1930,7 +2003,7 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
   // --- the denominator ---------------------------------------------------
   const rec = S.stormStatBlank();
   eq('a fresh record is empty', rec,
-    { n: 0, a: 0, g: 0, o: 0, b: 0, x: 0, u: 0, ls: 0, lc: 0, t: 0 });
+    { n: 0, a: 0, g: 0, o: 0, b: 0, x: 0, u: 0, ls: 0, lc: 0, s: 0, t: 0 });
   eq('a great answer counts', S.stormStatApply(rec, { verdict: 'great', wp: 1.2 }, 100), true);
   S.stormStatApply(rec, { verdict: 'good', wp: 5.5 }, 200);
   S.stormStatApply(rec, { verdict: 'ok', wp: 8.0 }, 250);
@@ -2088,6 +2161,60 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
     Object.keys(cutStats.c['1'].lines).indexOf('v59') >= 0, true);
   eq('…and it still reads back',
     Object.keys(S.stormStatsWireUnpack(cutStats, C).stats['1'].lines).length, cutStats.n);
+
+  // --- §21) HOW THE ANSWERS WERE GIVEN ------------------------------------
+  // A set used to write NOTHING here, so somebody who plays sets had an empty
+  // record — a measurement of nothing. It writes now, and `s` is what stops the
+  // resulting figure from being a mixture that does not say so.
+  //
+  // TWO SILENT FAILURES, and they fail in OPPOSITE directions. If `s` is never
+  // incremented the caveat never appears and the mixture is presented as a
+  // timed measurement — the thing §15.2 forbids. If `s` is ever allowed into a
+  // denominator the percentages move, which is the thing it must never do: it
+  // is a LABEL, not a term.
+  const unh = S.stormStatBlank();
+  S.stormStatApply(unh, { verdict: 'great', wp: 1.0 }, 100);
+  eq('a timed answer is not counted as unhurried', unh.s, 0);
+  S.stormStatApply(unh, { verdict: 'bad', wp: 9.0 }, 200, true);
+  eq('…and a set answer is', unh.s, 1);
+  eq('…without changing how many answers there are', unh.n, 2);
+  // The one thing `s` must NEVER do: move a figure.
+  const timedOnly = S.stormStatBlank();
+  S.stormStatApply(timedOnly, { verdict: 'great', wp: 1.0 }, 100);
+  S.stormStatApply(timedOnly, { verdict: 'bad', wp: 9.0 }, 200);
+  eq('the found rate is the same whether or not the answers were timed',
+    S.stormStatRate(unh), S.stormStatRate(timedOnly));
+  eq('…and so is the average loss', S.stormStatLoss(unh), S.stormStatLoss(timedOnly));
+  // It rolls up like every other counter, or a chapter's caveat would be the
+  // last line's rather than the chapter's.
+  const mixRoll = S.stormStatPlus(S.stormStatBlank(), unh);
+  S.stormStatPlus(mixRoll, unh);
+  eq('unhurried answers sum when records are folded together', mixRoll.s, 2);
+  eq('…alongside the answers they are part of', mixRoll.n, 4);
+  // The sentence itself, which is the whole reason the counter exists.
+  eq('all timed says nothing', S.statUnhurriedNote({ n: 4, s: 0 }), '');
+  eq('nothing at all says nothing', S.statUnhurriedNote({ n: 0, s: 0 }), '');
+  eq('a mixture says it is one',
+    /2 of 5/.test(S.statUnhurriedNote({ n: 5, s: 2 })), true);
+  eq('…and names both conditions',
+    /four seconds/.test(S.statUnhurriedNote({ n: 5, s: 2 })), true);
+  eq('a record made entirely of set answers says THAT instead',
+    S.statUnhurriedNote({ n: 5, s: 5 }), 'All 5 answered in a set, without a clock.');
+  // The wire. `s` rides with NO version bump, §19's precedent: a payload
+  // written before v0.154.0 has none, which reads as "all of these were timed"
+  // — true of every answer any earlier build ever counted.
+  const mixStats = { '1': { name: 'Course one', lines: {
+    v1: { nm: 'Scotch', dv: { A: { n: 4, a: 1, g: 1, o: 1, b: 1, x: 0, u: 0,
+      ls: 40, lc: 4, s: 3, t: 900 } } },
+  } } };
+  const mixBack = S.stormStatsWireUnpack(
+    S.stormStatsWirePack(mixStats, C, 0, 4242), C);
+  eq('the unhurried count survives the wire', mixBack.stats['1'].lines.v1.dv.A.s, 3);
+  eq('…and a payload written without one reads as all-timed',
+    S.stormStatsWireUnpack({ v: C.statsWireVersion, at: 1, c: { '1': { name: 'c', lines: {
+      v1: { nm: 'x', dv: { A: { n: 2, a: 2, g: 0, o: 0, b: 0, x: 0, u: 0,
+        ls: 10, lc: 2, t: 5 } } },
+    } } } }, C).stats['1'].lines.v1.dv.A.s, 0);
 
   }
 

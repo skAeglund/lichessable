@@ -3489,6 +3489,12 @@ easy one.
 
 ### 17.6 What it writes, and what it deliberately does not
 
+> **Superseded in part by §21 (v0.154.0).** The first paragraph below is no
+> longer true: a set's first look at a position IS counted now, and §21 is the
+> argument for why — the rule as written left somebody who plays sets with a
+> record of nothing. Everything else here stands, and §21 is built on the second
+> paragraph rather than against it.
+
 **Nothing goes into §15's performance record.** That record counts how a
 repertoire is read under the storm's own conditions — four seconds, one attempt —
 and an unhurried answer with three attempts behind it is not that measurement.
@@ -4074,3 +4080,320 @@ is 29px desktop, 82px touch, 84px at 420px, no overflow; the tab pair is 211px.
 * **the shallow end.** At the start position a Black repertoire's uncovered
   replies are 1.c4, 1.Nf3 and so on — real gaps, and the pick rules ought to
   reject most of them for flatness. Ought.
+
+---
+
+## 20. The opponent's move in front of the analysis board (v0.153.0)
+
+Asked for after §19 shipped: *when analysing a position, it would be nice if the
+previous move (the opponent's) was included — this way, when using "Add as
+puzzle/variation", that move is part of the variation. It also gets easier to
+see the connection to the repertoire.*
+
+### 20.1 What a storm card is missing
+
+A storm card is a middlegame position with no moves in front of it. The board
+already **tints** the squares of the move that led there (`applyStormArrival`,
+and the review's mini board does the same) — that was §14.10's answer to "a card
+has to be readable in about a second" and it is enough while the clock is
+running. It is not enough once the position is being worked on:
+
+* **The write.** "Add as puzzle" (19d) writes the analysis board's start
+  position as the new variation's `initialFEN` and our moves after it. Opened on
+  the card's own position, that card begins *after* the opponent's move — so the
+  puzzle asks "what do you play here" with the thing being answered off screen.
+  With the move in front of it the puzzle reads the way every human-written one
+  does: the opponent plays, you answer.
+* **The reading.** A position eight plies past a line end is hard to place. The
+  move that produced it is most of what ties it back to the repertoire, and in
+  the analysis board's own move list it is *written down* rather than being two
+  tinted squares.
+
+"Add as variation" (19c) still refuses on a storm position — it needs a `source`
+variation to splice onto and a storm position belongs to none — so the write
+this actually changes is the puzzle. That is not a reason to leave it: the
+puzzle is the write the user named, and it is the one that works here.
+
+### 20.2 It is 24g's mechanism, not a new one
+
+The course tree already opens the analysis board one ply behind and plays a move
+in: `openAnalysis`'s `playUci`, for exactly the same reason —
+
+> The move the board was opened ON, played as the line's first ply. Not a
+> different start position: the comment an added line goes into hangs off the
+> move BEFORE it, so the start must stay where the course's own last move left
+> off and this one has to be part of the line.
+
+So the whole of this feature on the section 19 side is two fields in the `given`
+object, and section 19 needed no change at all.
+
+### 20.3 The one thing that had to be plumbed
+
+`stormAdvance` already returns `arrived: { san, uci }` — the move that led to
+the position. What it did not carry is **the position that move was played
+from**, and that is the one field of an arrival which cannot be recomputed
+later: a capture loses the captured piece, so a FEN cannot be un-played.
+
+Four places fill it in, and all four were free:
+
+| where | source of the `before` |
+|---|---|
+| `stormAdvance` | the `fen` it was handed — every ply of both walks |
+| `stormWalkGame`'s fast-forward | a new `lastFen`, the one ply the walk plays *before* the loop begins |
+| `stormFrontiers` | `walkVariation`'s last ply already carries `before` |
+| `stormDecisions` / `harvestUncovered` | `stormAdvance` again, from the decision point |
+
+The second is the interesting one. The ply that *arrives at* the frontier is
+played in the fast-forward that finds the frontier in the game, not in the walk
+proper — so it is the one `before` a naive implementation loses, and it is the
+one that matters most, since the frontier's own card is the first the user sees.
+
+### 20.4 The store, and what it costs on the wire
+
+`a` grew a third element. Locally that is ~60 bytes on a ~700-byte entry and
+nobody notices.
+
+On the **wire** it is ~60 of an entry's ~450 characters, so an exchange carries
+about an eighth fewer positions. It rides anyway, for §14.19's reason and at a
+higher price: it is not re-derivable on the far device, and the alternative —
+stripping it — is a device that received its positions by sync quietly getting a
+different feature from the one that gathered them. The budget check is on the
+encoded size, so the cost is *fewer positions carried*, never a failed exchange.
+
+No `wireVersion` bump. A payload written before v0.153.0 has a two-element `a`,
+which `stormUnpack` already reads as "not known" — and an entry with no lead-in
+simply opens the board on the card's own position, exactly as every entry did
+until now.
+
+### 20.5 The lead-in is proven before it is taken
+
+`analysisGiven(card)` does not trust the stored field. The move must resolve on
+the earlier position **and** the resulting position must be this card's own
+(compared on `cacheKey`); anything else falls back to the card position with one
+console line.
+
+That is not defensiveness for its own sake. `before` is a *stored* field: the
+store outlives builds, is merged from other devices, and is the one input here
+that a future change to `stormPack` could put out of step with `f`. A mismatched
+one opens the board **a ply short with the wrong side to move** — a board that
+looks entirely plausible and is about a position the user never saw. It is this
+feature's one silent failure and it costs two lines to make impossible.
+
+### 20.6 What was measured
+
+**Executed** (`node dev/check-storm.js`, 610 assertions): that every position
+both walks offer carries a `before` which, with its move played, really lands on
+that position; that the frontier's own arriving ply carries one too; that
+`stormAdvance` names the position it played from; that the store round trip
+keeps it and that a pre-v0.153.0 two-element `a` — and one with an empty third
+element — read as *no lead-in* rather than as an empty-string FEN; and that it
+survives the wire pack, the unpack, and still reaches the position afterwards.
+
+**Five controls, run 2026-08-30**, each failing on exactly its own assertions
+and no others:
+
+| control | fails |
+|---|---|
+| `stormAdvance` loses `before` | 5 |
+| the fast-forward forgets `lastFen` | 1 |
+| `stormPack` drops the third element | 2 |
+| `stormFrontiers` forgets `lastFen` | 1 |
+| the wire strips the third element | 3 |
+
+The second and fourth are worth their single assertions: each is the *first*
+card of a whole class of session (a real-game walk's frontier, an invented
+line's), and each is invisible from everywhere else — the other cards of the
+same session are fine.
+
+**Not measured.** No live run. In particular: what the puzzle written from a
+lead-in board actually looks like in the course (19d's move-**pair** fold now
+starts on a black-first pair whenever the user is White — which is a shape the
+fold already handles and CLAUDE.md already calls normal, but "already handled"
+is an argument), and whether the analysis board's own move list numbering reads
+right when the line starts on the opponent's move (`renderMoveList` has the
+ellipsis form for exactly this and it is used by both existing hosts).
+
+---
+
+## 21. A set's answers go into the record (v0.154.0)
+
+Reported: *I played a set of uncovered replies — but it never showed up in
+stats.*
+
+Not a defect in §19's plumbing: the uncovered record (`ulines`) is written,
+merged, pruned, carried and rendered exactly as the frontier one is. The cause is
+§17.6, one line up from the store write it sits beside — **a set wrote nothing to
+§15's record at all**, on the argument that a record counting four-second answers
+must not also count unhurried ones.
+
+### 21.1 The rule was right about the risk and wrong about the cost
+
+§15.2's discipline is real: a percentage that mixes two conditions without saying
+so means neither. But the price of keeping it was not the one §17.6 assumed.
+
+* **The set is not a footnote.** It is one of the two exercises the window
+  offers, chosen from a selector in the same row as the source. Somebody whose
+  practice is sets has an empty record — a feature that measures nothing, on
+  material they have been through.
+* **The argument shrinks under inspection.** §17.6 objects to "an unhurried
+  answer with three attempts behind it". Restricted to the FIRST attempt of the
+  FIRST round, there are no attempts behind it, and the difference reduces to the
+  clock alone. §17.6's own second paragraph already says this about the store:
+  *"an unhurried FIRST answer settles that exactly as a hurried one does — the
+  two questions have different subjects, and only one of them is about the
+  clock."* The record's subject is "did I find a decent move here", which is not
+  about the clock either.
+* **The scoring rule is identical.** Both loops grade through `runGrade` /
+  `gradeTiers` and land in §16's same five bands. What differs is the condition,
+  not the arithmetic — which is a thing to *label*, not a reason to keep two
+  records.
+
+### 21.2 What was rejected
+
+**A parallel counter map (`sv` beside `dv`).** The honest separation, and it
+touches `stormStatSum`, `stormStatRoll`, `stormStatsMerge`, `stormStatsPrune`,
+`stormStatsWirePack`, `stormStatsWireUnpack` and every reader of the table — each
+of which is somewhere a mistake would be a plausible number. It also produces two
+half-empty tables, which answers "which chapter am I weak on" *worse* than one
+that is full, and would need a mode selector beside the two source tabs: six
+states of a panel that had two.
+
+**Silent mixing.** Recording set answers into the counters and saying nothing.
+Cheapest, and exactly what §15.2 forbids.
+
+### 21.3 What it is: one integer, and it is a label
+
+`stormStatBlank` gains `s` — *how many of `n` were answered without a clock*.
+
+```
+{ n, a, g, o, b, x, u, ls, lc, s, t }
+```
+
+It follows every rule the counters beside it already follow: per device, summed
+on read, `stormStatPlus`'d when records fold together, replaced wholesale by the
+merge's `max` on `n`, forced to a number by the wire unpack.
+
+**It is never a term.** Nothing divides by it. `stormStatRate` and
+`stormStatLoss` are byte-identical with and without it, and
+`dev/check-storm.js` asserts that directly — a rate that moved when an answer was
+unhurried would be the one way this change could quietly alter a figure it is
+only supposed to describe.
+
+### 21.4 What a set records, and what it still does not
+
+The two write points are **the two places that already write the store**, under
+the same guard:
+
+| where | when |
+|---|---|
+| `finishSetAnswer` | `entry.attempts === 1 && st.round === 1` — the first blind attempt |
+| `setGiveUp` | `entry.attempts === 0 && st.round === 1` — "no idea", before any attempt |
+
+That is a rule worth stating as one sentence: **the set records exactly what the
+store records, and for the same reason** — it is the one thing that happens to a
+position which is evidence about whether the move was known. A retry, the second
+pass and a reveal are not evidence about anything, and none of them reaches
+`statNote`.
+
+A pass is counted in the worst band, as it is in the timed loop. "I have no idea"
+is the most informative thing this record can be told about a position, and a
+pass that cost nothing would make it the cheap way to keep a record clean.
+
+**A review retry (§14.10b) is still not counted**, and that is a different case
+rather than an inconsistency: it is a position played again with the answer
+already on screen. `statNote` is called from `finishAnswer` and the two set
+points, never from the shared `runGrade`.
+
+### 21.5 Where it shows
+
+Two places, because a tooltip alone is no answer on a touch device:
+
+* **Above the tables**, one faint line rolled up over every course on screen —
+  *"12 of 40 answered in a set, without a clock; 28 against the storm's own four
+  seconds."* It is a caveat about the meaning of every figure below it, so it
+  goes before the first of them and not after the last.
+* **On each row's `n` cell**, the same sentence for that row — a course, a
+  chapter or a line can be entirely one condition while the panel as a whole is a
+  mixture, and that is precisely when the caveat above is least use.
+
+`statUnhurriedNote` is the one writer of both, and it answers `''` when every
+answer was timed — so a record with no sets in it is byte-identical to the
+pre-v0.154.0 panel.
+
+The caveat wears `.clo-st-scopenote`'s vocabulary (faint, 12px) rather than
+amber: nothing is outstanding and nothing is wrong. The numbers are simply saying
+how they were made.
+
+### 21.6 The wire
+
+`s` rides with **no `statsWireVersion` bump**, which is §19's precedent applied
+unchanged: a payload written before v0.154.0 has no `s`, that reads as `0`, and
+`0` means *all of these were timed* — true of every answer any earlier build ever
+counted.
+
+The other direction is safe by the merge's own rule. An older device re-packing a
+newer one's record drops `s`, but a device only ever writes its own counters and
+they only grow, so `theirs.n > ours.n` is never true of a round trip through
+somebody else's card: the copy that comes back cannot displace the original.
+
+### 21.7 What was measured
+
+**Executed** (`node dev/check-storm.js`, 624 assertions): that a timed answer
+does not increment `s` and a set answer does; that `n` is unaffected; that
+`stormStatRate` and `stormStatLoss` return *identical* values for a record whose
+answers were unhurried and one whose were not; that `s` sums through
+`stormStatPlus`; the three shapes of `statUnhurriedNote`'s sentence; and that `s`
+survives the wire while a payload without one reads as all-timed.
+
+**Four controls, run 2026-08-30**, each failing on exactly its own assertions:
+
+| control | fails |
+|---|---|
+| `stormStatApply` ignores the flag | 2 |
+| `stormStatPlus` does not sum `s` | 1 |
+| the wire unpack drops `s` | 2 |
+| `s` is added to `stormStatRate`'s denominator | 1 |
+
+The last is the one worth having. It is the only way this change could make a
+number wrong rather than absent, and it is invisible from the outside — every
+percentage would still be a percentage, and still move in the right direction.
+
+**Measured in the harness** (`node dev/serve.js`, 2026-08-30). The caveat is
+400x28 desktop / 434x30 under `html.clo-touch` — two lines, clamped by
+`max-width: 60ch` — and it costs the LIST, not the panel: the stats body is a
+`flex: 1` scroll container, so hiding the line changes its height and nothing
+else. Zero horizontal overflow in all eight states measured (858 / 700 / 560 /
+420px of panel, desktop and touch).
+
+### 21.8 VERIFIED LIVE, 2026-08-30
+
+Course 453453, set of six on the uncovered source, both write points exercised in
+one session.
+
+**Before:** the Uncovered replies tab read *"Nothing recorded yet on this
+source"* — the report reproduced exactly.
+
+**The session:** one card passed on ("No idea" → `setGiveUp`, graded `blunder`),
+one answered with a real move on our own board (…Nf6 → `finishSetAnswer`, graded
+`ok`, "Inaccuracy · #5 of 10 · 7.0% of the game").
+
+**After:**
+
+```
+Uncovered replies
+All 2 answered in a set, without a clock.
+Course                found   avg lost   n
+Testing course          0%       7.0%    2
+```
+
+Four things that could only be seen here: the answers land in `ulines` and not in
+`lines`; `found` is 0% because neither band scores, which is the intended
+reading and not an absence of data; `avg lost` is 7.0% — the Nf6 answer alone,
+the pass having no loss to sum, which is `stormStatApply`'s "only ever summed
+where there is one" doing its job; and the caveat renders in both hosts, above
+the tables and in each row's `n` tooltip.
+
+**Noticed, not changed.** Pressing Stats in the same beat as "End set" did
+nothing, and a press a moment later worked. `endSession` clears `st.card`
+synchronously, so this is a race with the teardown render rather than
+`toggleStats`'s guard, and it predates this change.

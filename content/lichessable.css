@@ -6883,6 +6883,17 @@ button.clo-st-strow:hover { background: var(--clo-bg-raised); }
   font-size: 12px;
 }
 
+/* §21) The caveat above the tables. `.clo-st-scopenote`'s vocabulary — faint,
+   12px — because it is the same kind of statement: something about the scope of
+   what is being shown rather than part of it. Never amber: nothing is
+   outstanding and nothing is wrong, the numbers simply say how they were made. */
+.clo-st-stcaveat {
+  color: var(--clo-text-faint);
+  font-size: 12px;
+  margin: 0 0 8px;
+  max-width: 60ch;
+}
+
 /* Neutral OUTLINE, `.clo-st-sync`'s vocabulary and deliberately not
    `.clo-st-gather`'s green: DESIGN-ui-inventory §3's rule is that green outline
    is an ordinary action and the green in THIS window is spent on "storm" and
@@ -7006,6 +7017,7 @@ html.clo-touch .clo-st-strow--head { font-size: 12px; }
 html.clo-touch .clo-st-sthead { font-size: 13px; }
 html.clo-touch .clo-st-scope { font-size: 14px; padding: 7px 14px; }
 html.clo-touch .clo-st-scopenote { font-size: 13px; }
+html.clo-touch .clo-st-stcaveat { font-size: 13px; }
 html.clo-touch .clo-st-x { font-size: 22px; padding: 0 6px; }
 html.clo-touch .clo-st-clock { font-size: 24px; }
 html.clo-touch .clo-st-note { font-size: 13px; }

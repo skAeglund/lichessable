@@ -34863,7 +34863,14 @@
         u: cand.unc ? 1 : undefined,
         sh: cand.unc && typeof cand.unc.share === 'number'
           ? Math.round(cand.unc.share * 10) : undefined,
-        a: cand.arrived ? [cand.arrived.uci || '', cand.arrived.san || ''] : null,
+        // The move that led here — uci, SAN, and (§20) the position it was
+        // played FROM. That third element is the one field of a stored entry
+        // that is not derivable from the others: a FEN cannot be un-played, so
+        // without it a position taken out of the store can only be analysed
+        // from the move AFTER the opponent's.
+        a: cand.arrived
+          ? [cand.arrived.uci || '', cand.arrived.san || '', cand.arrived.before || '']
+          : null,
         // The scored list, mover's perspective, best first — the thing the
         // requests bought. `w` is dropped where ChessDB gave none rather than
         // stored as null: it is absent on roughly half the moves.
@@ -34910,7 +34917,12 @@
         nScored: scored.length,
         scored,
         invented: Boolean(e.i),
-        arrived: e.a ? { uci: e.a[0] || null, san: e.a[1] || '' } : null,
+        // `before` is absent on anything written before v0.153.0, and every
+        // reader treats that as "not known" — the analysis board then opens on
+        // the card's own position, exactly as it did.
+        arrived: e.a
+          ? { uci: e.a[0] || null, san: e.a[1] || '', before: e.a[2] || null }
+          : null,
         // §19) Rebuilt from the three fields above rather than stored twice:
         // the reply IS `a`, and `g` is its game count. A missing `u` is a
         // frontier position, which is what every pre-v0.152.0 entry is.
@@ -34969,6 +34981,15 @@
         const e = store[ck];
         if (!e || !Array.isArray(e.m)) continue;
         out.p[ck] = {
+          // §20) `a` NOW CARRIES A THIRD ELEMENT, the position the arriving
+          // move was played from, and it rides here for `g`'s reason and at a
+          // higher price: it is not re-derivable on the far device — a FEN
+          // cannot be un-played — and it is ~60 of an entry's ~450 characters,
+          // so an exchange carries about an eighth fewer positions. That is the
+          // trade, and it is a cut in how many come across rather than a failed
+          // exchange: the budget check below is on the encoded size. NO
+          // `wireVersion` bump — a payload written before v0.153.0 has a
+          // two-element `a`, which `stormUnpack` already reads as "not known".
           f: e.f, p: e.p, c: e.c, n: e.n, i: e.i, a: e.a, t: e.t, k: e.k,
           // §14.19: it RIDES, as an optional field and with NO `wireVersion`
           // bump — absence is already handled as "not known" everywhere that
@@ -35098,9 +35119,15 @@
 
     /** One device's counters for one line — §16's five bands plus `unknown`.
      *  Short keys: this goes on the wire. `ls` is a sum of TENTHS of a point of
-     *  win probability, so the whole record stays integers. */
+     *  win probability, so the whole record stays integers.
+     *
+     *  `s` (§21) is HOW MANY OF `n` WERE ANSWERED WITHOUT A CLOCK — a set's
+     *  first look at a position. It is a LABEL and never a term: nothing above
+     *  divides by it, and `stormStatRate`/`stormStatLoss` are byte-identical
+     *  with and without it. It exists so a figure that mixes two conditions
+     *  says so, which is the whole of §15.2's discipline. */
     function stormStatBlank() {
-      return { n: 0, a: 0, g: 0, o: 0, b: 0, x: 0, u: 0, ls: 0, lc: 0, t: 0 };
+      return { n: 0, a: 0, g: 0, o: 0, b: 0, x: 0, u: 0, ls: 0, lc: 0, s: 0, t: 0 };
     }
 
     /** The band each verdict is counted in. One table rather than a chain of
@@ -35138,11 +35165,17 @@
      * mind, and counting it would mark the user down for running out of time.
      * Returns whether anything was counted, which is what decides a write.
      */
-    function stormStatApply(rec, v, now) {
+    function stormStatApply(rec, v, now, unhurried) {
       const band = v && STAT_BAND[v.verdict];
       if (!rec || !band) return false;
       rec.n = (rec.n || 0) + 1;
       rec[band] = (rec[band] || 0) + 1;
+      // §21) …and whether it was answered against a clock. Counted beside `n`
+      // rather than in a record of its own: the two are the SAME measurement of
+      // the same repertoire taken under two conditions, and two half-empty
+      // tables answer "which chapter am I weak on" worse than one that says how
+      // its answers were given.
+      if (unhurried) rec.s = (rec.s || 0) + 1;
       // THE LOSS IS ONLY EVER SUMMED WHERE THERE IS ONE. An ungradeable answer
       // has no loss at all, and reading a missing number as zero is what would
       // make the book's ignorance show up as perfect play.
@@ -35171,6 +35204,7 @@
       into.u += r.u || 0;
       into.ls += r.ls || 0;
       into.lc += r.lc || 0;
+      into.s += r.s || 0;
       if ((r.t || 0) > into.t) into.t = r.t || 0;
       return into;
     }
@@ -35366,6 +35400,11 @@
                 o: Math.max(0, r.o | 0), b: Math.max(0, r.b | 0), x: Math.max(0, r.x | 0),
                 u: Math.max(0, r.u | 0),
                 ls: Math.max(0, r.ls | 0), lc: Math.max(0, r.lc | 0),
+                // §21) Absent on every payload written before v0.154.0, which
+                // reads as "all of these were timed" — true of every answer any
+                // build before it ever counted. No `statsWireVersion` bump for
+                // that reason, §19's precedent exactly.
+                s: Math.max(0, r.s | 0),
                 t: Number(r.t) || 0,
               };
             }
@@ -35486,6 +35525,10 @@
             // arrived at — a real game's walk reads that off the game instead.
             lastUci: (last && last.uci) || null,
             lastSan: (last && last.san) || '',
+            // …and the position it was played from (§20), free from the same
+            // ply, so an invented line's first card can be analysed with the
+            // course's own last move in front of it.
+            lastFen: (last && last.before) || null,
           });
         }
         e.n++;
@@ -36262,7 +36305,13 @@
         fen: after,
         prevCapSq: full.indexOf('x') >= 0 ? uci.slice(2, 4) : null,
         gaveCheck: /[+#]/.test(full),
-        arrived: { san: full, uci },
+        // §20) `before` is the position this move was played FROM, and it is
+        // the one thing about the arrival that cannot be recomputed later: a
+        // capture loses the captured piece, so a FEN cannot be un-played. It is
+        // what lets the analysis board open one ply earlier and play the move
+        // in, so an added puzzle carries the opponent's move that made the
+        // position rather than starting after it.
+        arrived: { san: full, uci, before: fen },
       };
     }
 
@@ -36325,12 +36374,18 @@
       let fen = START_FEN;
       let i = 0;
       let lastUci = null;
+      // …and the position that move was played from (§20), which only this
+      // loop ever sees: past the frontier `stormAdvance` carries it, but the
+      // ply that ARRIVES at the frontier is played here, before the walk
+      // proper begins.
+      let lastFen = null;
       while (i < sans.length && cacheKey(fen) !== target) {
         const pos = CloSan.parseFen(fen);
         const uci = pos && sanToUci(pos, sans[i]);
         const after = uci && fenAfterUci(fen, uci);
         if (!after) return { found: false, out: [], stop: 'the game left the board' };
         lastUci = uci;
+        lastFen = fen;
         fen = after;
         i++;
       }
@@ -36345,7 +36400,7 @@
       // tint. At the frontier itself that is the course's own final ply, which
       // is exactly the move the user has just been taught — so the very first
       // card still arrives with the board saying how it got there.
-      let arrived = i > 0 ? { san: sans[i - 1], uci: lastUci } : null;
+      let arrived = i > 0 ? { san: sans[i - 1], uci: lastUci, before: lastFen } : null;
       let stop = 'the walk reached its ply limit';
 
       for (let k = 0; k < C.maxPly && i + k < sans.length; k++) {
@@ -37450,7 +37505,7 @@
         if (!C.randomFallback) return [];
         const walked = await stormRandomLine(
           f.fen, f.side, askCdb, cfg(), Math.random,
-          f.lastUci ? { san: f.lastSan || '', uci: f.lastUci } : null,
+          f.lastUci ? { san: f.lastSan || '', uci: f.lastUci, before: f.lastFen || null } : null,
           frontierCovered(f));
         stormFunnelWhy(fn, 'stops', walked.stop);
         log('storm: no games at', f.names[0], '— invented a line,', walked.out.length,
@@ -37984,12 +38039,22 @@
 
     /**
      * ONE GRADED ANSWER, counted against the line the position is a frontier
-     * of. Called from `finishAnswer` only — a review retry (§14.10b) is
-     * deliberately not counted, for the same reason it scores no points: it was
-     * answered at leisure, and mixing the two would make the record a measure
+     * of.
+     *
+     * TWO CALLERS, and `unhurried` is which. `finishAnswer` is the timed loop.
+     * §21's is the SET, from the two places that already write the STORE — the
+     * first attempt of the first round, and a give-up before any attempt — under
+     * the same guard and for the same reason: that is the one thing that
+     * happens to a position which is evidence about whether the move was known.
+     * A retry, the second pass and a reveal are not, and none of them reaches
+     * here.
+     *
+     * A review retry (§14.10b) is still deliberately not counted, and that is a
+     * different case from a set: it is a position being played again with the
+     * answer already on screen, so counting it would make the record a measure
      * of how much reviewing was done.
      */
-    function statNote(card, v) {
+    function statNote(card, v, unhurried) {
       if (!st.stats || !st.devId || !card || !card.storm) return;
       const c = courseStats(true);
       if (!c) return;
@@ -38004,7 +38069,7 @@
       if (!line.nm && card.storm.from) line.nm = card.storm.from;
       let rec = line.dv[st.devId];
       if (!rec) rec = line.dv[st.devId] = stormStatBlank();
-      if (!stormStatApply(rec, v, Date.now())) return;
+      if (!stormStatApply(rec, v, Date.now(), unhurried)) return;
       st.statsDirty = true;
       saveStats();
     }
@@ -39090,7 +39155,15 @@
       entry.attempts++;
       if (entry.attempts === 1) {
         if (st.round === 1) entry.first = v; else entry.second = v;
-        if (st.round === 1 && st.card) storeNote(st.card.startFen, v.verdict);
+        if (st.round === 1 && st.card) {
+          storeNote(st.card.startFen, v.verdict);
+          // §21) …and §15's record, which used to be written here by nothing at
+          // all. THE SAME GUARD AS THE STORE WRITE ABOVE, deliberately: both ask
+          // about the FIRST thing that happened to this position, which is the
+          // only attempt that says whether the move was known. Marked unhurried,
+          // so the figure it lands in can say what it is made of.
+          statNote(st.card, v, true);
+        }
       }
       if (stormSetHeld(v.verdict, C)) {
         // HELD. Nothing is scheduled — no verdict timer, no next card — and the
@@ -39195,7 +39268,13 @@
       st.verdict = v;
       if (entry && entry.attempts === 0) {
         if (st.round === 1) entry.first = v; else entry.second = v;
-        if (st.round === 1) storeNote(st.card.startFen, v.verdict);
+        if (st.round === 1) {
+          storeNote(st.card.startFen, v.verdict);
+          // §21) A pass is an ANSWER here exactly as it is in the timed loop,
+          // where it is counted in the worst band — "I have no idea" is the most
+          // informative thing this record can be told about a position.
+          statNote(st.card, v, true);
+        }
       }
       st.hold = { attempts: (entry && entry.attempts) || 0, revealed: true };
       if (continuationStormApi) continuationStormApi.verdict(v, setHoldState());
@@ -39223,7 +39302,7 @@
       st.boardUp = false;
       st.analysing = true;
       render();
-      const given = { startFen: card.startFen, userColor: card.userColor };
+      const given = analysisGiven(card);
       if (!continuationStormApi.analyse(given, slots)) {
         st.analysing = false;
         render();
@@ -40215,6 +40294,21 @@
 
     /** One row of any of the tables. `tag` is the element, so a chapter row can
      *  be a button and a line row need not be. */
+    /**
+     * §21) HOW THESE ANSWERS WERE GIVEN, or '' when they were all timed. The
+     * one thing `s` is for: a "found" percentage over a mixture has to say it
+     * is one, and this is the sentence that says so wherever the figure is.
+     */
+    function statUnhurriedNote(agg) {
+      const n = (agg && agg.n) || 0;
+      const un = (agg && agg.s) || 0;
+      if (!n || !un) return '';
+      return un >= n
+        ? 'All ' + n + ' answered in a set, without a clock.'
+        : un + ' of ' + n + ' answered in a set, without a clock; ' +
+          (n - un) + ' against the storm’s own four seconds.';
+    }
+
     function statRow(tag, cls, label, agg) {
       const row = el(tag, 'clo-st-strow' + (cls ? ' ' + cls : ''));
       if (tag === 'button') row.type = 'button';
@@ -40222,7 +40316,13 @@
       row.append(statBar(agg));
       row.append(el('span', 'clo-st-stnum', statPct(agg)));
       row.append(el('span', 'clo-st-stnum', statLossText(agg)));
-      row.append(el('span', 'clo-st-stnum clo-st-stnum--faint', String(agg.n || 0)));
+      const count = el('span', 'clo-st-stnum clo-st-stnum--faint', String(agg.n || 0));
+      // On the COUNT rather than on the row: the row may already carry a title
+      // of its own (a course's line total, a chapter's fold hint), and this is a
+      // statement about how many answers there are, which is what this cell is.
+      count.title = statUnhurriedNote(agg) ||
+        ((agg.n || 0) + ' answer(s), all against the clock');
+      row.append(count);
       return row;
     }
 
@@ -40239,7 +40339,11 @@
         'the best one — in winning probability, so it means the same thing in a sharp ' +
         'position and in a won one.';
       row.append(loss);
-      row.append(el('span', 'clo-st-stnum clo-st-stnum--faint', 'n'));
+      const n = el('span', 'clo-st-stnum clo-st-stnum--faint', 'n');
+      n.title = 'How many answers this figure is made of. A set’s first look at a ' +
+        'position is counted here too — hover a row to see how many of its answers ' +
+        'were given without a clock.';
+      row.append(n);
       return row;
     }
 
@@ -40332,6 +40436,13 @@
         return;
       }
 
+      // §21) WHAT THESE NUMBERS ARE MADE OF, before the first of them is read.
+      // A tooltip alone would not do: on a touch device there is no hover, and
+      // this is a caveat about the meaning of every figure below it rather than
+      // a detail about one row.
+      const mix = statUnhurriedNote(
+        courses.reduce((a, r) => stormStatPlus(a, r.agg), stormStatBlank()));
+      if (mix) body.append(el('div', 'clo-st-stcaveat', mix));
       body.append(el('div', 'clo-st-sthead', 'Your repertoires'));
       body.append(statHeader('Course'));
       for (const row of courses) {
@@ -40755,20 +40866,51 @@
 
     // --- section 19's board, on a review position ---------------------------
 
+    /**
+     * §20) EVERYTHING SECTION 19 WOULD READ OFF A PAGE, handed in — the shape
+     * 24g established (`openAnalysis`'s `given`). A storm position belongs to
+     * no variation, so `source`, `entry` and their sentences are unanswerable
+     * and the three writes each refuse with their own; every field past
+     * `startFen` is optional by that contract.
+     *
+     * WITH THE OPPONENT'S MOVE IN FRONT OF IT wherever the position knows how
+     * it was reached. The board opens one ply EARLIER and plays that move in as
+     * the line's first ply — 24g's `playUci`, and for 24g's reason: a line
+     * worked out here continues the opponent's move, so "Add as puzzle" writing
+     * the position without it produces a card that starts a move after the
+     * thing being answered. It is also most of what ties a storm position back
+     * to the repertoire on sight.
+     *
+     * THE LEAD-IN IS PROVEN BEFORE IT IS TAKEN, never assumed: the move must
+     * resolve on the earlier position AND land on this card's own. `before` is
+     * a stored field and a store outlives builds and crosses devices, so a
+     * mismatched one would otherwise open the board a ply short with the wrong
+     * side to move — the failure this feature could most plausibly ship with,
+     * and the one hardest to notice.
+     */
+    function analysisGiven(card) {
+      const given = { startFen: card.startFen, userColor: card.userColor };
+      const arrived = card.storm && card.storm.cand && card.storm.cand.arrived;
+      if (!arrived || !arrived.before || !arrived.uci) return given;
+      const pos = CloSan.parseFen(arrived.before);
+      const mv = pos && CloSan.uciToMove(pos, arrived.uci);
+      const after = mv && fenAfterUci(arrived.before, arrived.uci);
+      if (!after || cacheKey(after) !== cacheKey(card.startFen)) {
+        warn('storm: the stored lead-in move does not reach this position —',
+          'analysing from the position itself');
+        return given;
+      }
+      given.startFen = arrived.before;
+      given.playUci = arrived.uci;
+      return given;
+    }
+
     function toggleAnalyse() {
       if (st.analysing) { closeAnalyse(); return; }
       const item = revItem();
       if (!item || !continuationStormApi) return;
       if (st.retry) endRetry();
-      // Everything section 19 would read off a page, handed in — the shape
-      // 24g established (`openAnalysis`'s `given`). A storm position belongs to
-      // no variation, so only `startFen` and the orientation are answerable,
-      // and every field past `startFen` is optional by that contract: the three
-      // writes simply refuse, each with its own sentence.
-      const given = {
-        startFen: item.card.startFen,
-        userColor: item.card.userColor,
-      };
+      const given = analysisGiven(item.card);
       st.analysing = true;
       render();
       if (!continuationStormApi.analyse(given, slots)) {

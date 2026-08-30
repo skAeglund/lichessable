@@ -3577,13 +3577,14 @@ Currently working (v0.18.x).
       can", and a change to either must be a deliberate change to the other. The
       check asserts they still agree, so the duplication cannot silently become a
       divergence.
-    - §15's RECORD IS NOT WRITTEN, and the STORE IS — on the first answer of the
-      first round only. That record counts how a repertoire is read under the
-      storm's own conditions (four seconds, one attempt) and an unhurried answer
-      with three attempts behind it is not that measurement; the store asks a
-      question about the POSITION, which the clock has nothing to do with. A
-      retry is played with the last verdict on screen and the second pass minutes
-      after a reveal, so neither is evidence about anything.
+    - §15's RECORD **IS** WRITTEN SINCE v0.154.0 (§21) — the rule that it was not
+      left somebody who plays sets with a record of nothing. It is written from
+      the SAME TWO PLACES as the store, under the SAME guard: the first attempt
+      of the first round (`finishSetAnswer`) and a give-up before any attempt
+      (`setGiveUp`). So the set records exactly what the store records, and for
+      the same reason — that is the one thing that happens to a position which is
+      evidence about whether the move was known. A retry, the second pass and a
+      reveal are not, and none of them reaches `statNote`.
     - IT REVEALS BEFORE IT ANALYSES. Section 19's board arrives with the engine
       and the database beside it, both of which name the move within a second, so
       "analyse blind" is not a state that exists — making the reveal explicit and
@@ -3596,6 +3597,29 @@ Currently working (v0.18.x).
       `advance`, `analyse`) and section 18 grew `cr.stormHold`, which is a verdict
       the session has not accepted yet — the board is already shut behind one, so
       nothing about the board changed.
+  * A SET'S ANSWERS ARE LABELLED, NOT SEGREGATED (§21, v0.154.0). §15's counters
+    gained ONE integer, `s` — how many of `n` were answered WITHOUT A CLOCK — and
+    a parallel `sv` map was deliberately rejected: it would touch every one of
+    the six functions that iterate `dv` and produce two half-empty tables, which
+    answers "which chapter am I weak on" worse than one full one.
+    - `s` IS A LABEL AND NEVER A TERM. Nothing divides by it, and
+      `stormStatRate`/`stormStatLoss` must stay byte-identical with and without
+      it — a rate that moved when an answer was unhurried is the one way this can
+      make a figure WRONG rather than absent, and every percentage would still
+      look like a percentage. `dev/check-storm.js` asserts the two rates are
+      equal for records differing only in `s`.
+    - IT RIDES THE WIRE WITH NO `statsWireVersion` BUMP, §19's precedent: absence
+      reads as 0, i.e. "all of these were timed", which is true of every answer
+      any earlier build counted. The other direction is safe by the merge's own
+      rule — a device only writes its own monotone counters, so an older device's
+      re-packed copy can never displace the original.
+    - `statUnhurriedNote` IS THE ONE WRITER of the sentence, in TWO hosts: a
+      faint line above the tables (rolled up over every course shown) and each
+      row's `n` cell. Both, because a tooltip is no answer on a touch device and
+      a whole-panel caveat is least use exactly when one row is all one
+      condition. It answers `''` when nothing was unhurried, so a record with no
+      sets in it renders exactly as it did.
+
   * FOUR THINGS ASKED FOR AFTER THE SET SHIPPED (§18, v0.151.0). None of them
     touches the producer, the store, the wire or the grade. **READ
     DESIGN-intuition-storm.md §18 BEFORE CHANGING ANY OF THEM.** What an edit
@@ -3690,6 +3714,33 @@ Currently working (v0.18.x).
       the three grading tiers, the bands, the set, the retention rule, the
       tombstones, the wire, the review — is shared and must stay unaware of the
       source.
+
+  * THE ANALYSIS BOARD OPENS ONE PLY EARLIER (§20, v0.153.0): the opponent's
+    move that MADE the position, played in as the line's first ply, so "Add as
+    puzzle" (19d) writes a card that asks its question after that move instead
+    of starting a move past it — and so a middlegame position can be placed at
+    all. It is 24g's `playUci` verbatim and section 19 needed NO change; what it
+    cost is `arrived.before` and the four places that fill it.
+    - `before` IS THE ONE FIELD OF AN ARRIVAL THAT CANNOT BE RECOMPUTED — a
+      capture loses the captured piece, so a FEN cannot be un-played. Hence it
+      is carried rather than derived, everywhere: `stormAdvance` (both walks and
+      §19's decision points), `stormFrontiers`'s `lastFen` (free, off
+      `walkVariation`'s last ply) and `stormWalkGame`'s OWN `lastFen`, which is
+      the one an implementation loses: the ply that ARRIVES at the frontier is
+      played in the fast-forward, before the walk's loop begins, and it is the
+      first card of every real-game session.
+    - THE STORE'S `a` HAS THREE ELEMENTS NOW and the third RIDES THE WIRE, for
+      §14.19's reason and at a higher price: ~60 of an entry's ~450 characters,
+      i.e. about an eighth fewer positions per exchange (a CUT, never a failed
+      one — the budget check is on the encoded size). NO `wireVersion` bump: a
+      two-element `a` is what every pre-v0.153.0 payload has and reads as "not
+      known", which simply opens the board on the card's own position.
+    - `analysisGiven` PROVES THE LEAD-IN BEFORE IT TAKES IT — the move must
+      resolve on `before` AND land on this card's own position (`cacheKey`).
+      `before` is a STORED field, so it outlives builds and crosses devices, and
+      a mismatched one opens the board a ply short with the wrong side to move:
+      a plausible-looking board about a position nobody saw. Both storm entry
+      points (`toggleAnalyse`, `setAnalyse`) go through it.
 
 - SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
@@ -3795,14 +3846,18 @@ After touching section 27's producer — `stormFrontiers`, `stormDrawFrontier`,
 `stormWalkGame`, `stormRandomLine` or `stormCard` — or the verdict line it
 prints (`stormCp`, `stormVerdictLine`, `stormBestLine`), or the position store
 and its wire (`stormPack`, `stormUnpack`, `stormRetain`, `stormWirePack`,
-`stormWireUnpack`, `stormWireMerge`) — — or the GRADE ITSELF (§16: `stormWinPct`, `stormWpLoss`, `stormGrade`,
+`stormWireUnpack`, `stormWireMerge`) — or §20's LEAD-IN (`stormAdvance`'s
+`before`, `stormWalkGame`'s and `stormFrontiers`'s `lastFen`, the third element
+of `stormPack`/`stormUnpack`'s `a`, and `analysisGiven`), whose one failure mode
+is an analysis board opening a ply short with the wrong side to move — a board
+that looks entirely plausible and is about a position the user never saw — — or the GRADE ITSELF (§16: `stormWinPct`, `stormWpLoss`, `stormGrade`,
 `stormPoints`, `stormWp`, and `CONFIG.storm`'s `wpK`/`wpClampCp` and five
 bands), whose every failure mode is a verdict that still grades every move —
 or the PERFORMANCE RECORD (§15:
 `stormStatApply`, `stormStatPlus`, `stormStatSum`, `stormStatRoll`,
 `stormStatRate`, `stormStatLoss`, `stormStatsMerge`, `stormStatsPrune`,
-`stormStatsWirePack`, `stormStatsWireUnpack`), every one of whose failure modes
-is a plausible percentage — or the CHAPTER SCOPE's two filters (`stormFilterPool`,
+`stormStatsWirePack`, `stormStatsWireUnpack`, and §21's `s` counter and
+`statUnhurriedNote`), every one of whose failure modes is a plausible percentage — or the CHAPTER SCOPE's two filters (`stormFilterPool`,
 `stormFilterStore`, §14.21, whose pool filter written as a plain `.filter()`
 silently switches §14.18.4's walk stop off) — or the STORE'S DRAW ORDER
 (`stormStoreDraw`, §14.15: a
