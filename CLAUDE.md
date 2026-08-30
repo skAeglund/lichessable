@@ -2920,7 +2920,10 @@ Currently working (v0.18.x).
     courses' custom start FENs) leaves an empty column and nothing else changed.
 
 - Intuition storm on the repertoire's frontier (section 27, v0.130.0): the
-  positions your own course lines END on, carried forward by REAL games, one
+  positions your own course lines END on, carried forward by REAL games — or,
+  on the SECOND SOURCE (§19, v0.152.0, "uncovered responses"), the position
+  after a popular reply the course never answers at a position it answers
+  OTHER replies at, most played first — one
   at a time against a clock — or, in the SET mode (§17, v0.150.0), with no
   clock at all and no mistake left behind — Chessable teaches a line and stops, and this asks
   what you do on the move after it stops. A move is graded for being DECENT
@@ -3156,7 +3159,8 @@ Currently working (v0.18.x).
       and `statsWireVersion` stays 2.
   * `stormCp`, `stormVerdictLine` AND `stormBestLine` ARE TOP LEVEL AND MUST
     STAY THERE — and since v0.147.0 so are `stormEstimated`, `stormSourceLabel`
-    and `stormSourceTitle`, for the same reason and with the same reach. Section 18's panel prints that line while a card is up and
+    and `stormSourceTitle`, and since v0.152.0 `stormSharePct` and
+    `stormGapNote` (§19), for the same reason and with the same reach. Section 18's panel prints that line while a card is up and
     section 27's review prints it again afterwards — two closures, so a helper
     living in either one is a `ReferenceError` in the other. `node --check`
     cannot see it and neither can a sliced check, which flattens every scope
@@ -3638,6 +3642,55 @@ Currently working (v0.18.x).
       dispatch belongs in section 27 (`toggleAnalyse` for a review row,
       `setAnalyse` for a held card, which reveals first).
 
+  * UNCOVERED RESPONSES — THE SECOND SOURCE (§19, v0.152.0): a position the
+    course ANSWERS, and a popular reply it never mentions. It covers 1…e5 and
+    1…c5 here and says nothing about 1…c6 — what do you play against 1…c6? A
+    SOURCE, orthogonal to §17's mode: either exercise runs on either source
+    (`st.source`, a setting like the mode and the ply range, its selector in the
+    pre-roll row). **READ DESIGN-intuition-storm.md §19 BEFORE CHANGING IT.**
+    What an edit ELSEWHERE can break:
+    - A DECISION POINT IS AN **OPPONENT**-TO-MOVE POSITION, and that guard is
+      the feature. On the user's own move an uncovered popular choice is a
+      repertoire DECISION (1…c5 over 1…e5) — section 6c's rule, 24b's reason —
+      so dropping it asks the user to improvise against lines they chose not to
+      play and reads as the course being full of holes. Whose move it is comes
+      from the LINE, never `courseSide` (24h).
+    - THE EXPLORER'S UCI IS RESOLVED THROUGH CloSan, NEVER COMPARED against the
+      covered set — section 6c's v0.48.1 trap from the other side, and here it
+      misses exactly the CASTLING replies and succeeds on everything else: the
+      storm then asks "what do you play against O-O?" about a position the
+      course answers.
+    - THE PAUSED / CUSTOM-FEN ASYMMETRY IS §14.18's, in its second home: neither
+      may be a SOURCE, both count as COVERAGE. And the reply's CHILD is checked
+      against §14.18.4's continuation index too, which is what catches a course
+      that answers the position by another move order.
+    - PRIORITY IS THE REPLY'S OWN GAME COUNT and it is `stormPack`'s `g` — i.e.
+      §14.19's reachability figure, measured one ply down — so `stormReachBucket`
+      and `stormStoreDraw`'s existing order need NO change and must not grow one
+      (§14.15: a re-weighted comparator there is silent).
+    - ONE STORE, TWO SOURCES. `u: 1` on an entry; absence is "a frontier
+      position", which is what every entry written before v0.152.0 is, so
+      nothing migrates and no cache key was bumped. `stormFilterSource` narrows
+      the INPUT, never the order, and composes with §14.21's chapter scope.
+      `storeCount()` is source-scoped (the chip, the background ceiling, the
+      summary all ask "ready for what I am about to do"); `storeTotal()` is the
+      wire's.
+    - TWO RECORDS, NEVER POOLED (§15, and the "own stats tab"): a course grows
+      `ulines` beside `lines`, everything that iterates one iterates
+      `STAT_MAPS`, and `stormStatsPrune`'s cap is PER MAP — a long uncovered
+      record must not delete a frontier line's history. `statsWireVersion` stays
+      2: `lines` is still `lines` and an absent `ulines` is a device that has
+      answered no uncovered positions.
+    - IT NEEDS NO GAME AND NO PGN, so it never touches the `lichess.org` host
+      permission — `askMoves` reads `explorer.lichess.org` only. Do not "unify"
+      it with `askGames`, whose parameters are its exact opposite (`moves` on,
+      `topGames`/`recentGames` off).
+    - `poolFor` AND `harvestOne` ARE THE WHOLE SEAM. Everything else — the
+      producer, the gather pass, the background top-up, the queue, the board,
+      the three grading tiers, the bands, the set, the retention rule, the
+      tombstones, the wire, the review — is shared and must stay unaware of the
+      source.
+
 - SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
   (`quickEditSelectMoveEl`, hoisted out of `quickEditSelectMove` — which now just
@@ -3781,7 +3834,15 @@ through a whole live verification pass, because a slow machine and an ignorant
 ChessDB print the same thing: a depth above engine.js's own `PROFILES` ceiling
 is CLAMPED rather than refused, each watchdog must outlast the one inside it,
 and an update short of the target depth must be KEPT rather than discarded or a
-budget that expires has nothing to answer with:
+budget that expires has nothing to answer with — or §19's SECOND SOURCE
+(`stormDecisions`, `stormUncoveredMoves`, `stormFilterSource`, `statMapOf`,
+`STAT_MAPS`, `stormSharePct`, `stormGapNote`, and `CONFIG.storm`'s
+`uncMinShare` / `uncMinGames` / `uncMaxPerPosition`), every rule of which
+fails by yielding a plausible session made of the wrong positions — the
+opponent-to-move guard turns the author's own choices into holes, a raw uci
+compare misses exactly the castling replies and succeeds everywhere else, a
+reversed comparator still returns every gap, and a missing store filter deals a
+frontier position into an uncovered session:
 
 ```
 node dev/check-storm.js

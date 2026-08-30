@@ -6378,6 +6378,25 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
   color: var(--clo-text-bright);
 }
 
+/* §19) The source selector, and the two setting groups only one of which is
+   ever shown. A GROUP rather than loose children so that hiding one hides its
+   labels with it — `display: inline-flex` and not `display: contents`, which
+   ties with `[hidden]`'s own `display: none` on specificity and would then be
+   decided by which rule came last. */
+.clo-st-sourcesel {
+  margin-right: 6px;
+  color: var(--clo-text-bright);
+}
+
+.clo-st-set-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.clo-st-set-group[hidden] { display: none; }
+
 /* Pushes the gather control to the far end of the row: it is not part of the
    sentence beside it, and reading "…past the end of a line Gather positions"
    as one phrase is what the gap prevents. */
@@ -7004,6 +7023,40 @@ html.clo-touch .clo-st-revrow-loss { font-size: 13px; }
 html.clo-touch .clo-st-analyse { font-size: 15px; padding: 9px 18px; }
 html.clo-touch .clo-st-again,
 html.clo-touch .clo-st-done { font-size: 15px; padding: 9px 18px; }
+
+/* §19) The stats view's two records. TABS and not a filter chip: they are two
+   whole tables of the same shape, and the one on screen is the subject of every
+   number under it. Quiet — the same neutral outline as the buttons at the other
+   end of the row — with the active one filled just enough to be read as
+   selected rather than as the thing to press. */
+.clo-st-stats-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+}
+
+.clo-st-stattab {
+  border: 1px solid var(--clo-bg-raised);
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.clo-st-stattab:hover { color: var(--clo-text-bright); }
+
+.clo-st-stattab--on {
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text-bright);
+  border-color: var(--clo-text-dim);
+}
+
+html.clo-touch .clo-st-stattab { font-size: 14px; padding: 7px 13px; }
 
 /* ==========================================================================
    25) KEY MOVES vs DIFFICULT MOVES (course page) — see DESIGN-key-moves.md

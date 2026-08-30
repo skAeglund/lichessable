@@ -3828,3 +3828,249 @@ geometry are harness measurements. Three things only a live sitting can answer:
   which no test here can see;
 * whether four buttons on two rows in the blind hold reads badly enough to want
   the Analyse door only after a reveal after all.
+
+---
+
+## 19. Uncovered responses: the other gap in a repertoire (v0.152.0)
+
+Everything above storms the **frontier** — the position a course line ends on.
+This is a second SOURCE for the same machine, and it asks about the other place
+a repertoire runs out:
+
+> The course reaches a position, answers the two most common replies, and says
+> nothing about the third. What do you play against the third?
+
+Chessable teaches a line and stops; §1's whole argument. But it also teaches a
+line and covers only *part* of what the opponent may do at each point along it —
+and that gap is invisible, because the line still continues past it. You never
+meet it in the trainer, by construction: the trainer only ever plays the replies
+the course contains.
+
+### 19.1 Why it belongs here rather than in section 24b
+
+Section 24b already **lists** these moves, on the course tree: "played here, not
+in the course", with a share and a win rate. Section 21 offers to **add** the
+missing lines. Neither answers the question this does, which is *can you
+actually play the position that reply leads to* — and for most gaps that is the
+cheaper answer. A repertoire cannot cover everything; what matters is whether
+the uncovered half is somewhere you can think.
+
+So it is a third thing to do with a gap, and it is the storm's own question
+asked at a different place on the board. Everything the storm already has — the
+grading tiers, the eval band, the pick rules, the board, the clock, the set, the
+store, the wire, the review — applies unchanged.
+
+### 19.2 The pipeline, and what it costs
+
+Stage 0 and stage 1 are replaced; stages 2 to 4 do not exist here, and 5 (the
+grade) is untouched.
+
+**0 — the decision points.** Walk the course (the same `walkVariation` over the
+same cached `fetchCourse`) and keep every position where the **opponent** is to
+move that one of the user's lines plays a move from, with the set of moves it
+plays there. `stormDecisions`.
+
+**1 — the gaps.** One explorer request per decision point, `moves=30`, the
+storm's own relaxed filters. Every reply not in the covered set, over both
+floors, most popular first, capped at four. `stormUncoveredMoves`.
+
+**the card.** The position after that reply. One `queryall` on it, then the
+ordinary pick rules (`stormCandidate` / `stormPickReject`) and the ordinary
+card (`stormCard`).
+
+So a usable position costs **one explorer request (shared by every gap at that
+position) and one ChessDB lookup**, against the frontier source's measured ~11
+(§6.1). That is not the point of the feature but it is a pleasant consequence:
+the store fills perhaps five times faster, and the background top-up (§14.24)
+reaches its ceiling in a fraction of the time.
+
+**It needs no game and no PGN,** so this source never touches the `lichess.org`
+host permission (§14.1) — only `explorer.lichess.org`, which the extension has
+read since the beginning. A user who refused that permission has a fully working
+storm on this source.
+
+### 19.3 Priority is the reply's own game count, and it is free
+
+The instruction was "higher probability moves should be prioritised". The
+explorer's reply already carries, per move, `white + draws + black`, and at the
+position `white + draws + black` again — so a reply's own count *is*
+`P(reach the position) × P(play the reply) × N`, i.e. proportional to how often
+the user will actually face it. Nothing has to be estimated and nothing extra
+has to be fetched.
+
+It is applied twice, and neither is a new mechanism:
+
+* **within a decision point**, `stormUncoveredMoves` sorts by it and
+  `harvestUncovered` walks that order, so a session cut short by the clock has
+  spent itself on the biggest gaps;
+* **across sessions**, `stormPack` files the position's `g` — §14.19's
+  reachability figure — as the **reply's** count rather than the decision
+  point's. That is the same quantity measured one ply lower down, so
+  `stormReachBucket` and `stormStoreDraw`'s existing "unseen first, then most
+  reachable" order need no change at all and a stored gap comes back in
+  popularity order for free.
+
+Section 21's full conditional ranking (a product over the opponent plies' shares,
+one request per ply) is still not paid for, exactly as §4 decided for the
+frontier draw. The pool draw stays `n`-weighted — how many of the user's own
+lines pass through the position — which correlates with depth and so prefers the
+early, common decision points.
+
+### 19.4 The two floors
+
+`uncMinShare` (3%, a user setting) and `uncMinGames` (20, a constant). They are
+not one rule twice:
+
+* a **share** is what makes a reply worth preparing for. It means the same thing
+  on move 3 and on move 15, which an absolute count does not.
+* an **absolute count** is what makes the share mean anything. Three per cent of
+  forty games is one game, i.e. a spelling mistake rather than a reply.
+
+The share is the setting because "the third most common move" and "anything
+anybody has ever played" are two different exercises, and which is wanted is a
+judgement (§14.9's argument for the ply range, which this replaces in the
+settings row — a ply range is meaningless here, an uncovered position being
+always exactly one ply past the reply).
+
+`uncMaxPerPosition` (4) is the third bound and a different kind: a position with
+fourteen uncovered replies is one the course barely covers at all, and storming
+all fourteen would spend a session inside a single decision point.
+
+### 19.5 What the covered set includes, and what may be a source
+
+The asymmetry §14.18 established, in its second home, and it reads the same way:
+
+|  | may be a SOURCE | counts as COVERAGE |
+|---|---|---|
+| an ordinary line | yes | yes |
+| a PAUSED line | no | **yes** |
+| a CUSTOM-FEN line (tactics, model game) | no | **yes** |
+| a line whose colour the course does not state | no | no |
+
+"Does this course answer this reply" and "is this line one to storm from" are
+different questions. A paused line answering 1...c6 is still the course
+answering 1...c6, and asking what the user plays there would be asking about a
+move their own book has.
+
+And the reply's **child** is checked against §14.18.4's continuation index as
+well, which catches the case the covered set cannot: the course may answer the
+position that reply leads to by another **move order**. Free — the index was
+built by the same walk that found the decision point.
+
+### 19.6 Whose move it is, again
+
+A decision point is an **opponent**-to-move position, and that is the rule this
+feature would be worthless without. On the user's own move an uncovered popular
+choice is a repertoire DECISION (1...c5 over 1...e5) — section 6c's rule, 24b's
+reason. Drop the guard and the storm starts asking the user to improvise against
+the lines they deliberately chose not to play, which reads as the course being
+full of holes.
+
+Whose move it is comes from the **line** (`sideOf(v.color)`), never from
+`courseSide` — 24h's rule, for 24h's reason.
+
+### 19.7 One store, two sources
+
+They share everything storage-shaped: one `cloStormPositions` key, one course
+slice, one retention rule, one tombstone list, one wire card, one `storeMax`.
+An entry carries `u: 1` and its share `sh`; absence means "a frontier position",
+which is what every entry written before v0.152.0 is — so nothing needed
+migrating and no cache key needed bumping.
+
+`stormFilterSource` narrows the store to one source, and it is a **filter on the
+input** rather than a term in `stormStoreDraw`'s comparator: §14.15 is explicit
+that a reordering there is silent from the outside, and it composes with
+§14.21's chapter scope the same way.
+
+`storeCount()` — the chip beside Start, the background pass's ceiling, the
+summary — is source-scoped, because every one of its readers is asking "how many
+are ready for the exercise I am about to do". `storeTotal()` is the wire's, which
+carries both.
+
+### 19.8 Two records, and the tab
+
+"It can have its own stats tab", and the reason it must is §15's own: *which
+part of my repertoire do I not understand* is the question, and
+
+> how often do I find a decent move one move past my book
+
+and
+
+> how often do I find one against a reply my book never answers
+
+are two different answers about the same chapter. A merged figure would hide
+exactly the interesting case — a chapter that is solid past its own line ends
+and hopeless against what it does not cover.
+
+So a course record grows a second map, `ulines`, beside `lines`. Everything that
+iterates one now iterates `STAT_MAPS`, the cap in `stormStatsPrune` is **per
+map** (a long uncovered record must not delete a frontier line's history), and
+the stats view gets two tabs, opening on the record for the source being
+stormed.
+
+The wire needed **no version bump**: `statsWireVersion` stays 2, `lines` is
+still `lines`, and a payload with no `ulines` is a device that has answered no
+uncovered positions — which is true. An older build reading a newer payload
+ignores the map it does not know and, because `stormStatsMerge` only ever adds,
+never deletes the newer device's copy of it.
+
+### 19.9 What is shared, which is nearly all of it
+
+Two one-line dispatchers, `poolFor` and `harvestOne`, are the whole of the seam.
+Unchanged and unaware of the source: the producer, the gather pass, the
+background top-up, the queue, `st.seen`, section 18's board, all three grading
+tiers, the win-probability bands, the streak, the set (§17), the retention rule,
+the tombstones, the store's wire, the review, the retry, the analysis board, the
+chapter scope, and §15's counters.
+
+Changed for wording only: the panel's second line (`stormGapNote`, top level for
+§14.7's reason — section 18 prints it live and section 27's review prints it
+afterwards), the review row's tooltip, the subtitle, the funnel's two nouns, the
+summary's cost line, and the refusals.
+
+### 19.10 The settings row
+
+`Mode` then `Source` then the setting that belongs to the source — the ply range
+for the frontier, the share floor for this one, never both. Changing the SOURCE
+during the pre-roll **restarts** the session, because the pool, the queue and the
+store draw are all of the other kind; that costs no fetch, the course listing
+being in the session cache. Changing the share floor does not: it decides what a
+HARVEST offers, and everything already found was found under whichever floor was
+in force then. Said in the tooltip rather than implied.
+
+### 19.11 What was measured, and what was not
+
+**Executed** (`node dev/check-storm.js`, §13, and four controls each failing on
+exactly its own assertions): the opponent-to-move rule, the castling spelling,
+the popularity order, the two floors, the cap, an unresolvable SAN, the
+paused/custom-FEN asymmetry in both directions, the continuation index riding
+out, the store split, the pack/unpack round trip including the reach figure, the
+wire round trip and an old payload's absence of `u`, the two records not being
+pooled, the per-map cap, and the panel's two sentences.
+
+**Measured in the harness** (`node dev/serve.js`, 2026-08-30). The settings row
+is 858px wide in the harness card and 52px tall on BOTH sources with no
+horizontal overflow — against 54px for the pre-v0.152.0 row, i.e. the row
+already wrapped to two lines and the wrap point simply moved. Under
+`html.clo-touch` it is 68px on both, and at a 316px row (a 420px viewport) 160px
+on both, still with no overflow of its own. The stats header with its two tabs
+is 29px desktop, 82px touch, 84px at 420px, no overflow; the tab pair is 211px.
+
+**Not measured.** No live run yet. In particular:
+
+* **the yield per decision point.** A repertoire's own positions are far more
+  likely to be inside ChessDB's book than a frontier's continuations are (§3.2's
+  98% is over real continuations, and these positions are one ply off a main
+  line), so the `unknown` rate should be much lower — but that is an argument,
+  not a number.
+* **how many decision points a real course has, and how many have a gap at 3%.**
+  Both are one `--frontiers`-shaped probe away and neither is known.
+* **whether the pick rules reject differently here.** The eval band is applied to
+  the CANDIDATE rather than at stage 0 (there is no cheap stage-0 eval to reject
+  a whole line with — one explorer request already answers every gap at the
+  position), and a position one ply out of a book line is flatter than one eight
+  moves past a frontier, so `spreadMinCp` may bite harder. §12.1's open question
+  in a new place.
+* **the shallow end.** At the start position a Black repertoire's uncovered
+  replies are 1.c4, 1.Nf3 and so on — real gaps, and the pick rules ought to
+  reject most of them for flatness. Ought.

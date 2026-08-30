@@ -71,6 +71,15 @@
  *     every position where the OPPONENT left the book first)
  *   * …its continuation index made colour-agnostic       → 1 fail
  *   * …restricted to the lines eligible to BE a frontier → 2 fail
+ *
+ * §19's second SOURCE (v0.152.0). Controls run 2026-08-30, each failing on
+ * exactly its own assertions and no others:
+ *   * `stormDecisions`'s "opponent to move" guard removed  → 3 fail (the
+ *     "tidy" that turns every one of the author's own choices into a hole)
+ *   * `stormUncoveredMoves` preferring the explorer's raw uci → 2 fail (both
+ *     castling cases, and NOTHING else — which is exactly why it is invisible)
+ *   * …its comparator reversed                             → 4 fail
+ *   * `stormFilterSource` returning the whole store        → 3 fail
  */
 'use strict';
 const fs = require('fs');
@@ -97,6 +106,11 @@ const src = [
   sliceDecl('sideOf'),
   // The pipeline under test.
   sliceDecl('stormFrontiers'),
+  // §19's stage 0 and stage 1, and the store split that keeps the two sources
+  // apart. Every one of them fails SILENTLY — see section 13.
+  sliceDecl('stormDecisions'),
+  sliceDecl('stormUncoveredMoves'),
+  sliceDecl('stormFilterSource'),
   sliceDecl('stormDrawFrontier'),
   sliceDecl('stormFilterPool'),
   sliceDecl('stormFilterStore'),
@@ -154,6 +168,8 @@ const src = [
   // §15's performance record. The three silent failures are the denominator,
   // the merge and the roll-up — see section 9 below.
   sliceDecl('STAT_BAND'),
+  sliceDecl('STAT_MAPS'),
+  sliceDecl('statMapOf'),
   sliceDecl('stormStatBlank'),
   sliceDecl('stormStatApply'),
   sliceDecl('stormStatPlus'),
@@ -183,12 +199,17 @@ const src = [
   // The verdict line: pure, and the half of this feature the user reads.
   sliceDecl('stormCp'),
   sliceDecl('stormWp'),
+  sliceDecl('stormSharePct'),
+  sliceDecl('stormGapNote'),
   sliceDecl('stormEstimated'),
   sliceDecl('stormSourceLabel'),
   sliceDecl('stormSourceTitle'),
   sliceDecl('stormVerdictLine'),
   sliceDecl('stormBestLine'),
-  'return { stormFrontiers, stormDrawFrontier, stormUserEval, stormPgnMoves,' +
+  'return { stormFrontiers, stormDecisions, stormUncoveredMoves,' +
+  '         stormFilterSource, stormSharePct, stormGapNote,' +
+  '         statMapOf, STAT_MAPS,' +
+  '         stormDrawFrontier, stormUserEval, stormPgnMoves,' +
   '         stormPickReject, stormMoveLoss, stormGrade, stormPoints,' +
   '         stormWalkGame, stormRandomLine, stormCandidate, stormAdvance,' +
 '         stormReentered,' +
@@ -318,6 +339,10 @@ const C = {
   // is refused on, so it has to be the shipped one.
   statsWireVersion: num('statsWireVersion'),
   statsMaxLines: num('statsMaxLines'),
+  // §19's two floors and its cap. Read out of the shipped file like everything
+  // else here, so an assertion about the rule cannot drift from the rule.
+  uncMinShare: num('uncMinShare'), uncMinGames: num('uncMinGames'),
+  uncMaxPerPosition: num('uncMaxPerPosition'), uncMovesLimit: num('uncMovesLimit'),
 };
 
 let pass = 0, fail = 0;
@@ -341,8 +366,13 @@ const eq = (label, got, want) => {
 // §14.20 added two more with exactly the same reach: `stormEstimated` decides a
 // CLASS on both hosts and `stormSourceTitle` a tooltip on both, so a move into
 // either closure fails in the other at the first verdict.
+//
+// §19 added two more of the same shape: `stormGapNote` says what an uncovered
+// card IS, and section 18's panel prints it while the card is up while section
+// 27's review prints the same fact from its own closure.
 for (const name of ['stormCp', 'stormWp', 'stormVerdictLine', 'stormBestLine',
-  'stormEstimated', 'stormSourceLabel', 'stormSourceTitle']) {
+  'stormEstimated', 'stormSourceLabel', 'stormSourceTitle',
+  'stormSharePct', 'stormGapNote']) {
   const line = SRC.split('\n')[findDecl(name)];
   const indent = line.length - line.replace(/^ +/, '').length;
   eq(name + ' is declared at top level (2-space indent), not inside a module', indent, 2);
@@ -2340,6 +2370,268 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
     // bandwidth back promptly.
     eq('...and it pauses between line ends',
       C.backfillGapMs >= 500 && C.backfillGapMs <= 10000, true);
+  }
+
+  // ========================================================================
+  // 13) §19) THE UNCOVERED-REPLY SOURCE
+  //
+  // The second source, and every rule in it fails the way every rule in this
+  // feature fails — silently, yielding a plausible session made of the wrong
+  // positions:
+  //
+  //  * WHOSE MOVE IT IS. A decision point is an OPPONENT-to-move position.
+  //    Drop that test and the storm starts asking the user to improvise against
+  //    lines they deliberately chose not to play (section 6c's rule, 24b's
+  //    reason), which reads as the course being full of holes.
+  //  * THE CASTLING SPELLING. Lichess writes O-O as KING TAKES ROOK, so a raw
+  //    compare against the walk's own `e1g1` misses exactly the castling
+  //    replies — and succeeds on everything else, which is what makes it
+  //    invisible: the storm asks "what do you play against O-O?" about a
+  //    position the course answers.
+  //  * THE ORDER. "Most popular first" is the whole of what the user asked
+  //    for, and a comparator the wrong way round still returns every reply.
+  //  * THE TWO FLOORS. A share and an absolute count are two different rules;
+  //    with either missing the session fills up with one-game sidelines or
+  //    refuses everything at depth, and both look like "this course has no
+  //    gaps".
+  //  * THE STORE SPLIT. One store holds both sources, so a missing filter
+  //    deals a frontier position into an uncovered session, where the panel
+  //    describes it with the wrong sentence entirely.
+  // ========================================================================
+  {
+    console.log('\n-- 13) the uncovered-reply source (§19) --');
+    const uc = Object.assign({}, C, { uncMinShare: 3, uncMinGames: 20,
+      uncMaxPerPosition: 4 });
+
+    // --- stage 0: the decision points --------------------------------------
+    const decVars = [
+      { oid: 1, name: 'Italian', color: 'white', sans: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4'] },
+      { oid: 2, name: 'Ruy', color: 'white', sans: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5'] },
+      { oid: 3, name: 'Scotch', color: 'white', sans: ['e4', 'e5', 'Nf3', 'Nf6', 'Nxe5'] },
+    ];
+    const dec = await S.stormDecisions(decVars, uc);
+    const at = (fen) => dec.find((d) => d.ck === cacheKey(fen));
+    const startPoint = at(START_FEN);
+    eq('the start position is not a decision point for White', Boolean(startPoint), false);
+    const afterE4 = at('rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1');
+    eq('the position after 1.e4 is one', Boolean(afterE4), true);
+    eq('…and it is BLACK to move there', afterE4.fen.split(' ')[1], 'b');
+    eq('…for the WHITE repertoire', afterE4.side, 'w');
+    eq('…which answers exactly the reply its lines play',
+      Array.from(afterE4.covered).sort(), ['e7e5']);
+    eq('…and three lines pass through it', afterE4.n, 3);
+    // WHOSE MOVE IT IS. Every decision point must have the opponent to move,
+    // or the storm is asking the user to second-guess their own repertoire.
+    eq('every decision point has the OPPONENT to move',
+      dec.every((d) => d.fen.split(' ')[1] !== d.side), true);
+    // The position after 2...Nc6, where the course plays two different moves —
+    // both are answers, so neither is a gap.
+    const afterNc6 = at('r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 6 4');
+    eq('a position with the USER to move is not a decision point',
+      Boolean(afterNc6), false);
+    const afterNf3 = at('rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2');
+    eq('a position the course answers two ways covers both',
+      Array.from(afterNf3.covered).sort(), ['b8c6', 'g8f6']);
+
+    // A PAUSED line is not a source and still counts as coverage — §14.18's
+    // asymmetry, in its second home. Both halves matter: the first stops the
+    // storm asking about a line the user asked not to be prompted on, the
+    // second stops it calling a move a gap when the course plainly answers it.
+    const pausedDec = await S.stormDecisions([
+      { oid: 1, name: 'Live', color: 'white', sans: ['e4', 'e5', 'Nf3'] },
+      { oid: 2, name: 'Paused', color: 'white', paused: 1,
+        sans: ['e4', 'c5', 'd4', 'cxd4'] },
+    ], uc);
+    const pAfterE4 = pausedDec.find((d) =>
+      d.ck === cacheKey('rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1'));
+    eq('a paused line still covers the reply it answers',
+      Array.from(pAfterE4.covered).sort(), ['c7c5', 'e7e5']);
+    eq('…but does not count as a source line', pAfterE4.n, 1);
+    eq('…and is reported, so a refusal can say why', pausedDec.paused, 1);
+    eq('a position only a paused line reaches is no decision point',
+      pausedDec.some((d) => d.ck ===
+        cacheKey('rnbqkbnr/pp1ppppp/8/2p5/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2')), false);
+    // …and the same for a custom-FEN line, which likewise may cover and may
+    // not be a source.
+    const puzzleDec = await S.stormDecisions([
+      { oid: 1, name: 'Live', color: 'white', sans: ['e4', 'e5', 'Nf3'] },
+      { oid: 2, name: 'Puzzle', color: 'white', sans: ['c5', 'Nf3'],
+        fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1' },
+    ], uc);
+    const qAfterE4 = puzzleDec.find((d) =>
+      d.ck === cacheKey('rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1'));
+    eq('a custom-FEN line covers the reply it answers',
+      Array.from(qAfterE4.covered).sort(), ['c7c5', 'e7e5']);
+    eq('…and is not counted as a source line', qAfterE4.n, 1);
+    // A line whose colour the course does not state is walked for neither use.
+    eq('a colourless line yields no decision point',
+      (await S.stormDecisions([{ oid: 1, name: 'X', sans: ['e4', 'e5'] }], uc)).length, 0);
+    // §14.18.3's index rides out on the array, which is what `frontierCovered`
+    // hands the walk-stop AND what the harvest asks about a reply's child.
+    eq('the continuation index rides out',
+      dec.cont.w.has(cacheKey(
+        'rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2')), true);
+    eq('…and holds nothing for the colour that has no lines', dec.cont.b.size, 0);
+
+    // --- stage 1: which replies are gaps, and in what order -----------------
+    const point = {
+      fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
+      covered: new Set(['e7e5']),
+    };
+    const reply = (san, games) =>
+      ({ san, white: games, draws: 0, black: 0 });
+    const gaps = S.stormUncoveredMoves(point, [
+      reply('e5', 4000), reply('c5', 3000), reply('e6', 1200), reply('c6', 900),
+      reply('d5', 400), reply('Nf6', 300), reply('g6', 60), reply('b6', 5),
+    ], 10000, uc);
+    eq('the covered reply is not offered',
+      gaps.some((g) => g.san === 'e5'), false);
+    eq('…and the most popular gap is first', gaps[0].san, 'c5');
+    eq('MOST POPULAR FIRST, all the way down',
+      gaps.map((g) => g.san), ['c5', 'e6', 'c6', 'd5']);
+    eq('…capped at the cap', gaps.length, uc.uncMaxPerPosition);
+    eq('the share is against the position’s own total, not the listed moves',
+      Math.round(gaps[0].share), 30);
+    eq('…and the reply’s own game count rides with it', gaps[0].games, 3000);
+    // THE TWO FLOORS ARE TWO RULES. `g6` clears the share (0.6% of 10000 is
+    // under 3) and `b6` clears neither; a move can also clear the share and
+    // fail the absolute floor, which is the case a single rule cannot express.
+    const deep = S.stormUncoveredMoves(point, [reply('c5', 12), reply('e6', 8)], 40, uc);
+    eq('a reply popular in share but tiny in games is refused', deep.length, 0);
+    const wide = S.stormUncoveredMoves(point, [reply('c5', 30)], 100000, uc);
+    eq('…and a reply with plenty of games but no share is refused too',
+      wide.length, 0);
+    // An unresolvable SAN is DROPPED, never guessed at.
+    eq('a SAN that will not resolve is dropped',
+      S.stormUncoveredMoves(point, [reply('Qh5', 5000)], 10000, uc).length, 0);
+
+    // THE CASTLING TRAP (section 6c's v0.48.1 rule, from the other side).
+    // Lichess writes Black's O-O as `e8h8`; the course's covered set, built by
+    // `walkVariation`, spells it `e8g8`. A raw compare offers a position the
+    // course answers, and succeeds on every other move.
+    const castleFen = 'r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R b KQkq - 6 5';
+    const castlePoint = { fen: castleFen, covered: new Set(['e8g8']) };
+    const castleGaps = S.stormUncoveredMoves(castlePoint,
+      [{ san: 'O-O', uci: 'e8h8', white: 5000, draws: 0, black: 0 },
+        { san: 'd6', uci: 'd7d6', white: 2000, draws: 0, black: 0 }], 10000, uc);
+    eq('a covered CASTLING reply is recognised through its SAN',
+      castleGaps.map((g) => g.san), ['d6']);
+    eq('…and an uncovered one is still offered',
+      S.stormUncoveredMoves({ fen: castleFen, covered: new Set(['d7d6']) },
+        [{ san: 'O-O', uci: 'e8h8', white: 5000, draws: 0, black: 0 }], 10000, uc)
+        .map((g) => g.uci), ['e8g8']);
+
+    // --- the store: two sources, one store ---------------------------------
+    const uCand = {
+      fen: 'rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2',
+      ply: 1, userColor: 'w', scored: [{ uci: 'g1f3', san: 'Nf3', score: 20, winrate: 52 }],
+      arrived: { uci: 'c7c5', san: 'c5' },
+      unc: { san: 'c5', uci: 'c7c5', share: 30, games: 3000 },
+    };
+    const packedU = S.stormPack(uCand, { names: ['Italian'], oids: ['1'], games: 90000 });
+    eq('an uncovered position is marked in the store', packedU.u, 1);
+    eq('…its share is kept in tenths of a per cent', packedU.sh, 300);
+    // §14.19's reachability is the REPLY's own count here, not the decision
+    // point's — which is what makes "ask about the popular gaps first" the
+    // draw order that already exists rather than a new rule.
+    eq('…and the reach is the REPLY’s own game count, not the position’s',
+      packedU.g, 3000);
+    const backU = S.stormUnpack(packedU);
+    eq('…and it comes back as an uncovered candidate', backU.unc.san, 'c5');
+    eq('…with its share', backU.unc.share, 30);
+    const fCand = Object.assign({}, uCand, { unc: null });
+    const packedF = S.stormPack(fCand, { names: ['Italian'], oids: ['1'], games: 90000 });
+    eq('a frontier position is not marked', packedF.u, undefined);
+    eq('…and its reach is still the line end’s', packedF.g, 90000);
+    eq('…and unpacks with no reply', S.stormUnpack(packedF).unc, null);
+
+    const store = { a: packedU, b: packedF };
+    eq('the store splits by source',
+      Object.keys(S.stormFilterSource(store, 'uncovered')), ['a']);
+    eq('…and the frontier half is the rest',
+      Object.keys(S.stormFilterSource(store, 'frontier')), ['b']);
+    eq('an entry written before v0.152.0 is a frontier position',
+      Object.keys(S.stormFilterSource({ b: { f: 'x' } }, 'frontier')), ['b']);
+    // The popularity order survives the store: among positions nobody has
+    // answered, the more played gap comes first (§14.19's bucket, fed by the
+    // reply's own count).
+    const drawn = S.stormStoreDraw({
+      big: S.stormPack(Object.assign({}, uCand,
+        { unc: { san: 'c5', uci: 'c7c5', share: 30, games: 3000 } }),
+      { names: ['A'], oids: ['1'] }),
+      small: S.stormPack(Object.assign({}, uCand,
+        { fen: 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2',
+          unc: { san: 'e5', uci: 'e7e5', share: 4, games: 40 } }),
+      { names: ['B'], oids: ['2'] }),
+    }, () => 0.5, C).map((d) => d.name);
+    eq('the more popular gap is drawn first', drawn, ['A', 'B']);
+
+    // --- the wire ----------------------------------------------------------
+    const wire = S.stormWirePack({ a: packedU, b: packedF }, {}, C, 0);
+    eq('the wire carries the uncovered mark', wire.p.a.u, 1);
+    eq('…and the share', wire.p.a.sh, 300);
+    const backWire = S.stormWireUnpack(wire, C);
+    eq('…and both come back', Object.keys(backWire.store).sort(), ['a', 'b']);
+    eq('…the uncovered one still marked', backWire.store.a.u, 1);
+    eq('…and the frontier one still not', backWire.store.b.u, undefined);
+    eq('…so a payload written before v0.152.0 reads as frontier positions',
+      Object.keys(S.stormFilterSource(backWire.store, 'frontier')), ['b']);
+
+    // --- the record: two questions, never pooled ---------------------------
+    eq('a card knows which record it belongs in',
+      S.statMapOf({ storm: { unc: { san: 'c5' } } }), 'ulines');
+    eq('…and a frontier card the other', S.statMapOf({ storm: {} }), 'lines');
+    const recA = S.stormStatBlank(), recB = S.stormStatBlank();
+    S.stormStatApply(recA, { verdict: 'great', wp: 1 }, 1000);
+    S.stormStatApply(recB, { verdict: 'blunder', wp: 40 }, 1000);
+    const mine = { 7: { name: 'C', lines: { 1: { nm: 'L', dv: { d1: recA } } },
+      ulines: { 1: { nm: 'L', dv: { d1: recB } } } } };
+    eq('the two records are not pooled',
+      S.stormStatRate(S.stormStatRoll([mine[7].lines[1]])), 1);
+    eq('…and the other reads its own answers',
+      S.stormStatRate(S.stormStatRoll([mine[7].ulines[1]])), 0);
+    // The wire and the merge carry both, and a device that has only one is the
+    // ordinary case rather than an error.
+    const sw = S.stormStatsWirePack(mine, C, 0, 2000);
+    eq('the record wire carries both maps', sw.n, 2);
+    const swBack = S.stormStatsWireUnpack(sw, C);
+    eq('…and both come back', Object.keys(swBack.stats[7].ulines), ['1']);
+    const local = {};
+    S.stormStatsMerge(local, swBack.stats);
+    eq('a merge keeps them apart',
+      S.stormStatRate(S.stormStatSum(local[7].ulines[1].dv)), 0);
+    eq('…and does not move answers between them',
+      S.stormStatSum(local[7].lines[1].dv).n, 1);
+    const only = { 7: { name: 'C', lines: { 1: { nm: 'L', dv: { d1: recA } } } } };
+    const into = {};
+    S.stormStatsMerge(into, only);
+    eq('a device with only the old record merges cleanly',
+      S.stormStatSum(into[7].lines[1].dv).n, 1);
+    eq('…and grows no record it was not sent', into[7].ulines, undefined);
+    // The cap is per map: a long uncovered record must not delete a frontier
+    // line's history.
+    const many = { 7: { name: 'C', lines: {}, ulines: {} } };
+    for (let i = 0; i < C.statsMaxLines + 5; i++) {
+      many[7].ulines['u' + i] = { nm: 'u', dv: { d1: Object.assign(
+        S.stormStatBlank(), { n: 1, a: 1, t: 5000 + i }) } };
+    }
+    many[7].lines.keep = { nm: 'k', dv: { d1: Object.assign(
+      S.stormStatBlank(), { n: 1, a: 1, t: 5000 }) } };
+    S.stormStatsPrune(many, C, 5000);
+    eq('the line cap is per record, not shared',
+      Boolean(many[7].lines.keep), true);
+    eq('…and the long one is capped', Object.keys(many[7].ulines).length, C.statsMaxLines);
+
+    // --- what the panel says -----------------------------------------------
+    eq('a share reads to one decimal under ten', S.stormSharePct(3.42), '3.4%');
+    eq('…and to none above it', S.stormSharePct(30.4), '30%');
+    eq('a frontier card has no gap note', S.stormGapNote({ plyPast: 3 }), '');
+    eq('an uncovered card names the reply and its share',
+      S.stormGapNote({ unc: { san: 'c5', share: 30 } }),
+      'after c5, which your course never answers · 30% of games here');
+    eq('…and says the first half even with no share',
+      S.stormGapNote({ unc: { san: 'c5' } }),
+      'after c5, which your course never answers');
   }
 
   console.log('\n' + SRC_PATH);

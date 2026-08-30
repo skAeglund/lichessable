@@ -1800,6 +1800,53 @@
       setCleanOn: ['great', 'good'],
       setModeKey: 'cloStormMode',
 
+      // --- §19) WHERE THE POSITIONS COME FROM ------------------------------
+      // A second SOURCE, orthogonal to the mode above: that one says what
+      // happens when a position arrives, this says which positions there are.
+      // Either exercise can be played on either source.
+      //
+      //   'frontier'  — everything above: the position a course line ENDS on,
+      //                 carried forward by a real game.
+      //   'uncovered' — a reply the course never answers, at a position it
+      //                 answers OTHER replies at. The course covers 1...e5 and
+      //                 1...c5 here and nothing else; what do you play against
+      //                 1...c6? The card is the position AFTER that reply.
+      //
+      // THEY ARE TWO DIFFERENT GAPS AND BOTH ARE REAL. The frontier is where
+      // the book stops; this is where the book turns out to have been narrower
+      // than the opponent. Section 24b already LISTS these on the course tree
+      // and section 21 offers to add them; this is the third thing to do with
+      // one, which is to find out whether you can actually play it.
+      //
+      // IT NEEDS NO GAME AND NO PGN, so it never touches the `lichess.org`
+      // host permission (§14.1) — one explorer request per decision point,
+      // which answers every uncovered reply at it at once, and one ChessDB
+      // lookup per card. That is about a fifth of a frontier position's ~11.
+      sourceKey: 'cloStormSource',   // storage.local, absent = 'frontier'
+      // HOW POPULAR A REPLY MUST BE, in per cent of the games at that position,
+      // and it is a USER SETTING for the ply range's own reason (§14.9): "the
+      // third most common move" and "anything anybody has ever played" are two
+      // different exercises, and which one is wanted is a judgement rather than
+      // a measurement. The default is the author's; the bounds are the
+      // selector's.
+      uncMinShare: 3,
+      uncMinShareKey: 'cloStormUncShare',
+      uncShareChoices: [1, 2, 3, 5, 8, 12, 20],
+      // …and an ABSOLUTE floor under it, because a share is a ratio and deep
+      // positions have few games: 3% of 40 games is one game, which is a
+      // spelling mistake rather than a reply to prepare for.
+      uncMinGames: 20,
+      // At most this many replies per decision point, most popular first. A
+      // position with fourteen uncovered replies is a position the course
+      // barely covers at all, and storming all fourteen would spend a whole
+      // session inside one of them.
+      uncMaxPerPosition: 4,
+      // What the explorer is asked for. The panel's own limit is 20 and
+      // section 21's bulk one is 50; here the list is only ever read down to
+      // `uncMaxPerPosition` survivors, and an uncovered reply outside the top
+      // 30 of a position is below every floor above anyway.
+      uncMovesLimit: 30,
+
       // --- the producer (§8.3) --------------------------------------------
       // ITS UNIT IS A FRONTIER, NOT A POSITION: one frontier yields two game
       // walks and, at the measured rate, one to three survivors — which is the
@@ -23177,10 +23224,17 @@
         // "N moves past the line" is a claim about somebody's GAME. Where the
         // continuation was invented (§6.4's no-games fallback) there is no
         // game, and saying so is the difference between a fact and a fiction.
-        const how = s.cand.invented ? ' plausible moves past the line'
-          : (s.plyPast === 1 ? ' move past the line' : ' moves past the line');
+        //
+        // §19) TWO SOURCES, TWO SENTENCES, and never a blend: that phrase is a
+        // claim about a line END, and an uncovered position is not one — it is
+        // one ply after a reply the course never answers, and naming that
+        // reply is the whole of what the user needs in order to know what is
+        // being asked of them.
+        const how = s.unc ? stormGapNote(s)
+          : s.plyPast + (s.cand.invented ? ' plausible moves past the line'
+            : (s.plyPast === 1 ? ' move past the line' : ' moves past the line'));
         cr.ui.progress.textContent =
-          (s.from ? shortDrillTitle(s.from) + ' · ' : '') + s.plyPast + how +
+          (s.from ? shortDrillTitle(s.from) + ' · ' : '') + how +
           (retry ? ' · nothing is scored' : '');
         cr.ui.progress.classList.remove('clo-cdb--est');
         cr.ui.progress.removeAttribute('title');
@@ -34425,6 +34479,33 @@
     return (wp < 10 ? wp.toFixed(1) : String(Math.round(wp))) + '%';
   }
 
+  /**
+   * §19) A reply's share of the games at its position, as the user reads it —
+   * `stormWp`'s shape and for its reason: one decimal under 10 and none above,
+   * because "23.4% of games" is a precision the number does not have.
+   */
+  function stormSharePct(share) {
+    if (typeof share !== 'number' || !Number.isFinite(share)) return '';
+    return (share < 10 ? share.toFixed(1) : String(Math.round(share))) + '%';
+  }
+
+  /**
+   * §19) …and what an UNCOVERED card is, in one clause: the reply that got
+   * here, and how often it is played.
+   *
+   * TOP LEVEL with the verdict line and for exactly its reason — section 18's
+   * panel prints this while the card is on the board and section 27's review
+   * prints the same fact afterwards, from a different closure. Pure, and it
+   * answers '' for a frontier card so a caller may ask without branching.
+   */
+  function stormGapNote(s) {
+    const u = s && s.unc;
+    if (!u) return '';
+    const share = stormSharePct(u.share);
+    return 'after ' + (u.san || 'that reply') + ', which your course never answers' +
+      (share ? ' · ' + share + ' of games here' : '');
+  }
+
   /** A ChessDB score as pawns, from the MOVER's side — which is whose move it
    *  is on a storm card, i.e. the user's. The panel's own eval column flips to
    *  White because an engine section sits above it; here there is no second
@@ -34518,6 +34599,13 @@
       // them with a config it declares itself.
       minPly: C.minPly,
       maxPly: C.maxPly,
+      // §19) WHICH SOURCE — 'frontier' (everything up to v0.151.0) or
+      // 'uncovered'. A setting like the two above and for the same reason: the
+      // control that changes it lives in the pre-roll row, i.e. is shown after
+      // `startSession` has run, so it is never part of what that function
+      // resets.
+      source: 'frontier',
+      uncShare: C.uncMinShare,
       panel: null,
       ui: null,
       // --- stage 0 --------------------------------------------------------
@@ -34621,11 +34709,17 @@
       statsNote: '',        // one line: what the chapter read or the exchange did
       statsBusy: false,     // chapters are being read
       statsOpen: null,      // Set of chapter ids the user has expanded
+      statsTab: 'lines',    // §19) which of the two records is on screen
       statsSyncing: false,
       chapters: null,       // { ch: { [oid]: lid }, cn: { [lid]: name }, at }
       // --- caches and budget (§9) -------------------------------------------
       cdb: new Map(),    // cacheKey → scored[] | null ("null" = asked, unknown)
       cdbCount: 0,
+      // §19) The explorer's MOVE list per decision point, which is the
+      // uncovered source's one explorer request — cached because a course
+      // regularly answers the same position from several lines, and because a
+      // gather pass and the session after it are the same tab.
+      mv: new Map(),     // cacheKey → { moves, total }
       pgn: new Map(),    // game id → SAN list
       lastCdbAt: 0, lastExplorerAt: 0, lastPgnAt: 0,
       // --- the engine tier (§3.4) ------------------------------------------
@@ -34645,6 +34739,18 @@
      * mid-session must not reach into a walk already under way.
      */
     const cfg = () => ({ ...C, minPly: st.minPly, maxPly: st.maxPly });
+
+    /** §19) …and the uncovered source's own, which is `C` with the user's
+     *  share floor folded in. The ply range is deliberately NOT in it: an
+     *  uncovered position is always exactly one ply past the reply, so that
+     *  setting has nothing to say here and its selectors are hidden. */
+    const uncCfg = () => ({ ...C, uncMinShare: st.uncShare });
+
+    /** Which source this session is on. Read in the handful of places that
+     *  genuinely differ — the pool, the harvest, the store's draw and the
+     *  wording — and nowhere else: the queue, the board, the grade, the
+     *  retention rule and the wire are all shared and know nothing about it. */
+    const uncoveredOn = () => st.source === 'uncovered';
 
     /** Clamped into the bounds the selectors offer, and `min <= max` always:
      *  an inverted range yields nothing at all and says nothing about why. */
@@ -34673,15 +34779,36 @@
       st.backfillOn = (v !== false);
     }
 
+    /** §19) …and the SOURCE, on the same terms. Anything but the literal
+     *  'uncovered' is the frontier source, which is what an absent setting and
+     *  every profile written before v0.152.0 means. */
+    function applyStormSource(v) {
+      st.source = (v === 'uncovered') ? 'uncovered' : 'frontier';
+    }
+
+    /** §19) How popular an unanswered reply must be to be asked about, clamped
+     *  into the selector's own choices — an out-of-range value would otherwise
+     *  yield either nothing at all or every one-game sideline, and say nothing
+     *  about why. */
+    function applyUncShare(v) {
+      const n = Number(v);
+      st.uncShare = (Number.isFinite(n) && C.uncShareChoices.indexOf(n) >= 0)
+        ? n : C.uncMinShare;
+    }
+
     (async () => {
       try {
         const got = await chrome.storage.local.get(
-          [C.minPlyKey, C.maxPlyKey, C.setModeKey, C.backfillKey]);
+          [C.minPlyKey, C.maxPlyKey, C.setModeKey, C.backfillKey,
+            C.sourceKey, C.uncMinShareKey]);
         applyPlyRange(
           Object.prototype.hasOwnProperty.call(got, C.minPlyKey) ? got[C.minPlyKey] : C.minPly,
           Object.prototype.hasOwnProperty.call(got, C.maxPlyKey) ? got[C.maxPlyKey] : C.maxPly);
         applyStormMode(got[C.setModeKey]);
         applyBackfill(got[C.backfillKey]);
+        applyStormSource(got[C.sourceKey]);
+        applyUncShare(Object.prototype.hasOwnProperty.call(got, C.uncMinShareKey)
+          ? got[C.uncMinShareKey] : C.uncMinShare);
         syncSettings();
       } catch (err) {
         // An orphaned content script, or a profile with no storage: the
@@ -34728,6 +34855,14 @@
         // `backfillStoreOids` fills in from the course's own listing.
         o: (f && f.oids && f.oids[0]) || '',
         i: cand.invented ? 1 : 0,
+        // §19) THE UNCOVERED REPLY. `u` is what tells the two sources apart in
+        // the store, and every reader treats its absence as "a frontier
+        // position", which is what every entry written before v0.152.0 is.
+        // `sh` is the share in TENTHS of a per cent, so the record stays
+        // integers; `a` above already carries the move itself.
+        u: cand.unc ? 1 : undefined,
+        sh: cand.unc && typeof cand.unc.share === 'number'
+          ? Math.round(cand.unc.share * 10) : undefined,
         a: cand.arrived ? [cand.arrived.uci || '', cand.arrived.san || ''] : null,
         // The scored list, mover's perspective, best first — the thing the
         // requests bought. `w` is dropped where ChessDB gave none rather than
@@ -34747,7 +34882,15 @@
         // `stormReachBucket` reads absence as unknown rather than as "never
         // played". (`g` on an ENTRY; the wire envelope's own `g` is the tombstone
         // map, a different namespace.)
-        g: (f && typeof f.games === 'number') ? f.games : undefined,
+        //
+        // §19) …and on an uncovered position it is the REPLY's own game count,
+        // which is exactly the same quantity — how often anybody reaches this
+        // board — measured one ply lower down. So the bucket, the draw order
+        // and the merge all keep working with no branch, and "ask about the
+        // popular gaps first" is `stormStoreDraw`'s existing rule rather than a
+        // new one.
+        g: cand.unc && typeof cand.unc.games === 'number' ? cand.unc.games
+          : (f && typeof f.games === 'number') ? f.games : undefined,
       };
     }
 
@@ -34768,6 +34911,15 @@
         scored,
         invented: Boolean(e.i),
         arrived: e.a ? { uci: e.a[0] || null, san: e.a[1] || '' } : null,
+        // §19) Rebuilt from the three fields above rather than stored twice:
+        // the reply IS `a`, and `g` is its game count. A missing `u` is a
+        // frontier position, which is what every pre-v0.152.0 entry is.
+        unc: e.u ? {
+          san: (e.a && e.a[1]) || '',
+          uci: (e.a && e.a[0]) || '',
+          share: typeof e.sh === 'number' ? e.sh / 10 : null,
+          games: typeof e.g === 'number' ? e.g : null,
+        } : null,
         stored: true,
       };
     }
@@ -34824,6 +34976,12 @@
           // re-derivable on the far device without another explorer request,
           // which is the whole reason it is worth the ~8 bytes.
           g: e.g,
+          // §19) …and the two fields that say this is an uncovered reply
+          // rather than a frontier position. OPTIONAL, and with NO
+          // `wireVersion` bump for `g`'s reason: absence is already read as
+          // "a frontier position" everywhere, so an old payload and a new one
+          // are both valid, in both directions.
+          u: e.u, sh: e.sh,
           // uci and score only; the san goes.
           m: e.m.map((m) => (typeof m[3] === 'number' ? [m[0], m[2], m[3]] : [m[0], m[2]])),
         };
@@ -34865,6 +35023,10 @@
           // §14.19, and `undefined` on a payload written before v0.146.0 —
           // which every reader treats as "not known", never as zero.
           g: typeof e.g === 'number' ? e.g : undefined,
+          // §19, and forced to the shapes the store's own readers expect: a
+          // payload is something another build wrote.
+          u: e.u ? 1 : undefined,
+          sh: typeof e.sh === 'number' ? e.sh : undefined,
           m };
       }
       const gone = {};
@@ -34945,6 +35107,28 @@
      *  comparisons, so adding a band is one line here and one in the bar. */
     const STAT_BAND = { great: 'a', good: 'g', ok: 'o', bad: 'b', blunder: 'x',
       unknown: 'u' };
+
+    /**
+     * §19) THE TWO SOURCES ARE COUNTED SEPARATELY, and that is the whole of
+     * what "its own stats tab" costs: one more map per course, iterated
+     * wherever the first one is.
+     *
+     * They must not be pooled. "How often do I find a decent move one move
+     * past my book" and "how often do I find one against a reply my book never
+     * answers" are two different questions about the same repertoire, and a
+     * chapter can be strong on one and hopeless on the other — which is
+     * precisely the finding a merged figure would hide.
+     *
+     * `lines` FIRST and named as it always was, so every payload and every
+     * stored record written before v0.152.0 reads unchanged: a course with no
+     * `ulines` has answered no uncovered positions, which is true.
+     */
+    const STAT_MAPS = ['lines', 'ulines'];
+
+    /** Which of them a card is counted in. The card knows, because
+     *  `stormCard` put the reply on it. */
+    const statMapOf = (card) =>
+      (card && card.storm && card.storm.unc) ? 'ulines' : 'lines';
 
     /**
      * Adds one graded answer.
@@ -35047,21 +35231,29 @@
       let added = 0, bumped = 0;
       for (const bid of Object.keys(remote || {})) {
         const rc = remote[bid];
-        if (!rc || !rc.lines) continue;
+        if (!rc) continue;
         let mine = local[bid];
         if (!mine) mine = local[bid] = { name: rc.name || '', lines: {} };
         if (!mine.name && rc.name) mine.name = rc.name;
-        for (const oid of Object.keys(rc.lines)) {
-          const rl = rc.lines[oid];
-          if (!rl || !rl.dv) continue;
-          let ml = mine.lines[oid];
-          if (!ml) ml = mine.lines[oid] = { nm: rl.nm || '', dv: {} };
-          if (!ml.nm && rl.nm) ml.nm = rl.nm;
-          for (const dev of Object.keys(rl.dv)) {
-            const theirs = rl.dv[dev], ours = ml.dv[dev];
-            if (!theirs) continue;
-            if (!ours) { ml.dv[dev] = theirs; added++; continue; }
-            if ((theirs.n || 0) > (ours.n || 0)) { ml.dv[dev] = theirs; bumped++; }
+        // §19: BOTH MAPS, and a device that has one and not the other is the
+        // ordinary case rather than an error — an older build, or simply
+        // somebody who has never stormed the other source.
+        for (const map of STAT_MAPS) {
+          const rm = rc[map];
+          if (!rm) continue;
+          if (!mine[map]) mine[map] = {};
+          for (const oid of Object.keys(rm)) {
+            const rl = rm[oid];
+            if (!rl || !rl.dv) continue;
+            let ml = mine[map][oid];
+            if (!ml) ml = mine[map][oid] = { nm: rl.nm || '', dv: {} };
+            if (!ml.nm && rl.nm) ml.nm = rl.nm;
+            for (const dev of Object.keys(rl.dv)) {
+              const theirs = rl.dv[dev], ours = ml.dv[dev];
+              if (!theirs) continue;
+              if (!ours) { ml.dv[dev] = theirs; added++; continue; }
+              if ((theirs.n || 0) > (ours.n || 0)) { ml.dv[dev] = theirs; bumped++; }
+            }
           }
         }
       }
@@ -35082,16 +35274,23 @@
       let dropped = 0;
       for (const bid of Object.keys(all || {})) {
         const c = all[bid];
-        if (!c || !c.lines) { delete all[bid]; continue; }
-        const rows = [];
-        for (const oid of Object.keys(c.lines)) {
-          const t = stormStatSum(c.lines[oid] && c.lines[oid].dv).t || 0;
-          if (now - t > C.statsTtlMs) { delete c.lines[oid]; dropped++; continue; }
-          rows.push({ oid, t });
-        }
-        if (rows.length > C.statsMaxLines) {
-          rows.sort((a, b) => b.t - a.t);
-          for (const r of rows.slice(C.statsMaxLines)) { delete c.lines[r.oid]; dropped++; }
+        if (!c || (!c.lines && !c.ulines)) { delete all[bid]; continue; }
+        // §19: the cap is PER MAP, not shared. They are two records of two
+        // exercises, and letting a long uncovered record push a frontier line
+        // out would make one source's use quietly delete the other's history.
+        for (const map of STAT_MAPS) {
+          const lines = c[map];
+          if (!lines) continue;
+          const rows = [];
+          for (const oid of Object.keys(lines)) {
+            const t = stormStatSum(lines[oid] && lines[oid].dv).t || 0;
+            if (now - t > C.statsTtlMs) { delete lines[oid]; dropped++; continue; }
+            rows.push({ oid, t });
+          }
+          if (rows.length > C.statsMaxLines) {
+            rows.sort((a, b) => b.t - a.t);
+            for (const r of rows.slice(C.statsMaxLines)) { delete lines[r.oid]; dropped++; }
+          }
         }
       }
       return dropped;
@@ -35113,11 +35312,18 @@
       const rows = [];
       for (const bid of Object.keys(all || {})) {
         const c = all[bid];
-        if (!c || !c.lines) continue;
-        for (const oid of Object.keys(c.lines)) {
-          const l = c.lines[oid];
-          if (!l || !l.dv) continue;
-          rows.push({ bid, oid, l, name: c.name || '', t: stormStatSum(l.dv).t || 0 });
+        if (!c) continue;
+        // §19: both maps in ONE list, sorted together — the budget is spent on
+        // the most recently answered lines whichever exercise they came from,
+        // which is the same rule this always had and not a new choice.
+        for (const map of STAT_MAPS) {
+          const lines = c[map];
+          if (!lines) continue;
+          for (const oid of Object.keys(lines)) {
+            const l = lines[oid];
+            if (!l || !l.dv) continue;
+            rows.push({ bid, oid, map, l, name: c.name || '', t: stormStatSum(l.dv).t || 0 });
+          }
         }
       }
       rows.sort((a, b) => b.t - a.t);
@@ -35125,9 +35331,10 @@
       for (const r of rows) {
         let c = out.c[r.bid];
         if (!c) c = out.c[r.bid] = { name: r.name, lines: {} };
-        c.lines[r.oid] = r.l;
+        if (!c[r.map]) c[r.map] = {};
+        c[r.map][r.oid] = r.l;
         const size = Math.ceil(JSON.stringify(out).length * 8 / 5);
-        if (budget && size > budget) { delete c.lines[r.oid]; break; }
+        if (budget && size > budget) { delete c[r.map][r.oid]; break; }
         kept++;
       }
       out.n = kept;
@@ -35142,26 +35349,33 @@
       const all = {};
       for (const bid of Object.keys(blob.c)) {
         const c = blob.c[bid];
-        if (!c || !c.lines) continue;
-        const lines = {};
-        for (const oid of Object.keys(c.lines)) {
-          const l = c.lines[oid];
-          if (!l || !l.dv) continue;
-          const dv = {};
-          for (const dev of Object.keys(l.dv)) {
-            const r = l.dv[dev];
-            if (!r || typeof r.n !== 'number' || !(r.n > 0)) continue;
-            dv[dev] = {
-              n: Math.max(0, r.n | 0), a: Math.max(0, r.a | 0), g: Math.max(0, r.g | 0),
-              o: Math.max(0, r.o | 0), b: Math.max(0, r.b | 0), x: Math.max(0, r.x | 0),
-              u: Math.max(0, r.u | 0),
-              ls: Math.max(0, r.ls | 0), lc: Math.max(0, r.lc | 0),
-              t: Number(r.t) || 0,
-            };
+        if (!c) continue;
+        const got = {};
+        for (const map of STAT_MAPS) {
+          if (!c[map]) continue;
+          const lines = {};
+          for (const oid of Object.keys(c[map])) {
+            const l = c[map][oid];
+            if (!l || !l.dv) continue;
+            const dv = {};
+            for (const dev of Object.keys(l.dv)) {
+              const r = l.dv[dev];
+              if (!r || typeof r.n !== 'number' || !(r.n > 0)) continue;
+              dv[dev] = {
+                n: Math.max(0, r.n | 0), a: Math.max(0, r.a | 0), g: Math.max(0, r.g | 0),
+                o: Math.max(0, r.o | 0), b: Math.max(0, r.b | 0), x: Math.max(0, r.x | 0),
+                u: Math.max(0, r.u | 0),
+                ls: Math.max(0, r.ls | 0), lc: Math.max(0, r.lc | 0),
+                t: Number(r.t) || 0,
+              };
+            }
+            if (Object.keys(dv).length) lines[oid] = { nm: String(l.nm || ''), dv };
           }
-          if (Object.keys(dv).length) lines[oid] = { nm: String(l.nm || ''), dv };
+          if (Object.keys(lines).length) got[map] = lines;
         }
-        if (Object.keys(lines).length) all[bid] = { name: String(c.name || ''), lines };
+        if (Object.keys(got).length) {
+          all[bid] = Object.assign({ name: String(c.name || ''), lines: {} }, got);
+        }
       }
       return { stats: all, at: Number(blob.at) || 0 };
     }
@@ -35314,6 +35528,150 @@
     }
 
     /**
+     * §19) STAGE 0 for the UNCOVERED source — the other gap in a repertoire.
+     *
+     * Every position this course plays a move from where the OPPONENT is to
+     * move, with the set of replies it actually answers there. The card is
+     * then the position after a POPULAR reply that is NOT in that set: the
+     * course covers 1...e5 and 1...c5 and says nothing about 1...c6, so what
+     * do you play against 1...c6?
+     *
+     * WHOSE MOVE IT IS DECIDES WHETHER THERE IS A GAP AT ALL — section 6c's
+     * rule and 24b's, for the same reason. On the OPPONENT's move an
+     * uncovered popular reply is a hole; on the user's own it is a repertoire
+     * DECISION (1...c5 over 1...e5), and offering it would be asking them to
+     * improvise a line they chose not to play. So only opponent plies make a
+     * decision point, and `ply.side !== side` is the whole of that test.
+     *
+     * THE COVERED SET IS COLLECTED FROM EVERY LINE OF THE COLOUR, including
+     * the ones that may not be a SOURCE — §14.18's asymmetry, and it reads the
+     * same way here: a paused line or a tactics fragment answering 1...c6 is
+     * still the course answering 1...c6, and asking what the user plays there
+     * would be asking about a move their own book has. (The child position is
+     * checked against `cont` as well, which is what catches a reply the course
+     * answers by another move order — §14.18.4 in its second home.)
+     *
+     * The two SOURCE exclusions are the frontier walk's, for its reasons: a
+     * variation with a custom start FEN reaches positions no real game passes
+     * through, so the explorer has nothing to say about any of them; and a
+     * PAUSED line is one the user asked not to be prompted about, which does
+     * not become a different request one ply to the side.
+     *
+     * `cont` rides out on the array exactly as `stormFrontiers` sends it, so
+     * `frontierCovered` serves both sources with no branch.
+     */
+    async function stormDecisions(vars, C) {
+      const byPos = new Map();
+      const cont = { w: new Set(), b: new Set() };
+      let paused = 0;
+      let i = 0;
+      for (const v of vars || []) {
+        // The frontier walk's yield, for its reason: this is `walkVariation`
+        // over every line of the course, and a 500-line repertoire is several
+        // seconds of frozen tab at the moment a button was pressed.
+        if (++i % C.chunkVars === 0) await sleepMs(0);
+        if (!v.sans || !v.sans.length) continue;
+        const side = sideOf(v.color);
+        // A line whose colour the course does not state is walked for neither
+        // use: "whose move is this" is the one question here that must not be
+        // guessed at, since an inverted answer offers the user positions their
+        // own book covers and calls them gaps.
+        const w = side ? walkVariation(v) : null;
+        if (!w) continue;
+        for (const ply of w.plies) cont[side].add(cacheKey(ply.before));
+        const eligible = !v.paused &&
+          !(v.fen && cacheKey(v.fen) !== cacheKey(START_FEN));
+        if (v.paused) paused++;
+        for (const ply of w.plies) {
+          if (ply.side === side) continue;   // our own move: a choice, not a gap
+          const ck = cacheKey(ply.before);
+          let e = byPos.get(ck);
+          if (!e) {
+            byPos.set(ck, e = {
+              ck, fen: ply.before, side, n: 0, names: [], oids: [],
+              covered: new Set(), mixed: false,
+            });
+          }
+          // Only one colour can ever contribute to a given entry — the test
+          // above is relative to the LINE's own side, so a position the other
+          // repertoire meets is one where that repertoire is to move and the
+          // ply is skipped. Kept as a guard rather than as an assumption: a
+          // course that states its colours oddly must DROP the position, not
+          // ask the user for the opponent's move.
+          if (e.side !== side) { e.mixed = true; continue; }
+          e.covered.add(ply.uci);
+          if (!eligible) continue;
+          e.n++;
+          e.oids.push(String(v.oid));
+          if (e.names.length < 3) e.names.push(v.name || String(v.oid));
+        }
+      }
+      const out = [];
+      for (const e of byPos.values()) {
+        // `n` counts SOURCE lines only, so an entry built out of nothing but
+        // paused or custom-FEN lines is not a decision point — while its
+        // covered moves stay on the entry that was dropped, which costs
+        // nothing because nothing reads it.
+        if (e.mixed || !e.n) continue;
+        out.push(e);
+      }
+      out.paused = paused;
+      // Named the same way as the frontier pool's and meaning the same thing:
+      // how many lines this source's own rule excluded. Always zero here — the
+      // uncovered source has no stub rule, a line that ends inside another
+      // being perfectly able to have a gap in the middle of it.
+      out.covered = 0;
+      out.cont = cont;
+      return out;
+    }
+
+    /**
+     * §19) …and stage 1: which of the explorer's replies at a decision point
+     * the course does not answer, MOST POPULAR FIRST.
+     *
+     * That order is the feature's own instruction — the reply you are most
+     * likely to meet is the one worth being ready for — and it is carried all
+     * the way through: the harvest offers them in this order, and the store
+     * files each position under the reply's own game count, which is §14.19's
+     * reachability term and therefore what `stormStoreDraw` sorts a later
+     * session by.
+     *
+     * THE EXPLORER'S UCI IS RESOLVED THROUGH CloSan, NEVER COMPARED — section
+     * 6c's v0.48.1 rule, and this is the same trap from the same side: Lichess
+     * writes castling as KING TAKES ROOK (`e1h1`) while `walkVariation`'s
+     * covered set is spelled `e1g1`, so a raw compare misses exactly the
+     * castling replies and succeeds on everything else. A move whose SAN will
+     * not resolve is dropped rather than guessed at.
+     *
+     * TWO FLOORS, and they are not one rule twice: `uncMinShare` is what makes
+     * a reply worth preparing for, and `uncMinGames` is what makes the share
+     * mean anything at all — 3% of 40 games is one game.
+     *
+     * Pure, and `total` is handed in rather than summed from the moves: the
+     * explorer's own `white + draws + black` counts every game at the
+     * position, including those playing a move outside the list it returned,
+     * which is the denominator a share is actually against.
+     */
+    function stormUncoveredMoves(entry, moves, total, C) {
+      const pos = entry && CloSan.parseFen(entry.fen);
+      if (!pos) return [];
+      const out = [];
+      for (const m of moves || []) {
+        const games = (m.white || 0) + (m.draws || 0) + (m.black || 0);
+        if (!games) continue;
+        const uci = m.san ? sanToUci(pos, m.san) : null;
+        if (!uci) continue;
+        if (entry.covered && entry.covered.has(uci)) continue;
+        if (games < C.uncMinGames) continue;
+        const share = total > 0 ? (games / total) * 100 : 0;
+        if (share < C.uncMinShare) continue;
+        out.push({ uci, san: m.san, games, share });
+      }
+      out.sort((a, b) => b.games - a.games);
+      return out.slice(0, C.uncMaxPerPosition);
+    }
+
+    /**
      * §14.21) The frontier pool, narrowed to the lines of one chapter.
      *
      * PURE, and it takes the pool rather than reaching for `st.pool`, so
@@ -35406,8 +35764,15 @@
      * nowhere: the totals then quietly stop adding up while every individual
      * number still looks plausible.
      */
-    function stormFunnelBlank() {
+    function stormFunnelBlank(what, unit) {
       return {
+        // §19) WHAT THIS PASS WALKED and WHAT IT FETCHED, as words, because
+        // the same seven counters describe two different passes: line ends and
+        // the games walked from them, or decision points and the unanswered
+        // replies found at them. Defaulted, so every existing caller and
+        // `dev/check-storm.js` are unchanged.
+        what: what || 'line end',
+        unit: unit || 'game',
         frontiers: 0,     // drawn from the pool and walked
         unscored: 0,      // …ChessDB could not score the line end at all
         offBand: 0,       // …outside the stage-0 eval band (§7)
@@ -35460,10 +35825,10 @@
       const skipped = [];
       if (f.unscored) skipped.push(f.unscored + ' unscored');
       if (f.offBand) skipped.push(f.offBand + ' off-band');
-      if (f.noGames) skipped.push(f.noGames + ' with no games');
-      const out = ['Walked ' + f.frontiers + ' line end(s)' +
+      if (f.noGames) skipped.push(f.noGames + ' with no ' + (f.unit || 'game') + 's');
+      const out = ['Walked ' + f.frontiers + ' ' + (f.what || 'line end') + '(s)' +
         (skipped.length ? ' (' + skipped.join(', ') + ')' : '') +
-        ' and ' + f.games + ' game(s).'];
+        ' and ' + f.games + ' ' + (f.unit || 'game') + '(s).'];
       if (f.examined) {
         out.push(f.examined + ' position(s) examined: ' + f.rejected +
           ' rejected, ' + f.retired + ' already answered, ' + f.dup +
@@ -35488,11 +35853,13 @@
       const table = (t) => Object.keys(t || {})
         .sort((a, b) => t[b] - t[a])
         .map((k) => '    ' + String(t[k]).padStart(4) + '  ' + k);
+      const pad = (t) => (t + '                 ').slice(0, 17);
       const out = [
-        'line ends walked : ' + f.frontiers +
+        pad((f.what || 'line end') + 's walked') + ': ' + f.frontiers +
           '  (unscored ' + f.unscored + ', off-band ' + f.offBand +
-          ', no games ' + f.noGames + ')',
-        'games walked     : ' + f.games + '  (unusable ' + f.gamesFailed + ')',
+          ', no ' + (f.unit || 'game') + 's ' + f.noGames + ')',
+        pad((f.unit || 'game') + 's walked') + ': ' + f.games +
+          '  (unusable ' + f.gamesFailed + ')',
         'positions        : ' + f.examined + ' examined -> ' + f.stored + ' stored' +
           '  (rejected ' + f.rejected + ', retired ' + f.retired +
           ', already stored ' + f.dup + ')',
@@ -35502,7 +35869,9 @@
       const stops = table(f.stops);
       if (stops.length) out.push('  walks stopped on:', ...stops);
       const reach = table(f.reach);
-      if (reach.length) out.push('  line ends by how often they are reached:', ...reach);
+      if (reach.length) {
+        out.push('  ' + (f.what || 'line end') + 's by how often they are reached:', ...reach);
+      }
       return out;
     }
 
@@ -35865,6 +36234,12 @@
         userColor: ctx.userSide,
         arrived: ctx.arrived || null,
         invented: Boolean(ctx.invented),
+        // §19) …and, on the UNCOVERED source, the reply that got here: the
+        // move the course does not answer, with how often it is played.
+        // Symmetrical with `invented` above and for the same reason — nothing
+        // downstream should have to guess which kind of position this is, and
+        // the panel has a different sentence to print for each.
+        unc: ctx.unc || null,
       };
       cand.reject = stormPickReject(cand, C);
       return cand;
@@ -36125,6 +36500,11 @@
           // counted, under one "line not recorded" row.
           oid: (frontier && frontier.oids && frontier.oids[0]) || '',
           plyPast: cand.ply,
+          // §19) …or, on the uncovered source, the reply the course never
+          // answers. Section 18's panel prints one sentence or the other and
+          // never both: "3 moves past the line" is a claim about a line end,
+          // and this position is not one.
+          unc: cand.unc || null,
           // §14.19) How reachable the frontier is. It is NOT on the live card —
           // a frontier's popularity is not a spoiler, but a card has one job —
           // and is read only by the review row's tooltip and the gather report.
@@ -36346,13 +36726,46 @@
       return Math.max(0, Math.min(C.reachTop, Math.floor(Math.log10(Math.max(1, games)))));
     }
 
-    /** …and as words, for the two places that report it (§14.19). */
-    function stormReachLabel(games) {
+    /** …and as words, for the two places that report it (§14.19).
+     *
+     *  §19) `what` names the SUBJECT, because the number means the same thing
+     *  on both sources and is about a different thing: how often anybody
+     *  reaches the line end, or how often anybody plays the reply. Defaulted,
+     *  so the frontier callers are unchanged. */
+    function stormReachLabel(games, what) {
+      const where = what || 'at the line end';
       if (typeof games !== 'number' || !Number.isFinite(games)) return 'reach not recorded';
-      if (games <= 0) return 'no games at the line end';
-      if (games < 10) return games + ' game(s) at the line end';
+      if (games <= 0) return 'no games ' + where;
+      if (games < 10) return games + ' game(s) ' + where;
       const lo = Math.pow(10, Math.floor(Math.log10(games)));
-      return lo + '-' + (lo * 10 - 1) + ' games at the line end';
+      return lo + '-' + (lo * 10 - 1) + ' games ' + where;
+    }
+
+    /**
+     * §19) The store, narrowed to ONE SOURCE.
+     *
+     * The two share a store — one course, one key, one wire card, one
+     * retention rule and one set of tombstones — and a session must draw only
+     * on its own kind: a storm of uncovered replies dealing a frontier
+     * position would be a card the panel has the wrong sentence for and the
+     * user did not ask for.
+     *
+     * FILTER THE INPUT, NEVER THE ORDER. §14.15's rule, and the reason this is
+     * a pure function of its own beside `stormFilterStore` rather than a
+     * clause in `stormStoreDraw`'s comparator: a reordering there is silent
+     * from the outside, where a narrowing here is one line and can be executed.
+     *
+     * ABSENCE IS 'frontier', which is what every entry written before v0.152.0
+     * is, so no store needs migrating and no cache key needed bumping.
+     */
+    function stormFilterSource(store, source) {
+      const want = source === 'uncovered';
+      const out = {};
+      for (const ck of Object.keys(store || {})) {
+        if (Boolean(store[ck] && store[ck].u) !== want) continue;
+        out[ck] = store[ck];
+      }
+      return out;
     }
 
     function stormStoreDraw(store, rnd, C) {
@@ -36385,8 +36798,12 @@
      * function rather than as a clause in the comparator.
      */
     function storeDraw() {
-      if (!st.oidFilter) return stormStoreDraw(st.store, Math.random, C);
-      const cut = stormFilterStore(st.store, st.oidFilter);
+      // §19) THE SOURCE IS THE FIRST FILTER, and it composes with the chapter
+      // scope exactly as two filters should: both narrow the input and neither
+      // touches the order.
+      const mine = stormFilterSource(st.store, st.source);
+      if (!st.oidFilter) return stormStoreDraw(mine, Math.random, C);
+      const cut = stormFilterStore(mine, st.oidFilter);
       st.storeCut = cut;
       return stormStoreDraw(cut.kept, Math.random, C);
     }
@@ -36543,6 +36960,57 @@
       out.total = (typeof w === 'number' || typeof dr === 'number' || typeof b === 'number')
         ? (w || 0) + (dr || 0) + (b || 0)
         : null;
+      return out;
+    }
+
+    /**
+     * §19) THE EXPLORER'S MOVE LIST at a decision point — the uncovered
+     * source's one and only network request per position, and the whole reason
+     * that source is about a fifth of a frontier position's cost: it answers
+     * every unanswered reply at that position at once.
+     *
+     * IT NEEDS NO GAME AND NO PGN, so this source never touches the
+     * `lichess.org` host permission (§14.1) — only `explorer.lichess.org`,
+     * which this extension has read since the beginning.
+     *
+     * The storm's own RELAXED filters again (§6.4), for the reason they exist:
+     * a decision point ten plies into a repertoire has few games at the user's
+     * own rating band, and "which replies do people play here" is a question
+     * about people rather than about people like me. `moves` is asked for and
+     * `topGames`/`recentGames` are not, which is the exact opposite of
+     * `askGames` beside it.
+     *
+     * Cached per position for the length of the window: a course regularly
+     * answers the same position from several lines, and a gather pass and the
+     * session after it are the same tab.
+     */
+    async function askMoves(fen) {
+      const ck = cacheKey(fen);
+      if (st.mv.has(ck)) return st.mv.get(ck);
+      await pace('lastExplorerAt', C.explorerGapMs);
+      const params = new URLSearchParams({
+        variant: CONFIG.lichess.variant, fen,
+        speeds: C.speeds.join(','), ratings: C.ratings.join(','),
+        moves: String(C.uncMovesLimit), topGames: '0', recentGames: '0',
+      });
+      const reply = await chrome.runtime.sendMessage({
+        type: 'clo-fetch-explorer', url: CONFIG.lichess.apiBase + '?' + params,
+      });
+      if (!reply) throw new Error('no reply from background worker');
+      if (!reply.ok) throw new Error(reply.error || 'HTTP ' + reply.status);
+      const d = reply.data || {};
+      const w = d.white, dr = d.draws, b = d.black;
+      const out = {
+        moves: Array.isArray(d.moves) ? d.moves : [],
+        // Null, never 0, on a reply carrying none of the three — `askGames`'s
+        // rule, and here it also decides whether a share can be computed at
+        // all rather than merely how a position is ordered.
+        total: (typeof w === 'number' || typeof dr === 'number' || typeof b === 'number')
+          ? (w || 0) + (dr || 0) + (b || 0)
+          : null,
+      };
+      if (st.mv.size >= C.cdbCacheMax) st.mv.delete(st.mv.keys().next().value);
+      st.mv.set(ck, out);
       return out;
     }
 
@@ -37025,6 +37493,106 @@
       return cards;
     }
 
+    /**
+     * §19) Everything ONE DECISION POINT yields: the unanswered replies at it,
+     * most popular first, each as the position it leads to.
+     *
+     * `harvestFrontier`'s counterpart, and deliberately its own function rather
+     * than a branch inside it — the two share stage 3 (`stormCandidate`), the
+     * dedupe, the store and the funnel, and share nothing at all above them.
+     * What it does NOT do is walk: an uncovered position is exactly one ply
+     * past the reply and there is no game to follow, which is why this source
+     * needs no PGN, no `st.mastersOnly` fallback and no ply range.
+     *
+     * THE ORDER IS THE FEATURE. `stormUncoveredMoves` returns the replies most
+     * popular first and they are harvested in that order, so a session that
+     * runs out of time has spent it on the gaps most likely to be met.
+     */
+    async function harvestUncovered(f, storeOnly) {
+      const fn = st.funnel;
+      stormFunnelBump(fn, 'frontiers');
+      let got = null;
+      try {
+        got = await askMoves(f.fen);
+      } catch (err) {
+        warn('storm: explorer lookup failed at a decision point:', err);
+        return [];
+      }
+      // How often anybody reaches the DECISION POINT — free in the reply we
+      // were fetching anyway, and the denominator every share is against.
+      if (typeof got.total === 'number') f.games = got.total;
+      stormFunnelWhy(fn, 'reach', stormReachLabel(f.games, 'at the position'));
+      const gaps = stormUncoveredMoves(f, got.moves, got.total, uncCfg());
+      if (!gaps.length) {
+        // The ordinary and entirely good case: the course answers everything
+        // popular here. Counted in the same slot as a frontier with no games,
+        // which is the same statement — there was nothing to walk.
+        stormFunnelBump(fn, 'noGames');
+        stormFunnelWhy(fn, 'stops', 'every popular reply here is answered');
+        return [];
+      }
+      const pos = CloSan.parseFen(f.fen);
+      if (!pos) return [];
+      const covered = frontierCovered(f);
+      const cands = [];
+      for (const mv of gaps) {
+        if (!st.running || (st.over && !storeOnly)) break;
+        const step = stormAdvance(f.fen, pos, mv.uci, mv.san);
+        if (!step) continue;
+        const child = CloSan.parseFen(step.fen);
+        if (!child) continue;
+        // §14.18.4 IN ITS SECOND HOME, and it is not redundant with the
+        // covered set: that one asks whether the course plays this REPLY, and
+        // this asks whether the course answers the position the reply leads
+        // to — which it may well do by another move order. Free, since the
+        // index was built by the same walk that found the decision point.
+        if (stormReentered(covered, child, step.fen, f.side)) {
+          stormFunnelBump(fn, 'gamesFailed');
+          stormFunnelWhy(fn, 'stops', 'your own course answers this position');
+          continue;
+        }
+        const scored = await askCdb(step.fen);
+        if (!scored || !scored.length) {
+          stormFunnelBump(fn, 'unscored');
+          stormFunnelWhy(fn, 'stops', 'ChessDB has no score here');
+          continue;
+        }
+        stormFunnelBump(fn, 'games');
+        cands.push(stormCandidate({
+          fen: step.fen, pos: child, scored, ply: 1, userSide: f.side,
+          arrived: step.arrived, prevCapSq: step.prevCapSq, gaveCheck: step.gaveCheck,
+          unc: { san: mv.san, uci: mv.uci, share: mv.share, games: mv.games },
+        }, uncCfg()));
+      }
+      return harvestCandidates(cands, f, storeOnly);
+    }
+
+    /**
+     * §19) The stage-0 pool for whichever source this session is on, and one
+     * unit of it harvested.
+     *
+     * TWO one-line dispatchers and nothing else, which is the measure of how
+     * much of this feature the second source actually cost: the producer, the
+     * gather pass, the background top-up, the queue, the board, the three
+     * grading tiers, the store, the retention rule, the tombstones, the wire
+     * and the review are all shared and none of them asks which source it is
+     * on.
+     */
+    async function poolFor(vars) {
+      return uncoveredOn() ? stormDecisions(vars, C) : stormFrontiers(vars, C);
+    }
+
+    function harvestOne(f, storeOnly) {
+      return uncoveredOn() ? harvestUncovered(f, storeOnly) : harvestFrontier(f, storeOnly);
+    }
+
+    /** …and the funnel's two nouns, so a pass reports what it actually walked. */
+    function newFunnel() {
+      return uncoveredOn()
+        ? stormFunnelBlank('decision point', 'unanswered reply')
+        : stormFunnelBlank();
+    }
+
     /** The surviving candidates of one walk as cards, deduped — and STORED, so
      *  the eleven requests each one cost are paid once and not once per
      *  session (§14.11). A gather pass takes the same path and simply never
@@ -37155,7 +37723,7 @@
             break;
           }
           setNote('Looking for positions… (' + st.pool.length + ' lines left)');
-          const cards = await harvestFrontier(f);
+          const cards = await harvestOne(f);
           if (!st.running) return;
           for (const card of cards) st.queue.push(card);
           if (cards.length) render();
@@ -37269,7 +37837,7 @@
         st.lastPull = Date.now();
         await saveStore();
         await saveSyncMeta();
-        setSyncNote('Synced — ' + packed.n + ' of ' + storeCount() + ' carried' +
+        setSyncNote('Synced — ' + packed.n + ' of ' + storeTotal() + ' carried' +
           (merged.added ? ', ' + merged.added + ' taken from another device' : '') +
           (merged.dropped ? ', ' + merged.dropped + ' already learned elsewhere' : ''));
         log('storm: synced (' + reason + ') —', packed.n, 'carried,',
@@ -37405,6 +37973,15 @@
       return c || null;
     }
 
+    /** §19) One of the two records, created on demand. `ulines` is absent on
+     *  every course recorded before v0.152.0 and on every device that has
+     *  never stormed this source, which is why nothing may assume it. */
+    function statLines(c, map, create) {
+      if (!c) return null;
+      if (!c[map] && create) c[map] = {};
+      return c[map] || null;
+    }
+
     /**
      * ONE GRADED ANSWER, counted against the line the position is a frontier
      * of. Called from `finishAnswer` only — a review retry (§14.10b) is
@@ -37417,8 +37994,13 @@
       const c = courseStats(true);
       if (!c) return;
       const oid = String(card.storm.oid || '');
-      let line = c.lines[oid];
-      if (!line) line = c.lines[oid] = { nm: card.storm.from || '', dv: {} };
+      // §19) …INTO THE RECORD FOR THIS SOURCE. The card knows which it is, so
+      // nothing here reads `st.source` — a review retry or a card left over
+      // from a source switch is filed by what it IS rather than by what the
+      // session is currently set to.
+      const lines = statLines(c, statMapOf(card), true);
+      let line = lines[oid];
+      if (!line) line = lines[oid] = { nm: card.storm.from || '', dv: {} };
       if (!line.nm && card.storm.from) line.nm = card.storm.from;
       let rec = line.dv[st.devId];
       if (!rec) rec = line.dv[st.devId] = stormStatBlank();
@@ -37643,7 +38225,7 @@
       }
       st.gathering = true;
       st.gathered = 0;
-      st.funnel = stormFunnelBlank();   // §14.17
+      st.funnel = newFunnel();   // §14.17, §19
       st.exhausted = false;
       // Its own ceiling, far above a session's: this IS the long burst, and it
       // is the one the user asked for by name.
@@ -37664,7 +38246,7 @@
           // reading that costs nothing and is also the right one — a pass
           // started from inside a chapter-scoped session is a pass for that
           // chapter.
-          st.pool = stormScope(await stormFrontiers(course.vars, C));
+          st.pool = stormScope(await poolFor(course.vars));
           st.poolSize = st.pool.length;
           st.name = course.name || st.name;
         }
@@ -37674,7 +38256,7 @@
           const f = stormDrawFrontier(st.pool, Math.random);
           if (!f) break;
           setGatherNote();
-          await harvestFrontier(f);
+          await harvestOne(f);
           // Written as it goes, not at the end: this pass is meant to be left
           // running, and a crash or a closed tab must not throw away an hour.
           await saveStore();
@@ -37693,7 +38275,8 @@
         await saveStore();
         setNote('');
         log('storm: gathered', st.gathered, 'position(s) in',
-          st.cdbCount, 'ChessDB requests;', Object.keys(st.store || {}).length, 'in store');
+          st.cdbCount, 'ChessDB requests;', storeCount(), 'in store for this source,',
+          storeTotal(), 'in all');
         // §14.17: the breakdown, and the reason tables with it — which is the
         // half that says what to change. One line each so a console filtered on
         // [CLO] reads as a block.
@@ -37712,9 +38295,9 @@
         setStatus([
           st.gathered
             ? 'Stored ' + st.gathered + ' new position(s) — ' +
-              Object.keys(st.store || {}).length + ' ready on this course.'
+              storeCount() + ' ready on this course.'
             : 'Nothing new to store — ' +
-              Object.keys(st.store || {}).length + ' ready on this course.',
+              storeCount() + ' ready on this course.',
           funnelNote,
           skipped ? skipped + ' paused or skipped variation(s) are not walked.' : '',
           inside ? inside + ' line end(s) sit inside other lines and are not frontiers.' : '',
@@ -37799,7 +38382,7 @@
       const before = st.backfillStored;
       syncSettings();
       try {
-        await harvestFrontier(f, true);
+        await harvestOne(f, true);
       } catch (err) {
         // Fails soft and fails QUIET: nobody asked for this pass, so an
         // explorer hiccup in it must not put a sentence over the review the
@@ -37841,7 +38424,7 @@
       const f = st.funnel;
       setNote('Gathering… ' + st.gathered + ' stored of ' +
         ((f && f.examined) || 0) + ' examined, ' +
-        (st.pool ? st.pool.length : 0) + ' line ends left, ' +
+        (st.pool ? st.pool.length : 0) + ' ' + ((f && f.what) || 'line end') + 's left, ' +
         st.cdbCount + ' ChessDB lookups');
     }
 
@@ -37957,6 +38540,8 @@
       st.mastersOnly = false;
       st.cdb = new Map();
       st.cdbCount = 0;
+      st.mv = new Map();   // §19
+      if (spec.source) applyStormSource(spec.source);
       // §14.24) THE BACKGROUND BUDGET IS PER WINDOW, and this is the window
       // opening. `backfilling` is deliberately NOT cleared here: a walk from
       // the last window can still be in flight, its own `finally` is what ends
@@ -37971,6 +38556,7 @@
       st.viewStats = false;
       st.statsNote = '';
       st.statsOpen = new Set();
+      st.statsTab = uncoveredOn() ? 'ulines' : 'lines';   // §19
       mount();
       render();
       setStatus('Reading the course…', '');
@@ -38050,7 +38636,7 @@
       // course has been walked — the walk is what knows which lines end where,
       // and it is also what §14.18's stub index is built from, so filtering the
       // input to it would change what "the course answers this position" means.
-      const frontiers = stormScope(await stormFrontiers(course.vars, C));
+      const frontiers = stormScope(await poolFor(course.vars));
       if (!st.running) return;
       if (!frontiers.length) {
         // NAME THE PAUSE WHERE IT IS THE REASON. Every other cause here is a
@@ -38068,9 +38654,32 @@
         // sentences below would otherwise tell them their course is unsuitable.
         if (st.lid) {
           endSession('no frontiers in chapter', stormScopeNote(frontiers) ||
-            ('No line in ' + (st.lidName || 'that chapter') + ' ends on a position ' +
-             'a real game passes through, so there is nothing to storm there. ' +
-             'The rest of the course may still have plenty.'));
+            (uncoveredOn()
+              ? 'No line in ' + (st.lidName || 'that chapter') + ' answers a reply ' +
+                'from a standard starting position, so there is nothing there to be ' +
+                'unprepared for. The rest of the course may still have plenty.'
+              : 'No line in ' + (st.lidName || 'that chapter') + ' ends on a position ' +
+                'a real game passes through, so there is nothing to storm there. ' +
+                'The rest of the course may still have plenty.'));
+          return;
+        }
+        if (uncoveredOn()) {
+          // §19) The uncovered source's own empty answer, and it is a
+          // different fact from the frontier one: a pool of nothing here means
+          // the course never has the OPPONENT to move in a line that could be
+          // a source at all, which is a course of tactics puzzles or one whose
+          // every line is paused.
+          endSession('no decision points', paused
+            ? (course.allPaused
+                ? 'Every variation in this course is paused, so there is nothing to ' +
+                  'storm. Resume some lines on the course page and try again.'
+                : paused + ' variation(s) in this course are paused or skipped and are ' +
+                  'not stormed. Nothing else here answers a reply from a standard ' +
+                  'starting position.')
+            : 'None of this course’s variations answers an opponent reply from a ' +
+              'standard starting position — every line either starts from a custom ' +
+              'position (tactics, model games) or plays only your own moves. Try the ' +
+              'other source.');
           return;
         }
         endSession('no frontiers', paused
@@ -38099,7 +38708,8 @@
       st.pool = frontiers;
       st.poolSize = frontiers.length;
       st.name = course.name || st.name;
-      log('storm:', frontiers.length, 'eligible frontier(s) on', st.bid);
+      log('storm:', frontiers.length,
+        uncoveredOn() ? 'decision point(s) on' : 'eligible frontier(s) on', st.bid);
 
       // THE CLOCK STARTS WITH THE FIRST CARD, not here: the producer's opening
       // round trip is ~1.5 s of network and it is not the user's to pay for.
@@ -38938,9 +39548,9 @@
       // a thing you would want to start.
       const ready = el('span', 'clo-st-ready');
       ready.hidden = true;
-      ready.title = 'Positions already found on this course and waiting. A storm opens ' +
-        'on these instantly — finding one costs about eleven ChessDB lookups, which ' +
-        'is what "Gather positions" pays in advance.';
+      ready.title = 'Positions already found on this course, for the source chosen ' +
+        'beside this. A storm opens on these instantly — finding one costs several ' +
+        'lookups, which is what "Gather positions" pays in advance.';
       // §14.13) START. THE one primary in this window — a FILL, which nothing
       // else in this row wears (DESIGN-ui-inventory §3): the whole point of the
       // button is that the alternative, gathering, is a real choice and used to
@@ -39007,6 +39617,48 @@
         'answered well before the next one, a mistake is played again (or the move ' +
         'is shown), and what you did not find first time comes back at the end.';
       modeSel.addEventListener('change', () => saveStormMode(modeSel.value));
+      // §19) THE SOURCE, second and beside the mode: the two together are the
+      // whole sentence "what am I about to do, and to which positions". A
+      // `<select>` for the mode selector's reason — this window has one
+      // primary and Start is it.
+      const sourceSel = document.createElement('select');
+      sourceSel.className = 'clo-st-sel clo-st-sourcesel';
+      [['frontier', 'Past the end of a line'],
+        ['uncovered', 'Replies you don’t answer']].forEach(([val, label]) => {
+        const o = document.createElement('option');
+        o.value = val;
+        o.textContent = label;
+        sourceSel.appendChild(o);
+      });
+      sourceSel.title = 'Past the end of a line: the position one of your variations ' +
+        'stops on, carried forward by a real game — what do you play once the book ' +
+        'runs out?\nReplies you don’t answer: a position your course DOES answer, and ' +
+        'a popular reply it never mentions — the course covers 1…e5 and 1…c5 here and ' +
+        'says nothing about 1…c6. The most played gaps are asked about first.';
+      sourceSel.addEventListener('change', () => saveStormSource(sourceSel.value));
+      // The two settings that describe WHICH positions, one per source and
+      // never both: a ply range means nothing to a reply that is always
+      // exactly one move away, and a popularity floor means nothing to a walk
+      // that follows somebody's actual game.
+      const plyGroup = el('span', 'clo-st-set-group');
+      plyGroup.title = 'How far past the point a course line stops a position may be. ' +
+        '1 asks what you play the move AFTER the book runs out; a wider range mixes ' +
+        'that with positions further downstream.';
+      const uncGroup = el('span', 'clo-st-set-group');
+      uncGroup.title = 'How often a reply must be played at that position before you ' +
+        'are asked about it. Lower finds more gaps and more obscure ones; the floor ' +
+        'is a share of the games at that exact position, so it means the same thing ' +
+        'on move 3 and on move 15.\nIt applies to positions found from now on — ' +
+        'anything already stored was found under the floor in force at the time.';
+      const shareSel = document.createElement('select');
+      shareSel.className = 'clo-st-sel';
+      for (const v of C.uncShareChoices) {
+        const o = document.createElement('option');
+        o.value = String(v);
+        o.textContent = String(v) + '%';
+        shareSel.appendChild(o);
+      }
+      shareSel.addEventListener('change', () => saveUncShare(shareSel.value));
       // §14.24) THE BACKGROUND PASS's switch. NEUTRAL (`.clo-st-sync`), beside
       // Gather and deliberately not sharing its green: green outline in this
       // row is an ordinary ACTION (DESIGN-ui-inventory §3) and this one starts
@@ -39017,15 +39669,16 @@
       const bgBtn = el('button', 'clo-st-sync clo-st-bgbtn', 'Background: on');
       bgBtn.type = 'button';
       bgBtn.addEventListener('click', () => saveBackfill(!st.backfillOn));
-      settings.append(
-        modeSel,
+      plyGroup.append(
         el('span', 'clo-st-set-label', 'Offer positions'), minSel,
         el('span', 'clo-st-set-label', 'to'), maxSel,
-        el('span', 'clo-st-set-label', 'moves past the end of a line'),
+        el('span', 'clo-st-set-label', 'moves past the end of a line'));
+      uncGroup.append(
+        el('span', 'clo-st-set-label', 'Ask about replies played in'), shareSel,
+        el('span', 'clo-st-set-label', 'of the games there or more'));
+      settings.append(
+        modeSel, sourceSel, plyGroup, uncGroup,
         el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, bgBtn, syncBtn, statsBtn);
-      settings.title = 'How far past the point a course line stops a position may be. ' +
-        '1 asks what you play the move AFTER the book runs out; a wider range mixes ' +
-        'that with positions further downstream.';
       const stage = el('div', 'clo-st-stage');
       const boardSlot = el('div', 'clo-st-slot clo-st-slot--board');
       const panelSlot = el('div', 'clo-st-slot clo-st-slot--panel');
@@ -39043,6 +39696,28 @@
       const stats = el('div', 'clo-st-stats');
       stats.hidden = true;
       const statsHead = el('div', 'clo-st-stats-head');
+      // §19) THE TWO RECORDS, and they are not summed: "how often do I find a
+      // decent move one move past my book" and "…against a reply my book never
+      // answers" are two questions about the same repertoire, and a chapter can
+      // be strong on one and hopeless on the other — which is exactly the
+      // finding a merged figure would hide.
+      const statsTabs = el('div', 'clo-st-stats-tabs');
+      const mkTab = (map, label, title) => {
+        const b = el('button', 'clo-st-stattab', label);
+        b.type = 'button';
+        b.title = title;
+        b.addEventListener('click', () => {
+          if (st.statsTab === map) return;
+          st.statsTab = map;
+          renderStats();
+        });
+        return b;
+      };
+      const statsTabA = mkTab('lines', 'Past the line',
+        'Positions one move past the end of a line, carried forward by a real game.');
+      const statsTabB = mkTab('ulines', 'Uncovered replies',
+        'Positions after a popular reply your course never answers.');
+      statsTabs.append(statsTabA, statsTabB);
       const statsChapters = el('button', 'clo-st-analyse', 'Group by chapter');
       statsChapters.type = 'button';
       statsChapters.title = 'Read this course’s chapters and place every line in one. ' +
@@ -39061,7 +39736,7 @@
       statsBack.title = 'Back to the storm (s)';
       statsBack.addEventListener('click', toggleStats);
       statsHead.append(el('span', 'clo-st-stats-title', 'How you read your repertoires'),
-        el('span', 'clo-st-set-spacer'), statsChapters, statsSync, statsBack);
+        statsTabs, el('span', 'clo-st-set-spacer'), statsChapters, statsSync, statsBack);
       const statsNote = el('div', 'clo-st-note clo-st-statsnote');
       statsNote.hidden = true;
       const statsBody = el('div', 'clo-st-stats-body');
@@ -39127,7 +39802,9 @@
       document.body.appendChild(panel);
       st.panel = panel;
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
-        settings, modeSel, minSel, maxSel, startBtn, gatherBtn, bgBtn, ready, syncBtn, syncNote,
+        settings, modeSel, sourceSel, plyGroup, uncGroup, shareSel,
+        statsTabA, statsTabB,
+        minSel, maxSel, startBtn, gatherBtn, bgBtn, ready, syncBtn, syncNote,
         review, revBoard, revGrid, revLayer, revShapes, revHead, revLegend, revList,
         revActions, revRetry, revBest, revAnalyse, dbSlot,
         statsBtn, stats, statsHead, statsChapters, statsSync, statsNote, statsBody };
@@ -39166,6 +39843,43 @@
       } catch (err) { /* orphaned content script */ }
     }
 
+    /**
+     * §19) THE SOURCE, and it is the one setting here that cannot simply be
+     * written through: the pool, the queue and the store draw are all of the
+     * other kind, so a session that has not started yet is RESTARTED rather
+     * than converted. That costs no fetch — the course listing is in the
+     * session cache `startSession` reads it from.
+     *
+     * Once a session is under way or over it is only a preference again: the
+     * settings row is shown during the review, and "Storm again" is what
+     * carries the new source into the next session.
+     */
+    function saveStormSource(v) {
+      if ((v === 'uncovered' ? 'uncovered' : 'frontier') === st.source) return;
+      applyStormSource(v);
+      try {
+        chrome.storage.local.set({ [C.sourceKey]: st.source }).catch(() => {});
+      } catch (err) { /* orphaned content script */ }
+      if (st.running && !st.over && !st.started && !st.gathering) {
+        stormAgain({ bid: st.bid, name: st.name, lid: st.lid, lidName: st.lidName,
+          mode: st.mode, source: st.source });
+        return;
+      }
+      render();
+    }
+
+    /** §19) …and the popularity floor, which needs no restart: it decides what
+     *  a HARVEST offers, and everything already in the queue or the store was
+     *  found under whichever floor was in force then. Said in the tooltip
+     *  rather than implied. */
+    function saveUncShare(v) {
+      applyUncShare(v);
+      syncSettings();
+      try {
+        chrome.storage.local.set({ [C.uncMinShareKey]: st.uncShare }).catch(() => {});
+      } catch (err) { /* orphaned content script */ }
+    }
+
     /** §14.24) …and the background pass's own switch, on the same best-effort
      *  terms. Switching it OFF takes effect at the next line end rather than
      *  mid-walk: `backfillOk()` is re-asked before each one, and abandoning the
@@ -39182,9 +39896,20 @@
 
     /** The selectors follow the state, never the other way round — including
      *  after `applyPlyRange` has clamped an inverted pair. */
-    /** How many positions this course has ready — the one number that says
-     *  whether the next storm starts instantly (§14.11). */
-    const storeCount = () => (st.store ? Object.keys(st.store).length : 0);
+    /** How many positions this course has ready FOR THIS SOURCE — the one
+     *  number that says whether the next storm starts instantly (§14.11).
+     *
+     *  §19) Source-scoped, because that is the question every one of its
+     *  readers is asking: the chip beside Start, the background pass's own
+     *  ceiling and the summary all mean "ready for the exercise I am about to
+     *  do", and a frontier position is not one of those in an uncovered
+     *  session. */
+    const storeCount = () =>
+      (st.store ? Object.keys(stormFilterSource(st.store, st.source)).length : 0);
+
+    /** …and the whole store, both sources, which is what the WIRE carries and
+     *  therefore the only place the wider number is the honest one. */
+    const storeTotal = () => (st.store ? Object.keys(st.store).length : 0);
 
     function syncSettings() {
       if (!st.ui) return;
@@ -39204,6 +39929,14 @@
       st.ui.maxSel.value = String(st.maxPly);
       st.ui.modeSel.value = st.mode;
       st.ui.modeSel.disabled = st.gathering;
+      // §19) The source, and the one setting group that belongs to it. Never
+      // both groups: each describes positions the other source does not have.
+      st.ui.sourceSel.value = st.source;
+      st.ui.sourceSel.disabled = st.gathering;
+      st.ui.shareSel.value = String(st.uncShare);
+      st.ui.shareSel.disabled = st.gathering;
+      st.ui.plyGroup.hidden = uncoveredOn();
+      st.ui.uncGroup.hidden = !uncoveredOn();
       // The button IS the stop button while it runs — one control, because
       // "gather" and "stop gathering" are the two halves of one intention
       // (section 9's rule, and the tree's Read/Cancel does the same).
@@ -39223,8 +39956,11 @@
             ' position(s) are ready and the rest are found while you play.'
           : 'Begin. The clock starts with the first card — ' + st.queue.length +
           ' position(s) are ready and the rest are found while you play.')
-        : 'Nothing is ready yet. Finding a position costs about eleven ChessDB ' +
-          'lookups; "Gather positions" pays that in advance, and syncing brings ' +
+        : 'Nothing is ready yet. Finding a position costs ' +
+          (uncoveredOn()
+            ? 'an explorer lookup and a ChessDB one'
+            : 'about eleven ChessDB lookups') +
+          '; "Gather positions" pays that in advance, and syncing brings ' +
           'over what another device already found.';
       st.ui.statsBtn.textContent = st.viewStats ? 'Back' : 'Stats';
       st.ui.syncBtn.disabled = st.syncing || st.gathering;
@@ -39247,7 +39983,10 @@
       st.ui.gatherBtn.title = st.gathering
         ? 'Stop after the line end being walked now. Everything found so far is ' +
           'already stored.'
-        : 'Walk this course’s line ends and store every usable position, showing ' +
+        : 'Walk this course’s ' +
+          (uncoveredOn() ? 'positions for replies it never answers'
+            : 'line ends') +
+          ' and store every usable position, showing ' +
           'none of them — so a later storm starts instantly. Leave it running as ' +
           'long as you like; it saves as it goes.\nIt reads the Lichess opening ' +
           'explorer and the ChessDB analysis book, and says how many lookups it spent.';
@@ -39303,6 +40042,10 @@
       // overwrite.
       st.ui.sub.textContent = (st.name || '') +
         (st.lid && st.lidName ? ' › ' + st.lidName : '') +
+        // §19) …and WHICH GAP is being stormed, for the scope's own reason: it
+        // is part of what this session IS, and every card on screen is about
+        // to be described in its terms.
+        (uncoveredOn() ? ' › replies you don’t answer' : '') +
         // §17) …and which ROUND, for the same reason: the second pass is part
         // of what this session is, and it is the half that means something.
         (setModeOn() && st.round === 2 && !st.over ? ' › second pass' : '');
@@ -39406,7 +40149,8 @@
       }
       box.append(el('div', 'clo-st-sum-cost',
         st.cdbCount + ' ChessDB lookups · ' + st.seen.size + ' position(s) found on ' +
-        (st.poolSize - st.pool.length) + ' of ' + st.poolSize + ' line ends'));
+        (st.poolSize - st.pool.length) + ' of ' + st.poolSize +
+        (uncoveredOn() ? ' decision points' : ' line ends')));
       const again = el('button', 'clo-st-again', 'Storm again');
       again.type = 'button';
       again.addEventListener('click', () => stormAgain());
@@ -39509,13 +40253,14 @@
       return (ra - rb) || ((b.agg.n || 0) - (a.agg.n || 0));
     };
 
-    /** Every course with anything recorded — the "each repertoire" half. */
-    function statsCourseRows() {
+    /** Every course with anything recorded — the "each repertoire" half.
+     *  §19) …of ONE of the two records, named by the tab. */
+    function statsCourseRows(map) {
       const out = [];
       for (const bid of Object.keys(st.stats || {})) {
         const c = st.stats[bid];
-        if (!c || !c.lines) continue;
-        const lines = Object.keys(c.lines).map((oid) => c.lines[oid]);
+        if (!c || !c[map]) continue;
+        const lines = Object.keys(c[map]).map((oid) => c[map][oid]);
         const agg = stormStatRoll(lines);
         if (!agg.n) continue;
         out.push({ bid, name: c.name || ('Course ' + bid), agg, lines: lines.length });
@@ -39526,14 +40271,14 @@
 
     /** …and this course by chapter — or, where the chapters are not readable,
      *  one group holding every line. */
-    function statsChapterGroups() {
+    function statsChapterGroups(map) {
       const c = courseStats(false);
-      if (!c) return [];
+      if (!c || !c[map]) return [];
       const ch = (st.chapters && st.chapters.ch) || {};
       const cn = (st.chapters && st.chapters.cn) || {};
       const by = new Map();
-      for (const oid of Object.keys(c.lines)) {
-        const line = c.lines[oid];
+      for (const oid of Object.keys(c[map])) {
+        const line = c[map][oid];
         const agg = stormStatSum(line && line.dv);
         if (!agg.n) continue;
         const lid = ch[oid] || '';
@@ -39559,6 +40304,10 @@
 
     function renderStats() {
       if (!st.statsOpen) st.statsOpen = new Set();
+      const map = st.statsTab === 'ulines' ? 'ulines' : 'lines';
+      const unc = map === 'ulines';
+      st.ui.statsTabA.classList.toggle('clo-st-stattab--on', !unc);
+      st.ui.statsTabB.classList.toggle('clo-st-stattab--on', unc);
       const body = st.ui.statsBody;
       while (body.firstChild) body.removeChild(body.firstChild);
       const grouped = Boolean(st.chapters && Object.keys(st.chapters.ch || {}).length);
@@ -39572,11 +40321,14 @@
       st.ui.statsNote.textContent = st.statsNote;
       st.ui.statsNote.hidden = !st.statsNote;
 
-      const courses = statsCourseRows();
+      const courses = statsCourseRows(map);
       if (!courses.length) {
-        body.append(el('div', 'clo-st-stempty',
-          'Nothing recorded yet. Every position you answer in a storm is counted ' +
-          'against the line whose end it is one move past.'));
+        body.append(el('div', 'clo-st-stempty', unc
+          ? 'Nothing recorded yet on this source. Every position you answer after a ' +
+            'reply your course does not cover is counted against the line that ' +
+            'covers the position it was played at.'
+          : 'Nothing recorded yet. Every position you answer in a storm is counted ' +
+            'against the line whose end it is one move past.'));
         return;
       }
 
@@ -39585,11 +40337,11 @@
       for (const row of courses) {
         const r = statRow('div', row.bid === String(st.bid) ? 'clo-st-strow--here' : '',
           row.name, row.agg);
-        r.title = row.lines + ' line end(s) answered from';
+        r.title = row.lines + (unc ? ' line(s)' : ' line end(s)') + ' answered from';
         body.append(r);
       }
 
-      const groups = statsChapterGroups();
+      const groups = statsChapterGroups(map);
       if (!groups.length) return;
       body.append(el('div', 'clo-st-sthead',
         grouped ? 'This course, by chapter' : 'This course, line by line'));
@@ -39605,7 +40357,7 @@
           'Start again with every chapter of this course'));
         body.append(wide);
       }
-      body.append(statHeader(grouped ? 'Chapter' : 'Line end'));
+      body.append(statHeader(grouped ? 'Chapter' : (unc ? 'Line' : 'Line end')));
       for (const g of groups) {
         if (!grouped && !g.lid) {
           // Ungrouped: the "chapter" is every line, so print the lines
@@ -39616,7 +40368,8 @@
         const open = st.statsOpen.has(g.lid);
         const head = statRow('button', 'clo-st-strow--grp', (open ? '▾ ' : '▸ ') +
           (g.name || 'Not in a chapter'), g.agg);
-        head.title = g.rows.length + ' line end(s) — click to ' + (open ? 'fold' : 'list them');
+        head.title = g.rows.length + (unc ? ' line(s)' : ' line end(s)') +
+          ' — click to ' + (open ? 'fold' : 'list them');
         head.addEventListener('click', () => {
           if (st.statsOpen.has(g.lid)) st.statsOpen.delete(g.lid);
           else st.statsOpen.add(g.lid);
@@ -39657,6 +40410,10 @@
       if (!st.viewStats && st.card) return;
       st.viewStats = !st.viewStats;
       if (st.viewStats) {
+        // §19) Opens on the record for the source being stormed, which is the
+        // one the user is almost certainly asking about; the other is one
+        // click away and stays where they leave it for the rest of the view.
+        st.statsTab = uncoveredOn() ? 'ulines' : 'lines';
         // Both put section 18's board on the stage's slots, and the stats view
         // is what the stage makes way for.
         if (st.analysing) closeAnalyse();
@@ -39675,8 +40432,10 @@
       // §17) THE MODE RIDES ALONG WITH THE SCOPE, and for the same reason: both
       // are part of what the session the user just finished WAS, and "again"
       // means again.
+      // §19) …AND SO DOES THE SOURCE, for the mode's own reason: it is part
+      // of what the session just finished WAS, and "again" means again.
       const next = spec && spec.bid ? spec : { bid: st.bid, name: st.name,
-        lid: st.lid, lidName: st.lidName, mode: st.mode };
+        lid: st.lid, lidName: st.lidName, mode: st.mode, source: st.source };
       closeStorm();
       startSession(next);
     }
@@ -39821,14 +40580,22 @@
         // no longer the headline.
         row.append(el('span', 'clo-st-revrow-loss',
           typeof v.wp === 'number' ? (v.wp < 0.05 ? '0' : '−' + stormWp(v.wp)) : '?'));
+        const unc = item.card.storm.unc;
         row.title = (item.card.storm.from || '') +
+          // §19) WHICH REPLY the course does not answer, and how popular it is
+          // — the one thing a row of this source is read for that a frontier
+          // row has no equivalent of.
+          (unc ? ' · after ' + unc.san +
+            (typeof unc.share === 'number' ? ' (' + stormSharePct(unc.share) + ')' : '') +
+            ', which your course does not answer' : '') +
           (item.card.storm.cand.invented ? ' · invented continuation' : '') +
           // §14.19: how often anybody reaches the line end this came from. In
           // the TOOLTIP and not a column — it says nothing about the position
           // or the answer, so it must not compete with the four things this row
           // is read for.
           (typeof item.card.storm.games === 'number'
-            ? ' · ' + stormReachLabel(item.card.storm.games) : '') +
+            ? ' · ' + stormReachLabel(item.card.storm.games,
+              unc ? 'play that reply' : undefined) : '') +
           (typeof v.loss === 'number' ? ' · ' + v.loss + 'cp' : '') +
           // §17) …and how the SET resolved it, which is the one thing a set's
           // review knows that a storm's does not. In the tooltip rather than a
