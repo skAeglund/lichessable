@@ -3450,7 +3450,16 @@ body {
                    reads as two different buttons. -->
               <button type="button" class="clo-st-start" disabled>Finding a position&hellip;</button>
               <button type="button" class="clo-st-gather">Gather positions</button>
+              <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
+                   Gather and deliberately not its green: green outline in this row is
+                   an ordinary ACTION, and this one starts nothing &mdash; it says whether a
+                   thing already happening may go on. Its LABEL carries the state, so it
+                   needs no fill and no modifier class. -->
+              <button type="button" class="clo-st-sync clo-st-bgbtn">Background: on</button>
               <button type="button" class="clo-st-sync">Sync</button>
+              <!-- &sect;15.4) NEUTRAL, beside Sync and for the same reason: it is the
+                   action away from both storming and gathering. -->
+              <button type="button" class="clo-st-sync clo-st-statsbtn">Stats</button>
             </div>
             <div class="clo-st-stage hx-slots">
               <div class="clo-st-slot clo-st-slot--board" data-hx-slot="no board until Start"></div>
@@ -3489,7 +3498,16 @@ body {
                    only one of them is the storm. -->
               <button type="button" class="clo-st-start">Start</button>
               <button type="button" class="clo-st-gather">Gather positions</button>
+              <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
+                   Gather and deliberately not its green: green outline in this row is
+                   an ordinary ACTION, and this one starts nothing &mdash; it says whether a
+                   thing already happening may go on. Its LABEL carries the state, so it
+                   needs no fill and no modifier class. -->
+              <button type="button" class="clo-st-sync clo-st-bgbtn">Background: on</button>
               <button type="button" class="clo-st-sync">Sync</button>
+              <!-- &sect;15.4) NEUTRAL, beside Sync and for the same reason: it is the
+                   action away from both storming and gathering. -->
+              <button type="button" class="clo-st-sync clo-st-statsbtn">Stats</button>
             </div>
             <div class="clo-st-stage hx-slots">
               <div class="clo-st-slot clo-st-slot--board" data-hx-slot="no board until Start"></div>
@@ -3540,7 +3558,16 @@ body {
               <!-- It fills only while RUNNING, which is the one moment it IS the
                    thing happening. -->
               <button type="button" class="clo-st-gather clo-st-gather--on">Stop gathering</button>
+              <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
+                   Gather and deliberately not its green: green outline in this row is
+                   an ordinary ACTION, and this one starts nothing &mdash; it says whether a
+                   thing already happening may go on. Its LABEL carries the state, so it
+                   needs no fill and no modifier class. -->
+              <button type="button" class="clo-st-sync clo-st-bgbtn">Background: on</button>
               <button type="button" class="clo-st-sync">Sync</button>
+              <!-- &sect;15.4) NEUTRAL, beside Sync and for the same reason: it is the
+                   action away from both storming and gathering. -->
+              <button type="button" class="clo-st-sync clo-st-statsbtn">Stats</button>
             </div>
           </div>
         </div>
@@ -3576,7 +3603,16 @@ body {
               <span class="clo-st-ready">41 position(s) ready</span>
               <button type="button" class="clo-st-start">Start</button>
               <button type="button" class="clo-st-gather">Gather positions</button>
+              <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
+                   Gather and deliberately not its green: green outline in this row is
+                   an ordinary ACTION, and this one starts nothing &mdash; it says whether a
+                   thing already happening may go on. Its LABEL carries the state, so it
+                   needs no fill and no modifier class. -->
+              <button type="button" class="clo-st-sync clo-st-bgbtn">Background: on</button>
               <button type="button" class="clo-st-sync">Sync</button>
+              <!-- &sect;15.4) NEUTRAL, beside Sync and for the same reason: it is the
+                   action away from both storming and gathering. -->
+              <button type="button" class="clo-st-sync clo-st-statsbtn">Stats</button>
             </div>
           </div>
         </div>
@@ -3614,7 +3650,12 @@ body {
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">31 position(s) ready</span>
               <button type="button" class="clo-st-gather clo-st-gather--on">Stop gathering</button>
+              <!-- &sect;14.24) left ENABLED mid-gather, unlike the selectors beside it:
+                   those describe the pass now running, and this is a standing
+                   preference for what happens when it is over. -->
+              <button type="button" class="clo-st-sync clo-st-bgbtn">Background: on</button>
               <button type="button" class="clo-st-sync" disabled>Sync</button>
+              <button type="button" class="clo-st-sync clo-st-statsbtn">Stats</button>
             </div>
             <div class="clo-st-stage hx-slots">
               <div class="clo-st-slot clo-st-slot--board" data-hx-slot="section 18's board"></div>
@@ -3745,6 +3786,13 @@ body {
           <div class="clo-cr-prompt clo-cr-prompt--bad">Re1 &middot; #6 of 31 &middot; 13% of the game</div>
           <div class="clo-cr-progress">Play it again &mdash; 2 attempts left, then the move is shown</div>
           <div class="clo-cr-actions">
+            <!-- v0.151.0: ANALYSE is offered wherever a position is being played
+                 AGAIN, blind hold included. It reveals FIRST (&sect;17's own rule: the
+                 board arrives with the engine and the database beside it, both of
+                 which name the move within a second), so it costs the reveal and
+                 says so in its tooltip. It is `browseBtn`, which in this mode has
+                 never been anything else &mdash; there is no line to navigate. -->
+            <button type="button" class="clo-cr-btn">Analyse</button>
             <button type="button" class="clo-cr-btn">Show the move</button>
             <button type="button" class="clo-cr-btn">Try again (2)</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">End set</button>
@@ -3758,6 +3806,7 @@ body {
           <div class="clo-cr-prompt clo-cr-prompt--bad">h3 &middot; #9 of 31 &middot; 24% of the game</div>
           <div class="clo-cr-progress">No attempts left &mdash; show the move to move on</div>
           <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Analyse</button>
             <button type="button" class="clo-cr-btn">Show the move</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">End set</button>
           </div>
@@ -3771,9 +3820,52 @@ body {
           <div class="clo-cr-progress clo-cdb--est">best Bb5 +0.32 &middot; 54%&nbsp;&nbsp; Re1 &minus;0.55 &middot; 47%&nbsp;&nbsp;
             &middot; ChessDB&rsquo;s ranking here</div>
           <div class="clo-cr-actions">
+            <!-- v0.151.0: "Show the move" is spent and HIDDEN; Analyse is the same
+                 button it was before the reveal, so it does not move under the
+                 pointer as the state changes. -->
             <button type="button" class="clo-cr-btn">Analyse</button>
             <button type="button" class="clo-cr-btn">Next position</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">End set</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>The panel in a REVIEW RETRY (&sect;14.10b)</h3>
+      <p>The same board and the same three grading tiers, with the clock already
+        stopped &mdash; so every word changes: the title says which, the progress line
+        says <em>nothing is scored</em>, and Skip becomes <em>Try another move</em>.</p>
+      <p><strong>v0.151.0:</strong> and Analyse is here now. It is the one state that
+        most wants a board with the engine and the database on it &mdash; a position you
+        are still trying to work out &mdash; and until this it was the one state that
+        could not reach one without first going back to a list. It is
+        <code>browseBtn</code>, which in this mode has never been anything else, and
+        <code>stormApi.analyse()</code> is what decides which board opens: the review
+        row here, a held card in a set.</p>
+      <div class="hx-stage" style="display:flex;flex-direction:column;gap:12px;align-items:flex-start">
+        <!-- Asking. Skip is HIDDEN until there is a verdict: there is nothing to
+             put back before a move has been played. -->
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Try this one again</div>
+          <div class="clo-cr-prompt">White to play</div>
+          <div class="clo-cr-progress">Caro-Kann, Advance &middot; 3 moves past the line
+            &middot; nothing is scored</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Analyse</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Back to the review</button>
+          </div>
+        </div>
+        <!-- Answered. -->
+        <div class="clo-cr-panel hx-pos" style="width:300px">
+          <div class="clo-cr-title">Good move</div>
+          <div class="clo-cr-prompt clo-cr-prompt--ok">Bb5 &middot; #2 of 31 &middot; 3% of the game</div>
+          <div class="clo-cr-progress clo-cdb--est">best Nf3 +0.41 &middot; 56%&nbsp;&nbsp;
+            Bb5 +0.28 &middot; 53%&nbsp;&nbsp; &middot; ChessDB&rsquo;s ranking here</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn">Analyse</button>
+            <button type="button" class="clo-cr-btn">Try another move</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Back to the review</button>
           </div>
         </div>
       </div>
@@ -3822,7 +3914,16 @@ body {
               <!-- &sect;14.12. NEUTRAL, per DESIGN-ui-inventory &sect;3: the action away
                    from both of the others &mdash; you neither storm nor gather by
                    pressing it. -->
+              <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
+                   Gather and deliberately not its green: green outline in this row is
+                   an ordinary ACTION, and this one starts nothing &mdash; it says whether a
+                   thing already happening may go on. Its LABEL carries the state, so it
+                   needs no fill and no modifier class. -->
+              <button type="button" class="clo-st-sync clo-st-bgbtn">Background: on</button>
               <button type="button" class="clo-st-sync">Sync</button>
+              <!-- &sect;15.4) NEUTRAL, beside Sync and for the same reason: it is the
+                   action away from both storming and gathering. -->
+              <button type="button" class="clo-st-sync clo-st-statsbtn">Stats</button>
             </div>
             <div class="clo-st-review">
               <!-- The GREEN arrow is the best move, the RED one is what was
@@ -3978,6 +4079,12 @@ body {
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">19 position(s) ready</span>
               <button type="button" class="clo-st-gather">Gather positions</button>
+              <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
+                   Gather and deliberately not its green: green outline in this row is
+                   an ordinary ACTION, and this one starts nothing &mdash; it says whether a
+                   thing already happening may go on. Its LABEL carries the state, so it
+                   needs no fill and no modifier class. -->
+              <button type="button" class="clo-st-sync clo-st-bgbtn">Background: on</button>
               <button type="button" class="clo-st-sync">Sync</button>
               <!-- NEUTRAL, beside Sync and for the same reason: the action away from
                    both storming and gathering. Reads "Back" while the table is up. -->

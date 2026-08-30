@@ -1744,6 +1744,23 @@
       // (§8.2). It costs none until somebody measures that it should.
       missPenaltyMs: 0,
       verdictMs: 2600,   // how long the verdict line stays before the next card
+      // …AND HOW LONG IT STAYS WHEN THERE IS NOTHING TO READ (v0.151.0). The
+      // pause exists for the SECOND line, `stormBestLine`: the move that should
+      // have been played, how much the one played gave up, and which tier said
+      // so. After an answer that SCORED there is no such line to take in — the
+      // move was the move — so 2.6 s of it is dead time in an exercise whose
+      // whole point is rhythm.
+      //
+      // THE TEST IS THE SIGN OF THE POINTS, never a list of verdict names —
+      // §16's rule for the streak, applied to the pacing, so a sixth band added
+      // later cannot be forgotten here. In a SET, which scores nothing, the
+      // equivalent question is `stormSetClean`: an answer good enough to move
+      // past is the only one that reaches the timer at all.
+      //
+      // Not zero, and not `verdictMs / 2` for the sake of a tidy relation: a
+      // verdict that flashes is a verdict nobody sees, and "Great move · +2"
+      // with a streak on it is worth the beat it takes to read.
+      verdictFastMs: 1200,
       lowTimeMs: 30000,  // the clock goes amber under this
       tickMs: 200,       // the clock's own repaint
 
@@ -1752,13 +1769,16 @@
       // storm asks "what do you play in four seconds"; the set asks "can you
       // still not find this one", and refuses to move on until you can.
       //
-      // ITS UNIT IS A POSITION CLEARED, NOT A POSITION SHOWN, which is what
-      // makes a size here mean something a session length never could: twelve
-      // is one storm's worth of material (§8.2's "a 3-minute storm answers
-      // about a dozen"), so the two modes spend the store at the same rate and
-      // `queueTarget`, `maxPositions` and `cdbMaxPerSession` all need no
-      // second value.
-      setSize: 12,
+      // ITS UNIT IS A POSITION CLEARED, NOT A POSITION SHOWN, and that is what
+      // makes the number here mean something a session length never could — and
+      // also why it is SMALLER than a storm's dozen (v0.151.0, the author's own
+      // call). A storm's twelve are twelve positions SHOWN; six here are six
+      // positions CLEARED, each of which may take three attempts, a reveal and
+      // a second pass — so six is already the longer sitting of the two, and
+      // twelve was a set most people would abandon rather than finish. Nothing
+      // is derived from it: `queueTarget`, `maxPositions` and `cdbMaxPerSession`
+      // all sit above what either mode reaches.
+      setSize: 6,
       // HOW MANY BLIND ATTEMPTS BEFORE THE ANSWER OPENS. Not a difficulty
       // dial: with ~30 legal moves and a first grading tier that costs no
       // request at all (§3.4), unlimited hidden retries can be SEARCHED rather
@@ -1907,6 +1927,41 @@
       // by pressing a button that says so.
       gatherMaxCdb: 4000,
       gatherTarget: 200,   // …and it stops here, or when the pool runs out
+
+      // --- §14.24) THE BACKGROUND TOP-UP -----------------------------------
+      // The gather pass is the burst you ASK for and then watch: it ends the
+      // session, clears the board, owns the pool and reports a funnel. This is
+      // the other half — the same walk, one line end at a time, run in the
+      // DEAD TIME this window already has, which is most of the time it is open:
+      // the pre-roll, the pause after a verdict, a held set card being thought
+      // about, and the whole review afterwards.
+      //
+      // WHY IT IS SAFE WHERE THE GATHER PASS IS NOT. Three rules, and all three
+      // are in `backfillOk()` rather than here:
+      //   * it never runs while the user is SOLVING or while a grade is in
+      //     flight, so it competes with nothing the user is waiting on (the
+      //     ChessDB pacer is shared, and a grade is up to three round trips);
+      //   * during a started session it runs only while the queue is already at
+      //     `queueTarget`, so it can never take a frontier the producer is
+      //     about to need — everything it finds goes into the STORE, which
+      //     `produceFromStore` draws from first;
+      //   * it marks nothing `seen`, so a position it finds this minute is one
+      //     this session can still be dealt.
+      //
+      // IT IS NOT FREE, which is why it is bounded and can be switched off. It
+      // spends ChessDB's volunteer compute and Lichess's bandwidth, and a
+      // window left open all evening would otherwise walk a whole course
+      // without anybody deciding to. `backfillMaxCdb` is per WINDOW, not per
+      // pass, and `backfillStore` is the real stop: once a course has that many
+      // positions ready, no session is waiting on anything and there is nothing
+      // left to buy.
+      backfillKey: 'cloStormBackfill',   // storage.local, absent = ON
+      backfillMaxCdb: 1200,  // …per open window, whatever the session does
+      backfillStore: 60,     // …and it stands down once this many are ready
+      // A beat between line ends, so a window sitting idle is a trickle rather
+      // than a flood, and so `backfillOk()` is re-asked often enough that a
+      // press of Start is never waiting on a walk that has just begun.
+      backfillGapMs: 1500,
 
       // --- carrying the store between devices (§14.12) ----------------------
       // Section 16e's transport, for a second payload: an informational card in
@@ -22524,7 +22579,22 @@
       // resting label a state that returns before then shows an empty button.
       browseBtn.textContent = 'Navigate';
       browseBtn.title = 'Step through this line instead of being asked for it';
-      browseBtn.addEventListener('click', (e) => { setBrowse(!cr.browse); blurButton(e); });
+      browseBtn.addEventListener('click', (e) => {
+        // §17/§14.10b) IN A STORM THIS BUTTON IS "ANALYSE", and it is this one
+        // rather than a fifth because in that mode it has never been anything:
+        // `syncStormUi` has hidden it since the mode existed, there being no
+        // line to navigate. Section 27 owns every piece of state involved — a
+        // held set card, or a review row being played again — so it decides
+        // which position the board opens on; this side only knows that the user
+        // asked for one.
+        if (cr.mode === 'storm') {
+          if (stormApi) stormApi.analyse();
+          blurButton(e);
+          return;
+        }
+        setBrowse(!cr.browse);
+        blurButton(e);
+      });
 
       const hint = document.createElement('button');
       hint.type = 'button';
@@ -22533,13 +22603,15 @@
       hint.title = 'Show the move this line plays here';
       hint.addEventListener('click', () => {
         // §17) IN A HELD SET CARD THIS BUTTON IS THE OTHER DOOR — "show me the
-        // move", and once the move is out, "analyse it". Both belong to section
-        // 27, which owns the hold; `cr.busy` is true throughout a hold (the
-        // refused move is still on the board), so the guard below has to be
-        // reached only after this.
+        // move". It USED to carry the analysis board as well, once the move was
+        // out; that moved to `browseBtn` in v0.151.0, because analysing is now
+        // offered wherever a position is being played AGAIN and not only after
+        // a reveal, and one button that means two things depending on a flag
+        // the user cannot see is exactly what that change was for. Section 27
+        // owns the hold; `cr.busy` is true throughout one (the refused move is
+        // still on the board), so this has to be reached before the guard below.
         if (cr.mode === 'storm' && cr.stormHold && stormApi) {
-          if (cr.stormHold.revealed) stormApi.analyse();
-          else stormApi.reveal();
+          stormApi.reveal();
           return;
         }
         if (cr.busy) return;
@@ -23149,21 +23221,46 @@
       // pass on, so the button appears once a verdict is up and puts the
       // position back for another move — the one thing a review board can offer
       // that a timed card cannot.
-      cr.ui.browseBtn.hidden = true;
-      // §17) THE TWO DOORS OUT OF A MISTAKE, on the two buttons this panel
-      // already has. Before the reveal they are "try again" and "show me"; once
-      // the move is out they are "next" and "analyse", which are the only two
-      // things left to do with a position whose answer is known.
-      if (hold) {
-        const blind = !hold.revealed;
-        cr.ui.hint.hidden = false;
-        cr.ui.hint.disabled = false;
-        cr.ui.hint.textContent = blind ? 'Show the move' : 'Analyse';
-        cr.ui.hint.title = blind
-          ? 'Give up on this one and see the best move. It still has to be cleared, ' +
-            'and it comes back in the second pass.'
+      // §17/§14.10b) ANALYSE — OFFERED WHEREVER A POSITION IS BEING PLAYED
+      // AGAIN (v0.151.0), which is exactly two states and both of them are
+      // section 27's: a HELD set card, and a review row put back on the board
+      // by "Try again". It used to be reachable only after a reveal, so the one
+      // state most in need of it — a mistake you are still trying to fix, with
+      // the engine and the database one press away — was the one that could not
+      // reach it without first going back to a list.
+      //
+      // A BLIND HOLD GETS IT TOO, and the reveal that costs is not skipped:
+      // `setAnalyse` reveals FIRST, on §17's own rule that the board arrives
+      // with two things beside it that name the move within a second, so
+      // "analyse blind" is not a state that exists and the honest version is to
+      // make the reveal explicit and counted.
+      //
+      // NEVER during a live timed card: the panel then holds a question, and a
+      // database whose top row is the answer is section 20's rule, not a
+      // convenience to weigh up.
+      const canAnalyse = Boolean(hold) || retry;
+      cr.ui.browseBtn.hidden = !canAnalyse;
+      if (canAnalyse) {
+        cr.ui.browseBtn.textContent = 'Analyse';
+        cr.ui.browseBtn.title = (hold && !hold.revealed)
+          ? 'Show the best move and open the analysis board here — play it out, ' +
+            'with the engine and the database beside it. It counts as shown, and ' +
+            'the position comes back in the second pass.'
           : 'Open the analysis board here — play it out, with the engine and the ' +
             'database beside it.';
+      }
+      // §17) THE TWO DOORS OUT OF A MISTAKE, on the two buttons this panel
+      // already has. Before the reveal they are "try again" and "show me"; once
+      // the move is out the second is spent and only "next" is left — analysing
+      // having moved to the button above, where it is reachable from both.
+      if (hold) {
+        const blind = !hold.revealed;
+        cr.ui.hint.hidden = !blind;
+        cr.ui.hint.disabled = false;
+        cr.ui.hint.textContent = 'Show the move';
+        cr.ui.hint.title =
+          'Give up on this one and see the best move. It still has to be cleared, ' +
+          'and it comes back in the second pass.';
         // Hidden rather than disabled once the attempts are spent: a button
         // that cannot be pressed and says how many tries are left is two
         // messages where the line above already carries one.
@@ -34496,6 +34593,19 @@
       syncNote: '',       // one line: what the exchange did, or why it could not
       lastPull: 0,
       gathered: 0,        // positions it has added
+      // --- §14.24) the BACKGROUND top-up ------------------------------------
+      // Its own everything, deliberately: sharing the gather pass's flag would
+      // make `tick`, `nextCard` and `syncSettings` all treat a quiet trickle as
+      // the loud burst, and sharing its request counter would let a background
+      // walk exhaust the SESSION's budget and end it with "out of positions".
+      backfillOn: true,   // the user's setting; absent from storage = on
+      backfilling: false, // a background walk is in flight right now
+      backfillCdb: 0,     // …and what it has spent, per open WINDOW
+      backfillStored: 0,  // …and what that bought, for the line that says so
+      backfillAt: 0,      // when the last one finished, for `backfillGapMs`
+      backfillDone: false, // nothing left to walk, or the budget is spent
+      backfillBid: '',    // …and the course it began on, which is what stops a
+                          // walk outliving its window writing into another's store
       // §14.17: what the pass DID, not just what it kept. Null outside a pass —
       // every counter goes through `stormFunnelBump`, which is null-safe, so
       // the producer needs no branch of its own.
@@ -34553,13 +34663,25 @@
       st.mode = (m === 'set') ? 'set' : 'storm';
     }
 
+    /** §14.24) OPT-OUT, the `cloLineHeadsUp` shape: absent means ON, and only
+     *  an explicit `false` is ever stored. The pass costs the user nothing they
+     *  can feel and buys them a storm that starts instantly, so ON is the right
+     *  default — but it does spend a volunteer network's compute, so it must be
+     *  switchable off in the window it runs from and not only from a page the
+     *  user would have to go and find. */
+    function applyBackfill(v) {
+      st.backfillOn = (v !== false);
+    }
+
     (async () => {
       try {
-        const got = await chrome.storage.local.get([C.minPlyKey, C.maxPlyKey, C.setModeKey]);
+        const got = await chrome.storage.local.get(
+          [C.minPlyKey, C.maxPlyKey, C.setModeKey, C.backfillKey]);
         applyPlyRange(
           Object.prototype.hasOwnProperty.call(got, C.minPlyKey) ? got[C.minPlyKey] : C.minPly,
           Object.prototype.hasOwnProperty.call(got, C.maxPlyKey) ? got[C.maxPlyKey] : C.maxPly);
         applyStormMode(got[C.setModeKey]);
+        applyBackfill(got[C.backfillKey]);
         syncSettings();
       } catch (err) {
         // An orphaned content script, or a profile with no storage: the
@@ -36075,8 +36197,20 @@
      *  user has already answered it well (§14.16). This is the one write into
      *  the store, so it is where the retirement rule belongs; `harvestCandidates`
      *  asks the same question again about OFFERING, which is a different one. */
-    function storeAdd(cand, f) {
+    function storeAdd(cand, f, storeOnly) {
       if (!st.store) return false;
+      // §14.24) A BACKGROUND WALK OUTLIVES THE WINDOW THAT STARTED IT by up to
+      // one line end — `harvestFrontier` breaks on `!st.running`, but only
+      // between games — and in that gap the storm can already have been
+      // reopened on ANOTHER course, whose slice `st.store` now is. A position
+      // from the old course written into it would be silent and permanent, so
+      // the pass carries the bid it began on and this is where it is checked.
+      //
+      // `storeOnly`, never `st.backfilling`, for `harvestCandidates`'s reason:
+      // read off the flag, this would refuse the NEW session's own producer
+      // while an old window's walk was still in flight — which is a position
+      // found and silently not stored.
+      if (storeOnly && st.backfillBid && st.backfillBid !== st.bid) return false;
       const ck = cacheKey(cand.fen);
       if (st.store[ck]) return false;
       if (stormDone(st.gone, ck, C, Date.now())) return false;
@@ -36298,17 +36432,42 @@
     async function askCdb(fen) {
       const ck = cacheKey(fen);
       if (st.cdb.has(ck)) return st.cdb.get(ck);
-      // The gather pass has a ceiling of its own, far above a session's: it is
-      // the burst the user asked for by name, where a session's is the one they
-      // did not.
-      const cap = st.gathering ? C.gatherMaxCdb : C.cdbMaxPerSession;
-      if (st.cdbCount >= cap) {
-        if (!st.exhausted) log('storm: ChessDB request cap reached —', st.cdbCount);
-        st.exhausted = true;
-        return null;
+      // §14.24) THE BACKGROUND PASS COUNTS SEPARATELY, and that is not
+      // book-keeping: `st.exhausted` is what ends a session with "out of
+      // positions", so a background walk allowed to reach the SESSION's cap
+      // would end the session the user is in the middle of — over requests they
+      // never asked for. It still adds to `st.cdbCount`, which is the honest
+      // total the summary prints.
+      //
+      // THIS ONE IS THE FLAG, deliberately, where `harvestCandidates` and
+      // `storeAdd` take an argument: threading a parameter down through
+      // `askGames` and `askPgn` as well buys only the overlap case, and there
+      // the flag fails SAFE both ways — a producer's request charged to the
+      // background budget makes the background pass stand down early, and a
+      // background request not counted against the session's cap costs a walk
+      // the pool would have ended anyway.
+      if (st.backfilling) {
+        if (st.backfillCdb >= C.backfillMaxCdb) {
+          if (!st.backfillDone) {
+            log('storm: background top-up has spent its budget —', st.backfillCdb);
+          }
+          st.backfillDone = true;
+          return null;
+        }
+      } else {
+        // The gather pass has a ceiling of its own, far above a session's: it is
+        // the burst the user asked for by name, where a session's is the one they
+        // did not.
+        const cap = st.gathering ? C.gatherMaxCdb : C.cdbMaxPerSession;
+        if (st.cdbCount >= cap) {
+          if (!st.exhausted) log('storm: ChessDB request cap reached —', st.cdbCount);
+          st.exhausted = true;
+          return null;
+        }
       }
       await pace('lastCdbAt', C.cdbGapMs);
       st.cdbCount++;
+      if (st.backfilling) st.backfillCdb++;
       let scored = null;
       try {
         const d = await fetchChessdb(fen, true);
@@ -36776,7 +36935,7 @@
     }
 
     /** Everything one frontier yields, or [] when it yields nothing. */
-    async function harvestFrontier(f) {
+    async function harvestFrontier(f, storeOnly) {
       // STAGE 0'S EVAL BAND (§7). One `queryall`, before any game is fetched:
       // it rejects a whole LINE for one request instead of discovering the same
       // fact 11-29 requests later, and a course variation ends where the author
@@ -36828,7 +36987,7 @@
         stormFunnelWhy(fn, 'stops', walked.stop);
         log('storm: no games at', f.names[0], '— invented a line,', walked.out.length,
           'position(s) considered (' + walked.stop + ')');
-        return harvestCandidates(walked.out, f);
+        return harvestCandidates(walked.out, f, storeOnly);
       }
 
       const cards = [];
@@ -36840,9 +36999,17 @@
       // …and MORE of them on a gather pass (v0.143.0): that pass has ten times
       // the request budget and nobody waiting on it, which is the whole
       // difference between the two numbers.
-      const want = st.gathering ? C.gatherGamesPerFrontier : C.gamesPerFrontier;
+      //
+      // §14.24) …and a BACKGROUND pass takes the gather's number for the same
+      // reason: nobody is waiting on it either. Read off the ARGUMENT and never
+      // off `st.backfilling` — see `harvestCandidates`.
+      const want = (st.gathering || storeOnly)
+        ? C.gatherGamesPerFrontier : C.gamesPerFrontier;
       for (const g of stormPickGames(games, want, Math.random)) {
-        if (!st.running || st.over) break;
+        // §14.24) `st.over` IS TRUE FOR THE WHOLE REVIEW, which is the longest
+        // stretch a window is open and the one the background pass exists for —
+        // so it stops a session's producer, as it must, and never this.
+        if (!st.running || (st.over && !storeOnly)) break;
         const sans = await askPgn(g.id, st.mastersOnly);
         if (!sans) { stormFunnelBump(fn, 'gamesFailed'); continue; }
         const walked = await stormWalkGame(
@@ -36853,7 +37020,7 @@
         if (!walked.found) { stormFunnelBump(fn, 'gamesFailed'); continue; }
         stormFunnelBump(fn, 'games');
         stormFunnelWhy(fn, 'stops', walked.stop);
-        for (const card of harvestCandidates(walked.out, f)) cards.push(card);
+        for (const card of harvestCandidates(walked.out, f, storeOnly)) cards.push(card);
       }
       return cards;
     }
@@ -36862,7 +37029,7 @@
      *  the eleven requests each one cost are paid once and not once per
      *  session (§14.11). A gather pass takes the same path and simply never
      *  reads the cards back. */
-    function harvestCandidates(cands, f) {
+    function harvestCandidates(cands, f, storeOnly) {
       const cards = [];
       const fn = st.funnel;
       for (const cand of cands) {
@@ -36886,12 +37053,34 @@
           stormFunnelBump(fn, 'retired');
           continue;
         }
-        if (storeAdd(cand, f)) {
+        if (storeAdd(cand, f, storeOnly)) {
           st.gathered++;
+          // §14.24) Counted HERE rather than diffed around the walk, and for the
+          // third time for the same reason: the producer shares this function
+          // and can be running, so a diff would credit its finds to the
+          // background pass. This number is only a tooltip, but a tooltip that
+          // is wrong is worse than one that is absent.
+          if (storeOnly) st.backfillStored++;
           stormFunnelBump(fn, 'stored');
         } else {
           stormFunnelBump(fn, 'dup');
         }
+        // §14.24) A BACKGROUND PASS WANTS THE STORE FILLED AND NOTHING ELSE,
+        // and it stops HERE rather than at the top of the loop: the store write
+        // above is the whole point of it, and the four funnel counters have all
+        // fired, so §14.17's conservation is untouched. Marking `seen` is what
+        // it must not do — that set is exactly what `produceFromStore` filters
+        // on, so a background find would put a position in the store and in the
+        // same breath make this session unable to draw it.
+        //
+        // AN ARGUMENT, NEVER `st.backfilling`. This function is SHARED with the
+        // producer, and the two really can overlap: `backfillOk()` refuses while
+        // `st.producing`, but a background walk is a sequence of awaits and
+        // `showCard` starts a producer inside one. Read off the flag, the
+        // producer's own harvest would then return NO cards while a background
+        // pass happened to be in flight — and, finding none, would go on drawing
+        // frontiers until the pool was gone. Per call, that cannot arise.
+        if (storeOnly) continue;
         // DEDUPE BY POSITION (§6.4): the same position really does arrive from
         // two different games in one run, and a storm that shows a position
         // twice is a storm that looks broken. `st.seen` is per SESSION and
@@ -37555,6 +37744,89 @@
       }
     }
 
+    // --- §14.24) the background top-up --------------------------------------
+    //
+    // The same `harvestFrontier` again — a third walk written for this would be
+    // a third set of pick rules to disagree with the other two — run one line
+    // end at a time in the window's dead time. It shows nothing, says one quiet
+    // word in the settings row, and yields to everything.
+    // ----------------------------------------------------------------------
+
+    /**
+     * MAY A BACKGROUND WALK RUN RIGHT NOW? Asked before every line end, so a
+     * pass in flight stops at the first one after the answer turns false.
+     *
+     * Every clause is a way this could cost the user something:
+     *  - `backfillOn` is theirs, and this spends a volunteer network's compute.
+     *  - the gather pass and the producer both own the pool while they run.
+     *  - `solving()` is the user being asked a question, and `st.grading` is up
+     *    to three ChessDB round trips they are waiting on; the pacer is shared,
+     *    so either would be slowed by a walk running underneath it.
+     *  - the QUEUE clause is what stops it taking a frontier the producer is
+     *    about to need. Before Start and after the session there is no producer
+     *    to starve; during one, a queue at `queueTarget` means the producer has
+     *    stopped of its own accord and the pool is genuinely spare.
+     */
+    function backfillOk() {
+      if (!st.backfillOn || !st.running || !st.bid) return false;
+      if (st.backfilling || st.gathering || st.producing) return false;
+      if (st.backfillDone || st.grading) return false;
+      if (solving()) return false;
+      if (st.backfillCdb >= C.backfillMaxCdb) return false;
+      if (!st.store || storeCount() >= C.backfillStore) return false;
+      if (!st.pool || !st.pool.length) return false;
+      if (Date.now() - st.backfillAt < C.backfillGapMs) return false;
+      // Not started, or over: no producer exists, so the pool is nobody else's.
+      if (!st.started || st.over) return true;
+      return st.queue.length >= C.queueTarget;
+    }
+
+    /** ONE line end, then back to the tick. Deliberately not a loop of its own:
+     *  the tick re-asks `backfillOk()` every `pollMs`, which is how a press of
+     *  Start, a card appearing or a grade beginning gets its bandwidth back
+     *  within one line end rather than at the end of a burst. */
+    async function backfill() {
+      if (!backfillOk()) return;
+      const f = stormDrawFrontier(st.pool, Math.random);
+      if (!f) {
+        // The pool is spent. Nothing more can be found without re-reading the
+        // course, which is `startSession`'s job and not this pass's.
+        st.backfillDone = true;
+        return;
+      }
+      st.backfilling = true;
+      st.backfillBid = st.bid;
+      const before = st.backfillStored;
+      syncSettings();
+      try {
+        await harvestFrontier(f, true);
+      } catch (err) {
+        // Fails soft and fails QUIET: nobody asked for this pass, so an
+        // explorer hiccup in it must not put a sentence over the review the
+        // user is reading. It stands down for the rest of the window instead.
+        warn('storm: the background top-up stopped:', err);
+        st.backfillDone = true;
+      } finally {
+        st.backfilling = false;
+        st.backfillAt = Date.now();
+        if (st.backfillStored > before) {
+          // Written as it goes, exactly as the gather pass does and for the
+          // same reason: a closed tab must not throw the work away.
+          saveStore();
+          // §14.13's rule, in its third home: anything that fills the store
+          // behind a `storeDraw()` that has already happened must feed the
+          // session it landed in. Re-drawing the whole store is safe and is the
+          // point — every key already queued is in `st.seen`, which is what
+          // `produceFromStore` filters on.
+          if (!st.over) {
+            st.storeQueue = storeDraw();
+            produceFromStore();
+          }
+        }
+        render();
+      }
+    }
+
     function stopGather() {
       if (!st.gathering) return;
       st.gathering = false; // the loop reads this and falls out of its `while`
@@ -37613,7 +37885,18 @@
       retry() { setRetryHold(); },
       reveal() { setReveal(); },
       advance() { setAdvance(); },
-      analyse() { setAnalyse(); },
+      /** §17/§14.10b) SECTION 19's BOARD, on whichever position is being played
+       *  again — and the dispatch is HERE rather than in section 18 because
+       *  which one that is is entirely this module's state. A review RETRY is
+       *  `toggleAnalyse`, which ends the retry and opens the same board on the
+       *  same row (the two are exclusive, both wanting the stage's slots); a
+       *  held SET card is `setAnalyse`, which reveals first. Both are no-ops in
+       *  any other state, which is what lets that panel route a press without
+       *  knowing which one the session is in. */
+      analyse() {
+        if (st.retry) { toggleAnalyse(); return; }
+        setAnalyse();
+      },
     };
 
     async function startSession(spec) {
@@ -37674,6 +37957,15 @@
       st.mastersOnly = false;
       st.cdb = new Map();
       st.cdbCount = 0;
+      // §14.24) THE BACKGROUND BUDGET IS PER WINDOW, and this is the window
+      // opening. `backfilling` is deliberately NOT cleared here: a walk from
+      // the last window can still be in flight, its own `finally` is what ends
+      // it, and clearing the flag would take the `storeAdd` guard above off it
+      // at exactly the moment it is needed.
+      st.backfillCdb = 0;
+      st.backfillStored = 0;
+      st.backfillDone = false;
+      st.backfillAt = 0;
       st.pgn = new Map();
       st.endsAt = 0;
       st.viewStats = false;
@@ -38158,7 +38450,11 @@
       if (continuationStormApi) continuationStormApi.verdict(v);
       render();
       clearTimeout(st.nextTimer);
-      st.nextTimer = setTimeout(() => { st.nextTimer = 0; nextCard(); }, C.verdictMs);
+      // A move that SCORED has nothing under it to read (see `verdictFastMs`),
+      // so it goes on quickly; one that cost points has a best move, a loss and
+      // a source line, and gets the full pause.
+      st.nextTimer = setTimeout(() => { st.nextTimer = 0; nextCard(); },
+        earned > 0 ? C.verdictFastMs : C.verdictMs);
     }
 
     // --- §17) what a SET does with a verdict --------------------------------
@@ -38240,7 +38536,13 @@
       render();
       clearTimeout(st.nextTimer);
       if (now) { st.nextTimer = 0; nextCard(); return; }
-      st.nextTimer = setTimeout(() => { st.nextTimer = 0; nextCard(); }, C.verdictMs);
+      // The set's own reading of `verdictFastMs`'s rule: this timer is reached
+      // only by an answer good enough to move past (a held one schedules
+      // nothing at all), so the fast beat is the ordinary one here — the slow
+      // one is for a position resolved some other way, which is the case the
+      // best-move line has something to say about.
+      st.nextTimer = setTimeout(() => { st.nextTimer = 0; nextCard(); },
+        stormSetClean(v.verdict, C) ? C.verdictFastMs : C.verdictMs);
     }
 
     /** ONE MORE BLIND ATTEMPT. Section 18 holds the board shut behind a verdict
@@ -38705,12 +39007,22 @@
         'answered well before the next one, a mistake is played again (or the move ' +
         'is shown), and what you did not find first time comes back at the end.';
       modeSel.addEventListener('change', () => saveStormMode(modeSel.value));
+      // §14.24) THE BACKGROUND PASS's switch. NEUTRAL (`.clo-st-sync`), beside
+      // Gather and deliberately not sharing its green: green outline in this
+      // row is an ordinary ACTION (DESIGN-ui-inventory §3) and this one starts
+      // nothing — it says whether a thing that is already happening may go on.
+      // Its LABEL carries the state, so it needs no fill and no modifier class:
+      // a toggle whose text is "Background fill: on" cannot be misread the way
+      // a lit border can.
+      const bgBtn = el('button', 'clo-st-sync clo-st-bgbtn', 'Background: on');
+      bgBtn.type = 'button';
+      bgBtn.addEventListener('click', () => saveBackfill(!st.backfillOn));
       settings.append(
         modeSel,
         el('span', 'clo-st-set-label', 'Offer positions'), minSel,
         el('span', 'clo-st-set-label', 'to'), maxSel,
         el('span', 'clo-st-set-label', 'moves past the end of a line'),
-        el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, syncBtn, statsBtn);
+        el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, bgBtn, syncBtn, statsBtn);
       settings.title = 'How far past the point a course line stops a position may be. ' +
         '1 asks what you play the move AFTER the book runs out; a wider range mixes ' +
         'that with positions further downstream.';
@@ -38815,7 +39127,7 @@
       document.body.appendChild(panel);
       st.panel = panel;
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
-        settings, modeSel, minSel, maxSel, startBtn, gatherBtn, ready, syncBtn, syncNote,
+        settings, modeSel, minSel, maxSel, startBtn, gatherBtn, bgBtn, ready, syncBtn, syncNote,
         review, revBoard, revGrid, revLayer, revShapes, revHead, revLegend, revList,
         revActions, revRetry, revBest, revAnalyse, dbSlot,
         statsBtn, stats, statsHead, statsChapters, statsSync, statsNote, statsBody };
@@ -38854,6 +39166,20 @@
       } catch (err) { /* orphaned content script */ }
     }
 
+    /** §14.24) …and the background pass's own switch, on the same best-effort
+     *  terms. Switching it OFF takes effect at the next line end rather than
+     *  mid-walk: `backfillOk()` is re-asked before each one, and abandoning the
+     *  requests already spent on the one in flight would waste exactly what the
+     *  switch is there to save. */
+    function saveBackfill(on) {
+      applyBackfill(on);
+      if (on) st.backfillDone = false;   // a fresh decision deserves a fresh try
+      syncSettings();
+      try {
+        chrome.storage.local.set({ [C.backfillKey]: st.backfillOn }).catch(() => {});
+      } catch (err) { /* orphaned content script */ }
+    }
+
     /** The selectors follow the state, never the other way round — including
      *  after `applyPlyRange` has clamped an inverted pair. */
     /** How many positions this course has ready — the one number that says
@@ -38862,8 +39188,17 @@
 
     function syncSettings() {
       if (!st.ui) return;
+      // §14.24) …and whether something is quietly adding to it. This is the ONLY
+      // sign the background pass gives: it deliberately does not touch `setNote`
+      // or `setStatus`, both of which belong to things the user is waiting on,
+      // and a pass nobody asked for must not put a sentence over the review
+      // they are reading.
       st.ui.ready.textContent = st.store
-        ? storeCount() + ' position(s) ready' : '';
+        ? storeCount() + ' position(s) ready' +
+          (st.backfilling ? ' · filling…' : '') : '';
+      st.ui.ready.title = st.backfillStored
+        ? st.backfillStored + ' of them found in the background this session'
+        : '';
       st.ui.ready.hidden = !st.store;
       st.ui.minSel.value = String(st.minPly);
       st.ui.maxSel.value = String(st.maxPly);
@@ -38894,6 +39229,19 @@
       st.ui.statsBtn.textContent = st.viewStats ? 'Back' : 'Stats';
       st.ui.syncBtn.disabled = st.syncing || st.gathering;
       st.ui.syncBtn.textContent = st.syncing ? 'Syncing…' : 'Sync';
+      // §14.24) …and the quiet one beside it. The label IS the state.
+      st.ui.bgBtn.textContent = 'Background: ' + (st.backfillOn ? 'on' : 'off');
+      st.ui.bgBtn.title = st.backfillOn
+        ? 'While this window is open and you are not being asked anything — the ' +
+          'pre-roll, the pause after a verdict, a position you are still thinking ' +
+          'about, and the whole review — one line end at a time is walked and ' +
+          'stored, so the next storm starts instantly.' +
+          '\nIt never runs while a ' +
+          'card is live or a move is being graded, it stops once ' + C.backfillStore +
+          ' positions are ready, and it spends at most ' + C.backfillMaxCdb +
+          ' ChessDB lookups per window. Press to switch it off.'
+        : 'Nothing is fetched unless you press "Gather positions" or start a ' +
+          'storm. Press to let this window fill the store in its idle moments.';
       st.ui.gatherBtn.textContent = st.gathering ? 'Stop gathering' : 'Gather positions';
       st.ui.gatherBtn.classList.toggle('clo-st-gather--on', st.gathering);
       st.ui.gatherBtn.title = st.gathering
@@ -39714,6 +40062,16 @@
       // …and the same for the review's RETRY board (§14.10b), whose "Back to the
       // review" is section 18's own Exit button.
       if (st.retry && continuationActive && !continuationActive()) endRetry();
+      // §14.24) LAST, and unawaited. Every teardown above has had its say, so
+      // the answer `backfillOk()` gives is about the state this tick leaves
+      // behind rather than the one it arrived in — and it is the cheapest
+      // question here when the answer is no, which it is on most ticks.
+      //
+      // CAUGHT AT THE CALL SITE. It is async and unawaited, so a throw anywhere
+      // in it — including in its own `finally` — is an unhandled rejection that
+      // `tick`'s try/catch cannot see; and this pass above all must never be
+      // able to take the window's watchdog down with it.
+      backfill().catch((err) => warn('storm: the background top-up threw:', err));
     }
 
     /**

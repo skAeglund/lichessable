@@ -294,6 +294,17 @@ const C = {
   // questions and are written out twice on purpose, so a change to either must
   // be a deliberate change to both.
   setSize: num('setSize'), setRetryMax: num('setRetryMax'),
+  // The verdict pause and its short form (v0.151.0). Both are read here rather
+  // than asserted by eye because the fast one is invisible when it is wrong: a
+  // value above `verdictMs` makes the "quick" path the slow one and nothing
+  // else changes, and a value near zero makes a verdict flash past unread.
+  verdictMs: num('verdictMs'), verdictFastMs: num('verdictFastMs'),
+  // §14.24's background pass. `backfillStore` above `queueTarget` is what makes
+  // the pass able to do anything at all, and its budget below the gather pass's
+  // is what keeps "background" meaning quieter than the burst you ask for.
+  backfillMaxCdb: num('backfillMaxCdb'), backfillStore: num('backfillStore'),
+  backfillGapMs: num('backfillGapMs'), gatherMaxCdb: num('gatherMaxCdb'),
+  queueTarget: num('queueTarget'),
   setCleanOn: (cfgBody.match(/setCleanOn:\s*\[([^\]]*)\]/) || [, ''])[1]
     .split(',').map((x) => x.trim().replace(/'/g, '')).filter(Boolean),
   // §14.19's reachability bucket. UNKNOWN answers this value, so a wrong one
@@ -2299,8 +2310,36 @@ const playedUciAt = (fen) => gameLine.get(cacheKey(fen)) || null;
     // would let ~30 legal moves be searched rather than thought about.
     eq('the retry cap leaves room to think and not to search',
       C.setRetryMax >= 2 && C.setRetryMax <= 5, true);
-    eq('a set is about one storm\'s worth of material',
-      C.setSize >= 6 && C.setSize <= 30, true);
+    eq('a set is short enough to be finished in one sitting',
+      C.setSize >= 4 && C.setSize <= 12, true);
+  }
+
+  // ========================================================================
+  // 12) THE VERDICT PAUSE, and the background pass's bounds (v0.151.0)
+  //
+  // Two settings whose every failure mode is silent. A `verdictFastMs` above
+  // `verdictMs` inverts the rule while every card still advances; one near zero
+  // shows a verdict nobody can read, which looks like a rendering bug rather
+  // than a number. And a background pass whose store target sits at or below
+  // `queueTarget` can never run — the session's own producer keeps the queue
+  // there — so the feature would simply, quietly, never happen.
+  // ========================================================================
+  {
+    console.log('\n-- 12) the verdict pause and the background pass --');
+    eq('the fast verdict pause is shorter than the full one',
+      C.verdictFastMs < C.verdictMs, true);
+    eq('...and long enough to be read', C.verdictFastMs >= 800, true);
+    // If the background pass may only run with the queue full, its own stop
+    // has to sit well above that or it stands down before it has begun.
+    eq('the background store target leaves the pass something to do',
+      C.backfillStore > C.queueTarget * 4, true);
+    eq('...and its budget is smaller than the burst you ask for by name',
+      C.backfillMaxCdb < C.gatherMaxCdb, true);
+    // A pass with no beat between line ends is a flood, and the beat is also
+    // what re-asks `backfillOk()` often enough for a press of Start to get its
+    // bandwidth back promptly.
+    eq('...and it pauses between line ends',
+      C.backfillGapMs >= 500 && C.backfillGapMs <= 10000, true);
   }
 
   console.log('\n' + SRC_PATH);

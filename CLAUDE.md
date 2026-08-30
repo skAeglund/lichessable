@@ -3592,6 +3592,51 @@ Currently working (v0.18.x).
       `advance`, `analyse`) and section 18 grew `cr.stormHold`, which is a verdict
       the session has not accepted yet — the board is already shut behind one, so
       nothing about the board changed.
+  * FOUR THINGS ASKED FOR AFTER THE SET SHIPPED (§18, v0.151.0). None of them
+    touches the producer, the store, the wire or the grade. **READ
+    DESIGN-intuition-storm.md §18 BEFORE CHANGING ANY OF THEM.** What an edit
+    ELSEWHERE can break:
+    - THE VERDICT PAUSE IS TWO NUMBERS (§18.1). `verdictFastMs` (1200) is used
+      when there is nothing under the verdict to read, and THE TEST IS THE SIGN
+      OF THE POINTS — §16's rule for the streak, applied to the pacing, so a
+      sixth band cannot be forgotten here. A set has no points and asks
+      `stormSetClean` instead. Both failure modes are silent: a fast value ABOVE
+      `verdictMs` inverts the rule while every card still advances, and one near
+      zero shows a verdict nobody can read. `dev/check-storm.js` §12 pins both.
+    - THE BACKGROUND TOP-UP (§18.2, `backfillOk`/`backfill`) IS BOUNDED BY FOUR
+      CLAUSES AND EACH IS LOAD-BEARING. It counts its ChessDB requests
+      SEPARATELY (`st.backfillCdb`), because `askCdb` sets `st.exhausted` on the
+      session's cap and that is what ends a session with "out of positions" — a
+      background walk reaching it would end the session the user is in the middle
+      of. It runs only with the queue at `queueTarget`, so it cannot take a
+      frontier the producer needs. It never runs while `solving()` or
+      `st.grading`, the ChessDB pacer being shared with the grade. And it MARKS
+      NOTHING `seen` — that set is what `produceFromStore` filters on, so a
+      background find would store a position and in the same breath make this
+      session unable to draw it; the `continue` that does this sits AFTER the
+      store write and after all four funnel counters, so §14.17's conservation is
+      untouched. Two knock-on rules in SHARED code: `harvestFrontier`'s games
+      loop breaks on `st.over && !storeOnly` (`st.over` is true for the whole
+      review, which is the state this exists for), and `storeAdd` refuses when
+      `st.backfillBid` no longer matches `st.bid` — a walk outlives its window by
+      up to one line end, and the storm can be reopened on another course inside
+      that gap. AND THAT FLAG IS AN ARGUMENT (`storeOnly`), NEVER
+      `st.backfilling`: `harvestFrontier`/`harvestCandidates`/`storeAdd` are
+      SHARED with the producer and the two overlap — `backfillOk` refuses while
+      `st.producing`, but `showCard` starts a producer inside one of the
+      background walk's awaits — so read off the flag the PRODUCER's harvest
+      returns no cards at all and then drains the pool looking for some.
+      `cloStormBackfill` is opt-OUT.
+    - `setSize` IS 6 (§18.3), and the check's bound moved with it. Nothing is
+      derived from it.
+    - ANALYSE IS ON `browseBtn` NOW (§18.4), not on `hint`, and it shows on
+      `cr.stormHold || cr.stormRetry` — a held set card and a review retry, the
+      two states where a position is being played AGAIN. `browseBtn` because in
+      storm mode it has never been anything else, there being no line to
+      navigate. NEVER during a live timed card: a database whose top row is the
+      answer is section 20's rule. `stormApi.analyse()` is the dispatcher and the
+      dispatch belongs in section 27 (`toggleAnalyse` for a review row,
+      `setAnalyse` for a held card, which reveals first).
 
 - SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
@@ -3753,6 +3798,16 @@ first time" reads the same whether or not the retries were counted as first
 attempts. Controls run 2026-08-29, each failing on exactly its own assertions and
 no others: `stormSetHeld` written as `!stormSetClean` → 2; `stormSetOutcome`
 ignoring `revealed` → 2; the second pass folded into the first-time count → 2.
+
+…and after touching the VERDICT PAUSE or the BACKGROUND TOP-UP (§18, v0.151.0)
+— `CONFIG.storm`'s `verdictFastMs` / `verdictMs`, or `backfillMaxCdb` /
+`backfillStore` / `backfillGapMs`. §12 of that file asserts what an eye cannot:
+a `verdictFastMs` ABOVE `verdictMs` makes the "quick" path the slow one while
+every card still advances, one near zero shows a verdict nobody can read, and a
+`backfillStore` at or below `queueTarget` leaves a background pass that can never
+run — the session's own producer keeps the queue there — so the feature would
+simply, quietly, never happen. Controls run 2026-08-30, each failing on exactly
+one assertion: `verdictFastMs` at 3200 → 1; `backfillStore` at 3 → 1.
 
 …and after touching the verdict line it prints — `stormCp`, `stormVerdictLine`,
 `stormBestLine`, or §14.20's `stormEstimated` / `stormSourceLabel` /

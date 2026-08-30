@@ -3637,3 +3637,194 @@ extra buttons.
 * **The set does not know about §16b's pinned mistakes.** A position missed twice
   in one set is exactly what that store is for, and the two have never been
   introduced.
+
+---
+
+## 18. Four things asked for after the set shipped (v0.151.0)
+
+Four requests from the author, made together on 2026-08-30 after the first
+sittings with §17's set. None of them changes the pipeline: the producer, the
+store, the wire, the three grading tiers and the grade itself are untouched.
+
+### 18.1 The verdict pause is two numbers now
+
+**The ask:** "speed up the transition to next position after a good enough
+move."
+
+`verdictMs` (2600) was one figure for every verdict, and the pause exists for
+`stormBestLine` — the SECOND line, which names the move that should have been
+played, says how much the one played gave up, and (since §14.20) says which tier
+decided. After an answer that SCORED there is nothing there to take in: the move
+was the move. 2.6 s of reading time for a line that says "you played the best
+move" is dead time in an exercise whose whole point is rhythm.
+
+So `verdictFastMs: 1200` beside it, and **the test is the sign of the points** —
+§16's own rule for the streak, applied to the pacing. That matters more than the
+number: a list of verdict names would have to be revisited every time a band is
+added, and §16 has already added two. One rule, five bands, and a sixth would be
+covered by construction.
+
+In a SET there are no points, so the equivalent question is `stormSetClean` —
+and there the fast beat is very nearly the only one that can be reached, since a
+verdict that is *not* clean holds the position and schedules nothing at all. The
+slow branch is left in place for a position resolved some other way.
+
+1200 rather than 0 or `verdictMs / 2`: a verdict that flashes is a verdict nobody
+sees, and "Great move · +2" with a streak on it is worth the beat it takes to
+read. `dev/check-storm.js` §12 pins `verdictFastMs < verdictMs` and
+`verdictFastMs >= 800` — the two ways this fails silently, one of which inverts
+the rule while every card still advances.
+
+### 18.2 A background top-up (§14.24 in the code)
+
+**The ask:** "add background gathering of positions wherever it makes sense. For
+example when having the Storm panel open, there's no drawback of gathering
+positions in the background, right?"
+
+Mostly right, and the exceptions are exactly what `backfillOk()` is made of.
+There were four real ones, and each is a way this could have cost the user
+something:
+
+1. **The request budget.** `askCdb` sets `st.exhausted` when the SESSION's cap is
+   reached, and `st.exhausted` is what ends a session with *out of positions*. A
+   background walk sharing that counter would end the session the user is in the
+   middle of, over requests they never asked for. So it counts separately
+   (`st.backfillCdb` against `backfillMaxCdb`, per WINDOW) while still adding to
+   `st.cdbCount`, which is the honest total the summary prints.
+2. **The pool.** `stormDrawFrontier` is destructive, so a background walk really
+   can take the frontier the producer was about to need. Hence the queue clause:
+   during a started session the pass runs only while `st.queue.length >=
+   queueTarget`, i.e. only while the producer has stopped of its own accord. And
+   everything it finds goes into the STORE, which `produceFromStore` draws from
+   first — so the material is not lost, it changes hands.
+3. **`st.seen`.** This is the one that would have been invisible.
+   `harvestCandidates` marks every candidate seen, and `produceFromStore` filters
+   on exactly that set — so a background find would have put a position in the
+   store and in the same breath made the running session unable to draw it. The
+   pass therefore stops at a `continue` placed AFTER the store write and after
+   all four funnel counters, so §14.17's conservation is untouched.
+4. **The shared pacer.** `pace('lastCdbAt', cdbGapMs)` is global, and a grade is
+   up to three ChessDB round trips the user is watching. So the pass never runs
+   while `solving()` or while `st.grading`.
+
+What is left is most of the time the window is open: the pre-roll, the pause
+after a verdict, a held set card being thought about, and the whole review. One
+line end per pass, `backfillGapMs` between them, re-asking `backfillOk()` each
+time — deliberately not a loop of its own, so a press of Start gets its bandwidth
+back within one line end rather than at the end of a burst.
+
+**It is the same `harvestFrontier`**, for §14.17.3's reason: a third walk written
+for this would be a third set of pick rules to disagree with the other two. It
+takes the gather pass's `gatherGamesPerFrontier` for the same reason that pass
+does — nobody is waiting on it.
+
+**`st.over` had to stop meaning "stop".** `harvestFrontier`'s games loop breaks on
+`!st.running || st.over`, and `st.over` is true for the whole review, which is the
+longest stretch a window is open and the single state this feature exists for. It
+now breaks on `st.over && !st.backfilling`.
+
+**`storeOnly` IS AN ARGUMENT, NOT `st.backfilling`,** in `harvestFrontier`,
+`harvestCandidates` and `storeAdd` — and that was found by re-reading rather than
+by a test, which is the shape to remember. `backfillOk()` refuses while
+`st.producing`, but a background walk is a sequence of awaits and `showCard`
+starts a producer inside one, so the two really can overlap. Read off the flag,
+the PRODUCER's own harvest would then return no cards at all while a background
+pass happened to be in flight — and, finding none, would go on drawing frontiers
+until the pool was gone. Per call, that cannot arise. The same argument makes
+`storeAdd`'s bid guard and the `backfillStored` counter per-call. `askCdb`'s
+budget branch is the one that stays coarse: threading a parameter through
+`askGames` and `askPgn` buys only the overlap case, and there the flag fails safe
+in both directions.
+
+**It can outlive its own window**, by up to one line end — the break above only
+fires between games — and in that gap the storm can be reopened on ANOTHER
+course, whose slice `st.store` now is. A position from the old course written into
+it would be silent and permanent, so the pass carries `st.backfillBid` and
+`storeAdd` refuses when it no longer matches.
+
+**Bounded, and switchable off.** It spends ChessDB's volunteer compute and
+Lichess's bandwidth, and a window left open all evening would otherwise walk a
+whole course without anybody deciding to. `backfillStore` (60) is the real stop —
+past that no session is waiting on anything and there is nothing left to buy —
+with `backfillMaxCdb` (1200 per window) as the backstop. `cloStormBackfill` is
+opt-OUT, the `cloLineHeadsUp` shape, on a neutral toggle in the settings row whose
+LABEL carries the state.
+
+**It says one word and no more.** The only sign it gives is `· filling…` on the
+"N position(s) ready" line, with what it has found in that line's tooltip. It
+deliberately does not touch `setNote` or `setStatus`: both belong to things the
+user is waiting on, and a pass nobody asked for must not put a sentence over the
+review they are reading. A failure is a console line and a stand-down for the
+rest of the window.
+
+### 18.3 A set of six
+
+**The ask:** "lower the amount of positions in a set. Maybe 6 is enough."
+
+`setSize: 12` came from §8.2's "a 3-minute storm answers about a dozen", which
+turns out to be the wrong comparison: a storm's twelve are twelve positions
+SHOWN, and a set's are twelve positions CLEARED, each of which may take three
+attempts, a reveal and a second pass. Six is already the longer sitting of the
+two. Nothing is derived from the number — `queueTarget`, `maxPositions` and
+`cdbMaxPerSession` all sit far above what either mode reaches — so this is a free
+change. §17.9b listed it as a guess that needed sittings rather than a test; the
+sittings happened.
+
+`dev/check-storm.js`'s bound moved with it (4..12, was 6..30), which is the point
+of having the bound at all: it is a statement about what the mode IS, and it
+should be re-argued when it changes rather than left wide enough to admit
+anything.
+
+### 18.4 Analyse wherever a position is being played again
+
+**The ask:** "have 'Analyze this position' available whenever the user is
+retrying a move (during and after run)."
+
+Two states, and one of them had no way in at all:
+
+* **The review's retry** (§14.10b). `st.retry` and `st.analysing` are exclusive —
+  both want the stage's slots — and `render()` hides the whole review while either
+  is up. So the button that opens the analysis board was on a surface that is not
+  on screen while you are retrying: the way to a board was to press *Back to the
+  review* first. That is the state most in need of one.
+* **A held set card** (§17). Analyse was on `hint`, and only after a reveal.
+
+Both are answered by the SAME button, and it is `browseBtn` — which in storm mode
+has never been anything, there being no line to navigate. So no fifth control, and
+Analyse does not move under the pointer as a hold goes from blind to revealed.
+`stormApi.analyse()` is the dispatcher, and the dispatch belongs in section 27
+because which board to open is entirely that module's state: `toggleAnalyse` for a
+review row, `setAnalyse` for a held card.
+
+**A blind hold gets it too, and the reveal is not skipped.** §17's own rule stands:
+the board arrives with the engine and the database beside it, both of which name
+the move within a second, so "analyse blind" is not a state that exists and the
+honest version is to make the reveal explicit and counted. The tooltip says so.
+
+**Never during a live timed card.** The panel then holds a question, and a database
+whose top row is the answer is section 20's rule rather than a convenience to weigh
+up. `syncStormUi` shows the button on `hold || retry` and on nothing else.
+
+**Measured** in `dev/harness.html` at a 300px panel: the blind hold with attempts
+left goes from three buttons on one row (26px) to four on two (58px) — 63 + 104 +
+86 + 61 px of button against 266px of row, so four of these labels cannot fit
+however they are worded. No horizontal overflow in any state. Accepted rather than
+fixed: `.clo-cr-actions` wraps by design, the panel is a tall column beside the
+board, and the alternative is a state that lacks the thing the request was about.
+The settings row's own natural width went from ~996px to ~1130px, so it wraps to
+two lines on a window narrower than about 1160 rather than about 1030; the panel
+is `inset: 16px`, so this is a 1152-wide screen and not a 1366 or a 1920.
+
+### 18.5 What was NOT verified
+
+None of this has been through a live session — it is syntax-checked,
+`dev/check-storm.js` passes at 532 with two fresh controls, and the button and row
+geometry are harness measurements. Three things only a live sitting can answer:
+
+* whether `verdictFastMs` at 1200 reads as brisk or as clipped;
+* whether the background pass is actually invisible in use — in particular
+  whether the shared ChessDB pacer makes the first card after a verdict feel
+  slower, which the `solving()`/`st.grading` gates are supposed to prevent but
+  which no test here can see;
+* whether four buttons on two rows in the blind hold reads badly enough to want
+  the Analyse door only after a reveal after all.
