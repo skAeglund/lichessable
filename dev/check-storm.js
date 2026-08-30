@@ -1920,6 +1920,73 @@ const leadsTo = (arrived, fen) => {
   S.stormWireMerge(high, { a1: Object.assign({}, wireStore().a1, { k: 1 }) }, {}, {});
   eq('…in both directions', high.a1.k, 9);
 
+  // --- §22.6) A CLEAR, ACROSS DEVICES -------------------------------------
+  // A cleared position leaves NO tombstone — one would mean RETIRED (§14.16)
+  // and would block the very re-gather a clear is asking for — so it is simply
+  // ABSENT, and absent is what a union merge fills in from the other device.
+  // Clearing and then syncing is the ordinary sequence, and it silently undid
+  // the clear: reported 2026-08-30.
+  //
+  // The mark fails silently in BOTH directions. Ignored, every cleared position
+  // comes back and the store looks healthy; applied too widely, positions
+  // gathered after the clear are eaten and the store looks empty for no reason.
+  const clStore = () => ({
+    old1: { f: fFen, p: 3, c: 'w', n: 'Ruy', i: 0, a: null, t: 1000, k: 0,
+      m: [['a7a6', 'a6', 8]] },
+    old2: { f: fFen, p: 4, c: 'w', n: 'Ruy', i: 0, a: null, t: 1500, k: 1,
+      m: [['g8f6', 'Nf6', 4]] },
+    fresh: { f: fFen, p: 5, c: 'w', n: 'Ruy', i: 0, a: null, t: 9000, k: 0,
+      m: [['b8c6', 'Nc6', 2]] },
+  });
+  const CLEARED_AT = 5000;
+
+  // The reported bug, in one assertion: I cleared, the other device had not.
+  const wipedLocal = {};   // everything thrown away here
+  const theirCopy = clStore();
+  const afterClear = S.stormWireMerge(wipedLocal, theirCopy, {}, {}, CLEARED_AT, 0);
+  eq('a position cleared here does NOT come back from the other device',
+    Object.keys(wipedLocal).sort(), ['fresh']);
+  eq('…and the one gathered since the clear does', Boolean(wipedLocal.fresh), true);
+  eq('…with the two of them counted apart from "learned elsewhere"',
+    [afterClear.added, afterClear.dropped], [1, 0]);
+
+  // The other direction, which is what makes a clear PROPAGATE rather than
+  // merely defend the device that pressed the button.
+  const theirsStale = clStore();
+  const mineCleared = S.stormWireMerge(theirsStale, {}, {}, {}, 0, CLEARED_AT);
+  eq('a clear on the OTHER device drops this one’s pre-clear positions',
+    Object.keys(theirsStale).sort(), ['fresh']);
+  eq('…counted as cleared, never as learned',
+    [mineCleared.wiped, mineCleared.dropped], [2, 0]);
+  eq('…and the mark is taken over, so it is not re-learned every exchange',
+    mineCleared.clearedAt, CLEARED_AT);
+
+  // Merged by max, in both orders — a mark is a high-water figure.
+  eq('the LATER mark wins whichever side holds it',
+    [S.stormWireMerge({}, {}, {}, {}, 7000, 3000).clearedAt,
+      S.stormWireMerge({}, {}, {}, {}, 3000, 7000).clearedAt], [7000, 7000]);
+  // No clear anywhere: byte-identical to the merge as it was before v0.156.0.
+  const untouched = clStore();
+  const noMark = S.stormWireMerge({}, untouched, {}, {}, 0, 0);
+  eq('with no clear anywhere every position is still taken', noMark.added, 3);
+  eq('…and nothing is wiped', noMark.wiped, 0);
+  eq('…and the mark stays absent', noMark.clearedAt, 0);
+  // A tombstone still wins: it is the stronger statement of the two.
+  const bothRules = {};
+  S.stormWireMerge(bothRules, clStore(), {}, { fresh: Date.now() }, CLEARED_AT, 0);
+  eq('a retired position is not taken even when it is newer than the mark',
+    Object.keys(bothRules).length, 0);
+
+  // The wire. Absence is "nothing has been cleared", which is what every
+  // payload written before v0.156.0 is — so no wireVersion bump.
+  const clPacked = S.stormWirePack(clStore(), {}, C, 0, CLEARED_AT);
+  eq('the clear mark rides the wire', clPacked.cl, CLEARED_AT);
+  eq('…and comes back', S.stormWireUnpack(clPacked, C).clearedAt, CLEARED_AT);
+  eq('a payload from a device that has never cleared carries no mark',
+    S.stormWirePack(clStore(), {}, C, 0).cl, undefined);
+  eq('…and reads back as zero rather than as undefined',
+    S.stormWireUnpack(S.stormWirePack(clStore(), {}, C, 0), C).clearedAt, 0);
+
   // --- the budget -------------------------------------------------------
   // A payload that overshoots is a card the server refuses, so the honest
   // answer is fewer positions rather than a failed exchange.

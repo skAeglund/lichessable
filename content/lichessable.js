@@ -34691,6 +34691,13 @@
       // neither complete nor see they owe is section 9's own rule.
       clearArmed: false,
       clearTimer: 0,
+      // §22.6) WHEN THIS COURSE'S STORE WAS LAST CLEARED, per course and carried
+      // on the wire. A cleared position is ABSENT, and absent is what a union
+      // merge fills in from the other device — the exact hole §14.12's
+      // tombstones exist to close, in a second place. A high-water mark rather
+      // than 48 tombstones, because a tombstone here means RETIRED (§14.16) and
+      // would stop the very re-gather a clear is asking for.
+      clearedAt: 0,
       // --- §14.24) the BACKGROUND top-up ------------------------------------
       // Its own everything, deliberately: sharing the gather pass's flag would
       // make `tick`, `nextCard` and `syncSettings` all treat a quiet trickle as
@@ -34972,7 +34979,7 @@
      * `budget` is in BASE32 characters, which is 8/5 of the bytes — so the
      * check is made against the encoded size and not the JSON's.
      */
-    function stormWirePack(store, gone, C, budget) {
+    function stormWirePack(store, gone, C, budget, clearedAt) {
       const now = Date.now();
       const keys = Object.keys(store || {}).sort((a, b) =>
         ((store[b].k || 0) - (store[a].k || 0)) || ((store[b].t || 0) - (store[a].t || 0)));
@@ -34982,6 +34989,13 @@
         .sort((a, b) => (gone[b] || 0) - (gone[a] || 0))
         .slice(0, C.goneMax);
       const out = { v: C.wireVersion, at: now, g: {}, p: {} };
+      // §22.6) THE CLEAR MARK, set before the budget loop so its own bytes are
+      // inside every measurement below. Omitted where there has never been a
+      // clear, which is what every payload written before v0.156.0 looks like —
+      // and absence reads as 0, i.e. "nothing has been cleared", so an old
+      // payload and a new one are both valid in both directions and
+      // `wireVersion` did not move.
+      if (clearedAt) out.cl = clearedAt;
       for (const ck of tombs) out.g[ck] = gone[ck];
       // Grown one position at a time and measured each time: a payload that
       // overshoots is a card the server refuses, and the honest answer is fewer
@@ -35062,13 +35076,14 @@
       }
       const gone = {};
       for (const ck of Object.keys(blob.g || {})) gone[ck] = blob.g[ck];
-      return { store, gone, at: blob.at || 0 };
+      return { store, gone, at: blob.at || 0, clearedAt: Number(blob.cl) || 0 };
     }
 
     /**
      * Folds a remote snapshot into the local store.
      *
-     * THREE RULES, and the first two are the tombstones' whole purpose:
+     * FOUR RULES. The first two are the tombstones' whole purpose, the fourth
+     * is §22.6's:
      *  * a position in EITHER `gone` list is removed and never re-added — the
      *    retention rule dropped it on some device, and a union merge would
      *    otherwise resurrect it on every exchange;
@@ -35077,16 +35092,46 @@
      *    number that decides how soon it comes round again and forgetting it is
      *    the one way this merge can quietly make the feature worse.
      *
+     * §22.6) …AND A CLEAR IS A THIRD KIND OF ABSENCE, needing a rule of its
+     * own. A cleared position leaves NO tombstone — one would mean RETIRED
+     * (§14.16) and would block the re-gather the clear is asking for — so
+     * without this it is simply missing, and rule two puts it straight back
+     * from the other device. That is not a corner case: clearing and then
+     * syncing is the ordinary sequence, and it silently undid the clear.
+     *
+     * The mark is a per-course HIGH-WATER TIMESTAMP, merged by `max` and
+     * applied in BOTH directions: a remote entry older than it is not taken,
+     * and a LOCAL entry older than it is dropped — which is what makes a clear
+     * on one device reach the other rather than only defending the one that
+     * pressed the button. An entry's `t` is its original gather time and
+     * survives the wire, so this compares like with like.
+     *
+     * Its one cost is CLOCK SKEW between devices: a position gathered on a
+     * device whose clock is behind, moments after a clear on one whose clock is
+     * ahead, is dropped and gathered again. That is a handful of requests in
+     * the worst case, and the alternative — a counter — would need an authority
+     * neither device has.
+     *
      * Returns what changed, so a caller knows whether to write anything back.
      */
-    function stormWireMerge(local, remote, localGone, remoteGone) {
+    function stormWireMerge(local, remote, localGone, remoteGone, localCleared, remoteCleared) {
       const gone = Object.assign({}, remoteGone || {}, localGone || {});
-      let added = 0, dropped = 0, bumped = 0;
+      const cleared = Math.max(Number(localCleared) || 0, Number(remoteCleared) || 0);
+      let added = 0, dropped = 0, bumped = 0, wiped = 0;
       for (const ck of Object.keys(gone)) {
         if (local[ck]) { delete local[ck]; dropped++; }
       }
+      // Counted apart from `dropped`, which means "learned elsewhere" in the
+      // sentence the sync writes: these were thrown away on purpose, and the
+      // two are not the same news.
+      if (cleared) {
+        for (const ck of Object.keys(local)) {
+          if (((local[ck] && local[ck].t) || 0) < cleared) { delete local[ck]; wiped++; }
+        }
+      }
       for (const ck of Object.keys(remote || {})) {
         if (gone[ck]) continue;
+        if (cleared && ((remote[ck] && remote[ck].t) || 0) < cleared) continue;
         const mine = local[ck];
         if (!mine) { local[ck] = remote[ck]; added++; continue; }
         const theirs = remote[ck].k || 0;
@@ -35099,7 +35144,7 @@
           mine.g = remote[ck].g;
         }
       }
-      return { added, dropped, bumped, gone };
+      return { added, dropped, bumped, wiped, gone, clearedAt: cleared };
     }
 
     // ----------------------------------------------------------------------
@@ -37821,6 +37866,7 @@
         const mine = all[st.bid] || {};
         st.gone = mine.gone || {};
         st.lastPull = mine.at || 0;
+        st.clearedAt = Number(mine.cl) || 0;
       } catch (err) {
         st.gone = st.gone || {};
       }
@@ -37848,7 +37894,9 @@
         const gone = {};
         for (const ck of keys) gone[ck] = st.gone[ck];
         st.gone = gone;
-        all[st.bid] = { gone, at: st.lastPull };
+        // §22.6: `cl` rides in the same per-course record as the tombstones —
+        // it answers the same question about a different kind of absence.
+        all[st.bid] = { gone, at: st.lastPull, cl: st.clearedAt || 0 };
         await chrome.storage.local.set({ [C.syncKey]: all });
       } catch (err) {
         // Not fatal, and it fails the safe way: an unwritten tombstone costs a
@@ -37882,7 +37930,7 @@
       setSyncNote('Syncing…');
       render();
       try {
-        let merged = { added: 0, dropped: 0, bumped: 0 };
+        let merged = { added: 0, dropped: 0, bumped: 0, wiped: 0 };
         const text = await carrier.read(C.cardName);
         if (text) {
           let blob = null;
@@ -37896,11 +37944,16 @@
           }
           const got = stormWireUnpack(blob, C);
           if (!got) throw new Error('the stored payload is from a newer version');
-          merged = stormWireMerge(st.store, got.store, st.gone, got.gone);
+          merged = stormWireMerge(st.store, got.store, st.gone, got.gone,
+            st.clearedAt, got.clearedAt);
           st.gone = merged.gone;
+          // §22.6: the mark is a high-water figure, so taking the merged one
+          // back is how another device's clear becomes ours — and why our own
+          // survives a payload written before the clear.
+          st.clearedAt = merged.clearedAt;
           st.storeDirty = true;
         }
-        const packed = stormWirePack(st.store, st.gone, C, C.maxWireBytes);
+        const packed = stormWirePack(st.store, st.gone, C, C.maxWireBytes, st.clearedAt);
         const wire = carrier.encode(new TextEncoder().encode(JSON.stringify(packed)));
         await carrier.write(C.cardName, wire, C.maxWireBytes);
         st.lastPull = Date.now();
@@ -37908,9 +37961,11 @@
         await saveSyncMeta();
         setSyncNote('Synced — ' + packed.n + ' of ' + storeTotal() + ' carried' +
           (merged.added ? ', ' + merged.added + ' taken from another device' : '') +
-          (merged.dropped ? ', ' + merged.dropped + ' already learned elsewhere' : ''));
+          (merged.dropped ? ', ' + merged.dropped + ' already learned elsewhere' : '') +
+          (merged.wiped ? ', ' + merged.wiped + ' cleared elsewhere' : ''));
         log('storm: synced (' + reason + ') —', packed.n, 'carried,',
-          merged.added, 'added,', merged.dropped, 'dropped,', wire.length, 'bytes');
+          merged.added, 'added,', merged.dropped, 'dropped,',
+          merged.wiped, 'cleared,', wire.length, 'bytes');
         // A PULL MUST FEED THE SESSION IT LANDED IN. The exchange is fired from
         // `startSession` and deliberately not awaited (§14.12), so the store it
         // enriches has ALREADY been drawn from — and without this the positions
@@ -38535,13 +38590,20 @@
       st.store = {};
       st.storeQueue = [];
       st.storeDirty = true;
+      // §22.6) THE MARK, without which the next sync quietly undoes this. It is
+      // stamped and SAVED here rather than left to the next exchange: a clear
+      // the tab does not outlive would otherwise be a clear that never
+      // happened anywhere else.
+      st.clearedAt = Date.now();
       // The producer's own notion of what it has already offered is about THIS
       // session and is left alone: every key in it has just gone, so it can
       // filter nothing, and clearing it would let a walk re-offer a position
       // already seen on screen.
       await saveStore();
+      await saveSyncMeta();
       setStatus(had + ' stored position(s) cleared. "Gather positions" fills it ' +
-        'again, and what you have already answered well stays retired.', '');
+        'again, what you have already answered well stays retired, and your other ' +
+        'devices drop theirs on the next sync.', '');
       syncSettings();
       render();
     }

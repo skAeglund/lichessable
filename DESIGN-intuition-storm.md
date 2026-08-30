@@ -4520,3 +4520,104 @@ Course 453453, and it closed §20's live gap as well.
 board produces a course variation starting on the position before 8.Nf3. The
 move list IS what 19d writes, so this is sound by construction, but it is not a
 measurement.
+
+### 22.6 A clear has to be SYNCED (v0.156.0)
+
+Reported straight after §22 shipped: *if you clear positions then sync, it seems
+to reset the clear.*
+
+It did, and the reason is §14.12's own, one step along. **A cleared position
+leaves no tombstone** — deliberately, since a tombstone here means RETIRED
+(§14.16) and would block the very re-gather a clear is asking for — so it is
+simply ABSENT. And absent is exactly what a union merge fills in from the other
+device:
+
+```
+for (const ck of Object.keys(remote)) {
+  if (gone[ck]) continue;
+  if (!local[ck]) { local[ck] = remote[ck]; added++; }   // ← the clear, undone
+}
+```
+
+Clearing and then syncing is the ordinary sequence, not a corner, so the button
+shipped able to be silently reversed by the next exchange.
+
+#### The mark, not 48 tombstones
+
+The tempting fix is to tombstone everything cleared. It is wrong for the reason
+above: `stormDone` reads that list as a RETIREMENT HORIZON of `goneDays` (60),
+so the positions the user cleared in order to have them gathered again would
+become the positions that cannot be gathered again for two months. It is also
+the wrong shape — a clear is one act, not N.
+
+So: **a per-course high-water timestamp**, `st.clearedAt`, living in the same
+per-course record as the tombstones (`cl`) because it answers the same question
+about a different kind of absence. `clearStore` stamps it and SAVES it there and
+then — a clear the tab does not outlive would otherwise be a clear that never
+happened anywhere else.
+
+#### It is applied in BOTH directions, and that is the feature
+
+```
+const cleared = Math.max(localCleared, remoteCleared);
+// a LOCAL entry older than the mark is dropped   → the clear propagates
+// a REMOTE entry older than the mark is not taken → the clear holds here
+```
+
+One direction alone would only defend the device that pressed the button; the
+other device would keep its pre-clear positions, keep serving them in its own
+sessions, and keep offering them across (harmlessly, but for ever). Merged by
+`max` and taken back into `st.clearedAt`, so the mark is learned once rather
+than re-argued on every exchange.
+
+An entry's `t` is its original gather time and survives the wire unchanged
+(`stormWireUnpack` keeps `e.t`), so this compares like with like.
+
+`wiped` is counted apart from `dropped`: the sync's sentence reads the latter as
+"already learned elsewhere", and "thrown away on purpose" is not that news.
+
+#### What it costs
+
+**Clock skew.** A position gathered on a device whose clock is behind, moments
+after a clear on one whose clock is ahead, is dropped and gathered again. That is
+a handful of requests at worst, and the alternative — a counter — needs an
+authority neither device has.
+
+**Everything gathered before the clear, everywhere.** That is the intended
+reading rather than a cost: the user cleared because positions written in the old
+shape are stale, and positions written in the old shape are precisely those with
+`t < clearedAt` on every device.
+
+No `wireVersion` bump. A payload with no `cl` reads as 0, i.e. "nothing has been
+cleared" — true of every payload written before v0.156.0, and valid in both
+directions. `stormWirePack` sets it before the budget loop so its bytes are
+inside every measurement.
+
+#### What was measured
+
+**Executed** (`node dev/check-storm.js`, 639 assertions): the reported bug itself
+(a position cleared here does not come back from the other device, while one
+gathered since the clear does); the other direction (a clear on the other device
+drops this one's pre-clear positions, counted as `wiped` and never as `dropped`);
+`max` in both orders; a tombstone still winning over a newer-than-the-mark
+position; the mark riding the wire and coming back; and a payload with no mark
+behaving byte-identically to the pre-v0.156.0 merge.
+
+**Three controls, run 2026-08-30**, each failing on exactly its own assertions:
+
+| control | fails |
+|---|---|
+| the merge ignores the mark (the bug as reported) | 7 |
+| only the remote side is filtered (defends, does not propagate) | 2 |
+| the mark does not ride the wire | 2 |
+
+**NOT verified live.** The carrier course for syncing is not chosen on this
+profile — the Sync button answers *"Choose a course for syncing on the options
+page first"* — and setting one up writes a new informational card into one of the
+user's own courses, which is their choice to make and not a test fixture. So the
+merge is proven by execution and the plumbing around it (`st.clearedAt` through
+load, save, pack and `syncStore`) is not.
+
+**Already-restored positions are not repaired retroactively.** Anyone whose clear
+was undone by a sync before this fix has those positions back in their store;
+clearing again is what removes them, and this time it holds.

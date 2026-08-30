@@ -3619,6 +3619,20 @@ Currently working (v0.18.x).
     - `saveStore` NOW DELETES AN EMPTY SLICE rather than writing `{}`. Only a
       clear or a fully aged-out course produces one, and in both the honest
       record is "nothing stored", not "a store containing nothing".
+    - A CLEAR MUST BE SYNCED, AND NOT WITH TOMBSTONES (§22.6, v0.156.0). A
+      cleared position is ABSENT, and absent is what §14.12's union merge fills
+      in from the other device — so clearing and then syncing silently undid the
+      clear. Tombstoning them is the WRONG fix twice over: `stormDone` reads
+      that list as a 60-day RETIREMENT horizon, so it would block the re-gather
+      the clear is asking for. Instead a per-course HIGH-WATER TIMESTAMP
+      (`st.clearedAt`, `cl` in the same per-course record as the tombstones and
+      on the wire), merged by `max` and applied in BOTH directions — a remote
+      entry older than it is not taken, and a LOCAL entry older than it is
+      dropped. One direction alone only defends the device that pressed the
+      button. `wiped` is counted apart from `dropped`, whose sentence means
+      "already learned elsewhere". No `wireVersion` bump: absence reads as 0.
+      Its one cost is CLOCK SKEW — a position gathered on a device whose clock
+      is behind, moments after a clear on one ahead, is re-gathered.
 
   * A SET'S ANSWERS ARE LABELLED, NOT SEGREGATED (§21, v0.154.0). §15's counters
     gained ONE integer, `s` — how many of `n` were answered WITHOUT A CLOCK — and
@@ -3869,7 +3883,8 @@ After touching section 27's producer — `stormFrontiers`, `stormDrawFrontier`,
 `stormWalkGame`, `stormRandomLine` or `stormCard` — or the verdict line it
 prints (`stormCp`, `stormVerdictLine`, `stormBestLine`), or the position store
 and its wire (`stormPack`, `stormUnpack`, `stormRetain`, `stormWirePack`,
-`stormWireUnpack`, `stormWireMerge`) — or §20's LEAD-IN (`stormAdvance`'s
+`stormWireUnpack`, `stormWireMerge`, and §22.6's `clearedAt` high-water mark,
+whose absence lets the next sync silently undo a clear) — or §20's LEAD-IN (`stormAdvance`'s
 `before`, `stormWalkGame`'s and `stormFrontiers`'s `lastFen`, the third element
 of `stormPack`/`stormUnpack`'s `a`, and `analysisGiven`), whose one failure mode
 is an analysis board opening a ply short with the wrong side to move — a board
