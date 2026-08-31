@@ -120,7 +120,12 @@ plan's own next `sourceFen`.
 
 Replays the cards the user has already answered correctly **this session**, so a
 session gets to the new material instead of re-proving a shared prefix. Its own
-toggle on the row (`cloShowGradeAutoPlay`); the record itself stays section 13's
+toggle on the row (`cloShowGradeAutoPlay`, **opt-OUT since v0.160.0**, absent =
+ON — it can only ever replay a card the user has ALREADY got right this
+sitting, and §13's record is `storage.session` with a 12 h TTL, so on a fresh
+session it has nothing to replay and does nothing; what it cannot do is answer
+an unproven card, which is what would make a default-on setting cost the user
+scheduling); the record itself stays section 13's
 and this only asks, through `autoPlayIsProven(fen, uci)`. The FEN handed in is
 always the lesson plan's own `sourceFen`, which is exact — so this needs none of
 the tracker's heuristics.

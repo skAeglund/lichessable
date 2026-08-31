@@ -2191,8 +2191,13 @@ Currently working (v0.18.x).
   only from the first key move on — so you arrive at a position with no memory of
   how you got there. This replays those plies on OUR board, at a pace a human can
   follow, with Chessable's covered, and hands over standing on the card the
-  trainer is asking. Opt-IN (`cloKeyLeadIn`), its own speed (`cloKeyLeadInSpeed`),
-  both in section 23's cog.
+  trainer is asking. OPT-OUT since v0.160.0 (`cloKeyLeadIn`, absent = ON; the
+  `cloShowGrade` shape, and exact rather than a guess about absence because the
+  cog writes the boolean either way), at the FASTEST of its three speeds
+  (`cloKeyLeadInSpeed`, default `brisk`), both in section 23's cog. Defaulting
+  it on costs a user who does not study Key Moves nothing at all: §2's gate is a
+  property of the lesson plan and is false on every variation of an All Moves
+  session by construction.
   **READ `DESIGN-key-move-leadin.md` BEFORE CHANGING ANYTHING HERE** — §2 is the
   gate and the live ground truth it rests on; §5.1 is which plies get replayed
   (a run-up shared with the one just watched is not shown twice, and only a

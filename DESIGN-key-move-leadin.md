@@ -28,7 +28,17 @@ Two properties make it cheap and safe, and everything else follows from them:
   something, not asked. That is why it uncovers by itself rather than waiting for
   a press.
 
-Opt-IN: `cloKeyLeadIn`, with `cloKeyLeadInSpeed`, both in section 23's cog.
+OPT-OUT since v0.160.0: `cloKeyLeadIn` (absent = ON), with `cloKeyLeadInSpeed`
+(default `brisk`, the fastest of the three), both in section 23's cog. It was
+opt-IN because it was new. What makes defaulting it on safe is §2's gate: it is
+a property of the lesson plan — a ply of the study colour sitting before the
+first `isUserMove` ply — and is false on every variation of an All Moves session
+by construction, so a user who does not study Key Moves sees no change whatever.
+And `brisk` rather than `normal` because these plies are a REMINDER of how the
+position was reached, not a lesson: the user has seen them before, often minutes
+ago in the same session, and the replay is a delay in front of the card they are
+here to answer. The two slower presets stay for reading along rather than
+recognising.
 
 ---
 

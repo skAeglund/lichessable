@@ -711,7 +711,14 @@
       // the editor because what it draws must be what Chessable renders.
       arrowHeadScale: 0.75,
       // --- auto-play (this mode's own, independent of section 13's toggle) ---
-      autoKey: 'cloShowGradeAutoPlay', // chrome.storage.local; opt-IN
+      // OPT-OUT since v0.160.0, the same shape and the same reasoning as
+      // `leadKey` below: it replays only cards ALREADY ANSWERED CORRECTLY THIS
+      // SESSION and hands back at the first unproven move (§13's record is what
+      // it reads, and that record is `storage.session` with a 12 h TTL), so on a
+      // fresh session it has nothing to replay and does nothing. What it can
+      // never do is answer a card the user has not already got right, which is
+      // what would make a default-on setting cost them scheduling.
+      autoKey: 'cloShowGradeAutoPlay', // chrome.storage.local; opt-OUT, absent = ON
       // The two beats of an auto-played card, so a replay reads as moves rather
       // than as a blur: reveal, look at it, then advance.
       //
@@ -827,13 +834,27 @@
       //
       // Everything about it is in DESIGN-key-move-leadin.md; §2 is the gate and
       // the live ground truth it is built on.
-      leadKey: 'cloKeyLeadIn',            // storage.local; opt-IN, absent = off
+      // OPT-OUT since v0.160.0 (`cloShowGrade`'s shape: only an explicit `false`
+      // is stored, and `setLeadOn` writes the boolean either way, so `!== false`
+      // is exact rather than a guess about absence). It was opt-IN because it
+      // was new; it costs nothing to have on, since the gate is a property of
+      // the lesson plan — a ply of the study colour sitting before the first
+      // `isUserMove` ply — which is false on every variation of an All Moves
+      // session by construction. So on a user who does not study Key Moves this
+      // default changes nothing at all, and on one who does it is the feature.
+      leadKey: 'cloKeyLeadIn',            // storage.local; opt-OUT, absent = ON
       leadSpeedKey: 'cloKeyLeadInSpeed',  // storage.local; key into leadPaces
       // ITS OWN PRESETS, and they can be faster than `paces` above: nothing here
       // waits on Chessable, so these are about what a human can follow and
       // nothing else. Milliseconds per ply, measured from the last one landing.
       leadPaces: { brisk: 320, normal: 520, relaxed: 800 },
-      defaultLeadPace: 'normal',
+      // THE FASTEST OF THE THREE (v0.160.0). These plies are a REMINDER of how
+      // the position was reached, not a lesson — the user has seen them before,
+      // often minutes ago in the same session — and the whole replay is a delay
+      // in front of the card they are actually here to answer. `normal` was the
+      // cautious opening bid; the two slower presets stay for anyone reading
+      // along rather than recognising.
+      defaultLeadPace: 'brisk',
       // HOW LONG THE TRAINER MAY STAND STILL before its clock is stopped.
       //
       // §3.3 of the design: pausing for the whole lead-in would be simpler and
@@ -31352,7 +31373,7 @@
         const stored = await chrome.storage.local.get([C.key, C.autoKey, C.paceKey,
           C.animKey, C.audioKey, C.blindfoldKey, C.rateKey, C.leadKey, C.leadSpeedKey]);
         sg.enabled = stored[C.key] !== false;
-        sg.autoPlay = stored[C.autoKey] === true;
+        sg.autoPlay = stored[C.autoKey] !== false;
         sg.pace = C.paces[stored[C.paceKey]] ? stored[C.paceKey] : C.defaultPace;
         sg.anim = typeof C.anims[stored[C.animKey]] === 'number'
           ? stored[C.animKey] : C.defaultAnim;
@@ -31360,7 +31381,7 @@
         sg.blindfold = stored[C.blindfoldKey] === true;
         sg.rate = typeof C.rates[stored[C.rateKey]] === 'number'
           ? stored[C.rateKey] : C.defaultRate;
-        sg.leadOn = stored[C.leadKey] === true;   // opt-IN, unlike the mode itself
+        sg.leadOn = stored[C.leadKey] !== false;  // opt-OUT, like the mode itself
         sg.leadPace = C.leadPaces[stored[C.leadSpeedKey]]
           ? stored[C.leadSpeedKey] : C.defaultLeadPace;
         applyAnimSetting();
@@ -31374,7 +31395,7 @@
       chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
         if (changes[C.autoKey]) {
-          sg.autoPlay = changes[C.autoKey].newValue === true;
+          sg.autoPlay = changes[C.autoKey].newValue !== false;
           if (!sg.autoPlay) clearAutoTimer();
           syncAutoUi();
         }
@@ -31399,7 +31420,7 @@
           syncAutoUi();
         }
         if (changes[C.leadKey]) {
-          sg.leadOn = changes[C.leadKey].newValue === true;
+          sg.leadOn = changes[C.leadKey].newValue !== false;
           syncAutoUi();
         }
         if (changes[C.leadSpeedKey] && C.leadPaces[changes[C.leadSpeedKey].newValue]) {
