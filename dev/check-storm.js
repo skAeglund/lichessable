@@ -1003,7 +1003,7 @@ const leadsTo = (arrived, fen) => {
 
   // --- the stop rules -----------------------------------------------------
   const unknown = await S.stormWalkGame(fFen, 'w', gameSans, () => Promise.resolve(null), C);
-  eq('an unscored position stops the walk', unknown.stop, 'ChessDB has no score here');
+  eq('an unscored position stops the walk', unknown.stop, 'nothing could score this position');
   eq('…with nothing offered', unknown.out.length, 0);
 
   const decided = await S.stormWalkGame(fFen, 'w', gameSans, book(C.decidedCp + 50), C);
@@ -1407,7 +1407,7 @@ const leadsTo = (arrived, fen) => {
   const inventedUnknown = await S.stormRandomLine(
     fFen, 'b', () => Promise.resolve(null), C, cyc, null);
   eq('an unscored position stops the invented walk too',
-    inventedUnknown.stop, 'ChessDB has no score here');
+    inventedUnknown.stop, 'nothing could score this position');
   const inventedDecided = await S.stormRandomLine(
     fFen, 'b', book(C.decidedCp + 50), C, cyc, null);
   eq('…and so does a decided one', inventedDecided.stop, 'the position is already decided');
@@ -1857,10 +1857,10 @@ const leadsTo = (arrived, fen) => {
   // measured the binding constraint as ChessDB running out rather than as
   // anything about chess, and that is a fact about a COURSE.
   const lines = S.stormFunnelLines(Object.assign({}, fn, { frontiers: 4, games: 8,
-    stops: { 'ChessDB has no score here': 11, 'the opponent erred here': 3 } }));
+    stops: { 'nothing could score this position': 11, 'the opponent erred here': 3 } }));
   eq('the breakdown leads with the line ends', /^line ends walked/.test(lines[0]), true);
   eq('…and sorts a reason table biggest first',
-    lines.findIndex((l) => /ChessDB has no score here/.test(l)) <
+    lines.findIndex((l) => /nothing could score this position/.test(l)) <
     lines.findIndex((l) => /the opponent erred here/.test(l)), true);
   eq('no funnel breaks nothing', S.stormFunnelLines(null).length, 0);
   // §14.19: reported in the console, not in the status sentence — a reason
@@ -3218,6 +3218,122 @@ const leadsTo = (arrived, fen) => {
     S.__setEnv(noPool, C);
     eq('with no course read nothing is dropped', S.dropCoveredStored(), 0);
     eq('and the store is untouched', Boolean(noPool.store.a), true);
+  }
+
+  // --- 17) the walk's scorer and its provenance (§26, v0.164.0) ------------
+  // ChessDB is no longer what ends a walk: `askScores` falls through to
+  // Stockfish where the book is ignorant. Two things about that fail SILENTLY
+  // and neither is visible from any verdict.
+  {
+    console.log('\n-- 17) the walk\'s scorer and its provenance (§26) --');
+
+    // (a) A LIST'S PROVENANCE REACHES THE STORE. `stormPack` files
+    // `cand.listDepth` as `d`, and §23's whole compatibility story is that an
+    // ABSENT `d` means a ChessDB list. So a walk that searched a position and
+    // did not record the depth stores an engine list wearing ChessDB's
+    // clothes — it still grades, still prints, and is graded by the source
+    // §23.1 measured as biased while `stormBestLine` calls it a search.
+    const scoredEng = [
+      { uci: 'e2e4', san: 'e4', score: 30 },
+      { uci: 'd2d4', san: 'd4', score: 22 },
+      { uci: 'g1f3', san: 'Nf3', score: 18 },
+      { uci: 'c2c4', san: 'c4', score: 10 },
+      { uci: 'b1c3', san: 'Nc3', score: 4 },
+      { uci: 'g2g3', san: 'g3', score: -40 },
+    ];
+    scoredEng.depth = 14;                       // as `askEngineScores` hangs it
+    const posStart = CloSan.parseFen(START_FEN);
+    const cEng = S.stormCandidate({
+      fen: START_FEN, pos: posStart, scored: scoredEng, ply: 2, userSide: 'w',
+      arrived: null, prevCapSq: null, gaveCheck: false,
+    }, C);
+    eq('an engine-scored list carries its depth onto the candidate',
+      cEng.listDepth, 14);
+    eq('...and `stormPack` files it as the entry\'s d',
+      S.stormPack(cEng, { names: ['x'], oids: ['1'] }).d, 14);
+
+    // The other half of the same rule, and the one an implementation loses:
+    // a ChessDB list has no `depth`, and its entry must carry no `d`.
+    const scoredCdb = scoredEng.map((m) => ({ ...m }));   // a plain array
+    const cCdb = S.stormCandidate({
+      fen: START_FEN, pos: posStart, scored: scoredCdb, ply: 2, userSide: 'w',
+      arrived: null, prevCapSq: null, gaveCheck: false,
+    }, C);
+    eq('a ChessDB list records no depth', cCdb.listDepth, 0);
+    eq('...and its entry carries no d, which is what says it is one',
+      S.stormPack(cCdb, { names: ['x'], oids: ['1'] }).d, undefined);
+    // …which is what `stormStoreDraw`'s `deep` term reads, so the two must
+    // still sort apart. A `listDepth` that never arrived would make every
+    // walked position look unscored and undo §23.8's ordering entirely.
+    eq('so the two are still distinguishable downstream',
+      (cEng.listDepth > 0) !== (cCdb.listDepth > 0), true);
+
+    // (b) THE CONFIG'S OWN SHAPE, asserted the way §15 asserts `deepenDepth`'s:
+    // these are the numbers whose wrong values produce a storm that runs
+    // perfectly and finds nothing.
+    const walkMultipv = num('walkMultipv');
+    const walkDepth = num('walkDepth');
+    // THE ONE THAT KILLS THE FEATURE IN SILENCE. `stormPickReject` rejects on
+    // `nScored < minScored`, and `spread5` is best-minus-FIFTH — so a list
+    // narrower than `minScored` fails EVERY candidate with "too few moves
+    // scored to rank an answer". Every walk still runs, every request is still
+    // spent, and nothing is ever stored.
+    eq('the walk searches at least as wide as `minScored` demands',
+      walkMultipv >= C.minScored, true);
+    // …and wide enough for `spread5` to be a spread of five rather than of
+    // however many came back.
+    eq('...which is also what makes spread5 a five-move spread',
+      walkMultipv >= 5, true);
+    // A WALK MUST NOT WRITE A STANDARD. §23.7: a stored list is used for as
+    // long as the position is in the store and crosses devices, so
+    // `deepenDepth` is one number for every device. The walk is deliberately
+    // shallower — its job is to decide where to step next — and the deepen
+    // pass's `undeepened` test (`d < deepenDepth`) is what later raises what a
+    // walk stored. At or above it, a walk's list would masquerade as deepened
+    // and the pass would never revisit it.
+    eq('the walk searches shallower than the deepen standard',
+      walkDepth < num('deepenDepth'), true);
+    eq('...but deep enough to be worth storing', walkDepth >= 10, true);
+
+    // (c) A FALLBACK THAT ANSWERS MUST NOT STOP THE WALK — the contract the
+    // whole change rests on, and the reason both walks take `ask` as a
+    // parameter. What is asserted is that a walk's reach is decided ENTIRELY
+    // by its scorer: hand it one that runs out and it stops, hand it one that
+    // answers and it runs its length. That is what makes `askScores`'s
+    // fall-through sufficient, with no change to either walk.
+    const flat = (fen) => {
+      const p = CloSan.parseFen(fen);
+      if (!p) return null;
+      const out = [];
+      for (const m of CloSan.generateMoves(p)) {
+        const uci = squareName(m.from) + squareName(m.to) + (m.promo || '');
+        // Scores fan out by 10cp a move, so `spread5` (best - 5th) is 40 and
+        // `spread2` is 10 — inside the pick band either way. What is being
+        // asserted here is where the WALK stops, not which positions survive.
+        out.push({ uci, san: CloSan.moveToSan(p, uci) || '', score: 20 - out.length * 10 });
+      }
+      return out.length >= 6 ? out : null;
+    };
+    let asked = 0;
+    // ChessDB-only: ignorant after two plies, exactly the shape measured live.
+    const cdbOnly = async (fen) => (++asked <= 2 ? flat(fen) : null);
+    asked = 0;
+    const short = await S.stormRandomLine(
+      START_FEN, 'w', cdbOnly, { ...C, randomMinPlies: 8, maxPly: 8 },
+      () => 0.5, null, null);
+    eq('a ChessDB-only walk stops where the book runs out',
+      short.stop, 'nothing could score this position');
+
+    // …and the same walk, with a scorer that falls through, runs its length.
+    asked = 0;
+    const hybrid = async (fen) => flat(fen);
+    const long = await S.stormRandomLine(
+      START_FEN, 'w', hybrid, { ...C, randomMinPlies: 8, maxPly: 8 },
+      () => 0.5, null, null);
+    eq('with a fallback it reaches the ply limit instead',
+      long.stop, 'the walk reached its ply limit');
+    eq('...and so yields strictly more candidates',
+      long.out.length > short.out.length, true);
   }
 
   console.log('\n' + SRC_PATH);

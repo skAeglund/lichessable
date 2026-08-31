@@ -3072,10 +3072,84 @@ Currently working (v0.18.x).
       into doing so: it runs while a review is up, and a search started there
       holds the engine claim a review retry's own grade needs — which fails as
       "the engine is already claimed", i.e. a silently ungraded retry.
-    - CHESSDB KEEPS THE WALK. The stop rules, the pick rules, `minScored` and
-      §19's uncovered source are coarse questions about whether a position is
-      INTERESTING, asked ~11 times per position at 380 ms and unaffordable any
-      other way. Every yield number in §6 is untouched. Only the grade moved.
+    - CHESSDB KEEPS THE WALK — NARROWED BY §26 (v0.164.0), read that before
+      quoting this. It is still the walk's FIRST source on the has-games path,
+      for the reason it always was (coarse questions, ~11 per position at
+      380 ms). What changed is that it is no longer the walk's LIMIT.
+  * CHESSDB IS NO LONGER WHAT ENDS A WALK (§26, v0.164.0). Measured over 60
+    frontiers on all three courses: **42 of 42** walks stopped on `ChessDB has
+    no score here` — not one hit a chess rule — and past a frontier the median
+    walk died after FOUR plies. So ChessDB's coverage, not the stop rules, was
+    bounding the whole producer. `askScores(fen, source)` is the walk's one
+    scoring primitive now and falls through to Stockfish where the book is
+    ignorant. **READ `DESIGN-intuition-storm.md` §26 BEFORE CHANGING IT.** What
+    an edit ELSEWHERE can break:
+    - IT YIELDS TO THE GRADE, and that is the rule that makes searching inside
+      a walk safe at all. §14.23's tier bails with "the engine is already
+      claimed" and answers `No verdict` — §14.22.4's silent failure — so a walk
+      holding the one `st.eng` slot while a card is being answered reintroduces
+      it from a path nobody would look at. `askEngineScores` stands down on
+      `st.grading`, `solving()` and `st.eng`, exactly as §18.2's background pass
+      already does, and the stand-downs return BEFORE `st.eScores.set` so a
+      position refused for want of an engine is retried rather than cached as
+      unscoreable.
+    - `walkMultipv` MUST BE >= `minScored`, and this is the number whose wrong
+      value kills the feature in SILENCE: `stormPickReject` rejects on
+      `nScored < minScored` (6) and `spread5` is best-minus-FIFTH, so a narrower
+      list fails EVERY candidate while every walk still runs and every request
+      is still spent. The three-to-five a move is PICKED from (`randomTopN`) is
+      a separate, narrower number. Asserted in `dev/check-storm.js` §17.
+    - `walkDepth` (14) MUST STAY BELOW `deepenDepth` (20). §23.7's standard is
+      one number for every device because a stored list outlives its search and
+      crosses devices; a walk is deciding where to step next, which is a
+      different question and a cheaper one (measured: 6PV d14 is 1.5s against
+      d20's 15.5s, agreeing to a p90 of 12cp with nothing over 25cp). At or
+      above the standard a walk's list would masquerade as deepened and
+      `undeepened` would never revisit it. Also asserted.
+    - THE PROVENANCE RIDES ON THE ARRAY. `askEngineScores` hangs `depth` off the
+      list (`askGames`'s idiom), `stormCandidate` files it as `listDepth` and
+      `stormPack` writes it as `d` — so §23's whole compatibility story is
+      unchanged: absent `d` still means a ChessDB list, and a walk can now
+      produce either. A `listDepth` that never arrives stores an engine list
+      wearing ChessDB's clothes: it still grades, still prints, and is graded by
+      the source §23.1 measured as biased while `stormBestLine` calls it a
+      search.
+    - THE REORDER IS A BRANCH, NOT A SWAP. The explorer goes first, then the
+      sources diverge — the has-games path KEEPS its ChessDB stage-0 rejection,
+      because 3 of 47 such frontiers are unknown to it and without the check
+      each spends an explorer call and two game fetches to learn what one
+      request already said. `skipUnknownFrontiers` survives with its meaning
+      narrowed to "nothing at all could score this".
+    - THE INVENTED PATH IS ALWAYS `'engine'`, whichever pass is running.
+      ChessDB is unknown at 85% of no-games frontiers — which is why that
+      fallback, though shipped since v0.130.0, had NEVER been reached outside a
+      429 storm (0 of 13 sampled). Its eval band is asked of the walk's own
+      first search, so it costs nothing extra and judges the position on its
+      merits instead of rejecting it for want of data.
+    - THE SESSION AND THE GATHER USE DIFFERENT SOURCES, §14.17.3's precedent:
+      `walkSource: 'hybrid'` for the producer (the user is waiting, and it
+      shares the engine with the grade), `gatherWalkSource: 'engine'` for the
+      gather and background passes (nobody waiting, wake lock held, and every
+      position stored comes out engine-scored). A position's list is always
+      ENTIRELY one source, which is what keeps §3.4's cross-evaluator hazard out
+      of a candidate — `spread2`, `spread5` and `randomTopCp` all compare within
+      one list.
+    - `stormEngineList` IS SHARED BY TWO PASSES NOW, AND THE STATUS LINE TELLS
+      THEM APART BY `job.walk` — never by `kind`, which is `'list'` for both and
+      is what the list machinery keys on. The deepen pass and the walk's own
+      scorer both claim the one `st.eng` slot, so from v0.164.0 to v0.164.1 every
+      walk search repainted `setDeepenNote`: mid-gather the panel read
+      "Analysing… 16 left, depth 20" while a depth-14 WALK search ran, and the
+      elapsed figure §23.7 added — the only thing on screen separating a long
+      deepen search from a stuck one — was reset by each of them, so a real 207 s
+      search looked like a run of 2 s ones. Nothing errored and every counter
+      beside it stayed correct, which is why `node --check` and
+      `dev/check-storm.js` both passed it. Anything else that comes to share this
+      primitive must say which pass it is, in `bail()`'s wording too.
+    - §6'S YIELD NUMBERS NOW DESCRIBE A DIFFERENT WALK. They were measured
+      against one that died at ply 4; walks now run to their length, so
+      `maxPly`, `blunderCp` and `decidedCp` are being reached for the first
+      time. Treat §6.1's figures as a floor until `dev/probe-storm.js` is re-run.
   * **IT MUST NEVER CALL CHESSDB'S `queue` OR `store`, and this is the single
     most tempting place in the codebase to break that rule.** The walk stops on
     `unknown` ten to twelve times per fourteen frontiers, and "ask them to
@@ -4136,6 +4210,28 @@ restores the store dealing positions the user has already prepared:
 ```
 node dev/check-storm.js
 ```
+
+…and after touching §26's WALK SCORER — `askScores`, `walkScorer`,
+`askEngineScores`, `harvestFrontier`'s explorer-first branch, `stormCandidate`'s
+`listDepth`, or `CONFIG.storm`'s `walkDepth` / `walkMultipv` / `walkSource` /
+`gatherWalkSource` / `inventedWalkSource` / `walkEngineMax`. Three failure modes,
+all silent. A `walkMultipv` below `minScored` fails EVERY candidate on "too few
+moves scored to rank an answer" while every walk still runs and every request is
+still spent — the storm simply finds nothing, on a course that looks like one
+ChessDB does not know. A `walkDepth` at or above `deepenDepth` files a walk's
+shallow list under §23.7's standard, where `undeepened` will never revisit it. And
+a `listDepth` that does not reach `stormPack` stores an engine list with no `d`,
+which grades as ChessDB's — the source §23.1 measured as biased — while
+`stormBestLine` calls it a search. Controls run 2026-08-31, each failing on
+exactly its own assertions and no others: `listDepth` never recorded → 3;
+`walkMultipv` narrowed to 4 → 2; `walkDepth` raised to 20 → 1.
+
+`dev/probe-nogames-cdb.js` is the measurement §26 rests on and the cheapest way
+to re-ask it of a new course: it slices the shipped `stormFrontiers` and
+`stormRandomLine`, runs them against the live APIs, and reports how far a walk
+gets past a frontier with games against one without. It forces the random line
+length to `maxPly` on purpose — a walk that ran out of its own dice roll is
+otherwise indistinguishable from one that ran out of ChessDB.
 
 …and after touching §23's STORED STOCKFISH LIST — `stormPack`/`stormUnpack`'s
 `d`, the wire's `d`, `stormWireMerge`'s deeper-list rule, or `stormEstimated` /

@@ -1604,11 +1604,72 @@
       // frontiers and about six of its 26 scored ones.
       userLoCp: -100,
       userHiCp: 200,
-      // A frontier ChessDB cannot score at all is SKIPPED rather than offered
-      // unfiltered (§7's "separate small decision"). It is nearly free to skip:
-      // the walk's own `unknown` stop would kill such a line on ply 1 anyway,
-      // after an explorer request and two game fetches spent to learn nothing.
+      // A frontier NOTHING can score is skipped rather than offered
+      // unfiltered (§7's "separate small decision").
+      //
+      // §26) IT USED TO MEAN "ChessDB cannot score it", and it ran BEFORE the
+      // explorer — which is what made the no-games fallback unreachable: 85% of
+      // no-games frontiers are unknown to ChessDB, so they were dropped here
+      // before `stormRandomLine` was ever considered (measured, §26.1). Now the
+      // scorer falls back to Stockfish, so this fires only when the engine also
+      // declines — a claimed engine, an unreadable position, a spent budget.
       skipUnknownFrontiers: true,
+
+      // --- the walk's SCORER (§26, v0.164.0) ------------------------------
+      // CHESSDB MUST NEVER STOP A WALK. Measured 2026-08-31 over 60 frontiers
+      // on all three courses: 42 of 42 walks stopped on `ChessDB has no score
+      // here` and NOT ONE hit a chess rule — so ChessDB's coverage, not the
+      // stop rules, was the binding constraint on the entire producer. Past a
+      // frontier the median walk died after 4 plies.
+      //
+      // So `askScores` is the walk's one scoring primitive and it has a
+      // FALLBACK: where ChessDB is ignorant, Stockfish answers. The list comes
+      // back in `queryall`'s own shape either way, which is why both walks,
+      // `stormCandidate` and every pick rule are unchanged.
+      //
+      // DEPTH 14 AT MULTIPV 6, and both numbers are measurements
+      // (`dev/probe-gather-cost.js`, 8 positions / 43 shared moves, on
+      // CONFIG.engine's own desktop profile):
+      //
+      //     6PV d14   1.5s median (p90 1.9s)   vs d20: median 6cp, p90 12cp,
+      //     6PV d16   3.5s                     ZERO moves more than 25cp apart
+      //     6PV d20  15.5s
+      //
+      // The walk's coarsest decision is `randomTopCp` (40) and its stops are
+      // `blunderCp` (150) and `decidedCp` (250), so a 12cp p90 error cannot
+      // flip any of them. d20 costs ten times as much and buys nothing HERE —
+      // it is the right depth for `deepenDepth`, which writes a STANDARD that
+      // outlives the walk, and the wrong one for deciding where to step next.
+      walkDepth: 14,
+      // SIX, NOT the three-to-five a move is picked from. `stormPickReject` has
+      // `minScored: 6` and `spread5` is best-minus-FIFTH, so a five-wide list
+      // rejects every candidate with "too few moves scored to rank an answer" —
+      // silently, and the whole path would yield nothing while looking like it
+      // ran. The pick band (`randomTopN`) is a separate, narrower number.
+      walkMultipv: 6,
+      // WHICH SOURCE EACH PASS WALKS WITH. Two values, and the two passes pay
+      // with different things — `gatherGamesPerFrontier`'s precedent (§14.17.3):
+      //
+      //   'engine' — Stockfish only. Every position stored comes out
+      //              engine-scored with a real `d`, so §23's `sflist` grade and
+      //              `stormStoreDraw`'s `deep` term apply from birth.
+      //   'hybrid' — ChessDB first, Stockfish on a miss. Same answer, cheaper
+      //              on the plies ChessDB does know, and it never holds the
+      //              engine the grading tier may want next.
+      //
+      // A SESSION is latency-bound (the user is waiting for a first card) and
+      // shares the engine with §14.23's grade, so it is 'hybrid'. A GATHER has
+      // nobody waiting and holds a wake lock (§24), so it is 'engine'.
+      walkSource: 'hybrid',
+      gatherWalkSource: 'engine',
+      // …AND THE INVENTED PATH IS ALWAYS 'engine', whichever pass is running.
+      // ChessDB is unknown at 85% of no-games frontiers, so asking it first is
+      // a wasted request nearly every time (§26.1).
+      inventedWalkSource: 'engine',
+      // Searches ONE pass may spend, the engine's answer to `gatherMaxCdb`. A
+      // walk that runs to `maxPly` now that nothing stops it is ~16 searches,
+      // so this is roughly 25 frontiers' worth on the invented path.
+      walkEngineMax: 400,
 
       // --- stage 1: the games --------------------------------------------
       gamesPerFrontier: 2,
@@ -34875,6 +34936,14 @@
       // --- caches and budget (§9) -------------------------------------------
       cdb: new Map(),    // cacheKey → scored[] | null ("null" = asked, unknown)
       cdbCount: 0,
+      // §26) The WALK's own engine-scored lists, in the same shape and beside
+      // the ChessDB ones rather than in with them: an entry here carries a
+      // `depth` and one there does not, and that difference is what becomes a
+      // stored entry's `d`. Sharing one map would make a position's provenance
+      // depend on which source happened to fill it first.
+      eScores: new Map(), // cacheKey → scored[] (with .depth) | null
+      engCount: 0,        // searches this pass has spent (`walkEngineMax`)
+      engExhausted: false,
       // §19) The explorer's MOVE list per decision point, which is the
       // uncovered source's one explorer request — cached because a course
       // regularly answers the same position from several lines, and because a
@@ -36539,6 +36608,12 @@
         inCheck: Boolean(ctx.gaveCheck),
         recapture: ctx.prevCapSq != null && scored[0].uci.slice(2, 4) === ctx.prevCapSq,
         scored,
+        // §26) WHAT SEARCHED THIS LIST, hung off the array by `askEngineScores`
+        // and absent on a ChessDB one — which `stormPack` files as the entry's
+        // `d`, so §23's whole compatibility story reads exactly as before: no
+        // `d` means a ChessDB list, and now a walk can produce either.
+        listDepth: (typeof scored.depth === 'number' && scored.depth > 0)
+          ? scored.depth : 0,
         userColor: ctx.userSide,
         arrived: ctx.arrived || null,
         invented: Boolean(ctx.invented),
@@ -36676,7 +36751,7 @@
           break;
         }
         const scored = await ask(fen);
-        if (!scored || !scored.length) { stop = 'ChessDB has no score here'; break; }
+        if (!scored || !scored.length) { stop = 'nothing could score this position'; break; }
 
         const best = scored[0].score;
         if (Math.abs(best) > C.decidedCp) { stop = 'the position is already decided'; break; }
@@ -36752,7 +36827,7 @@
           break;
         }
         const scored = await ask(fen);
-        if (!scored || !scored.length) { stop = 'ChessDB has no score here'; break; }
+        if (!scored || !scored.length) { stop = 'nothing could score this position'; break; }
         const best = scored[0].score;
         if (Math.abs(best) > C.decidedCp) { stop = 'the position is already decided'; break; }
 
@@ -37265,6 +37340,102 @@
     }
 
     /**
+     * §26) THE SAME SCORED LIST, FROM STOCKFISH — the walk's other source.
+     *
+     * `stormEngineList` already returns exactly `queryall`'s shape (mover's
+     * perspective, best first), which is the whole reason nothing downstream
+     * had to change for this: §23 built that primitive for the deepen pass and
+     * it serves the walk unaltered, at a different depth and width.
+     *
+     * IT ANSWERS null RATHER THAN WAITING when the engine is claimed. The
+     * grading tier (§14.23) and the deepen pass share the one `st.eng` slot,
+     * and a walk is the lowest-priority thing here — so a busy engine degrades
+     * this to exactly the behaviour that shipped before it existed (the walk
+     * stops), which is safe, rather than to a queue that could delay a verdict
+     * the user is waiting on.
+     *
+     * THE DEPTH RIDES OUT ON THE ARRAY, `askGames`'s own idiom: every caller
+     * wants the moves and one — `stormCandidate`, which files it as the
+     * entry's `d` — wants to know what searched them. Absence there still
+     * means "a ChessDB list" (§23's compatibility story, unchanged).
+     */
+    async function askEngineScores(fen) {
+      const ck = cacheKey(fen);
+      if (st.eScores.has(ck)) return st.eScores.get(ck);
+      if (st.engCount >= C.walkEngineMax) {
+        if (!st.engExhausted) log('storm: walk search budget spent —', st.engCount);
+        st.engExhausted = true;
+        return null;
+      }
+      // §26) IT YIELDS TO THE GRADE, and this is the rule that makes searching
+      // in a walk safe at all. §14.23's tier bails with "the engine is already
+      // claimed" and answers `No verdict` — the silent failure §14.22.4 spent
+      // four releases on — so a walk holding the one `st.eng` slot while a card
+      // is being answered would reintroduce it from the other side.
+      //
+      // §18.2's background pass already stands down on exactly these two, for
+      // exactly this reason; the difference is only that this one is reached
+      // from the producer as well. `st.grading` is a grade in flight and
+      // `solving()` is a card on the board, whose answer can arrive at any
+      // moment — so a walk waits for the space between cards, or for a gather,
+      // where nobody is holding anything.
+      if (st.grading || solving()) return null;
+      if (st.eng) return null;
+      st.engCount++;
+      let out = null;
+      try {
+        const got = await stormEngineList(fen, {
+          depth: C.walkDepth, multipv: C.walkMultipv, walk: true,
+        });
+        if (got && got.moves && got.moves.length) {
+          out = got.moves;
+          out.depth = got.depth;
+        }
+      } catch (err) {
+        warn('storm: the walk could not search', fen, err);
+      }
+      if (st.eScores.size >= C.cdbCacheMax) {
+        st.eScores.delete(st.eScores.keys().next().value);
+      }
+      st.eScores.set(ck, out);
+      return out;
+    }
+
+    /**
+     * §26) THE WALK'S ONE SCORING PRIMITIVE, and the reason a walk no longer
+     * ends where ChessDB's knowledge does.
+     *
+     * `source` is 'engine' or 'hybrid' (see `CONFIG.storm.walkSource`). Hybrid
+     * asks ChessDB first and falls through to the engine on a MISS — never on
+     * a transport failure, which is a fact about the network rather than about
+     * the position and would spend a search to learn nothing.
+     *
+     * A POSITION'S LIST IS ALWAYS ENTIRELY ONE SOURCE, which is what makes
+     * hybrid safe: `spread2`, `spread5` and `randomTopCp` are all comparisons
+     * WITHIN one list, so §3.4's cross-evaluator hazard never arises inside a
+     * candidate. What mixing costs is only that two positions in one walk may
+     * have been admitted by evaluators with a known ~11cp systematic offset
+     * (§23.1) — a real effect on 60cp and 300cp thresholds, and a small one.
+     * `walkSource: 'engine'` is the one-word way to remove even that.
+     */
+    function askScores(fen, source) {
+      if (source === 'engine') return askEngineScores(fen);
+      return askCdb(fen).then((got) => {
+        if (got && got.length) return got;
+        // A MISS, not a failure: `askCdb` answers null for both, but it only
+        // caches a genuine miss — so a position it declined for transport
+        // reasons is absent from its cache and is retried rather than searched.
+        if (!st.cdb.has(cacheKey(fen))) return null;
+        return askEngineScores(fen);
+      });
+    }
+
+    /** The scorer one pass walks with, bound to a source. */
+    function walkScorer(source) {
+      return (fen) => askScores(fen, source);
+    }
+
+    /**
      * The real games that passed through a frontier.
      *
      * IT RELAXES THE USER'S OWN FILTERS, and this is the one place in the
@@ -37453,7 +37624,7 @@
     function stormEngineList(fen, opts) {
       const o = opts || {};
       const bail = (why) => {
-        log('storm: deepen stood down —', why);
+        log('storm: ' + (o.walk ? 'walk search' : 'deepen') + ' stood down —', why);
         return Promise.resolve(null);
       };
       if (st.eng) return bail('the engine is already claimed');
@@ -37468,6 +37639,14 @@
       return new Promise((resolve) => {
         const job = {
           kind: 'list',
+          // §26) WHICH PASS ASKED. Both the deepen pass and the walk's own
+          // scorer create a `kind: 'list'` job, and until v0.164.1 the status
+          // line told them apart by that alone — so every walk search repainted
+          // `setDeepenNote`, which then named `deepenDepth` over a depth-14
+          // search and reset the elapsed figure that exists to separate a long
+          // deepen search from a stuck one (§23.7). The list machinery still
+          // keys on `kind`; this only says who is holding it.
+          walk: Boolean(o.walk),
           reqId: 'sl' + Date.now() + '-' + (++st.engSeq),
           phase: 'list',
           moverColor: pos.side,
@@ -38033,23 +38212,20 @@
       // has ACHIEVED something, so this is the rule that actually bites.
       const fn = st.funnel;
       stormFunnelBump(fn, 'frontiers');
-      const scored = await askCdb(f.fen);
-      if (!scored) {
-        // A frontier ChessDB cannot score is skipped rather than offered
-        // unfiltered: the walk's own `unknown` stop would kill it on ply 1
-        // anyway, after an explorer call and two game fetches spent to learn
-        // nothing.
-        if (C.skipUnknownFrontiers) { stormFunnelBump(fn, 'unscored'); return []; }
-      } else {
-        const stm = String(f.fen).split(' ')[1] === 'b' ? 'b' : 'w';
-        const evalUser = stormUserEval(scored[0].score, stm, f.side);
-        if (evalUser < C.userLoCp || evalUser > C.userHiCp) {
-          stormFunnelBump(fn, 'offBand');
-          log('storm: skipping', f.names[0], '— frontier eval', (evalUser / 100).toFixed(2));
-          return [];
-        }
-      }
 
+      // §26) THE EXPLORER GOES FIRST, and this is a BRANCH rather than a swap
+      // of the two requests. The old order asked ChessDB before the explorer,
+      // on the argument that a frontier it could not score would die on ply 1
+      // anyway — which was true of a ChessDB-only walk and is what made the
+      // no-games fallback unreachable (§26.1: 85% of no-games frontiers are
+      // unknown to ChessDB, so 0 of 13 sampled ones ever reached it).
+      //
+      // A PLAIN SWAP WOULD BE WRONG. The has-games path still walks with
+      // ChessDB where it can, so its cheap rejection still earns its place —
+      // measured, 3 of 47 has-games frontiers are unknown to ChessDB, and
+      // without the check those spend an explorer call and two game fetches to
+      // learn what one request already said. So: explorer first, then the
+      // sources diverge.
       let games = [];
       try {
         games = await askGames(f.fen, st.mastersOnly);
@@ -38065,20 +38241,60 @@
       // gather pass says what kind of material it spent its budget on (§14.17.2).
       stormFunnelWhy(fn, 'reach', stormReachLabel(f.games));
       // NO GAMES AT ALL, which §6.4 measured at 5 of 14 frontiers even with the
-      // filters relaxed. Rather than lose the line, invent a continuation from
-      // ChessDB's own best moves — a fallback and never a preference, since a
-      // position somebody actually reached is what this feature is about.
+      // filters relaxed. Rather than lose the line, invent a continuation — a
+      // fallback and never a preference, since a position somebody actually
+      // reached is what this feature is about.
+      //
+      // §26) ON STOCKFISH, ALWAYS, whichever pass is running. ChessDB is
+      // unknown at 85% of these frontiers by measurement, so asking it first is
+      // a wasted request nearly every time — and its eval band, below, would
+      // reject the position for want of data rather than on its merits. The
+      // band is asked of the engine's own first search instead, which the walk
+      // was going to make anyway and which `askEngineScores` caches.
       if (!games.length) {
         stormFunnelBump(fn, 'noGames');
         if (!C.randomFallback) return [];
+        const ask = walkScorer(C.inventedWalkSource);
+        const seed = await ask(f.fen);
+        if (!seed || !seed.length) {
+          stormFunnelBump(fn, 'unscored');
+          stormFunnelWhy(fn, 'stops', 'nothing could score the frontier');
+          return [];
+        }
+        const stmR = String(f.fen).split(' ')[1] === 'b' ? 'b' : 'w';
+        const evalR = stormUserEval(seed[0].score, stmR, f.side);
+        if (evalR < C.userLoCp || evalR > C.userHiCp) {
+          stormFunnelBump(fn, 'offBand');
+          log('storm: skipping', f.names[0], '— frontier eval', (evalR / 100).toFixed(2));
+          return [];
+        }
         const walked = await stormRandomLine(
-          f.fen, f.side, askCdb, cfg(), Math.random,
+          f.fen, f.side, ask, cfg(), Math.random,
           f.lastUci ? { san: f.lastSan || '', uci: f.lastUci, before: f.lastFen || null } : null,
           frontierCovered(f));
         stormFunnelWhy(fn, 'stops', walked.stop);
         log('storm: no games at', f.names[0], '— invented a line,', walked.out.length,
           'position(s) considered (' + walked.stop + ')');
         return harvestCandidates(walked.out, f, storeOnly);
+      }
+
+      // THE HAS-GAMES PATH keeps its cheap stage-0 rejection (see the branch
+      // note above), but a MISS no longer sinks the frontier: `askScores` falls
+      // through to the engine, so `skipUnknownFrontiers` now fires only when
+      // nothing at all could score the position.
+      const askGame = walkScorer(st.gathering || storeOnly
+        ? C.gatherWalkSource : C.walkSource);
+      const scored = await askGame(f.fen);
+      if (!scored || !scored.length) {
+        if (C.skipUnknownFrontiers) { stormFunnelBump(fn, 'unscored'); return []; }
+      } else {
+        const stm = String(f.fen).split(' ')[1] === 'b' ? 'b' : 'w';
+        const evalUser = stormUserEval(scored[0].score, stm, f.side);
+        if (evalUser < C.userLoCp || evalUser > C.userHiCp) {
+          stormFunnelBump(fn, 'offBand');
+          log('storm: skipping', f.names[0], '— frontier eval', (evalUser / 100).toFixed(2));
+          return [];
+        }
       }
 
       const cards = [];
@@ -38104,7 +38320,7 @@
         const sans = await askPgn(g.id, st.mastersOnly);
         if (!sans) { stormFunnelBump(fn, 'gamesFailed'); continue; }
         const walked = await stormWalkGame(
-          f.fen, f.side, sans, askCdb, cfg(), frontierCovered(f));
+          f.fen, f.side, sans, askGame, cfg(), frontierCovered(f));
         // A game the explorer named for this position but whose moves do not
         // pass through it — the walk's own `found` — is not a walk, so it is
         // counted as unusable rather than as one that found nothing.
@@ -38174,10 +38390,16 @@
           stormFunnelWhy(fn, 'stops', 'your own course answers this position');
           continue;
         }
-        const scored = await askCdb(step.fen);
+        // §26) THROUGH THE SHARED SCORER, so this source loses a position only
+        // when NOTHING can score it. It is the same rule as the frontier walk's
+        // and it is here for the same reason — a gap the course never answers
+        // is not less worth asking about because ChessDB has not heard of the
+        // position it leads to.
+        const scored = await askScores(step.fen, st.gathering || storeOnly
+          ? C.gatherWalkSource : C.walkSource);
         if (!scored || !scored.length) {
           stormFunnelBump(fn, 'unscored');
-          stormFunnelWhy(fn, 'stops', 'ChessDB has no score here');
+          stormFunnelWhy(fn, 'stops', 'nothing could score this position');
           continue;
         }
         stormFunnelBump(fn, 'games');
@@ -39025,6 +39247,13 @@
       // Its own ceiling, far above a session's: this IS the long burst, and it
       // is the one the user asked for by name.
       st.cdbCount = 0;
+      // §26) …and the walk's search budget, which is per PASS for the same
+      // reason. The scored LISTS are deliberately not dropped with it: a search
+      // costs seconds where a request costs milliseconds, so re-searching a
+      // position this tab has already answered is the one waste worth carrying
+      // a cache across passes to avoid.
+      st.engCount = 0;
+      st.engExhausted = false;
       render();
       try {
         if (!st.store) await loadStore();
@@ -39441,7 +39670,7 @@
       // that is nearly finished, and this is the only thing on screen that can
       // tell the two apart. Read off the live job, so it advances as the poll
       // re-renders.
-      const on = (st.eng && st.eng.kind === 'list' && st.eng.startedAt)
+      const on = (st.eng && st.eng.kind === 'list' && !st.eng.walk && st.eng.startedAt)
         ? ' · ' + Math.round((Date.now() - st.eng.startedAt) / 1000) + 's on this one'
         : '';
       setNote('Analysing… ' + st.deepened + ' position(s) scored by Stockfish, ' +
@@ -39573,6 +39802,8 @@
       st.mastersOnly = false;
       st.cdb = new Map();
       st.cdbCount = 0;
+      st.engCount = 0;     // §26
+      st.engExhausted = false;
       st.mv = new Map();   // §19
       if (spec.source) applyStormSource(spec.source);
       // §14.24) THE BACKGROUND BUDGET IS PER WINDOW, and this is the window
@@ -42041,7 +42272,12 @@
       // on screen that separates a long search from a stuck one, and it has to
       // be redrawn to say anything.
       if (st.gathering) {
-        if (st.eng && st.eng.kind === 'list') setDeepenNote(); else setGatherNote();
+        // §26) `!walk`: the walk's own scorer holds the same `kind: 'list'`
+        // slot, and a search made while WALKING is part of gathering — saying
+        // "Analysing… depth 20" over it names the wrong pass, the wrong depth
+        // and the wrong clock.
+        if (st.eng && st.eng.kind === 'list' && !st.eng.walk) setDeepenNote();
+        else setGatherNote();
         render();
         return;
       }

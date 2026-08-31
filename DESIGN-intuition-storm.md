@@ -5393,3 +5393,249 @@ was — and the chip now says what it will be.
 
 **The background top-up (§18.2) still does not deepen**, for §23.6's reason, so
 positions it finds sort behind until the next gather reaches them.
+
+---
+
+## 26. ChessDB stops being what ends a walk (v0.164.0)
+
+**READ THIS BEFORE CHANGING `askScores`, `walkScorer`, `harvestFrontier`'s
+branch, or `CONFIG.storm`'s `walk*` numbers.**
+
+§23 moved the GRADE off ChessDB and left an explicit ruling behind: *CHESSDB
+KEEPS THE WALK* — the stop rules and the pick rules are coarse questions asked
+~11 times per position at 380 ms, and unaffordable any other way. This section
+is that ruling being narrowed, on a measurement that was not available when it
+was written.
+
+### 26.1 The measurement that forced it
+
+`dev/probe-nogames-cdb.js`, 2026-08-31 — the shipped `stormFrontiers` and
+`stormRandomLine` sliced out and run against the live APIs, over 60 frontiers on
+all three courses (368 ChessDB requests). The random line length is forced to
+`maxPly` so a walk's own dice roll cannot be mistaken for ChessDB running out.
+
+| | frontier **unknown** to ChessDB | reached the walk |
+|---|---|---|
+| **0 explorer games** (13 frontiers) | **11 (85%)** | **0** |
+| has games (47 frontiers) | 3 (6%) | 42 |
+
+Two findings, and the second is much the larger:
+
+**§6.4's no-games fallback was unreachable.** Not one of the thirteen 0-games
+frontiers ever got as far as `stormRandomLine`: eleven were dropped by
+`skipUnknownFrontiers`, which ran *before* the explorer, and the other two
+failed the stage-0 eval band. The fallback has existed since v0.130.0 and, on
+this account's courses, has only ever run when the explorer rate-limited
+(§14.22.3, where 62 line ends fell through it and the pass stored **1 position
+for 86 requests**).
+
+**ChessDB's coverage, not the stop rules, bounded the entire producer.** All
+**42 of 42** walks stopped on `ChessDB has no score here`. Not one hit
+`blunderCp`, `decidedCp`, the re-entry stop or the ply limit. Past a frontier
+the median walk died after **4 plies** — so `maxPly: 16`, every pick rule and
+every stop rule had been running against a walk that almost never reached them.
+
+The 0-games frontiers are overwhelmingly deep model-game endpoints. So "no
+games" and "unknown to ChessDB" share a cause — the position is deep and
+obscure — rather than one causing the other. That does not change what to do
+about it.
+
+### 26.2 What replaces it
+
+`askScores(fen, source)` is the walk's one scoring primitive, and it never
+answers "unknown" while anything can score the position:
+
+* **`'engine'`** — Stockfish only, through §23's own `stormEngineList`, which
+  already returns `queryall`'s exact shape. That is the whole reason both walks,
+  `stormCandidate` and every pick rule are **unchanged**.
+* **`'hybrid'`** — ChessDB first, Stockfish on a MISS. Never on a transport
+  failure: that is a fact about the network, not about the position, and would
+  spend a search to learn nothing. (`askCdb` caches only a genuine miss, which
+  is how the two are told apart.)
+
+**A position's list is always entirely one source**, which is what makes hybrid
+safe. `spread2`, `spread5` and `randomTopCp` are comparisons *within* one list,
+so §3.4's cross-evaluator hazard cannot arise inside a candidate. What mixing
+costs is only that two positions in one walk may have been admitted by
+evaluators with §23.1's known ~11cp offset between them — a real effect on 60cp
+and 300cp thresholds, and a small one. `walkSource: 'engine'` removes even that.
+
+**Which pass uses which** is `gatherGamesPerFrontier`'s precedent (§14.17.3) —
+the two passes pay with different things:
+
+| pass | source | why |
+|---|---|---|
+| session producer | `hybrid` | the user is waiting for a first card, and it shares the engine with §14.23's grade |
+| gather / background | `engine` | nobody waiting, a wake lock held (§24), and every position stored comes out engine-scored with a real `d` |
+| the invented path | `engine` **always** | ChessDB is unknown at 85% of these frontiers; asking it first is a wasted request nearly every time |
+
+### 26.3 The depth and the width are both measurements
+
+`dev/probe-gather-cost.js`, 2026-08-31, 8 positions / 43 shared moves, on
+`CONFIG.engine`'s own desktop profile (4 threads, 64 MB — not the machine's
+core count):
+
+| cell | median | p90 | vs 6PV d20 |
+|---|---|---|---|
+| **6PV d14** | **1.5s** | 1.9s | median 6cp, p90 12cp, **0 moves >25cp apart** |
+| 6PV d16 | 3.5s | 3.8s | median 5cp, p90 12cp |
+| 6PV d20 | 15.5s | 17.0s | — |
+
+**`walkDepth: 14`.** The walk's coarsest decision is `randomTopCp` (40) and its
+stops are `blunderCp` (150) and `decidedCp` (250); a 12cp p90 error cannot flip
+any of them. Depth 20 costs ten times as much and buys nothing *here* — it is
+the right depth for `deepenDepth`, which writes a STANDARD that outlives the
+search and crosses devices, and the wrong one for deciding where to step next.
+`dev/check-storm.js` §17 asserts `walkDepth < deepenDepth` for exactly that
+reason: at or above it a walk's list would masquerade as deepened and the
+deepen pass's `undeepened` test would never revisit it.
+
+**`walkMultipv: 6`, not the three-to-five a move is picked from.** This is the
+number whose wrong value kills the feature in silence: `stormPickReject` rejects
+on `nScored < minScored` (6) and `spread5` is best-minus-*fifth*, so a narrower
+list fails EVERY candidate with "too few moves scored to rank an answer" while
+every walk still runs and every request is still spent. Asserted directly.
+
+### 26.4 The branch, which is not a swap
+
+The explorer now goes first — but the two sources diverge rather than trading
+places:
+
+```
+askGames(f.fen)
+  |- no games  -> engine scorer: band check, then stormRandomLine
+  |- has games -> walk scorer: band check + skipUnknownFrontiers, then the game
+```
+
+**A plain swap would be wrong.** The has-games path still walks with ChessDB
+where it can, so its cheap stage-0 rejection still earns its place: 3 of 47
+has-games frontiers are unknown to ChessDB, and without the check each spends an
+explorer call and two game fetches to learn what one request already said.
+
+`skipUnknownFrontiers` survives with its meaning narrowed — it now fires only
+when *nothing* can score the position (a claimed engine, an unreadable position,
+a spent budget), which is rare.
+
+The invented path's eval band is asked of the engine's own first search, which
+the walk was going to make anyway and which `askEngineScores` caches. So the
+band costs nothing extra there, and — unlike before — it judges the position on
+its merits rather than rejecting it for want of data.
+
+### 26.5 It yields to the grade, and that is load-bearing
+
+§14.23's tier bails with *"the engine is already claimed"* and answers
+`No verdict` — the silent failure §14.22.4 spent four releases on. A walk
+holding the one `st.eng` slot while a card is being answered would reintroduce
+it from the other side, on a path nobody would think to look at.
+
+So `askEngineScores` stands down on `st.grading`, on `solving()` and on `st.eng`
+— §18.2's background pass already stands down on the first two, for this exact
+reason; the difference is only that this one is also reached from the producer.
+A walk therefore searches in the space between cards, or in a gather where
+nothing else is holding anything. **The stand-downs do not poison the cache**:
+they return before `st.eScores.set`, so a position refused for want of an engine
+is retried rather than remembered as unscoreable.
+
+`walkEngineMax` (400) is the engine's answer to `gatherMaxCdb`, per PASS. The
+scored *lists* are deliberately not dropped with the counter: a search costs
+seconds where a request costs milliseconds, so re-searching a position this tab
+has already answered is the one waste worth carrying a cache across passes to
+avoid.
+
+### 26.6 What this buys, and what it costs
+
+**Buys.** Up to ~22% of frontiers that were being thrown away entirely (13 of 60
+here), and walks that run to their length instead of dying after 4 plies — which
+is more candidates per frontier from the *same* explorer and PGN requests.
+Positions gathered this way arrive engine-scored, so §23's `sflist` grade and
+§23.8's deepened-first ordering apply from birth rather than after a later pass.
+
+**Costs.** A gather gets slower: a walk that no longer stops is ~16 searches
+rather than ~4 requests, so roughly 24s per frontier against ~2s. On a
+50-frontier course that is ~20 minutes against ~5 — acceptable for the pass that
+holds a wake lock and has nobody waiting, and the reason the session producer is
+`hybrid` instead.
+
+### 26.7 What is not done
+
+**ChessDB is not gone.** It still walks the has-games path under `hybrid`, still
+answers the uncovered source's decision points, and CLAUDE.md's section 26 eval
+column is untouched. `walkSource: 'engine'` is a one-word change if the whole
+producer should stop asking it; the reason it is not the default is §26.6's
+timing, not any remaining faith in the book.
+
+**The 42-of-42 finding is not fully exploited.** Now that walks run to their
+length, `maxPly`, `blunderCp` and `decidedCp` are being reached for the first
+time — so the numbers §6 measured against a walk that died at ply 4 are
+describing a different walk now. They want re-measuring with
+`dev/probe-storm.js`, and until that is done the yield figures in §6.1 should be
+read as a floor.
+
+**Mobile is unmeasured.** The lite build at 2 threads is several times slower
+than the desktop profile these numbers come from. If a gather on a phone proves
+unusable, the fix is `walkDepth` per profile — but that is a per-device *walk*
+setting, not a per-device standard, so it does not reopen §23.7's argument.
+
+### 26.8 The live run, and the one thing it found (v0.164.1)
+
+Ground-truthed 2026-08-31 on course 453453 (62 eligible frontiers), driven
+through Claude in Chrome with the extension reloaded to v0.164.0. Everything
+below is read off the console and the panel's own note.
+
+**What worked, first time.**
+
+* The walk searches at the declared numbers: every one logged
+  `position depth 14 of 14`, 0.8-9.5 s each on the author's desktop with the
+  tab hidden and the browser driven. The 1.5 s median of §26.3 is the floor,
+  not the figure to expect under automation.
+* A walk now ends on a CHESS reason. The one invented line the session
+  produced reported *"invented a line, 3 position(s) considered (the walk
+  reached its ply limit)"* - and in the whole run the string
+  `ChessDB has no score here` never appeared, which under the old code was 42
+  of 42 stops.
+* The invented path is REACHED, which is the whole of §26.1: it had been
+  0 of 13 before.
+* The frontier eval band is now asked of the engine's own list, so a frontier
+  is rejected ON ITS MERITS rather than for want of data -
+  `skipping repeating same piece test1 - frontier eval -6.65`.
+* `listDepth` really does reach the store. After the run the frontier source
+  held 10 positions of which 9 were engine-scored, while only 1 of the
+  course's 19 carried a depth-20 deepen list - so at least 8 carry the walk's
+  own `d = 14`, which is exactly what §26.2 promises and what §23's `sflist`
+  grade then reads.
+* `0 ChessDB requests` for the whole gather, which is `gatherWalkSource:
+  'engine'` behaving as declared and NOT an outage: chessdb.cn was checked
+  directly in the same sitting and answered normally.
+
+**What it found.** `stormEngineList` is shared by two passes, and until this
+run the only thing telling them apart was `kind: 'list'` - which §26 gave to
+the walk as well. So while the gather was WALKING, the status line read
+
+    Analysing... 1 position(s) scored by Stockfish, 16 left, depth 20 · 2s on this one
+
+three claims all wrong at once: the pass is gathering, the depth running is 14
+and not 20, and the elapsed figure - the one thing §23.7 put on screen to
+separate a long deepen search from a stuck one - was being reset by every walk
+search, so a real 207-second deepen search looked like a series of 2-second
+ones. Nothing errored, and the counters beside it (`0 scored, 16 left`) were
+correct throughout, which is why this is the shape of bug that survives a
+static check and a control run.
+
+The job now carries `walk: Boolean(o.walk)` and both the note choice in `tick`
+and the elapsed clause in `setDeepenNote` test `!st.eng.walk`; `bail()` names
+the caller too, so a stood-down walk search no longer logs itself as the
+deepen pass. `kind` is untouched, since the list machinery keys on it.
+
+Verified after the fix, on the same course: the first 18 s of a gather - two
+depth-14 walk searches in flight, at 7:04:40 and 7:04:50 - read
+`Gathering... 0 stored of 0 examined, 61 line ends left, 0 ChessDB lookups`
+throughout, and the note flipped to `Analysing...` only as the depth-20 search
+began. The elapsed figure then counted monotonically (44 -> 66 s and on) instead
+of resetting.
+
+**One cost worth recording, which is §23's and not this section's.** The gather
+interleaves `deepenPerFrontier: 1`, and a depth-20 `deepenMultipv: 12` search
+measured 207 s here without finishing (it reached depth 17 of 20 and was
+abandoned by hand). So on this machine a gather is DEEPEN-bound, not walk-bound:
+one frontier's walk is seconds and the search that follows it is minutes. §14.23's
+20.7 s figure is MultiPV 3; the width is what costs. Not changed - only measured.
