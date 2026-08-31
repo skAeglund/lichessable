@@ -72,12 +72,15 @@
  * the hub because offscreen sendMessage can never reach content scripts).
  * All engine messages carry a `target` field ('sw' | 'offscreen'); each
  * context ignores messages not addressed to it:
- *   { target:'sw', type:'clo-engine-analyze', fen, profile, reqId?, depth? }
+ *   { target:'sw', type:'clo-engine-analyze', fen, profile, reqId?, depth?,
+ *     multipv?, sanPlies? }
  *       -> forwarded to offscreen (profile 'desktop'|'mobile' picks the
  *       Stockfish build — computed by the content script, this worker just
  *       relays it; reqId is an optional request tag the offscreen echoes on
  *       that search's updates, depth an optional per-request cap — both used
- *       by the alt-check feature, content section 15); the sender's
+ *       by the alt-check feature, content section 15; multipv and sanPlies are
+ *       the storm's gather asking for a whole scored move list and no SAN
+ *       conversion, content section 27 §23); the sender's
  *       {tabId, frameId} is stored in chrome.storage.session so replies can
  *       be routed even after this worker idle-restarts
  *   { target:'sw', type:'clo-engine-stop' }         -> forwarded (engine warm)
@@ -306,6 +309,11 @@ async function handleEngineAnalyze(msg, sender) {
     chrome.runtime.sendMessage({
       target: 'offscreen', type: 'clo-engine-analyze', fen: msg.fen, profile: msg.profile,
       reqId: msg.reqId, depth: msg.depth,
+      // THIS OBJECT IS REBUILT FIELD BY FIELD, NOT SPREAD, so a per-request
+      // option added at either end and not added HERE is dropped in silence —
+      // the search still runs, just with the previous request's width. Both are
+      // optional and the offscreen falls back to its own defaults.
+      multipv: msg.multipv, sanPlies: msg.sanPlies,
     }).catch((err) => recordEngineError('analyze forward', err));
   } catch (err) {
     recordEngineError('analyze', err);

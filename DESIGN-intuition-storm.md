@@ -920,6 +920,17 @@ What it must look like:
       Both are reported, and the collapse to scores/nothing/costs is the one to
       argue from.
 
+   ⚠️ **AND §12.3c REOPENED ONE CORNER OF IT (2026-08-30, §23.1) — READ THAT
+   BEFORE QUOTING THIS BLOCK.** Everything above stands; what it did not ask is
+   whether the error is spread evenly over a position or concentrated on the ONE
+   number every verdict is measured against. It is concentrated: ChessDB's own
+   top move is over-scored by a median 11cp relative to the rest of the same
+   position, 14 positions to 1, a depth-30 search does not move towards it, and
+   that alone accounts for 70 of 100 band disagreements. The grade moved to
+   Stockfish in v0.158.0. The "harsher, never flattering" finding below is
+   exactly what an inflated ceiling produces, so the two readings agree — this
+   block simply attributed it to noise.
+
    **What this closes and what it does not.** It closes §12.3: the grade is
    sound enough, the bands are not measuring the wrong thing, and **nothing
    should be widened** — TODO-storm.md block 2 said explicitly that if fill-ins
@@ -1326,6 +1337,38 @@ before it.
 node dev/probe-storm.js --bid 453453 --n 16 --seed 7 --dump-fens dev/tmp-storm-fens.json
 node dev/probe-cdb-quality.js --n 22 --depth 24 --capms 120000 --moves 10 --build full
 ```
+
+### 13.1 The anchor probes (§23.1, 2026-08-30)
+
+Three more, all offline once the FENs are dumped. `dev/merge-fens.js` folds
+several survivor dumps into one deduped set — the walk is deterministic
+(§14.16), so a fresh seed on the same course adds only about half as many new
+positions as it returns.
+
+```bash
+node dev/merge-fens.js dev/tmp-qfens-all.json dev/tmp-storm-fens*.json dev/tmp-qfens-*.json
+node dev/probe-cdb-quality.js --fens dev/tmp-qfens-all.json --n 50     --depth 24 --capms 120000 --moves 10 --threads 6 --build full     --dump dev/tmp-anchor-pass1.json
+node dev/anchor-report.js dev/tmp-anchor-pass1.json [more.json ...]
+node dev/probe-anchor-depth.js dev/tmp-anchor-pass1.json --min 25 --depth 30     --capms 240000 --threads 6 --build full
+```
+
+`--dump` is what makes the follow-up questions free: every per-move row and
+per-position anchor figure is written out, so `anchor-report.js` and any new
+question can be re-asked without another engine run. `probe-anchor-depth.js` is
+the one that separates "ChessDB is wrong" from "the reference is shallow", and
+it is affordable only because it is restricted to the two or three moves the
+anchor question is about.
+
+And the cost curve behind §23.2, which is a timing measurement and so runs on
+`CONFIG.engine`'s DESKTOP profile rather than on the machine's core count:
+
+```bash
+node dev/probe-gather-cost.js --fens dev/tmp-qfens-all.json --n 8     --cells 8x20,8x24,16x20,0x18,0x20 --single 20,24 --threads 4 --capms 180000
+```
+
+`0` as a MultiPV means every legal move. Note that a wide search's answer is ONE
+iteration and not the union of several (§23.5) — the probe hit that bug in its
+own smoke test and reported "MultiPV 8, 12 moves, reached depth 1".
 
 The three wire facts of §2 need no extension, no Chessable and no browser:
 
@@ -4621,3 +4664,286 @@ load, save, pack and `syncStore`) is not.
 **Already-restored positions are not repaired retroactively.** Anyone whose clear
 was undone by a sync before this fix has those positions back in their store;
 clearing again is what removes them, and this time it holds.
+
+---
+
+## 23. Stockfish scores the position at gather time (v0.158.0)
+
+**The grade stops coming from ChessDB.** §12.3b asked whether a `learn=1` score
+was good enough to grade with and answered "yes, and nothing should be widened".
+§12.3c — below — asked a sharper question of the same data and found the one
+place where it is not: the number every verdict in a position is measured
+against.
+
+### 23.1 §12.3c — the anchor, measured (2026-08-30)
+
+`dev/probe-cdb-quality.js` gained the arithmetic; `dev/anchor-report.js` reads
+several engine passes as one sample; `dev/probe-anchor-depth.js` is the
+re-search that settles which source is wrong. **50 storm survivor positions,
+387 moves**, Stockfish 18 full build at 4-6 threads, depth 18-24 (median 23).
+
+A verdict is `loss(m) = best(P) − score(m)`, so an error on `best(P)` is paid by
+every other move in the position while an error spread evenly over the whole
+position cancels. The statistic that isolates it:
+
+```
+excess = (cdb − eng) on ChessDB's own top move
+       − median (cdb − eng) over the other moves sampled there
+```
+
+offset-free by construction, and a different question from the residual §12.3b
+already reported.
+
+```
+signed, ChessDB − engine (+ = ChessDB more optimistic)
+  ceiling gap  best vs best   median   +4   p75  +22   max  +48
+  error on ChessDB's top move median   +8   p75  +24   max  +55
+  error on every other move   median   −4   p75   +3   min  −81
+  EXCESS = top − rest         median  +11   p75  +26   max +105
+
+  anchor optimistic by  >=25cp 14/50   >=50cp 5/50   >=100cp 1/50
+  anchor pessimistic by >=25cp  1/50   >=50cp 0/50   >=100cp 0/50
+```
+
+**Fourteen to one.** Not noise about the anchor — a bias, and generous to
+nothing else in the same position.
+
+**What it costs.** Correcting the anchor alone, keeping every one of ChessDB's
+own move scores:
+
+```
+VERDICT BAND        as shipped     anchor corrected
+  same band          287  74%        342  88%
+  same outcome       313  81%        349  90%
+  of 100 disagreements the anchor alone explains 70   (breaks 15 that were right)
+
+  engine says great/good, ChessDB says ok or worse:  27  (7%)  — 18 restored
+```
+
+So ChessDB's per-move scores are fine and the ceiling they are measured against
+is not.
+
+**Three findings, and each closes a reading of the first one.**
+
+1. **The mechanism is a winner's curse.**
+   `rho(moves ChessDB scored, excess) = 0.559`, and the buckets are monotone:
+
+   ```
+   moves ChessDB scored   pos   median excess   bands agree
+     6-9                   36        +3            78%
+     10-14                  7       +16            77%
+     15+                    7       +50            57%
+
+   ChessDB and engine agree on best move   41 pos   median excess  +5
+   they disagree                            9 pos   median excess +26
+   ```
+
+   The anchor is a *max over noisy estimates*, so whichever move's score is most
+   inflated is the one that ends up on top, and more candidates means a higher
+   max. The bias therefore has to be positive, has to grow with the candidate
+   count, and has to be worst where the two sources disagree about the best
+   move. All three hold. **It is structural in a min-maxed graph and cannot be
+   tuned away.**
+
+2. **The bias is ChessDB's, not the arithmetic's.** A max is inflated whoever
+   computes it, so selecting the anchor by the ENGINE and running identical
+   arithmetic is the falsification test:
+
+   ```
+   excess, ChessDB-selected anchor   median  +12   p75  +26   >=25cp: 14/50
+   excess, engine-selected  anchor   median   −4   p75   +5   >=25cp:  2/50
+   ```
+
+   Near zero, slightly negative — the signature of `ChessDB = engine + noise`
+   rather than of two comparably noisy evaluators.
+
+3. **Depth does not rescue it.** The 15 positions with |excess| ≥ 25, re-searched
+   at **depth 30** restricted to the two or three moves the question is about:
+
+   ```
+   median gap on ChessDB's top move, depth ~23:  26cp
+   median gap on the same move,      depth 30:   24cp
+   median movement of the engine's own eval:     −1cp   (+ = towards ChessDB)
+   agrees with ChessDB MORE in 6 of 15, LESS in 7;  moved >=20cp towards it: 1
+   ```
+
+   A coin flip and no drift — and the worst cases are the ones that move least:
+   `Nf6 cdb −19 / d23 −74 / d30 −74`, `Bb4 cdb −11 / d23 −63 / d30 −74`. Six more
+   plies and Stockfish is where it was.
+
+**What this does NOT overturn.** §12.3b stands everywhere else: 78% of moves
+within 25cp, the fill-ins still marginally better than the book entries, and the
+dangerous direction still empty — **zero** moves scored good by ChessDB that the
+engine calls a mistake or blunder. The failure is harshness, not flattery, which
+is why this was worth fixing rather than urgent.
+
+### 23.2 The cost, measured (2026-08-30)
+
+`dev/probe-gather-cost.js`, on `CONFIG.engine`'s own DESKTOP profile — 4 threads,
+64MB hash, not the machine's core count:
+
+8 storm survivor positions, median **37 legal moves** each:
+
+```
+cell          median      p90      8h yield
+  8PV d20      41.5s     48.3s        694
+ 12PV d20      59.9s     72.4s        481   (the shipped width)
+ 16PV d20     103.2s    114.2s        279
+ allPV d18     70.3s     82.6s        410
+ allPV d20    180.1s+   180.1s+       160   (did not finish inside the cap)
+  8PV d24     140.5s    159.2s        205
+  1 move d20    4.3s   max 6.8s        —
+  1 move d24   19.1s  max 23.8s        —
+```
+
+⚠️ The AGREEMENT half of that run is missing and the table printed `n=0` for
+every cell: `search()` returns a Map of uci -> cp since the per-depth rewrite of
+§23.5, and the caller was still reading `.cp` off it, so every score was
+`undefined`. Fixed 2026-08-30; the timings above are from the run that had it
+and are unaffected. **So how much a verdict actually moves between depth 18, 20
+and 24 has NOT been measured** — depth 20 was chosen because it is the depth
+this feature has graded at since v0.134.0, not because the cheaper cell was
+shown to agree with the dearer one.
+
+**12 is where the curve is still flat** — 50% more moves than 8 for 44% more
+time, where 16 costs 149% more than 8 — and 481 positions a night is more than
+`storeMax` 900 needs in two sittings.
+
+Two things decide the design. **Depth 24 costs 3x depth 20**, and the storm has
+graded its own third tier at depth 20 since v0.134.0 — so depth 20 is the
+existing standard rather than a new one. And **a move outside the stored list
+costs 3.7 s, not a refusal**, so the width buys latency rather than coverage of
+the verdict.
+
+### 23.3 What was built
+
+A gather now has **two phases**: the walk (unchanged, network-bound, bounded by
+`gatherTarget`) and a **deepen pass** that replaces a stored position's ChessDB
+list with a Stockfish one. One position is deepened between frontiers so a pass
+stopped early leaves positions that are ready to play; the second phase then
+runs until the store has none left, which is the half meant to be left running.
+
+**It is a second pass over the store, not a step inside `storeAdd`.** That is a
+decision: `storeAdd` is synchronous and returns the boolean §14.17's funnel
+counts, and its four outcomes must account for every candidate examined —
+threading a 50-second search through it would make that invariant depend on an
+engine. Separating them also upgrades the positions ALREADY stored rather than
+stranding them, interleaves network work with CPU work, and leaves a coherent
+store at every moment.
+
+**A position that has not been deepened is still perfectly usable.** It grades
+exactly as it did before this existed and says so. So nothing waits for the pass
+and it never has to finish.
+
+**The tiers change shape rather than growing one.**
+
+| stored list | move in it | move not in it |
+|---|---|---|
+| ChessDB (`d` absent) | tier 1, as before | ChessDB child, then two searches |
+| Stockfish (`d` set) | tier 1, exact | **one** search of the reply |
+
+Two consequences worth stating on their own:
+
+* **ChessDB's child tier is unreachable on a Stockfish list, and that is not an
+  optimisation.** `best(P)` from Stockfish minus `best(P after m)` from ChessDB
+  is precisely the cross-evaluator subtraction §3.4 forbids, and the offset it
+  would inject is the same size as the bias measured above.
+* **The engine tier halves.** It exists as two searches because it knows neither
+  side; with a stored anchor at a known depth it is one search of the reply,
+  capped at that same depth — same evaluator, same depth, by construction. That
+  also removes §14.23's unsatisfiable arithmetic, where two searches had to fit
+  inside one budget.
+
+**ChessDB keeps everything it is good at.** The walk's stop rules, the pick
+rules, `minScored`, the uncovered-reply source: all coarse questions about
+whether a position is INTERESTING, asked ~11 times per position at 380 ms and
+unaffordable any other way. Every yield number in §6 is untouched.
+
+### 23.4 The list's depth is the whole compatibility story
+
+`d` on a stored entry means "`m` is a Stockfish list searched to this depth".
+**Its absence means ChessDB's list**, which is exactly what every entry written
+before v0.158.0 holds — so no cache key moved, nothing migrates, and §22's Clear
+is not needed. It rides the wire for the reason `g` and `a[2]` do and with no
+`wireVersion` bump: absence is already meaningful in both directions.
+
+It **must** ride, and it is the one field here worth crossing devices for at all:
+the search costs tens of seconds of CPU and a phone cannot run it, so a desktop
+that has deepened a position is the only way that phone will ever grade it with
+an engine. The merge therefore takes the deeper list — **with its moves**, since
+a depth without the scores it was measured on is a lie about every number in the
+entry — and never lets a shallower one displace a deeper one, or a device that
+has done the work loses it to one that has not.
+
+### 23.5 One iteration, never the union of several
+
+`latest.pvs` in `engine/engine.js` is cumulative across iterations, so a wide
+search ended early — by a budget, by a stop — flushes lines from TWO different
+depths. A scored list whose moves were searched to different depths puts a
+cross-depth difference into every verdict computed from it, invisibly, exactly
+as §3.4's cross-evaluator mixture would, and `msg.depth` cannot show it (it is
+multipv 1's).
+
+So `pv.depth` was added, updates are collected per depth, and the answer is the
+**deepest complete iteration** — which is also what drops the partial iteration
+a stop interrupts. `dev/probe-gather-cost.js` hit the same bug from the other
+side during its smoke test and reported "MultiPV 8, 12 moves, reached depth 1";
+that is what this looks like when it is visible, and on a stored list it would
+not have been.
+
+### 23.5a Live verification (2026-08-31, course 453453, Claude in Chrome)
+
+Driven through a real gather and three sets. What the console showed:
+
+* **Per-request MultiPV reaches the worker.** `sl…-1 ended in phase list after
+  36307 ms · position depth 20 of 20` — a wide search, tagged `sl`, at the
+  requested depth. The worker rebuilds the analyze message field by field, so
+  `multipv`/`sanPlies` had to be added there too; without that fix it would have
+  stored three-move lists in silence.
+* **The budget takes the deepest complete iteration rather than discarding it**
+  (§14.23's rule on the new path): `deepen taking <fen> at its deepest complete
+  iteration — it did not reach depth 20 within 120000 ms`, followed by
+  `answered … position depth 18 of 20`. In the browser at 4 threads a 12PV
+  search regularly wants more than 120 s, against 59.9 s median in node — so
+  this budget does real work, and §23.2's figures are a floor.
+* **The store is written and upgraded in place**: `1 of 4 … now carry an engine
+  list` → `2 of 10` → `4 of 10`, across three passes.
+* **Stopping the pass stops the search inside it**: `gave up — sl…-2 ended in
+  phase list after 69650 ms`, on the press.
+* **The legacy path is unchanged**: `graded d7d5 by list`, the panel reading
+  "· ChessDB's ranking here" with `.clo-cdb--est` set.
+* **The engine tier still works**: `by Stockfish d18`/`d19`, `est` false.
+* **AND IT HALVES ON A DEEPENED POSITION.** `st…-1 ended in phase child after
+  8002 ms · position depth 19 of 20, reply depth 17` — one 8 s phase budget,
+  entered directly in `child`, the position's depth 19 coming from the store.
+  The equivalent grade on an undeepened position logged 16002 ms and both
+  phases.
+
+That last one exposed a wording bug: the engine tier's tooltip said "two local
+Stockfish searches" when only one had run. `oneSearch` now rides the verdict and
+`stormSourceTitle` has a sentence for each, asserted with a control.
+
+NOT observed: a move that lands INSIDE a stored Stockfish list (`sflist`). Four
+of ten positions carried one and every move played fell outside it — which is
+itself a small datum about a 12-move list. The three lines that produce it are
+covered by `dev/check-storm.js` §14.
+
+### 23.6 What is NOT done
+
+* **The background top-up (§18.2) does not deepen.** It runs while a review is
+  up, and a 50-second search started there would hold the engine claim that a
+  review retry's own grade needs — which would fail as "the engine is already
+  claimed", i.e. a silently ungraded retry. Positions it finds are deepened by
+  the next gather.
+* **The width is 12 and the case for it is latency, not correctness.** Every
+  measured cell grades correctly; a narrower list simply reaches the one-search
+  path more often. `allPV @ d18` costs about the same as `12PV @ d20` and would
+  make grading free on every device for ever, at two plies of depth — an open
+  trade, and §12's kind of question rather than a decision to take here.
+* **Nothing is re-measured on a mobile profile.** A single search at 2 threads
+  on the lite build is certainly slower than the desktop's 3.7 s, and how much
+  slower is what decides whether the width should differ per device.
+* **Whether the pick rules should move too.** `minScored`, `spreadMinCp` and
+  `spread5` are still ChessDB's, and they decide which positions are OFFERED —
+  a different question from how a move is graded, and every one of them is a
+  §6 measurement that would have to be re-run.

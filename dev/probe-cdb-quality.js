@@ -96,6 +96,7 @@ const CAP_MS = Number(arg('capms', 120000));
 const MAX_MOVES = Number(arg('moves', 10));
 const THREADS = arg('threads', '6');
 const BUILD = arg('build', 'lite') === 'full' ? 'stockfish-18' : 'stockfish-18-lite';
+const DUMP = arg('dump', '');
 
 // --- chessdb ---------------------------------------------------------------
 /**
@@ -270,6 +271,7 @@ async function main() {
 
   const eng = await bootEngine();
   const rows = [];
+  const posInfo = [];
   const depths = [];
   let bestAgree = 0;
   let bestBoth = 0;
@@ -325,6 +327,11 @@ async function main() {
         cdb: m.score, eng: e.cp, d: m.score - e.cp,
         cdbBand: stormGrade(cdbLoss, C), engBand: stormGrade(engLoss, C),
         cdbLoss, engLoss, offset: 0,
+        // position-level context, copied onto every row so the dump is flat
+        bid: p.bid, ply: p.ply, nScored: scored.length, nBook: bookSet.size,
+        isTop: m.uci === scored[0].uci, bestSame,
+        excess: 0, ceilGap: cdbBest - engBest,
+        cdbLossFix: cdbLoss, cdbBandFix: stormGrade(cdbLoss, C),
       });
     }
     // §3.3's own claim, made measurable: "a uniformly shallow answer is still a
@@ -339,6 +346,39 @@ async function main() {
       const off = ds[Math.floor(ds.length / 2)];
       for (const r of here) r.offset = off;
     }
+
+    // THE ANCHOR (2026-08-30). Every verdict in a position is a difference
+    // against ONE number — the best score ChessDB names — so an error
+    // concentrated THERE is multiplied across every other move, while the same
+    // error spread evenly over the whole position cancels out of the grade.
+    // `excess` isolates exactly that: how much more optimistic ChessDB is about
+    // its own top move than it is about the rest of the same position. It is
+    // offset-free by construction, which is what makes it a different question
+    // from the residual above.
+    const topRow = here.find((r) => r.isTop) || null;
+    const rest = here.filter((r) => !r.isTop).map((r) => r.d).sort((a, b) => a - b);
+    const dMed = rest.length ? rest[Math.floor(rest.length / 2)] : 0;
+    const excess = topRow ? topRow.d - dMed : 0;
+    // The counterfactual: ChessDB's own move scores, with its top move brought
+    // back down by `excess`, re-graded. What survives is the damage its
+    // individual move scores do; what vanishes is the damage the anchor does.
+    if (topRow) {
+      const fixed = new Map(here.map((r) => [r.uci, r.cdb - (r.isTop ? excess : 0)]));
+      let fixBest = -Infinity;
+      for (const v of fixed.values()) if (v > fixBest) fixBest = v;
+      for (const r of here) {
+        r.excess = excess;
+        r.cdbLossFix = stormWpLoss(fixBest, fixed.get(r.uci), C);
+        r.cdbBandFix = stormGrade(r.cdbLossFix, C);
+      }
+    }
+    posInfo.push({
+      fen: p.fen, bid: p.bid, ply: p.ply, nScored: scored.length, nBook: bookSet.size,
+      cdbBestSan: scored[0].san, cdbBestUci: scored[0].uci, cdbBest,
+      engOfCdbTop: topRow ? topRow.eng : null, engBest, engBestSan, bestSame,
+      dTop: topRow ? topRow.d : null, dMed, excess, ceilGap: cdbBest - engBest,
+      moves: here.length, depth: res.depth, capped: res.capped,
+    });
     rows.push.apply(rows, here);
 
     const same = here.filter((r) => r.cdbBand === r.engBand).length;
@@ -458,6 +498,120 @@ async function main() {
       'cdb ' + String(r.cdb).padStart(6) + ' -> ' + r.cdbBand.padEnd(8) +
       '   eng ' + String(r.eng).padStart(6) + ' -> ' + r.engBand + '   ' + r.fen);
   }
+  // === THE ANCHOR (2026-08-30) ============================================
+  // The report above answers "how far apart are the two sources, move by move".
+  // This one answers a sharper question the shipped feature is exposed to: a
+  // loss is measured against ONE number per position, so an error on THAT
+  // number is paid by every other move in the position, while the same error
+  // spread evenly cancels. `excess` is the anchor's error net of the rest of
+  // the position, and the corrected columns are what the verdicts would have
+  // been without it.
+  const q = (arr, pr) => (arr.length
+    ? arr.slice().sort((a, b) => a - b)[Math.floor(pr * (arr.length - 1))] : 0);
+  const stat = (label, arr, unit) => {
+    const f = (n) => (unit === 'cp' ? String(Math.round(n)) : n.toFixed(2));
+    console.log('  ' + label.padEnd(26) +
+      'median ' + f(q(arr, 0.5)).padStart(6) +
+      '   p25 ' + f(q(arr, 0.25)).padStart(6) +
+      '   p75 ' + f(q(arr, 0.75)).padStart(6) +
+      '   min ' + f(q(arr, 0)).padStart(6) +
+      '   max ' + f(q(arr, 1)).padStart(6));
+  };
+  console.log(NL + '='.repeat(74));
+  console.log('THE ANCHOR - is ChessDB systematically too kind to its own best move?');
+  console.log('positions: ' + posInfo.length + NL);
+  console.log('  (all signed, ChessDB minus engine; + means ChessDB is the more optimistic)');
+  stat('ceiling gap  best-best', posInfo.map((p2) => p2.ceilGap), 'cp');
+  stat('error on cdb top move', posInfo.filter((p2) => p2.dTop !== null).map((p2) => p2.dTop), 'cp');
+  stat('error on the rest', posInfo.map((p2) => p2.dMed), 'cp');
+  stat('EXCESS = top - rest', posInfo.map((p2) => p2.excess), 'cp');
+  const nPos = posInfo.length || 1;
+  const cnt = (f) => posInfo.filter(f).length;
+  console.log(NL + '  positions whose anchor is optimistic by:  ' +
+    '>=25cp ' + cnt((p2) => p2.excess >= 25) + '/' + nPos +
+    '   >=50cp ' + cnt((p2) => p2.excess >= 50) + '/' + nPos +
+    '   >=100cp ' + cnt((p2) => p2.excess >= 100) + '/' + nPos);
+  console.log('  ...pessimistic by:                        ' +
+    '>=25cp ' + cnt((p2) => p2.excess <= -25) + '/' + nPos +
+    '   >=50cp ' + cnt((p2) => p2.excess <= -50) + '/' + nPos +
+    '   >=100cp ' + cnt((p2) => p2.excess <= -100) + '/' + nPos);
+
+  // WHAT IT COSTS IN VERDICTS. Not "is the anchor wrong" but "how much of the
+  // disagreement is the anchor's fault" - the only version of the question the
+  // feature has to act on.
+  const agreeFix = rows.filter((r) => r.cdbBandFix === r.engBand).length;
+  const grpFix = rows.filter((r) => grp(r.cdbBandFix) === grp(r.engBand)).length;
+  console.log(NL + 'VERDICT BAND with the anchor corrected (ChessDB own move scores kept):');
+  console.log('  same band            ' + String(agreeFix).padStart(4) + '  ' + pc(agreeFix) +
+    '   (as shipped: ' + agree + '  ' + pc(agree).trim() + ')');
+  console.log('  same outcome         ' + String(grpFix).padStart(4) + '  ' + pc(grpFix) +
+    '   (as shipped: ' + sameGrp + '  ' + pc(sameGrp).trim() + ')');
+  const fixedBy = rows.filter((r) => r.cdbBand !== r.engBand && r.cdbBandFix === r.engBand).length;
+  const brokeBy = rows.filter((r) => r.cdbBand === r.engBand && r.cdbBandFix !== r.engBand).length;
+  console.log('  disagreements the anchor alone explains: ' + fixedBy + ' of ' + diff.length +
+    '   (and ' + brokeBy + ' correct verdicts the correction would break)');
+
+  // THE COMPLAINT, STATED AS A COUNT. "ChessDB rates its best move higher than
+  // Stockfish does, so the second move reads as an inaccuracy where Stockfish
+  // would not have called it one." That is a row the engine puts in the top two
+  // bands and ChessDB does not.
+  const harsh = rows.filter((r) => BANDS.indexOf(r.engBand) <= 1 && BANDS.indexOf(r.cdbBand) >= 2);
+  const harshFix = harsh.filter((r) => BANDS.indexOf(r.cdbBandFix) <= 1).length;
+  console.log(NL + '  engine says great/good, ChessDB says ok or worse: ' +
+    harsh.length + '  (' + pc(harsh.length) + ')');
+  console.log('    of those, the anchor correction restores: ' + harshFix +
+    ' of ' + harsh.length);
+  const soft = rows.filter((r) => BANDS.indexOf(r.cdbBand) <= 1 && BANDS.indexOf(r.engBand) >= 2);
+  console.log('  ChessDB says great/good, engine says ok or worse: ' +
+    soft.length + '  (' + pc(soft.length) + ')   <- the dangerous direction');
+
+  // DOES IT GO WRONG WHERE THE BOOK IS THIN? If the anchor error concentrates
+  // in barely-elaborated positions, a gate is buildable and `minScored` is the
+  // lever; if it is flat, there is nothing to gate on.
+  console.log(NL + 'by how elaborated the position is (moves ChessDB scored):');
+  console.log('  bucket      n   median excess   median abs excess   bands agree');
+  for (const b of [[0, 5], [6, 9], [10, 999]]) {
+    const sel = posInfo.filter((p2) => p2.nScored >= b[0] && p2.nScored <= b[1]);
+    const keys = new Set(sel.map((p2) => p2.fen));
+    const rs = rows.filter((r) => keys.has(r.fen));
+    const ag = rs.filter((r) => r.cdbBand === r.engBand).length;
+    console.log('  ' + (b[1] === 999 ? '10+' : b[0] + '-' + b[1]).padEnd(8) +
+      String(sel.length).padStart(4) +
+      String(Math.round(q(sel.map((p2) => p2.excess), 0.5))).padStart(15) +
+      String(Math.round(q(sel.map((p2) => Math.abs(p2.excess)), 0.5))).padStart(20) +
+      ('   ' + ag + '/' + rs.length + (rs.length ? '  ' + Math.round(100 * ag / rs.length) + '%' : '')).padStart(16));
+  }
+  const inBook = posInfo.filter((p2) => p2.nBook > 0);
+  const noBook = posInfo.filter((p2) => !p2.nBook);
+  console.log('  top move in the real book (learn=0): ' + inBook.length +
+    ' positions, median excess ' + Math.round(q(inBook.map((p2) => p2.excess), 0.5)) + 'cp');
+  console.log('  nothing in the real book:            ' + noBook.length +
+    ' positions, median excess ' + Math.round(q(noBook.map((p2) => p2.excess), 0.5)) + 'cp');
+
+  console.log(NL + 'per position, worst anchor first:');
+  console.log('  excess  ceil   cdbTop              cdb    eng   rest  scored  agree  fen');
+  for (const p2 of posInfo.slice().sort((a, b) => b.excess - a.excess)) {
+    const rs = rows.filter((r) => r.fen === p2.fen);
+    const ag = rs.filter((r) => r.cdbBand === r.engBand).length;
+    console.log('  ' + String(Math.round(p2.excess)).padStart(6) +
+      String(Math.round(p2.ceilGap)).padStart(6) + '   ' +
+      String(p2.cdbBestSan + (p2.bestSame ? '' : ' (eng ' + p2.engBestSan + ')')).padEnd(18) +
+      String(p2.cdbBest).padStart(6) + String(p2.engOfCdbTop).padStart(7) +
+      String(Math.round(p2.dMed)).padStart(7) + String(p2.nScored).padStart(8) +
+      ('  ' + ag + '/' + rs.length).padEnd(9) + p2.fen);
+  }
+
+  if (DUMP) {
+    fs.writeFileSync(DUMP, JSON.stringify({
+      meta: {
+        when: new Date().toISOString(), fens: FENS, build: BUILD, threads: THREADS,
+        depthCeiling: DEPTH, capMs: CAP_MS, maxMoves: MAX_MOVES, bands: C,
+      },
+      positions: posInfo, rows,
+    }, null, 1));
+    console.log(NL + 'per-move rows written to ' + DUMP);
+  }
+
   console.log();
   process.exit(0);
 }

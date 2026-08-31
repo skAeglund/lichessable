@@ -33,7 +33,14 @@ const PROFILES = {
   desktop: { worker: 'vendor/stockfish-18.js',      threads: 4, hash: 64, depth: 30, movetime: 0 },
   mobile:  { worker: 'vendor/stockfish-18-lite.js', threads: 2, hash: 16, depth: 25, movetime: 0 },
 };
+// The panel's width, and the DEFAULT for a request that names none. Since
+// v0.158.0 MultiPV is per REQUEST (the storm's gather stores a whole scored
+// move list, DESIGN-intuition-storm.md §23), so this is no longer the only
+// width the worker ever runs at — `MULTIPV_MAX` is what bounds it. Stockfish
+// clamps MultiPV to the number of legal moves by itself, so asking for more
+// than a position has is how "every legal move" is spelled.
 const MULTIPV = 3;
+const MULTIPV_MAX = 250;
 const SAN_PLIES = 12;        // PV plies converted to SAN for display
 const THROTTLE_MS = 400;     // coalesce info bursts into one update per window
 const HANDSHAKE_TIMEOUT_MS = 10000;
@@ -58,6 +65,19 @@ let currentReqId = null;
 let pendingReqId = null;
 let currentDepth = 0;        // 0 = use the profile depth
 let pendingDepth = 0;
+// …and the width, which rides the same lifecycle for the same reason. It is
+// applied with a `setoption` before each `go` rather than once at boot,
+// because the panel and the storm's gather want different widths from ONE
+// worker — and a width left behind by the previous search is a panel drawing
+// twelve lines, or a gather storing three.
+let currentMultipv = MULTIPV;
+let pendingMultipv = 0;      // 0 = use MULTIPV
+let appliedMultipv = 0;      // what the worker was last told, to skip a no-op
+// PV plies converted to SAN, per request. A gather wants none: it stores
+// scores, and converting a 12-ply line for each of thirty PVs is work whose
+// output is thrown away.
+let currentSanPlies = SAN_PLIES;
+let pendingSanPlies = -1;    // <0 = use SAN_PLIES
 let latest = null;           // { depth, pvs: { [multipv]: {depth, cp, mate, moves} } }
 let flushTimer = 0;
 let fenceTimer = 0;
@@ -72,7 +92,9 @@ setInterval(() => {
     respawnAndResume('no engine output for ' + SEARCH_SILENCE_MS + ' ms',
       pendingFen || currentFen,
       pendingFen ? pendingReqId : currentReqId,
-      pendingFen ? pendingDepth : currentDepth);
+      pendingFen ? pendingDepth : currentDepth,
+      pendingFen ? pendingMultipv : currentMultipv,
+      pendingFen ? pendingSanPlies : currentSanPlies);
   }
 }, 5000);
 
@@ -83,7 +105,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   touchIdleTimer();
   if (msg.type === 'clo-engine-analyze' && typeof msg.fen === 'string') {
     sendDebug('analyze received (phase ' + phase + ', profile ' + msg.profile + '): ' + msg.fen);
-    handleAnalyze(msg.fen, msg.profile, msg.reqId, msg.depth);
+    handleAnalyze(msg.fen, msg.profile, msg.reqId, msg.depth, msg.multipv, msg.sanPlies);
   } else if (msg.type === 'clo-engine-stop') {
     sendDebug('stop received (phase ' + phase + ')');
     handleStop();
@@ -178,6 +200,7 @@ async function bootEngine() {
   uciSend(`setoption name Threads value ${prof.threads}`);
   uciSend(`setoption name Hash value ${prof.hash}`);
   uciSend(`setoption name MultiPV value ${MULTIPV}`);
+  appliedMultipv = MULTIPV;
   uciSend('isready');
   await waitFor('readyok');
   log(`engine ready (profile=${profileName} Threads=${prof.threads} Hash=${prof.hash} MultiPV=${MULTIPV})`);
@@ -217,23 +240,35 @@ function killWorker() {
  *  position the dead worker was on; the stop-fence passes only pendingFen
  *  (null after a deliberate stop — a stop must never resurrect a search).
  *  The resumed search keeps its request tag and depth cap. */
-function respawnAndResume(reason, resumeFen, resumeReqId, resumeDepth) {
+function respawnAndResume(reason, resumeFen, resumeReqId, resumeDepth, resumeMultipv, resumeSanPlies) {
   sendDebug('respawning worker (' + reason + '), phase was ' + phase);
   killWorker();
   pendingFen = resumeFen || null;
   pendingReqId = resumeReqId || null;
   pendingDepth = resumeDepth || 0;
+  // THE WIDTH HAS TO BE RESUMED TOO, or a wide search that died is silently
+  // restarted three lines wide — which for a stored list is not a failure but
+  // a shorter answer, i.e. exactly the shape of defect this file's comments
+  // keep warning about. `appliedMultipv` is belt and braces: every worker birth
+  // resets it in `bootEngine`, and this makes the invariant local to the one
+  // place that kills a worker without going through a `go`.
+  pendingMultipv = resumeMultipv || 0;
+  pendingSanPlies = typeof resumeSanPlies === 'number' ? resumeSanPlies : -1;
+  appliedMultipv = 0;
   startPending();
 }
 
 // --- search state machine ---------------------------------------------------
 
-function handleAnalyze(fen, profile, reqId, depth) {
+function handleAnalyze(fen, profile, reqId, depth, multipv, sanPlies) {
   // Unknown/absent profile falls back to desktop — today's behaviour.
   requestedProfile = PROFILES[profile] ? profile : 'desktop';
   pendingFen = fen;
   pendingReqId = typeof reqId === 'string' && reqId ? reqId : null;
   pendingDepth = Number.isInteger(depth) && depth > 0 ? depth : 0;
+  pendingMultipv = Number.isInteger(multipv) && multipv > 0
+    ? Math.min(multipv, MULTIPV_MAX) : 0;
+  pendingSanPlies = Number.isInteger(sanPlies) && sanPlies >= 0 ? sanPlies : -1;
   if (phase === 'searching') {
     // Fence: discard everything until bestmove, then start the pending FEN.
     phase = 'stopping';
@@ -283,10 +318,21 @@ function startPending() {
     currentDepth = pendingDepth > 0 ? Math.min(pendingDepth, prof.depth) : 0;
     pendingDepth = 0;
     const goDepth = currentDepth || prof.depth;
+    currentMultipv = pendingMultipv > 0 ? pendingMultipv : MULTIPV;
+    pendingMultipv = 0;
+    currentSanPlies = pendingSanPlies >= 0 ? pendingSanPlies : SAN_PLIES;
+    pendingSanPlies = -1;
     latest = { depth: 0, pvs: {} };
     phase = 'searching';
     lastLineAt = Date.now();
     sendDebug('search start: ' + fen + (currentReqId ? ' (req ' + currentReqId + ', depth ' + goDepth + ')' : ''));
+    // BEFORE `position`, and only when it changed: a `setoption` mid-search is
+    // undefined behaviour, and this is the one moment the worker is idle and
+    // the width for the search about to start is known.
+    if (appliedMultipv !== currentMultipv) {
+      uciSend(`setoption name MultiPV value ${currentMultipv}`);
+      appliedMultipv = currentMultipv;
+    }
     uciSend(`position fen ${fen}`);
     uciSend(prof.movetime > 0
       ? `go depth ${goDepth} movetime ${prof.movetime}`
@@ -336,7 +382,7 @@ function parseInfo(line) {
 
   const multipv = Number(tokens[mpvIdx + 1]);
   const depth = Number(tokens[depthIdx + 1]);
-  if (!multipv || multipv > MULTIPV || !depth) return;
+  if (!multipv || multipv > currentMultipv || !depth) return;
 
   const entry = { depth, cp: null, mate: null, moves: tokens.slice(pvIdx + 1) };
   if (tokens[scoreIdx + 1] === 'cp') entry.cp = Number(tokens[scoreIdx + 2]);
@@ -358,21 +404,34 @@ function flush(done) {
   if (!currentFen || !latest) return;
   const blackToMove = currentFen.split(/\s+/)[1] === 'b';
   const pvs = [];
-  for (let n = 1; n <= MULTIPV; n++) {
+  for (let n = 1; n <= currentMultipv; n++) {
     const entry = latest.pvs[n];
     if (!entry) continue;
-    const pv = { multipv: n };
+    // PER-PV DEPTH, and it is load-bearing for any WIDE search: `latest.pvs`
+    // is cumulative across iterations, so a search ended early (a budget, a
+    // stop) flushes a list whose lines come from TWO different depths — and a
+    // scored list straddling two depths is exactly the cross-depth subtraction
+    // §3.4 forbids, made invisible. `msg.depth` alone cannot show it, being
+    // multipv 1's. A consumer that wants one consistent iteration groups on
+    // this; the panel, which draws three lines as they improve, ignores it.
+    const pv = { multipv: n, depth: entry.depth };
     // UCI scores are side-to-move-relative; display is always White-positive.
     if (entry.cp !== null) pv.cp = blackToMove ? -entry.cp : entry.cp;
     if (entry.mate !== null) pv.mate = blackToMove ? -entry.mate : entry.mate;
-    const san = CloSan.pvToSan(currentFen, entry.moves.slice(0, SAN_PLIES));
-    pv.san = san || entry.moves.slice(0, SAN_PLIES).join(' '); // raw UCI fallback
+    // `currentSanPlies` 0 = the caller wants scores only (a gather), so no
+    // conversion runs and `pv.san` is simply absent. Every existing consumer
+    // asks for the default and is unaffected.
+    let san = '';
+    if (currentSanPlies > 0) {
+      san = CloSan.pvToSan(currentFen, entry.moves.slice(0, currentSanPlies));
+      pv.san = san || entry.moves.slice(0, currentSanPlies).join(' '); // raw UCI fallback
+    }
     // The line's FIRST move as plain uci. `san` is a numbered STRING ("5.Nf3
     // Nc6 …") and cannot be joined onto anything; this is what lets the panel
     // put a second source's eval for the same move beside this line
     // (DESIGN-chessdb.md §6.4) without parsing that string back apart.
     pv.uci = entry.moves[0] || '';
-    if (!san) warn('SAN conversion failed for pv', n, 'of', currentFen);
+    if (currentSanPlies > 0 && !san) warn('SAN conversion failed for pv', n, 'of', currentFen);
     pvs.push(pv);
   }
   if (!pvs.length) return;

@@ -2954,6 +2954,69 @@ Currently working (v0.18.x).
   are sound as they stand; do not widen them, and do not add a `learn=0` gate to
   the grade (the fill-ins measured marginally BETTER than the book entries).
   What follows is only what an edit ELSEWHERE can break.
+  * THE GRADE IS STOCKFISH'S, NOT CHESSDB'S (§23, v0.158.0). Measured
+    2026-08-30 (DESIGN-intuition-storm.md §23.1, 50 positions / 387 moves):
+    ChessDB over-scores ITS OWN TOP MOVE by a median 11cp relative to the rest
+    of the same position, **14 positions to 1**, and a depth-30 re-search does
+    not move towards it — so it is a defect of the source, not knowledge the
+    shallower search lacked. Because a verdict is a difference against that one
+    number, the bias is paid by every OTHER move: it explains 70 of 100 band
+    disagreements, and correcting it alone takes agreement with a local search
+    from 74% to 88%. The mechanism is a WINNER'S CURSE — the anchor is a max
+    over noisy estimates — so it grows with the candidate count
+    (rho 0.559) and cannot be tuned out of a min-maxed graph.
+    **READ §23 BEFORE CHANGING ANY OF THIS.** What an edit ELSEWHERE can break:
+    - `d` ON A STORED ENTRY IS THE WHOLE COMPATIBILITY STORY: >0 means `m` is a
+      Stockfish list at that depth, ABSENT means ChessDB's — which is what every
+      entry written before v0.158.0 holds. So no cache key moved and nothing
+      migrates. It rides the wire with NO `wireVersion` bump (§14.19's
+      precedent) and it MUST ride: a phone cannot run the search, so a desktop
+      that deepened a position is the only way that phone ever grades it with an
+      engine. The merge takes the deeper list AND ITS MOVES together — a depth
+      without the scores it was measured on is a lie about every number in the
+      entry — and never lets a shallower list displace a deeper one.
+    - CHESSDB'S CHILD TIER IS UNREACHABLE ON A STOCKFISH LIST, and that is not
+      an optimisation to tidy away: `best(P)` from Stockfish minus
+      `best(P after m)` from ChessDB is exactly the cross-evaluator subtraction
+      §3.4 forbids, and the offset it would inject is the size of the bias
+      above. It survives for the ChessDB lists still in the store.
+    - `stormEngineLoss` NOW TAKES A KNOWN ANCHOR and is ONE search when it has
+      one. Two searches was never the point — the point is that both sides come
+      from one evaluator at one depth, which a stored list already guarantees.
+      That also removes §14.23's unsatisfiable pair-inside-one-budget. Verified
+      live 2026-08-31: 8002 ms in phase `child` against 16002 ms and two phases
+      on an undeepened position. The answer carries `oneSearch` so the tooltip
+      does not describe a search that never ran.
+    - THE WORKER REBUILDS THE ANALYZE MESSAGE FIELD BY FIELD
+      (`handleEngineAnalyze`, background.js), so a per-request engine option
+      added at either end and not added THERE is dropped in silence — the search
+      still runs, at the previous request's width. That is how a 12-move list
+      would have been stored as three, with nothing in the console.
+    - `sflist` IS A FOURTH SOURCE and `stormEstimated` must be FALSE for it.
+      That predicate gates `.clo-cdb--est`, which means "ChessDB computed this
+      for us just now" and nothing else (DESIGN-chessdb.md §3.3) — so it is
+      false for BOTH engine sources. `stormBestLine` treats it like `engine`
+      for the same reason: both halves come from one search, so it names the
+      ENGINE's best and prints no win rate, which is a book figure.
+    - THE DEEPEN PASS IS A SECOND PASS OVER THE STORE, NEVER A STEP INSIDE
+      `storeAdd`. That function is synchronous and returns the boolean §14.17's
+      funnel counts, whose four outcomes must account for every candidate
+      examined; threading a 50-second search through it would make that
+      invariant depend on an engine. Separating them is also what upgrades the
+      positions already stored rather than stranding them.
+    - AN UNDEEPENED POSITION IS STILL USABLE and is graded exactly as it was
+      before this existed. Nothing waits for the pass, it never has to finish,
+      and it is deliberately NOT a filter or a term in `stormStoreDraw` —
+      §14.15's rule (a re-weighted comparator there is silent) and §14.21's
+      (filter the input, never the order).
+    - THE BACKGROUND TOP-UP (§18.2) DOES NOT DEEPEN, and must not be "improved"
+      into doing so: it runs while a review is up, and a search started there
+      holds the engine claim a review retry's own grade needs — which fails as
+      "the engine is already claimed", i.e. a silently ungraded retry.
+    - CHESSDB KEEPS THE WALK. The stop rules, the pick rules, `minScored` and
+      §19's uncovered source are coarse questions about whether a position is
+      INTERESTING, asked ~11 times per position at 380 ms and unaffordable any
+      other way. Every yield number in §6 is untouched. Only the grade moved.
   * **IT MUST NEVER CALL CHESSDB'S `queue` OR `store`, and this is the single
     most tempting place in the codebase to break that rule.** The walk stops on
     `unknown` ten to twelve times per fourteen frontiers, and "ask them to
@@ -3951,6 +4014,19 @@ frontier position into an uncovered session:
 ```
 node dev/check-storm.js
 ```
+
+…and after touching §23's STORED STOCKFISH LIST — `stormPack`/`stormUnpack`'s
+`d`, the wire's `d`, `stormWireMerge`'s deeper-list rule, or `stormEstimated` /
+`stormSourceLabel` / `stormSourceTitle` / `stormBestLine`'s handling of the
+`sflist` source. EVERY FAILURE HERE IS SILENT, and in the same way: a list is a
+list whichever source filled it, so `stormMoveLoss` still reads it, every
+verdict still prints and every number still looks like a number. `d` alone tells
+them apart — so a `d` dropped from the pack, the wire or the merge breaks
+nothing visible, it quietly puts the grade back on the source §23.1 measured as
+biased while labelling it a search. Controls run 2026-08-30, each failing on
+exactly its own assertions and no others: `d` dropped from the wire pack → 2;
+`stormEstimated` reverted to `v.source !== 'engine'` → 1; the merge's
+deeper-list rule disabled → 2.
 
 …and after touching §17's SET rules — `stormSetClean`, `stormSetHeld`,
 `stormSetOutcome`, `stormSetTally`, or `CONFIG.storm`'s `setCleanOn` /

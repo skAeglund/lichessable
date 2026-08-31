@@ -2828,6 +2828,112 @@ const leadsTo = (arrived, fen) => {
       'after c5, which your course never answers');
   }
 
+  // --- 14) the stored Stockfish list (§23) ---------------------------------
+  //
+  // EVERY FAILURE HERE IS SILENT. A list is a list: whichever source filled it,
+  // `stormMoveLoss` reads it, every verdict still prints, and every number
+  // still looks like a number. What tells the two apart is `d` alone — so a
+  // `d` that does not survive the pack, the wire or the merge does not break
+  // anything visible, it just quietly puts the feature back on the source
+  // §12.3c measured as biased, while labelling it as a search.
+  {
+    console.log('\n-- 14) the stored Stockfish list (§23) --\n');
+    const cand = {
+      fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+      ply: 3, userColor: 'w', scored: [
+        { uci: 'e2e4', san: 'e4', score: 30 },
+        { uci: 'd2d4', san: 'd4', score: 18 },
+        { uci: 'g1f3', san: 'Nf3', score: 12 },
+      ],
+      arrived: null, unc: null,
+    };
+    const f = { names: ['L'], oids: ['9'], games: 100 };
+
+    const plain = S.stormPack(cand, f);
+    eq('a ChessDB list carries no depth', plain.d, undefined);
+    eq('…and unpacks as one', S.stormUnpack(plain).listDepth, 0);
+
+    const deep = S.stormPack(Object.assign({ listDepth: 20 }, cand), f);
+    eq('an engine list carries its depth', deep.d, 20);
+    eq('…and unpacks with it', S.stormUnpack(deep).listDepth, 20);
+    eq('…and its moves are unchanged', S.stormUnpack(deep).scored.length, 3);
+    // The one that would be missed: a depth of 0 must read as "ChessDB", never
+    // as "an engine list searched to depth 0", which would suppress the second
+    // search AND claim a search that never ran.
+    eq('a zero depth is not an engine list',
+      S.stormUnpack(Object.assign({}, deep, { d: 0 })).listDepth, 0);
+
+    // --- the wire ----------------------------------------------------------
+    const store = { ck1: deep, ck2: plain };
+    const packed = S.stormWirePack(store, {}, C, 0, 0);
+    eq('the wire carries the depth', packed.p.ck1.d, 20);
+    eq('…and carries none where there is none', packed.p.ck2.d, undefined);
+    const back = S.stormWireUnpack(packed, C);
+    eq('…and it survives the round trip', back.store.ck1.d, 20);
+    eq('…on the right entry only', back.store.ck2.d, undefined);
+    eq('…with the moves intact', back.store.ck1.m.length, 3);
+
+    // --- the merge ---------------------------------------------------------
+    // THE POINT OF CARRYING IT AT ALL: a phone cannot run this search, so a
+    // desktop that has deepened a position is the only way the phone will ever
+    // grade it with an engine.
+    const mine = { ck1: JSON.parse(JSON.stringify(plain)) };
+    const theirs = { ck1: JSON.parse(JSON.stringify(deep)) };
+    const m1 = S.stormWireMerge(mine, theirs, {}, {}, 0, 0);
+    eq('a deeper list is taken from the other device', mine.ck1.d, 20);
+    eq('…and counted', m1.deepened, 1);
+    // …and the reverse must NOT happen, or a device that has done the work
+    // loses it to one that has not.
+    const mine2 = { ck1: JSON.parse(JSON.stringify(deep)) };
+    const theirs2 = { ck1: JSON.parse(JSON.stringify(plain)) };
+    const m2 = S.stormWireMerge(mine2, theirs2, {}, {}, 0, 0);
+    eq('a shallower list never displaces a deeper one', mine2.ck1.d, 20);
+    eq('…and nothing is counted', m2.deepened, 0);
+    eq('…and the moves are the deep ones', mine2.ck1.m.length, 3);
+    // The moves MOVE WITH the depth. A depth taken without them would be a
+    // claim about scores that were never measured at it.
+    const short = Object.assign(JSON.parse(JSON.stringify(deep)), { m: [], d: 24 });
+    const mine3 = { ck1: JSON.parse(JSON.stringify(plain)) };
+    S.stormWireMerge(mine3, { ck1: short }, {}, {}, 0, 0);
+    eq('a depth with no moves behind it is refused', mine3.ck1.d, undefined);
+
+    // --- what it is called -------------------------------------------------
+    // §14.20's rule, and the half that is easy to get backwards: `.clo-cdb--est`
+    // means "ChessDB computed this for us just now" and is FALSE of both engine
+    // sources.
+    eq('a stored engine list is not an estimate',
+      S.stormEstimated({ source: 'sflist' }), false);
+    eq('a ChessDB list still is', S.stormEstimated({ source: 'list' }), true);
+    eq('…and so is its child tier', S.stormEstimated({ source: 'child' }), true);
+    eq('the engine tier is not', S.stormEstimated({ source: 'engine' }), false);
+    eq('a stored engine list names the engine and its depth',
+      S.stormSourceLabel({ source: 'sflist', depth: 20 }), 'by Stockfish d20');
+    // §23) The engine tier's own sentence must not describe a search that did
+    // not run: with a stored anchor only the reply is searched.
+    eq('a one-search engine grade does not claim two',
+      /two local Stockfish searches/.test(
+        S.stormSourceTitle({ source: 'engine', depth: 20, oneSearch: true })), false);
+    eq('…and still names the depth',
+      S.stormSourceTitle({ source: 'engine', depth: 20, oneSearch: true })
+        .indexOf('depth 20') >= 0, true);
+    eq('a two-search engine grade still says so',
+      /two local Stockfish searches/.test(
+        S.stormSourceTitle({ source: 'engine', depth: 20 })), true);
+    eq('…and its sentence is its own',
+      S.stormSourceTitle({ source: 'sflist', depth: 20 }) ===
+      S.stormSourceTitle({ source: 'engine', depth: 20 }), false);
+    // A `sflist` verdict names the ENGINE's best, like the engine tier and for
+    // the same reason — both halves come from one search — and prints no win
+    // rate, which is a ChessDB figure.
+    const line = S.stormBestLine(
+      { source: 'sflist', depth: 20, bestSan: 'Nf3', bestScore: 30,
+        san: 'a3', score: -40, winrate: 44 },
+      { bestSan: 'WRONG', bestScore: 999, bestWinrate: 51 });
+    eq('…and names the engine best, not the card\'s', line.indexOf('Nf3') >= 0, true);
+    eq('…never the stored one', line.indexOf('WRONG'), -1);
+    eq('…and prints no win rate', line.indexOf('%'), -1);
+  }
+
   console.log('\n' + SRC_PATH);
   console.log(pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);

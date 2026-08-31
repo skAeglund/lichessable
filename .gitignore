@@ -29,3 +29,11 @@ __pycache__/
 # Packed builds: pack-and-push.ps1 (.crx) and pack-mobile.ps1 (.zip) both
 # write here. Build output, never source.
 dist/
+
+# Probe scratch: engine runs and survivor dumps. Course content is not ours to
+# redistribute, and an engine run is a measurement of one machine.
+dev/tmp-qfens*.json
+dev/tmp-anchor-*.json
+dev/tmp-anchor-*.log
+dev/tmp-gather-cost*.json
+dev/tmp-gather-cost*.log

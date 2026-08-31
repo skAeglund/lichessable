@@ -1926,6 +1926,66 @@
       // even that was not reached in budget. A JUDGEMENT, not a measurement —
       // §14.23 records what it is traded against.
       engineDepthSlack: 3,
+      // ----------------------------------------------------------------
+      // §23) THE STORED SCORED LIST — Stockfish, at gather time.
+      //
+      // Measured 2026-08-30 (DESIGN-intuition-storm.md §12.3c): ChessDB's own
+      // TOP move is over-scored by a median 11cp relative to the rest of the
+      // same position, 14 positions to 1, and a depth-30 search does not move
+      // towards it — so it is a defect of the source and not knowledge the
+      // shallower search lacked. Because a loss is measured against that one
+      // number, the bias is paid by every OTHER move in the position: it
+      // accounts for 70 of 100 band disagreements, and correcting it alone
+      // takes agreement with a local search from 74% to 88%.
+      //
+      // So the numbers a verdict is computed from stop coming from ChessDB.
+      // ChessDB keeps everything it is good at — the walk's stop rules, the
+      // pick rules, `minScored` — which are coarse questions about whether a
+      // position is INTERESTING, asked ~11 times per position at 380 ms and
+      // unaffordable any other way. What moves is the grade.
+      deepenDepth: { desktop: 20, mobile: 18 },
+      // The same numbers as `engineDepth` above, deliberately: that is the
+      // depth this feature has always graded its third tier at, so a stored
+      // list is the SAME standard rather than a new one — and grading a move
+      // that is not in the list is then one search at a depth the anchor
+      // already has, instead of the two `stormEngineLoss` needs when it knows
+      // neither side.
+      //
+      // HOW MANY MOVES. A stored move is graded for free; one outside the list
+      // costs a SINGLE search, measured at 4.3 s median (max 6.8 s). So the
+      // width buys the difference between "free" and "a few seconds", not
+      // between "graded" and "not graded" — which is why this is not every
+      // legal move. Measured over 8 positions on the desktop profile (4
+      // threads, 64MB), which have a median of 37 legal moves each:
+      //      8 PV @ d20    41.5 s   ->  694 positions per 8 h
+      //     12 PV @ d20    59.9 s   ->  481
+      //     16 PV @ d20   103.2 s   ->  279
+      //    all PV @ d18    70.3 s   ->  410
+      //    all PV @ d20   180.1 s+  ->  160  (did not finish inside the cap)
+      //      8 PV @ d24   140.5 s   ->  205
+      // 12 is where the curve is still flat: 50% more moves than 8 for 44% more
+      // time, where 16 costs 149% more than 8. Storing EVERY legal move would
+      // make play-time grading free for ever on every device — the one real
+      // argument for it, since a phone's own search is far slower than 4.3 s —
+      // but only at depth 18, and it triples the bytes an entry costs on a wire
+      // that is already budgeted (§23.6 keeps that trade open).
+      deepenMultipv: 12,
+      // PER POSITION, after which the search is TAKEN at the deepest COMPLETE
+      // iteration it reached — `armEnginePhase`'s rule, for its reason. A
+      // gather has nobody waiting, so this is generous; what it protects
+      // against is one pathological position stalling a pass left running
+      // overnight.
+      deepenPhaseMs: 120000,
+      deepenTimeoutMs: 150000,
+      // A list of fewer than this is not worth storing as an engine list: the
+      // point is to cover the moves a human might actually play, and two of
+      // them is barely better than the anchor alone.
+      deepenMinMoves: 3,
+      // Positions deepened between two frontier walks, so a pass stopped early
+      // leaves USABLE positions rather than a pile of raw ones. The rest are
+      // caught by the pass's second phase, which runs until the store has none
+      // left.
+      deepenPerFrontier: 1,
       // THE PAIR'S CEILING, and now a BACKSTOP rather than the operative limit:
       // it is armed when the job is created and never re-armed between phases,
       // so it has to cover both. It exists for the shapes of failure the phase
@@ -34383,7 +34443,11 @@
    * panel and section 27's review both read it, from two different closures.
    */
   function stormEstimated(v) {
-    return Boolean(v) && v.source !== 'engine';
+    // §23) `sflist` is a Stockfish list stored at gather time — a real search,
+    // so it is no more an estimate than the engine tier is. The class this
+    // gates means "ChessDB computed this for us just now" and nothing else
+    // (DESIGN-chessdb.md §3.3), so it must be false for BOTH engine sources.
+    return Boolean(v) && v.source !== 'engine' && v.source !== 'sflist';
   }
 
   /**
@@ -34400,7 +34464,7 @@
    * two evaluations, and the tooltip is where the sentence goes.
    */
   function stormSourceLabel(v) {
-    if (v.source === 'engine') {
+    if (v.source === 'engine' || v.source === 'sflist') {
       return 'by Stockfish' + (v.depth ? ' d' + v.depth : '');
     }
     // The two ChessDB tiers, and the distinction is real: 'list' is this
@@ -34420,7 +34484,25 @@
    */
   function stormSourceTitle(v) {
     if (!v) return '';
+    if (v.source === 'sflist') {
+      return 'This position was scored by a local Stockfish search' +
+        (v.depth ? ' to depth ' + v.depth : '') +
+        ' when it was gathered, and your move is in that list — so the best ' +
+        'move and yours come from one search of one position, which is what ' +
+        'makes the difference between them mean anything.';
+    }
     if (v.source === 'engine') {
+      // §23) TWO SEARCHES, OR ONE. With a stored Stockfish list the anchor was
+      // already known at a recorded depth and only the reply was searched —
+      // still one evaluator and one depth, which is the whole of what the pair
+      // was buying, but saying "two searches" would describe one that never ran.
+      if (v.oneSearch) {
+        return 'Your move is not in the list Stockfish stored for this position, so ' +
+          'the position AFTER it was searched now' +
+          (v.depth ? ' to depth ' + v.depth : '') +
+          ' and compared against that stored score — one engine, one depth, ' +
+          'which is what makes the difference between them mean anything.';
+      }
       return 'ChessDB could score neither your move nor the position after it, so ' +
         'this was graded by two local Stockfish searches' +
         (v.depth ? ' to depth ' + v.depth : '') +
@@ -34444,7 +34526,12 @@
     // A verdict from the ENGINE tier names the ENGINE's best and its score:
     // both halves of a comparison have to come from one evaluator, which is
     // the same rule that makes that tier two searches rather than one.
-    const eng = v.source === 'engine' && typeof v.bestScore === 'number';
+    // §23) A `sflist` verdict is the same claim as an `engine` one — the best
+    // move and the move played are two entries of ONE search — so it names the
+    // engine's best for the engine tier's reason, and prints no win rate,
+    // which is a ChessDB figure.
+    const eng = (v.source === 'engine' || v.source === 'sflist') &&
+      typeof v.bestScore === 'number';
     const bestSan = eng ? (v.bestSan || '?') : (s.bestSan || '?');
     const bestScore = eng ? v.bestScore : s.bestScore;
     const bw = eng ? '' : pct(s.bestWinrate);
@@ -34685,6 +34772,8 @@
       syncNote: '',       // one line: what the exchange did, or why it could not
       lastPull: 0,
       gathered: 0,        // positions it has added
+      deepened: 0,        // §23) …and how many of them Stockfish has scored
+      deepenFailed: null, // …and the ones it refused, in memory and per pass
       // §22) "Clear positions" is a two-press confirm, section 13's shape: a
       // press arms it, a second within `clearArmMs` does it, and anything that
       // takes the button off screen drops the arm — a confirm the user can
@@ -34894,6 +34983,12 @@
         m: cand.scored.map((m) => (typeof m.winrate === 'number'
           ? [m.uci, m.san, m.score, m.winrate]
           : [m.uci, m.san, m.score])),
+        // §23) THE DEPTH `m` WAS SEARCHED TO, and its ABSENCE is the whole
+        // compatibility story: every entry written before v0.158.0 has no `d`
+        // and is a ChessDB list, which is exactly what it was. So no cache key
+        // was bumped and nothing migrates — a position is upgraded when the
+        // deepen pass reaches it, and graded by whatever it carries until then.
+        d: cand.listDepth || undefined,
         t: Date.now(),
         // How many times it has been offered and NOT learned. Kept for the
         // ordering below, and because a position missed three times is worth
@@ -34933,6 +35028,9 @@
         userColor: e.c === 'b' ? 'b' : 'w',
         nScored: scored.length,
         scored,
+        // §23) >0 means `scored` is a Stockfish list at that depth; 0/absent
+        // means ChessDB's, which is what every pre-v0.158.0 entry holds.
+        listDepth: typeof e.d === 'number' && e.d > 0 ? e.d : 0,
         invented: Boolean(e.i),
         // `before` is absent on anything written before v0.153.0, and every
         // reader treats that as "not known" — the analysis board then opens on
@@ -35027,6 +35125,16 @@
           // "a frontier position" everywhere, so an old payload and a new one
           // are both valid, in both directions.
           u: e.u, sh: e.sh,
+          // §23) THE LIST'S DEPTH, and it MUST ride: it is the difference
+          // between a Stockfish list and a ChessDB one, it is not re-derivable
+          // on the far device at any price the far device can pay — a phone
+          // cannot run this search — and carrying the list without it would
+          // present engine scores as ChessDB estimates and grade an unlisted
+          // move with two searches instead of one. Optional, absent on every
+          // payload written before v0.158.0, and absence reads as "ChessDB's
+          // list", which is what those payloads carry. NO `wireVersion` bump,
+          // for `g`'s and `u`'s reason: valid in both directions.
+          d: e.d,
           // uci and score only; the san goes.
           m: e.m.map((m) => (typeof m[3] === 'number' ? [m[0], m[2], m[3]] : [m[0], m[2]])),
         };
@@ -35072,6 +35180,9 @@
           // payload is something another build wrote.
           u: e.u ? 1 : undefined,
           sh: typeof e.sh === 'number' ? e.sh : undefined,
+          // §23, forced to a number for the same reason the two above are
+          // forced: a payload is something another build wrote.
+          d: typeof e.d === 'number' && e.d > 0 ? e.d : undefined,
           m };
       }
       const gone = {};
@@ -35117,7 +35228,7 @@
     function stormWireMerge(local, remote, localGone, remoteGone, localCleared, remoteCleared) {
       const gone = Object.assign({}, remoteGone || {}, localGone || {});
       const cleared = Math.max(Number(localCleared) || 0, Number(remoteCleared) || 0);
-      let added = 0, dropped = 0, bumped = 0, wiped = 0;
+      let added = 0, dropped = 0, bumped = 0, wiped = 0, deepened = 0;
       for (const ck of Object.keys(gone)) {
         if (local[ck]) { delete local[ck]; dropped++; }
       }
@@ -35143,8 +35254,20 @@
         if (typeof mine.g !== 'number' && typeof remote[ck].g === 'number') {
           mine.g = remote[ck].g;
         }
+        // §23) TAKE THE DEEPER LIST, and this is the one field here worth
+        // crossing devices for at all: the search costs tens of seconds of CPU
+        // and a phone cannot run it, so a desktop that has deepened a position
+        // is the ONLY way that phone will ever grade it with an engine. The
+        // list and its depth move together — a depth without the moves it was
+        // measured on is a lie about every score in the entry.
+        if ((remote[ck].d || 0) > (mine.d || 0) && Array.isArray(remote[ck].m) &&
+            remote[ck].m.length) {
+          mine.d = remote[ck].d;
+          mine.m = remote[ck].m;
+          deepened++;
+        }
       }
-      return { added, dropped, bumped, wiped, gone, clearedAt: cleared };
+      return { added, dropped, bumped, wiped, deepened, gone, clearedAt: cleared };
     }
 
     // ----------------------------------------------------------------------
@@ -37181,6 +37304,131 @@
     }
 
     /**
+     * §23) SCORE A WHOLE POSITION WITH THE ENGINE — the search a gather stores.
+     *
+     * One wide MultiPV search, returning a scored list in exactly the shape
+     * ChessDB's `queryall` produced: mover-perspective, best first. That is the
+     * whole of why nothing downstream changed — `stormMoveLoss`, `stormCard`,
+     * the review, the bands and the wire all read that shape and cannot tell
+     * which source filled it.
+     *
+     * THE ANSWER IS ONE ITERATION, NEVER THE UNION OF SEVERAL. `latest.pvs` in
+     * engine.js is cumulative, so a search ended by its budget flushes lines
+     * from two different depths — and a list whose moves were searched to
+     * different depths puts a cross-depth difference into every verdict
+     * computed from it, invisibly, exactly as §3.4's cross-EVALUATOR mixture
+     * would. So updates are collected per depth and the answer is the deepest
+     * COMPLETE iteration, which is also what drops the partial iteration a stop
+     * interrupts. `pv.depth` exists for this.
+     *
+     * It claims the engine the way section 15 and `stormEngineLoss` do, through
+     * the same single `st.eng` slot and the same single release in
+     * `endEngineJob` — one claim variable and one way to give it back, because
+     * a leaked claim is a panel whose engine never starts again.
+     */
+    function stormEngineList(fen, opts) {
+      const o = opts || {};
+      const bail = (why) => {
+        log('storm: deepen stood down —', why);
+        return Promise.resolve(null);
+      };
+      if (st.eng) return bail('the engine is already claimed');
+      const pos = CloSan.parseFen(fen);
+      if (!pos) return bail('the position could not be read');
+      const profile = engineProfile();
+      const depth = o.depth || C.deepenDepth[profile] || C.deepenDepth.desktop;
+      const multipv = o.multipv || C.deepenMultipv;
+      return new Promise((resolve) => {
+        const job = {
+          kind: 'list',
+          reqId: 'sl' + Date.now() + '-' + (++st.engSeq),
+          phase: 'list',
+          moverColor: pos.side,
+          fen,
+          resolve,
+          timer: 0,
+          phaseTimer: 0,
+          depth,
+          multipv,
+          // depth -> Map(uci -> mover-perspective cp), see above.
+          byDepth: new Map(),
+          startedAt: Date.now(),
+          bestDepth: 0, childDepth: 0, nopv: 0, foreign: 0,
+        };
+        st.eng = job;
+        state.altCheckBusy = true;
+        state.engineFen = null;
+        engineSend({
+          type: 'clo-engine-analyze', fen, profile,
+          reqId: job.reqId + ':list', depth,
+          multipv,
+          // No SAN: converting a 12-ply line for each of a dozen PVs is work
+          // whose output is discarded — the list stores one move per line and
+          // its SAN is computed here from the position we already hold.
+          sanPlies: 0,
+        });
+        pingEngineIfSilent();
+        job.phaseTimer = setTimeout(() => {
+          if (st.eng !== job) return;
+          log('storm: deepen taking', fen, 'at its deepest complete iteration —',
+            'it did not reach depth', depth, 'within', C.deepenPhaseMs, 'ms');
+          finishEngineList(job);
+        }, C.deepenPhaseMs);
+        job.timer = setTimeout(() => {
+          warn('storm: deepen hit its ceiling of', C.deepenTimeoutMs, 'ms');
+          endEngineJob(job, null);
+        }, C.deepenTimeoutMs);
+      });
+    }
+
+    /** The deepest COMPLETE iteration, turned into a scored list. */
+    function finishEngineList(job) {
+      let widest = 0;
+      for (const m of job.byDepth.values()) widest = Math.max(widest, m.size);
+      let pick = 0;
+      for (const [d, m] of job.byDepth) if (m.size >= widest && d > pick) pick = d;
+      const got = job.byDepth.get(pick);
+      if (!got || got.size < C.deepenMinMoves) {
+        warn('storm: deepen produced', got ? got.size : 0, 'move(s) at depth', pick,
+          '— not enough to store');
+        endEngineJob(job, null);
+        return;
+      }
+      const pos = CloSan.parseFen(job.fen);
+      const moves = [];
+      for (const [uci, score] of got) {
+        moves.push({
+          uci, score,
+          // A move whose SAN will not resolve is kept with an empty one rather
+          // than dropped: the uci is what every reader joins on, and the wire
+          // recomputes the SAN at the far end anyway.
+          san: (pos && CloSan.moveToSan(pos, uci)) || '',
+          winrate: undefined,
+        });
+      }
+      moves.sort((a, b) => b.score - a.score);
+      endEngineJob(job, { depth: pick, moves });
+    }
+
+    /** One wide update folded into the per-depth table. */
+    function keepEngineList(job, msg) {
+      const pvs = Array.isArray(msg.pvs) ? msg.pvs : [];
+      if (!pvs.length) { job.nopv++; return; }
+      for (const pv of pvs) {
+        // `pv.depth` is the LINE's own depth; `msg.depth` is multipv 1's, which
+        // is what makes a straddling flush invisible without it. An update from
+        // a build that does not send it is refused rather than filed under a
+        // depth it did not reach.
+        if (!Number.isInteger(pv.depth) || !pv.uci) continue;
+        const cp = stormMoverCp(pv, job.moverColor, C);
+        if (typeof cp !== 'number') continue;
+        if (!job.byDepth.has(pv.depth)) job.byDepth.set(pv.depth, new Map());
+        job.byDepth.get(pv.depth).set(pv.uci, cp);
+        if (pv.depth > job.bestDepth) job.bestDepth = pv.depth;
+      }
+    }
+
+    /**
      * §3.4's THIRD SOURCE: two Stockfish searches when ChessDB can grade
      * neither the move nor its child.
      *
@@ -37195,7 +37443,7 @@
      * null. It never throws and never leaves the engine claimed: every exit
      * goes through `endEngineJob`.
      */
-    function stormEngineLoss(fen, uci) {
+    function stormEngineLoss(fen, uci, known) {
       // §14.22.4) EVERY null out of this tier used to be SILENT, and a silent
       // null is indistinguishable from ChessDB not knowing the position — which
       // is exactly how a tier that answered nothing at all read as the book
@@ -37209,13 +37457,21 @@
       };
       if (!C.engineFallback) return bail('the fallback is switched off');
       if (st.eng) return bail('the engine is already claimed by another grade');
+      // §23) THE ANCHOR MAY ALREADY BE KNOWN. A position deepened at gather
+      // time carries the engine's own best score for it, at a recorded depth —
+      // so grading a move that is not in that list is ONE search of the reply,
+      // capped at that same depth, instead of two. Same evaluator and same
+      // depth by construction, which is what the two-search rule was buying;
+      // `engineDepthSlack` still guards the case where the reply's budget ran
+      // out short.
       const after = fenAfterUci(fen, uci);
       const pos = CloSan.parseFen(fen);
       if (!after || !pos) return bail('the position or the move could not be read');
       return new Promise((resolve) => {
         const job = {
           reqId: 'st' + Date.now() + '-' + (++st.engSeq),
-          phase: 'best',
+          phase: known ? 'child' : 'best',
+          known: Boolean(known),
           moverColor: pos.side,
           fen, after,
           resolve,
@@ -37230,7 +37486,9 @@
           // THE DEEPEST EACH SEARCH HAS PRODUCED, and the whole of §14.22.4's
           // fix: a budget that runs out mid-search leaves a real evaluation
           // behind, and throwing it away is what made this tier answer nothing.
-          best: null, bestDepth: 0, bestSan: '',
+          best: known ? known.best : null,
+          bestDepth: known ? known.depth : 0,
+          bestSan: known ? (known.bestSan || '') : '',
           childBest: null, childDepth: 0, childTarget: 0,
           // Bookkeeping, read only by `endEngineJob`'s one log line — the
           // failure this tier had was invisible for four releases.
@@ -37244,12 +37502,19 @@
         // makes the stand-down send no stop of its own.
         state.altCheckBusy = true;
         state.engineFen = null;
-        engineSend({
-          type: 'clo-engine-analyze', fen, profile: engineProfile(),
-          reqId: job.reqId + ':best', depth: job.depth,
-        });
-        pingEngineIfSilent();
-        armEnginePhase(job);
+        if (known) {
+          // `startEngineChild` sends the search and arms the phase itself, and
+          // it is reached with `job.best` already filled — which is the guard
+          // it opens with, so nothing about it had to change.
+          startEngineChild(job);
+        } else {
+          engineSend({
+            type: 'clo-engine-analyze', fen, profile: engineProfile(),
+            reqId: job.reqId + ':best', depth: job.depth,
+          });
+          pingEngineIfSilent();
+          armEnginePhase(job);
+        }
         // THE PAIR'S HARD CEILING, and since v0.149.0 a BACKSTOP rather than
         // the operative limit: `enginePhaseMs` is what actually ends a search.
         // Unlike the alt check's two minutes, this is a card the user is
@@ -37348,6 +37613,12 @@
         best: job.best,
         value: -job.childBest,
         bestSan: job.bestSan,
+        // §23) WHETHER THE POSITION ITSELF WAS SEARCHED. With a stored list the
+        // anchor was already known and only the reply ran, so the sentence
+        // naming "two local Stockfish searches" would be false — and a tooltip
+        // that describes a search that did not happen is the same class of
+        // claim §14.20 split the three sources apart to avoid.
+        oneSearch: Boolean(job.known),
         // §14.20) THE DEPTH THE PAIR ACTUALLY RAN TO — the weaker of the two,
         // since that is what the comparison is worth. Read off the job, never
         // from `CONFIG.storm.engineDepth`, which is now only a ceiling.
@@ -37388,6 +37659,13 @@
         return;
       }
       const which = msg.reqId.slice(job.reqId.length + 1);
+      // §23) The wide search that fills a stored list wants EVERY line, not
+      // just multipv 1 — so it is taken before the single-PV unwrapping below.
+      if (which === 'list' && job.kind === 'list') {
+        keepEngineList(job, msg);
+        if (msg.done || job.bestDepth >= job.depth) finishEngineList(job);
+        return;
+      }
       const pv = (Array.isArray(msg.pvs) ? msg.pvs : []).find((p) => p.multipv === 1);
       if (!pv) { job.nopv++; return; }
 
@@ -37962,10 +38240,12 @@
         setSyncNote('Synced — ' + packed.n + ' of ' + storeTotal() + ' carried' +
           (merged.added ? ', ' + merged.added + ' taken from another device' : '') +
           (merged.dropped ? ', ' + merged.dropped + ' already learned elsewhere' : '') +
-          (merged.wiped ? ', ' + merged.wiped + ' cleared elsewhere' : ''));
+          (merged.wiped ? ', ' + merged.wiped + ' cleared elsewhere' : '') +
+          (merged.deepened ? ', ' + merged.deepened + ' scored by another device' : ''));
         log('storm: synced (' + reason + ') —', packed.n, 'carried,',
           merged.added, 'added,', merged.dropped, 'dropped,',
-          merged.wiped, 'cleared,', wire.length, 'bytes');
+          merged.wiped, 'cleared,', merged.deepened, 'deepened,',
+          wire.length, 'bytes');
         // A PULL MUST FEED THE SESSION IT LANDED IN. The exchange is fired from
         // `startSession` and deliberately not awaited (§14.12), so the store it
         // enriches has ALREADY been drawn from — and without this the positions
@@ -38359,6 +38639,8 @@
       }
       st.gathering = true;
       st.gathered = 0;
+      st.deepened = 0;
+      st.deepenFailed = new Set();
       st.funnel = newFunnel();   // §14.17, §19
       st.exhausted = false;
       // Its own ceiling, far above a session's: this IS the long burst, and it
@@ -38395,6 +38677,29 @@
           // running, and a crash or a closed tab must not throw away an hour.
           await saveStore();
           render();
+          // §23) …AND SCORE ONE OF THEM WHILE WE ARE HERE. Interleaved rather
+          // than left to the phase below so that a pass stopped in the middle
+          // leaves positions that are ready to play, instead of a pile of raw
+          // ones and a promise.
+          if (C.deepenPerFrontier > 0 && st.gathering) {
+            if (await deepenSome(C.deepenPerFrontier)) await saveStore();
+          }
+        }
+        // §23) PHASE TWO: keep scoring until the store has nothing left. This
+        // is the half that is meant to be left running — the walk is bounded by
+        // `gatherTarget` and finishes in minutes, while a search is tens of
+        // seconds a position. It writes after every one, so stopping it costs
+        // at most the position in flight.
+        while (st.gathering) {
+          const todo = undeepened(st.store);
+          if (!todo.length) break;
+          const before = st.deepened;
+          await deepenSome(1, todo);
+          // A refused position has been added to `st.deepenFailed`, so the next
+          // `undeepened` is strictly shorter whether or not this one succeeded
+          // — which is what guarantees this loop ends.
+          if (st.deepened === before && !st.gathering) break;
+          await saveStore();
         }
       } catch (err) {
         warn('storm: the gather pass stopped:', err);
@@ -38411,6 +38716,10 @@
         log('storm: gathered', st.gathered, 'position(s) in',
           st.cdbCount, 'ChessDB requests;', storeCount(), 'in store for this source,',
           storeTotal(), 'in all');
+        log('storm: scored', st.deepened, 'position(s) with Stockfish;',
+          deepenedCount(st.store), 'of', Object.keys(st.store || {}).length,
+          'in this course now carry an engine list,',
+          undeepened(st.store).length, 'still on ChessDB');
         // §14.17: the breakdown, and the reason tables with it — which is the
         // half that says what to change. One line each so a console filtered on
         // [CLO] reads as a block.
@@ -38547,6 +38856,12 @@
     function stopGather() {
       if (!st.gathering) return;
       st.gathering = false; // the loop reads this and falls out of its `while`
+      // §23) …AND THE SEARCH IT IS INSIDE. The loops check the flag between
+      // positions, so without this a stop pressed during a deepen search does
+      // nothing visible for up to `deepenPhaseMs` — and it is exactly the pass
+      // a user stops, being the long one. Only OUR job: a grade belongs to a
+      // session, which this pass has already ended.
+      if (st.eng && st.eng.kind === 'list') endEngineJob(st.eng, null);
       setNote('');
     }
 
@@ -38621,6 +38936,108 @@
       clearTimeout(st.clearTimer);
       st.clearTimer = 0;
       if (st.ui) syncSettings();
+    }
+
+    /**
+     * §23) THE DEEPEN PASS — replace a stored position's ChessDB list with a
+     * Stockfish one.
+     *
+     * IT IS A SECOND PASS OVER THE STORE, NOT A STEP INSIDE `storeAdd`, and
+     * that is a decision rather than an accident. `storeAdd` is synchronous and
+     * returns a boolean that §14.17's funnel counts, and its four outcomes have
+     * to account for every candidate examined — threading a search of tens of
+     * seconds through it would make that invariant depend on an engine. Separating them
+     * also means the positions ALREADY in the store are upgraded rather than
+     * stranded, the walk (network-bound) and the search (CPU-bound) interleave
+     * instead of queueing, and a pass stopped at any moment leaves a coherent
+     * store.
+     *
+     * A position that has not been deepened is still perfectly usable — it is
+     * graded exactly as it was before this existed, and says so. So this never
+     * has to be finished, and nothing waits for it.
+     */
+    function undeepened(store) {
+      if (!store) return [];
+      const out = [];
+      for (const ck of Object.keys(store)) {
+        const e = store[ck];
+        if (!e || !Array.isArray(e.m) || !e.m.length || e.d > 0) continue;
+        // A POSITION THE SEARCH HAS ALREADY REFUSED IS NOT OFFERED AGAIN, and
+        // this is what makes the pass terminate: phase two re-asks the store
+        // until it is empty, so one position the engine cannot score — an
+        // unparseable FEN, a list too short to store — would otherwise be
+        // handed back for ever, and a pass left running overnight would spend
+        // the night on it. IN MEMORY ONLY, and per pass: it is a fact about
+        // this attempt, not about the position, so a reload retries.
+        if (st.deepenFailed && st.deepenFailed.has(ck)) continue;
+        out.push(ck);
+      }
+      return out;
+    }
+
+    /** How much of this course's store carries an engine list. */
+    function deepenedCount(store) {
+      if (!store) return 0;
+      let n = 0;
+      for (const ck of Object.keys(store)) if (store[ck] && store[ck].d > 0) n++;
+      return n;
+    }
+
+    /**
+     * One position. Returns true when it stored a list, false otherwise — a
+     * refusal is never fatal and never retried in a loop: the position keeps
+     * the list it has and the pass moves on to the next one.
+     */
+    async function deepenOne(ck) {
+      const e = st.store && st.store[ck];
+      if (!e || !e.f) return false;
+      const got = await stormEngineList(e.f);
+      // THE STORE CAN HAVE MOVED UNDER THE SEARCH — tens of seconds is long enough
+      // for the window to be reopened on another course (§14.24's hazard, one
+      // await further out), or for the entry to have been answered and dropped
+      // by the retention rule. Both are checked against the object we started
+      // from rather than trusted.
+      if (!got || !st.store || st.store[ck] !== e) {
+        // Only a REFUSAL is remembered. A store that moved under the search is
+        // not this position's fault and must stay retryable.
+        if (!got && st.deepenFailed) st.deepenFailed.add(ck);
+        return false;
+      }
+      e.m = got.moves.map((m) => [m.uci, m.san, m.score]);
+      e.d = got.depth;
+      st.storeDirty = true;
+      return true;
+    }
+
+    /**
+     * Up to `n` of them, in whatever order the store enumerates — which is not
+     * a priority and is not meant to be one. Every stored position is worth the
+     * same search, and the ORDER positions are OFFERED in is
+     * `stormStoreDraw`'s, which §14.15 is emphatic must not gain terms.
+     */
+    async function deepenSome(n, list) {
+      let done = 0;
+      const todo = list || undeepened(st.store);
+      for (const ck of todo) {
+        if (!st.gathering || done >= n) break;
+        setDeepenNote(todo.length - done);
+        const ok = await deepenOne(ck);
+        if (ok) st.deepened++;
+        // A REFUSAL STILL SPENDS THE SLICE. It is also remembered by
+        // `deepenOne`, so the position does not come back — the two together
+        // are what bound the pass.
+        done++;
+        render();
+        if (!st.gathering) break;
+      }
+      return done;
+    }
+
+    function setDeepenNote(left) {
+      setNote('Analysing… ' + st.deepened + ' position(s) scored by Stockfish, ' +
+        left + ' left, depth ' +
+        (C.deepenDepth[engineProfile()] || C.deepenDepth.desktop) +
+        ' · leave this open');
     }
 
     function setGatherNote() {
@@ -39186,9 +39603,27 @@
     /** §3.4's three sources, in order, and nothing else — no bookkeeping, so
      *  both callers of `runGrade` get ONE definition of what a move is worth. */
     async function gradeTiers(card, uci, alive) {
-      const scored = card.storm.cand.scored;
+      const cand = card.storm.cand;
+      const scored = cand.scored;
+      // §23) A DEEPENED POSITION CARRIES A STOCKFISH LIST, and that changes
+      // which tiers exist rather than adding one. Absent, everything below is
+      // exactly what it was.
+      const listDepth = cand.listDepth || 0;
       let got = stormMoveLoss(scored, uci, undefined, C);
-      if (!got) {
+      if (got && listDepth) {
+        // The same lookup, but it is a SEARCH and not an estimate — so it is
+        // relabelled here rather than in `stormMoveLoss`, which stays pure and
+        // stays byte-identical for `dev/check-storm.js`.
+        got.source = 'sflist';
+        got.depth = listDepth;
+        got.bestSan = scored[0].san || '';
+      }
+      // CHESSDB'S CHILD TIER IS UNREACHABLE ON A STOCKFISH LIST, and that is
+      // not an optimisation: `best(P)` from Stockfish minus `best(P after m)`
+      // from ChessDB is precisely the cross-evaluator subtraction §3.4 forbids,
+      // and the offset it would inject is the same size as the bias §12.3c
+      // measured. It survives for the ChessDB lists still in the store.
+      if (!got && !listDepth) {
         const after = fenAfterUci(card.startFen, uci);
         const child = after ? await askCdb(after) : null;
         got = stormMoveLoss(scored, uci, child && child.length ? child[0].score : undefined, C);
@@ -39199,7 +39634,12 @@
       // over to it. Three answers in a row came back ungradeable on course
       // 291847 before this existed.
       if (!got && alive()) {
-        const eng = await stormEngineLoss(card.startFen, uci);
+        // …and with a stored list the anchor is already in hand at a known
+        // depth, so this is ONE search of the reply rather than two.
+        const known = listDepth ? {
+          best: scored[0].score, bestSan: scored[0].san || '', depth: listDepth,
+        } : null;
+        const eng = await stormEngineLoss(card.startFen, uci, known);
         if (eng) {
           got = {
             loss: Math.max(0, eng.best - eng.value),
@@ -39211,6 +39651,7 @@
             // §14.20: which search, so the tooltip can say so rather than
             // quoting a config value that may not be the one that ran.
             depth: eng.depth,
+            oneSearch: Boolean(eng.oneSearch),
             // Both halves of the line the panel prints come from the SAME
             // search, so it names the engine's best and not the book's.
             bestSan: eng.bestSan, bestScore: eng.best,
@@ -39612,6 +40053,14 @@
       // it: `syncEngine` stands down while `state.altCheckBusy` is set, so a
       // leaked claim is a panel whose engine never starts again.
       if (st.eng) endEngineJob(st.eng, null);
+      // §23) …AND THE GATHER PASS, or closing the window leaves it looping
+      // invisibly. That mattered little while the pass was network-bound, and
+      // matters a great deal now that it also SEARCHES: `endEngineJob` above
+      // kills the search in flight, the loop starts the next one, and
+      // `state.altCheckBusy` then holds the panel's engine down on a page whose
+      // storm has gone. Safe at `gather`'s own entry, which calls this BEFORE
+      // it sets the flag.
+      if (st.gathering) stopGather();
       // …and the store, whose whole value is that it outlives this session.
       // Fire and forget: nothing after this reads it back.
       saveStore();
