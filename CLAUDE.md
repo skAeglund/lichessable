@@ -3873,6 +3873,44 @@ Currently working (v0.18.x).
       tombstones, the wire, the review — is shared and must stay unaware of the
       source.
 
+  * TRANSPOSITIONS ARE ANSWERED BY A KEY OF THEIR OWN (§25, v0.162.0), and it is
+    NOT `cacheKey`. `stormCoverKey` is placement + side + castling, EN PASSANT
+    DROPPED, and it is the only key the continuation index (`out.cont`) is built
+    or read with — §14.18's stub filter, §14.18.4's walk stop, §19's child check
+    and the new store sweep. **READ DESIGN-intuition-storm.md §25 BEFORE
+    CHANGING IT.** What an edit elsewhere can break:
+    - A TRANSPOSITION IS EXACTLY A DIFFERENT LAST MOVE, which is why the ep
+      field cannot be in this key: 1.e4 e6 2.d4 c5 and 1.e4 c5 2.d4 e6 leave one
+      board with `c6` and `-` in that field, so `cacheKey` called them two
+      positions and the storm asked "what do you play against 2...c5?" about a
+      board the course answers with 3.Nf3. Measured over all three courses
+      (`dev/probe-transpositions.js`, 2026-08-31): the exact key was missing
+      between a fifth and a third of the re-entries it existed to catch, and
+      every one of them looked exactly like a real card.
+    - CASTLING STAYS. A king that has moved and come home leaves the same
+      placement and a genuinely different position (section 11's reasoning about
+      the review FEN). Only the field recording the PREVIOUS move is dropped, and
+      the one-sided cost is stated: a position differing from a covered one only
+      by an AVAILABLE en passant capture reads as covered and is not offered.
+    - IT IS NOT THE STORE KEY AND NOT A POSITION'S IDENTITY. `storeAdd`,
+      `st.seen`, `byEnd`/`byPos` and every wire key stay `cacheKey`. This one
+      answers "does the course say anything here", which is a different question
+      — and the probe measured ZERO decision points split by ep alone, so
+      grouping needs nothing.
+    - `dropCoveredStored()` IS THE OTHER HALF AND THE BIGGER ONE. §14.11's whole
+      point is that `produceFromStore` runs BEFORE the course is read, so a
+      stored position is dealt with no coverage test at all — and a repertoire
+      GROWS, usually because this feature found the gap, so the positions most
+      likely to be covered by now are exactly the ones already acted on. The
+      sweep runs the moment `st.pool` exists, in `startSession` AND in `gather`
+      (before a request is spent, and before the deepen pass puts tens of seconds
+      of Stockfish into a position about to go). ONE RULE, BOTH SOURCES; a PLAIN
+      DELETION, never a §14.16 tombstone (nothing was answered, and a re-harvest
+      now applies the same rule at the same key); it filters `st.storeQueue` and
+      `st.queue` too but leaves `st.seen`, and it never touches `st.card`.
+      A record with no `c` is LEFT — whose move it is cannot be guessed at, and a
+      sweep that guessed would delete positions on a coin toss.
+
   * THE ANALYSIS BOARD OPENS ONE PLY EARLIER (§20, v0.153.0): the opponent's
     move that MADE the position, played in as the line's first ply, so "Add as
     puzzle" (19d) writes a card that asks its question after that move instead
@@ -4056,7 +4094,12 @@ fails by yielding a plausible session made of the wrong positions — the
 opponent-to-move guard turns the author's own choices into holes, a raw uci
 compare misses exactly the castling replies and succeeds everywhere else, a
 reversed comparator still returns every gap, and a missing store filter deals a
-frontier position into an uncovered session:
+frontier position into an uncovered session — or §25's COVERAGE KEY and the
+stored-position sweep (`stormCoverKey`, `dropCoveredStored`), whose failure is
+the quietest in this feature: a card whose position the repertoire covers looks
+exactly like a card whose position it does not, so putting `cacheKey` back
+silently restores the transposition hole and switching the sweep off silently
+restores the store dealing positions the user has already prepared:
 
 ```
 node dev/check-storm.js

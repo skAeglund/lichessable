@@ -105,6 +105,11 @@ const src = [
   sliceDecl('walkVariation'),
   sliceDecl('sideOf'),
   // The pipeline under test.
+  // §19b) THE COVERAGE KEY. Sliced rather than transcribed for the usual
+  // reason and one of its own: both sides of every coverage comparison go
+  // through it, so a transcription that drifted would agree with itself and
+  // with nothing shipped.
+  sliceDecl('stormCoverKey'),
   sliceDecl('stormFrontiers'),
   // §19's stage 0 and stage 1, and the store split that keeps the two sources
   // apart. Every one of them fails SILENTLY — see section 13.
@@ -144,6 +149,10 @@ const src = [
   sliceDecl('stormFunnelLines'),
   sliceDecl('storeAdd'),
   sliceDecl('harvestCandidates'),
+  // 19b) The stored-position sweep. IMPURE, and here for the funnel's own
+  // reason: what it removes is what the user would otherwise be asked, and a
+  // sweep that removes nothing is indistinguishable from one that works.
+  sliceDecl('dropCoveredStored'),
   'let st = null; let C = null;',
   'function __setEnv(a, b) { st = a; C = b; }',
   // §14.23's engine tier. IMPURE, like the funnel above and for the same
@@ -215,7 +224,7 @@ const src = [
   sliceDecl('stormSourceTitle'),
   sliceDecl('stormVerdictLine'),
   sliceDecl('stormBestLine'),
-  'return { stormFrontiers, stormDecisions, stormUncoveredMoves,' +
+  'return { stormFrontiers, stormDecisions, stormUncoveredMoves, stormCoverKey,' +
   '         stormFilterSource, stormSharePct, stormGapNote,' +
   '         statMapOf, STAT_MAPS,' +
   '         stormDrawFrontier, stormUserEval, stormPgnMoves,' +
@@ -228,7 +237,7 @@ const src = [
 '         stormReachBucket, stormReachLabel,' +
   '         stormFunnelBlank, stormFunnelBump, stormFunnelWhy,' +
   '         stormFunnelNote, stormFunnelLines,' +
-  '         storeAdd, harvestCandidates, __setEnv,' +
+  '         storeAdd, harvestCandidates, dropCoveredStored, __setEnv,' +
   '         stormEngineLoss, onStormEngineUpdate, endEngineJob,' +
   '         deepestCompleteList, deepenPickDepth,' +
   '         stormWirePack, stormWireUnpack, stormWireMerge,' +
@@ -1055,11 +1064,11 @@ const leadsTo = (arrived, fen) => {
     return out;
   })();
   eq('the fixture position really is the one the course transposes into',
-    covW.has(cacheKey(gameFens[6])), true);
+    covW.has(S.stormCoverKey(gameFens[6])), true);
   eq('…and it is the user’s move there', gameFens[6].split(' ')[1], 'w');
-  const oppOnly = new Set([cacheKey(gameFens[7])]);
+  const oppOnly = new Set([S.stormCoverKey(gameFens[7])]);
   eq('the same position with the OPPONENT to move is not in the index',
-    covW.has(cacheKey(gameFens[7])), false);
+    covW.has(S.stormCoverKey(gameFens[7])), false);
   const opponentCovered = await S.stormWalkGame(ruy.fen, 'w', gameSans, book(20), C, oppOnly);
   eq('an opponent-to-move position in the index does not stop the walk',
     opponentCovered.out.length, freeWalk.out.length);
@@ -2676,7 +2685,7 @@ const leadsTo = (arrived, fen) => {
     // §14.18.3's index rides out on the array, which is what `frontierCovered`
     // hands the walk-stop AND what the harvest asks about a reply's child.
     eq('the continuation index rides out',
-      dec.cont.w.has(cacheKey(
+      dec.cont.w.has(S.stormCoverKey(
         'rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2')), true);
     eq('…and holds nothing for the colour that has no lines', dec.cont.b.size, 0);
 
@@ -3049,6 +3058,111 @@ const leadsTo = (arrived, fen) => {
     // truncation this version removed wearing a different name.
     eq('the stall watchdog is minutes, not seconds',
       C.deepenStallMs === 0 || C.deepenStallMs >= 300000, true);
+  }
+
+  // ========================================================================
+  // 16) THE COVERAGE KEY AND THE STORED-POSITION SWEEP (§19b)
+  //
+  // Both halves fail SILENTLY and in the same way: a card whose position the
+  // repertoire covers looks exactly like a card whose position it does not, so
+  // the only way to see either is to compare what the two keys answer about the
+  // same board.
+  //
+  // THE FIXTURE IS A REAL TRANSPOSITION, not a hand-built pair of FENs: two
+  // lines of one repertoire reaching one position by opposite move orders
+  // (1.e4 e6 2.d4 c5 and 1.e4 c5 2.d4 e6), which differ in NOTHING but the en
+  // passant square — c6 in the first, because the double pawn push is the last
+  // move there, and dash in the second, where it was the move before. That is
+  // what a transposition IS, and it is why cacheKey cannot answer this
+  // question.
+  // ========================================================================
+  {
+    console.log('\n-- 16) the coverage key and the stored sweep (19b) --');
+    const uc = Object.assign({}, C, { uncMinShare: 3, uncMinGames: 20,
+      uncMaxPerPosition: 4 });
+    const lineA = { oid: 11, name: 'French', color: 'white',
+      sans: ['e4', 'e6', 'd4', 'd5', 'Nc3', 'Bb4'] };
+    const lineB = { oid: 12, name: 'Sicilian, e6', color: 'white',
+      sans: ['e4', 'c5', 'd4', 'e6', 'Nf3', 'a6'] };
+    // A's decision point, the reply it does not answer, and the board that
+    // reply leads to — all computed the way the harvest computes them.
+    const afterD4 = 'rnbqkbnr/pppp1ppp/4p3/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2';
+    const childA = S.fenAfterUci(afterD4, 'c7c5');
+    const inB = 'rnbqkbnr/pp1p1ppp/4p3/2p5/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 3';
+    const other = 'rnbqkbnr/pp1p1ppp/4p3/2p5/3PP3/2N5/PPP2PPP/R1BQKBNR b KQkq - 1 3';
+
+    // --- the key itself -----------------------------------------------------
+    eq('the two routes really do reach one board',
+      childA.split(' ').slice(0, 3).join(' '), inB.split(' ').slice(0, 3).join(' '));
+    eq('and cacheKey says they are different positions',
+      cacheKey(childA) === cacheKey(inB), false);
+    eq('the coverage key says they are the same',
+      S.stormCoverKey(childA), S.stormCoverKey(inB));
+    // CASTLING STAYS. A king that has moved and come home leaves the same
+    // placement and a genuinely different position, so dropping this field too
+    // would answer "covered" about a board nobody can castle in.
+    eq('but castling rights are still part of it',
+      S.stormCoverKey('r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1') ===
+      S.stormCoverKey('r3k2r/8/8/8/8/8/8/R3K2R w - - 0 1'), false);
+    eq('and so is the side to move',
+      S.stormCoverKey(START_FEN) ===
+      S.stormCoverKey(START_FEN.replace(' w ', ' b ')), false);
+
+    // --- and what it costs, through the real pipeline ------------------------
+    const trans = await S.stormDecisions([lineA, lineB], uc);
+    const point = trans.find((d) => d.ck === cacheKey(afterD4));
+    eq('the position after 2.d4 is a decision point', Boolean(point), true);
+    eq('answering only the reply its own line plays',
+      Array.from(point.covered), ['d7d5']);
+    eq('so 2...c5 reads as an unanswered reply', point.covered.has('c7c5'), false);
+    // THE WHOLE POINT. The course plays 3.Nf3 on that board by the other move
+    // order, so the storm must not ask what to play there.
+    eq('the course does answer the position 2...c5 leads to',
+      S.stormReentered(trans.cont.w, CloSan.parseFen(childA), childA, 'w'), true);
+    // ...and the same question asked with the exact key, which is what shipped:
+    // this is the assertion that fails when the key is put back.
+    eq('which cacheKey alone cannot see',
+      trans.cont.w.has(cacheKey(childA)), false);
+    eq('the index holds the board under the coverage key instead',
+      trans.cont.w.has(S.stormCoverKey(childA)), true);
+
+    // --- the sweep ----------------------------------------------------------
+    // THE HARVEST'S CHECK IS NOT ENOUGH: produceFromStore runs before the
+    // course is read, so a position stored weeks ago — before the user went and
+    // prepared the very line this feature showed them — is dealt with no
+    // coverage test at all.
+    const sweepSt = {
+      pool: trans,
+      store: {
+        [cacheKey(childA)]: { f: childA, c: 'w', m: [['g1f3', 'Nf3', 12]], t: 1 },
+        // A position nothing in the course answers, which must survive.
+        keep: { f: other, c: 'w', m: [['a7a6', 'a6', 5]], t: 1 },
+        // ...and one with no side recorded, which cannot be judged and stays.
+        noside: { f: childA, m: [['g1f3', 'Nf3', 12]], t: 1 },
+      },
+      storeQueue: [{ ck: cacheKey(childA) }, { ck: 'keep' }],
+      queue: [{ startFen: childA }, { startFen: other }],
+      storeDirty: false,
+      seen: new Set(),
+    };
+    S.__setEnv(sweepSt, C);
+    const swept = S.dropCoveredStored();
+    eq('the covered stored position is dropped', swept, 1);
+    eq('and is gone from the store', Boolean(sweepSt.store[cacheKey(childA)]), false);
+    eq('and from the queue it had already been dealt into', sweepSt.queue.length, 1);
+    eq('and from the store queue behind it', sweepSt.storeQueue.length, 1);
+    eq('a position the course does not answer survives',
+      Boolean(sweepSt.store.keep), true);
+    // A record with no c cannot be asked whose move it is, and a sweep that
+    // guessed would delete positions on a coin toss.
+    eq('and so does one with no side recorded', Boolean(sweepSt.store.noside), true);
+    eq('the write is marked', sweepSt.storeDirty, true);
+    // NO POOL, NO SWEEP: the course could not be read, and a store is worth
+    // more than a rule applied against nothing.
+    const noPool = { pool: null, store: { a: { f: childA, c: 'w' } }, queue: [], storeQueue: [] };
+    S.__setEnv(noPool, C);
+    eq('with no course read nothing is dropped', S.dropCoveredStored(), 0);
+    eq('and the store is untouched', Boolean(noPool.store.a), true);
   }
 
   console.log('\n' + SRC_PATH);

@@ -5154,3 +5154,144 @@ The live phone. Everything here was checked on the desktop build; what a live
 Android session has to answer is whether the lock is granted on the user's own
 browser at all (24.3's first two cases), and whether the screen genuinely stays
 on for the length of a real pass rather than dimming to nothing.
+
+---
+
+## 25. Transpositions: the coverage key, and the store that outlives the course (v0.162.0)
+
+Reported after §19 had been played for a while:
+
+> There's an issue with intuition storm — uncovered responses: transpositions. A
+> specific move order might not be covered, but the position might have
+> transposed into a covered position. We need to avoid these positions.
+
+§14.18.4's rule was already meant to answer exactly this — `stormReentered` asks,
+of the board one ply past an unanswered reply, whether the course plays a move
+from it. Two things were wrong with it, and neither is visible from the outside:
+a card whose position the repertoire covers looks exactly like a card whose
+position it does not.
+
+### 25.1 The key could not see a transposition
+
+The index and the lookup were both `cacheKey` — placement, side, castling **and
+en passant**. And a transposition is *precisely* the case where the last move
+differs:
+
+```
+1.e4 e6 2.d4 c5   ->  ... /3PP3/8/PPP2PPP/RNBQKBNR w KQkq c6 0 3
+1.e4 c5 2.d4 e6   ->  ... /3PP3/8/PPP2PPP/RNBQKBNR w KQkq -  0 3
+```
+
+Same board, same rights, same side to move. The double pawn push is the last move
+in one order and the move before it in the other, so one FEN carries an ep square
+and the other does not — and `cacheKey` calls them two positions. So a repertoire
+holding both a French and an e6-Sicilian was asked "what do you play against
+2...c5?" about a board it answers with 3.Nf3.
+
+`stormCoverKey` is placement + side + castling, en passant dropped, and it is the
+only key the continuation index is built or read with. Everything else stays
+`cacheKey`: the store key, a frontier's identity, `st.seen`. This is not "what
+position is this", it is "does the course say anything here".
+
+**Castling stays.** A king that has moved and come home leaves the same placement
+and a genuinely different position — section 11's reasoning about the review FEN,
+in the one place here where the FEN is exact enough to act on. Only the field that
+records the *previous move* is dropped.
+
+**The cost is one-sided and stated.** A position whose only difference from a
+covered one is an *available* en passant capture now reads as covered and is not
+offered. That is the direction to be wrong in: the complaint is positions offered
+that should not have been.
+
+Measured (`dev/probe-transpositions.js`, 2026-08-31, over all three courses on the
+account, every legal reply at every decision point):
+
+| course | replies examined | caught by `cacheKey` | caught only by `stormCoverKey` |
+|---|---|---|---|
+| 291847 | 11314 | 4 | **1** |
+| 453453 | 8159 | 2 | **1** |
+| 455941 | 978 | 0 | 0 |
+
+So the exact key was missing between a fifth and a third of the transpositions it
+was there to catch. Small in absolute terms — and the storm only ever offers the
+*popular* replies, so the live figure is smaller still — but it is a card the user
+cannot tell from a real one, which is the whole reason this is worth a key of its
+own rather than a note.
+
+The same probe answers the other half of the question and answers it "no": zero
+decision points on any of the three courses are **split** by ep alone, so two
+routes to one board always did share a covered set. `byPos` therefore keeps
+`cacheKey` for identity, and §12.3's measurement about the course tree holds here
+too.
+
+### 25.2 The store is dealt from before the course is read
+
+The bigger half, and it is structural. §14.11's whole point is that
+`produceFromStore` runs **before** the course listing arrives, so a stored position
+is offered with **no coverage test at all** — the harvest's check applies to
+positions found *now*, and the store is full of positions found weeks ago by a
+gather pass, possibly on another device.
+
+That would be tolerable if a repertoire were fixed. It is not, and the reason it
+grows is *this feature*: the user is shown a gap, goes away, adds the line — and
+the storm keeps asking them the same question for ever, because the position is
+still sitting in the store. The positions most likely to be covered by now are
+exactly the ones already acted on.
+
+`dropCoveredStored()` is the sweep. It runs the moment the course has been read
+and the pool exists — from `startSession` (after `st.pool = frontiers`) and from
+`gather` (before a single request is spent, and before the deepen pass puts tens
+of seconds of Stockfish into a position that is about to go).
+
+* **One rule, both sources.** A frontier position is a board a real game walked to
+  and an uncovered one is a board one reply past a decision point; the question
+  asked of each is the same — does the course now play a move from it, on this
+  position's own side? That is `stormReentered` with the walk taken out.
+* **A plain deletion, never a tombstone.** §14.16's list means "answered well,
+  retired for sixty days". This position was never answered and taught nothing.
+  If the lines come out again it is re-harvested by the ordinary walk, which now
+  applies the same rule at the same key — so the two cannot disagree.
+* **It sweeps what was already dealt.** `st.storeQueue` and `st.queue` are filtered
+  by the same keys; `st.seen` is deliberately left alone, since those keys should
+  stay unaskable for the rest of the session, which is what it is for.
+* **It does not touch `st.card`.** Nothing is shown before Start (§14.13) and
+  `gather` has already ended whatever was running, so the only path that beats the
+  sweep is a Start pressed during the course fetch. Taking the board out from
+  under a card whose clock is running is a worse answer than one stale position.
+* **No write of its own.** `storeDirty` is set and the existing flush carries it.
+  A tab closed in between simply sweeps again next time.
+* **No pool, no sweep.** Where the course could not be read at all the session
+  still plays its stored positions (`startSession`'s own "not fatal where the store
+  has positions" branch); a rule applied against nothing is worth less than the
+  store.
+
+### 25.3 What was checked
+
+`dev/check-storm.js` §16, twenty assertions, and the fixture is a real
+transposition rather than a hand-built pair of FENs — the two lines above, walked
+by the shipped `stormDecisions`. Controls run 2026-08-31, each failing on exactly
+its own assertions and no others:
+
+* `stormCoverKey` reverted to four fields -> **8** (three about the key, five about
+  the sweep, which then finds nothing to do)
+* `dropCoveredStored` returning 0 -> **5**
+* the sweep's side guard removed, so a position is dropped when either colour
+  answers it -> **2** (and note the second: a record with no `c` must stay, because
+  a sweep that guessed whose move it is would delete positions on a coin toss)
+
+The whole pre-existing suite passes unchanged at both keys, which is the other
+thing worth knowing: nothing outside this rule depended on the coverage index
+being exact.
+
+### 25.4 What is not measured
+
+**How many stored positions a real store loses on the first sweep.** It is the
+number that would say how big the complaint actually was, and it cannot be got at
+offline — it needs the author's own store and a course read. The console line
+naming the count is where it will show up on the first live run.
+
+**Whether a walk should stop at a transposition the course answers later.** The
+uncovered source is one ply deep by construction, so this only concerns the
+frontier walk, where §14.18.4 already stops at the first covered position. A walk
+that leaves the book and comes back three moves on is not stopped and probably
+should not be — the improvising happened.

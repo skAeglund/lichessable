@@ -35652,6 +35652,39 @@
     }
 
     /**
+     * §19b) THE COVERAGE KEY — placement + side to move + castling rights,
+     * WITH EN PASSANT DROPPED. The one key that answers "does this course say
+     * anything here", and it is deliberately NOT `cacheKey`.
+     *
+     * A TRANSPOSITION IS EXACTLY THE CASE WHERE THE LAST MOVE DIFFERS. Two
+     * routes to one placement — 1.e4 e6 2.d4 c5 and 1.e4 c5 2.d4 e6 — leave the
+     * same board with the same rights and DIFFERENT en passant squares, because
+     * the double pawn push is the second move in one order and the first in the
+     * other. `cacheKey` reads all four fields, so the storm asked "what do you
+     * play against 2...c5?" about a position the course answers by the other
+     * move order. Measured over the account's three courses (2026-08-31,
+     * `dev/probe-transpositions.js`): 1 missed re-entry per course out of every
+     * legal reply examined, and none of them visible from the outside — a card
+     * whose position the repertoire covers looks exactly like a card whose
+     * position it does not.
+     *
+     * CASTLING STAYS, and that is not symmetry: a king that has moved and come
+     * home leaves the same placement and a genuinely different position, which
+     * is section 11's reasoning about the review FEN in the one place here it
+     * is exact enough to act on. Only en passant is dropped.
+     *
+     * THE COST IS ONE-SIDED, and stated: a position whose only difference from
+     * a covered one is an AVAILABLE en passant capture reads as covered and is
+     * not offered. That is the direction to be wrong in — the complaint this
+     * key answers is positions offered that should not have been.
+     *
+     * NOT the store key and not a frontier's identity: those stay `cacheKey`,
+     * which is what a position IS. This is only what the continuation index is
+     * built and read with, and both sides of every comparison go through it.
+     */
+    const stormCoverKey = (fen) => String(fen || '').split(' ').slice(0, 3).join(' ');
+
+    /**
      * STAGE 0 — the frontier set: every position one of this course's own
      * variations ENDS on, with whose repertoire it belongs to and how many
      * lines converge there.
@@ -35729,7 +35762,7 @@
         // attributed to a repertoire, and the frontier rule below refuses to
         // guess at one for exactly that reason.
         const w = side ? walkVariation(v) : null;
-        if (w) for (const p of w.plies) cont[side].add(cacheKey(p.before));
+        if (w) for (const p of w.plies) cont[side].add(stormCoverKey(p.before));
         if (v.sans.length < C.minVarPlies) continue;
         // PAUSED LINES ARE NOT STORMED. "Paused" and "skipped" are Chessable's
         // two words for one flag (see `reduceCourse`) and both mean the user
@@ -35782,7 +35815,7 @@
         // colour passing through says nothing about whether THIS repertoire
         // continues — the user meeting the position from the other side has a
         // move there, the one facing it does not.
-        if (cont[side].has(e.ck)) { covered++; continue; }
+        if (cont[side].has(stormCoverKey(e.fen))) { covered++; continue; }
         e.side = side;
         out.push(e);
       }
@@ -35853,7 +35886,7 @@
         // own book covers and calls them gaps.
         const w = side ? walkVariation(v) : null;
         if (!w) continue;
-        for (const ply of w.plies) cont[side].add(cacheKey(ply.before));
+        for (const ply of w.plies) cont[side].add(stormCoverKey(ply.before));
         const eligible = !v.paused &&
           !(v.fen && cacheKey(v.fen) !== cacheKey(START_FEN));
         if (v.paused) paused++;
@@ -36574,7 +36607,7 @@
      */
     function stormReentered(covered, pos, fen, userSide) {
       if (!covered || !pos || pos.side !== userSide) return false;
-      return covered.has(cacheKey(fen));
+      return covered.has(stormCoverKey(fen));
     }
 
     /**
@@ -38230,6 +38263,69 @@
     }
 
     /**
+     * §19b) DROP THE STORED POSITIONS THE COURSE NOW ANSWERS.
+     *
+     * THE HARVEST'S COVERAGE CHECK IS NOT ENOUGH, and the reason is §14.11's
+     * whole point: `produceFromStore` runs BEFORE the course is read, so a
+     * stored position is dealt with no coverage test at all. Everything about
+     * that store is durable — it survives the tab, it is carried between
+     * devices, and the gather pass fills it weeks in advance — while the thing
+     * it is being compared against is not: a repertoire GROWS, and the reason
+     * it grows is usually that this feature found the gap. So the positions
+     * most likely to be covered by now are exactly the ones the user has
+     * already been shown and gone away and prepared. Without this sweep the
+     * storm keeps asking them for ever, which reads as the coverage rule not
+     * working at all.
+     *
+     * ONE RULE, BOTH SOURCES. A frontier position is a board a real game walked
+     * to and an uncovered one is a board one reply past a decision point, and
+     * the question asked of each here is the same: does the course now play a
+     * move from it, on this position's own side? That is `stormReentered`'s
+     * test with the walk taken out of it — every stored position has the user
+     * to move by construction, so the side guard is satisfied by every entry
+     * that has a `c` at all.
+     *
+     * A PLAIN DELETION, NEVER A TOMBSTONE. §14.16's list means "answered well,
+     * retired for sixty days"; this position was never answered and nothing was
+     * learned from it. It leaves silently and, if the user later deletes those
+     * lines again, is re-harvested by the ordinary walk — which now applies the
+     * same rule at the same key, so the two cannot disagree.
+     *
+     * IT DOES NOT TOUCH `st.card`. The sweep runs from `startSession` before
+     * anything is shown (§14.13) and from `gather`, which has already ended
+     * whatever was running; the one path that could beat it is a Start pressed
+     * during the course fetch, and taking the board out from under a card whose
+     * clock is running would be a worse answer than one stale position.
+     *
+     * NO WRITE OF ITS OWN: `storeDirty` is set and the existing flush carries
+     * it. A tab closed in between simply sweeps again next time.
+     */
+    function dropCoveredStored() {
+      const cont = st.pool && st.pool.cont;
+      if (!cont || !st.store) return 0;
+      const dropped = new Set();
+      for (const ck of Object.keys(st.store)) {
+        const e = st.store[ck];
+        const side = e && e.c;
+        if (!side || !cont[side] || !e.f) continue;
+        if (!cont[side].has(stormCoverKey(e.f))) continue;
+        delete st.store[ck];
+        dropped.add(ck);
+      }
+      if (!dropped.size) return 0;
+      st.storeDirty = true;
+      // Whatever was dealt off the store before the course landed goes with it.
+      // `st.seen` is deliberately left alone — those keys should stay unaskable
+      // for the rest of the session, which is exactly what it is for.
+      st.storeQueue = (st.storeQueue || []).filter((it) => !dropped.has(it.ck));
+      st.queue = (st.queue || []).filter((c) =>
+        !(c && c.startFen && dropped.has(cacheKey(c.startFen))));
+      log('storm:', dropped.size, 'stored position(s) dropped — the repertoire ' +
+        'now answers them');
+      return dropped.size;
+    }
+
+    /**
      * Fills the queue from the STORE first (§14.11) — instantly, at no network
      * cost. This is the whole point of the store: the ~11 ChessDB requests a
      * position costs were paid at some earlier, unhurried moment.
@@ -38919,6 +39015,9 @@
           st.pool = stormScope(await poolFor(course.vars));
           st.poolSize = st.pool.length;
           st.name = course.name || st.name;
+          // §19b: before a single request is spent, and before the deepen pass
+          // spends tens of seconds of Stockfish on a position about to go.
+          dropCoveredStored();
         }
         while (st.gathering &&
                st.gathered < C.gatherTarget &&
@@ -39613,6 +39712,11 @@
       st.pool = frontiers;
       st.poolSize = frontiers.length;
       st.name = course.name || st.name;
+      // §19b) …and now that the course has been read, the coverage index it
+      // carries is applied to the STORE, which was drawn from before it
+      // existed. A repertoire grows, and the positions it has grown to cover
+      // are exactly the ones this feature already showed the user.
+      dropCoveredStored();
       log('storm:', frontiers.length,
         uncoveredOn() ? 'decision point(s) on' : 'eligible frontier(s) on', st.bid);
 
