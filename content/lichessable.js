@@ -1943,13 +1943,26 @@
       // pick rules, `minScored` — which are coarse questions about whether a
       // position is INTERESTING, asked ~11 times per position at 380 ms and
       // unaffordable any other way. What moves is the grade.
-      deepenDepth: { desktop: 20, mobile: 18 },
-      // The same numbers as `engineDepth` above, deliberately: that is the
-      // depth this feature has always graded its third tier at, so a stored
-      // list is the SAME standard rather than a new one — and grading a move
-      // that is not in the list is then one search at a depth the anchor
-      // already has, instead of the two `stormEngineLoss` needs when it knows
-      // neither side.
+      deepenDepth: 20,
+      // ONE NUMBER, NOT A PER-PROFILE MAP, and that is the point rather than a
+      // tidy-up. A stored list is a STANDARD — it is what every later grade on
+      // every device is measured against, and it crosses devices on §14.12's
+      // wire — so the depth it was measured at may not depend on which machine
+      // happened to run the search. A phone storing depth 18 and a desktop
+      // storing depth 20 for the same course is §3.4's cross-source mixture one
+      // level up: the two lists are not comparable, and nothing downstream can
+      // see which is which beyond `d`, which would then be a lie by omission.
+      //
+      // It is `engineDepth.desktop`'s number deliberately: that is the depth
+      // this feature has always graded its third tier at, so a stored list is
+      // the SAME standard rather than a new one — and grading a move that is
+      // not in the list is then one search at a depth the anchor already has,
+      // instead of the two `stormEngineLoss` needs when it knows neither side.
+      //
+      // It is below BOTH `PROFILES` ceilings (30 desktop, 25 mobile), so
+      // engine.js's `Math.min(pendingDepth, prof.depth)` never lowers it and a
+      // phone really does search to 20. What a phone pays is TIME, which is
+      // what the stall watchdog below is shaped for.
       //
       // HOW MANY MOVES. A stored move is graded for free; one outside the list
       // costs a SINGLE search, measured at 4.3 s median (max 6.8 s). So the
@@ -1970,13 +1983,31 @@
       // but only at depth 18, and it triples the bytes an entry costs on a wire
       // that is already budgeted (§23.6 keeps that trade open).
       deepenMultipv: 12,
-      // PER POSITION, after which the search is TAKEN at the deepest COMPLETE
-      // iteration it reached — `armEnginePhase`'s rule, for its reason. A
-      // gather has nobody waiting, so this is generous; what it protects
-      // against is one pathological position stalling a pass left running
-      // overnight.
-      deepenPhaseMs: 120000,
-      deepenTimeoutMs: 150000,
+      // THERE IS NO TOTAL BUDGET, and this is the deliberate opposite of
+      // `armEnginePhase`'s rule for the GRADING tier. That one has a user
+      // watching a clock, so a search out of time is TAKEN at whatever depth it
+      // reached. This one has nobody waiting and writes a STANDARD, so a search
+      // out of time must be ABANDONED: a list short of `deepenDepth` is not a
+      // cheaper version of the answer, it is a different one, and it would sit
+      // in the store — and cross the wire — wearing the same `d` field as a
+      // real one. The target depth and `deepenMinMoves` are the only two things
+      // that decide whether a search is worth storing.
+      //
+      // What replaces the budget is a PROGRESS watchdog. A search is cut only
+      // when it has stopped producing iterations, never for being slow: on the
+      // lite build's two threads a single depth-19 -> 20 iteration can take many
+      // minutes on a sharp middlegame position, and cutting that is exactly the
+      // truncation this design has just removed. `job.bestDepth` advances at
+      // the START of every iteration (multipv 1 lands first), so the gap
+      // between advances IS one iteration, which is the right granularity.
+      //
+      // The lower half of this is engine.js's own `SEARCH_SILENCE_MS` (15 s of
+      // no output at all => respawn), which sees every worker LINE including
+      // the `currmove` chatter this side never hears about. So a dead worker is
+      // caught there in seconds, and this only has to cover the shape that one
+      // cannot see: a worker that is alive, answering, and getting nowhere.
+      // 0 = no watchdog at all; `stopGather` is always the escape hatch.
+      deepenStallMs: 1200000,
       // A list of fewer than this is not worth storing as an engine list: the
       // point is to cover the moves a human might actually play, and two of
       // them is barely better than the anchor alone.
@@ -34774,6 +34805,8 @@
       gathered: 0,        // positions it has added
       deepened: 0,        // §23) …and how many of them Stockfish has scored
       deepenFailed: null, // …and the ones it refused, in memory and per pass
+      deepenLeft: 0,      // …and how many are still queued, for the note the
+                          // tick redraws while a search is in flight
       // §22) "Clear positions" is a two-press confirm, section 13's shape: a
       // press arms it, a second within `clearArmMs` does it, and anything that
       // takes the button off screen drops the arm — a confirm the user can
@@ -37313,13 +37346,21 @@
      * which source filled it.
      *
      * THE ANSWER IS ONE ITERATION, NEVER THE UNION OF SEVERAL. `latest.pvs` in
-     * engine.js is cumulative, so a search ended by its budget flushes lines
-     * from two different depths — and a list whose moves were searched to
+     * engine.js is cumulative, so a search that is flushed mid-iteration sends
+     * lines from two different depths — and a list whose moves were searched to
      * different depths puts a cross-depth difference into every verdict
      * computed from it, invisibly, exactly as §3.4's cross-EVALUATOR mixture
      * would. So updates are collected per depth and the answer is the deepest
      * COMPLETE iteration, which is also what drops the partial iteration a stop
      * interrupts. `pv.depth` exists for this.
+     *
+     * …AND THAT ITERATION MUST BE `deepenDepth`. A search short of it is
+     * ABANDONED, not taken: this list is a STANDARD that outlives the search,
+     * is graded against for as long as the position is in the store, and
+     * crosses devices — so "as deep as this machine managed" is not a weaker
+     * version of the answer, it is a different one wearing the same `d`. That
+     * is the opposite of `armEnginePhase`'s rule for the grading tier, and the
+     * difference is that this one has nobody waiting.
      *
      * It claims the engine the way section 15 and `stormEngineLoss` do, through
      * the same single `st.eng` slot and the same single release in
@@ -37336,7 +37377,10 @@
       const pos = CloSan.parseFen(fen);
       if (!pos) return bail('the position could not be read');
       const profile = engineProfile();
-      const depth = o.depth || C.deepenDepth[profile] || C.deepenDepth.desktop;
+      // ONE depth for every device — see `deepenDepth`. `profile` still rides on
+      // the request, since it is what picks the BUILD; only the target is
+      // shared.
+      const depth = o.depth || C.deepenDepth;
       const multipv = o.multipv || C.deepenMultipv;
       return new Promise((resolve) => {
         const job = {
@@ -37353,6 +37397,9 @@
           // depth -> Map(uci -> mover-perspective cp), see above.
           byDepth: new Map(),
           startedAt: Date.now(),
+          // Re-armed by `keepEngineList` on every iteration, so the watchdog
+          // below measures PROGRESS and never elapsed time.
+          stallTimer: 0,
           bestDepth: 0, childDepth: 0, nopv: 0, foreign: 0,
         };
         st.eng = job;
@@ -37368,25 +37415,111 @@
           sanPlies: 0,
         });
         pingEngineIfSilent();
-        job.phaseTimer = setTimeout(() => {
-          if (st.eng !== job) return;
-          log('storm: deepen taking', fen, 'at its deepest complete iteration —',
-            'it did not reach depth', depth, 'within', C.deepenPhaseMs, 'ms');
-          finishEngineList(job);
-        }, C.deepenPhaseMs);
-        job.timer = setTimeout(() => {
-          warn('storm: deepen hit its ceiling of', C.deepenTimeoutMs, 'ms');
-          endEngineJob(job, null);
-        }, C.deepenTimeoutMs);
+        armDeepenStall(job);
       });
     }
 
-    /** The deepest COMPLETE iteration, turned into a scored list. */
-    function finishEngineList(job) {
+    /**
+     * THE DEEPEST COMPLETE ITERATION SO FAR, or 0.
+     *
+     * "Complete" is the widest line count any iteration has reached — read off
+     * the data rather than from `job.multipv`, because Stockfish clamps MultiPV
+     * to the number of legal moves and a position with five of them completes
+     * at five. An iteration in flight is narrower than the last finished one,
+     * which is exactly what this must not pick.
+     *
+     * It is asked on every update as well as at the end, because it is the
+     * COMPLETION TEST too: finishing on `job.bestDepth` — which is multipv 1's
+     * depth, and so bumps at the START of an iteration — would cut the search
+     * the moment its first line touched the target and hand the strict check
+     * below an iteration one short, refusing a position that was seconds from
+     * being storable.
+     */
+    function deepestCompleteList(job) {
       let widest = 0;
       for (const m of job.byDepth.values()) widest = Math.max(widest, m.size);
+      if (!widest) return 0;
       let pick = 0;
       for (const [d, m] of job.byDepth) if (m.size >= widest && d > pick) pick = d;
+      return pick;
+    }
+
+    /**
+     * THE PROGRESS WATCHDOG — see `deepenStallMs`. Re-armed on every iteration,
+     * so a slow search runs as long as it needs and only a STUCK one is cut.
+     */
+    function armDeepenStall(job) {
+      if (!(C.deepenStallMs > 0)) return;
+      clearTimeout(job.stallTimer);
+      job.stallTimer = setTimeout(() => {
+        if (st.eng !== job) return;
+        warn('storm: deepen gave up on', job.fen, '— no new iteration for',
+          C.deepenStallMs, 'ms; it reached depth', job.bestDepth, 'of', job.depth);
+        endEngineJob(job, null);
+      }, C.deepenStallMs);
+    }
+
+    /**
+     * §23) WHICH DEPTH THIS SEARCH MAY BE STORED AT, or 0 for "none of them".
+     *
+     * PURE, and separated from `finishEngineList` for that reason: it is the
+     * whole of the rule that keeps a stored list a STANDARD, and every way of
+     * getting it wrong stores a list that looks exactly like a right one — a
+     * `d` field is the only thing that tells two lists apart, so a list filed
+     * under a depth it did not reach is undetectable from anywhere downstream.
+     * `dev/check-storm.js` executes it.
+     *
+     * The rule in two clauses:
+     *  - THE COMPLETE ITERATION, if it is at or past the target. This is the
+     *    ordinary answer and the only one available while the search is still
+     *    running — an iteration in flight is narrower than the last finished
+     *    one, and taking it would file a partial list at a depth most of its
+     *    moves never reached, which is §3.4's cross-depth mixture exactly.
+     *  - A NARROWER FINAL ITERATION, once the ENGINE has stopped (`ended`).
+     *    engine.js drops a line whose score came back bounded, so a finished
+     *    search can carry eleven of twelve moves at the target while the
+     *    iteration before it carries all twelve; refusing that throws away a
+     *    completed search over one missing line — many minutes of a phone's
+     *    work. Reachable only after `bestmove`, so nothing is ever cut short to
+     *    get here, and what relaxes is WIDTH, never depth: `deepenMinMoves` is
+     *    the floor, and the target is still the target.
+     */
+    function deepenPickDepth(job, ended, C) {
+      const complete = deepestCompleteList(job);
+      if (complete >= job.depth) return complete;
+      if (!ended) return 0;
+      let deepest = 0;
+      for (const [d, m] of job.byDepth) {
+        if (d > deepest && m.size >= C.deepenMinMoves) deepest = d;
+      }
+      return deepest >= job.depth ? deepest : 0;
+    }
+
+    /**
+     * The deepest COMPLETE iteration, turned into a scored list — or a refusal.
+     *
+     * `ended` says the ENGINE has finished (a `bestmove` flush), which is the
+     * one state in which no more lines are coming and so the one in which a
+     * narrow iteration can be read as final rather than as in flight.
+     */
+    function finishEngineList(job, ended) {
+      const pick = deepenPickDepth(job, ended, C);
+      // §23) SHORT OF THE TARGET IS A REFUSAL, NEVER A SHALLOWER ANSWER.
+      // Storing what the search had would put a list at one depth in a store
+      // every other entry of which is at another, under a `d` field that is
+      // supposed to make exactly that distinguishable. The position keeps
+      // whatever it already has and is offered again by the next gather pass.
+      if (!pick) {
+        warn('storm: deepen refused', job.fen, '— its deepest complete iteration',
+          'was', deepestCompleteList(job), 'of', job.depth,
+          ended ? '(the search ended early)' : '(the search was cut short)');
+        endEngineJob(job, null);
+        return;
+      }
+      if (pick !== deepestCompleteList(job)) {
+        log('storm: deepen taking a narrow final iteration at depth', pick, '—',
+          job.byDepth.get(pick).size, 'of', job.multipv, 'lines');
+      }
       const got = job.byDepth.get(pick);
       if (!got || got.size < C.deepenMinMoves) {
         warn('storm: deepen produced', got ? got.size : 0, 'move(s) at depth', pick,
@@ -37424,7 +37557,12 @@
         if (typeof cp !== 'number') continue;
         if (!job.byDepth.has(pv.depth)) job.byDepth.set(pv.depth, new Map());
         job.byDepth.get(pv.depth).set(pv.uci, cp);
-        if (pv.depth > job.bestDepth) job.bestDepth = pv.depth;
+        // A NEW ITERATION IS THE PROGRESS SIGNAL, and it is the one this
+        // watchdog wants: multipv 1 lands first, so this bumps once per
+        // iteration and the gap between bumps is one iteration's work. Re-armed
+        // here rather than on every update, or a search that kept re-flushing
+        // the SAME iteration would look like progress for ever.
+        if (pv.depth > job.bestDepth) { job.bestDepth = pv.depth; armDeepenStall(job); }
       }
     }
 
@@ -37633,6 +37771,9 @@
       clearTimeout(job.timer);
       st.eng = null;
       clearTimeout(job.phaseTimer);
+      // The deepen job's own, and it is re-armed on every iteration — so it is
+      // the one most likely to be left running by an exit path added later.
+      clearTimeout(job.stallTimer);
       log('storm: engine tier', answer ? 'answered' : 'gave up', '—', job.reqId,
         'ended in phase', job.phase, 'after', Date.now() - job.startedAt,
         'ms · position depth', job.bestDepth, 'of', job.depth + ', reply depth',
@@ -37663,7 +37804,14 @@
       // just multipv 1 — so it is taken before the single-PV unwrapping below.
       if (which === 'list' && job.kind === 'list') {
         keepEngineList(job, msg);
-        if (msg.done || job.bestDepth >= job.depth) finishEngineList(job);
+        // THE COMPLETE ITERATION, NOT `job.bestDepth` — see
+        // `deepestCompleteList`. The old test was multipv 1's depth, which
+        // bumps at the START of an iteration, so under the strict rule in
+        // `finishEngineList` it would have ended every search one line into the
+        // target iteration and then refused the position for being one short.
+        if (msg.done || deepestCompleteList(job) >= job.depth) {
+          finishEngineList(job, Boolean(msg.done));
+        }
         return;
       }
       const pv = (Array.isArray(msg.pvs) ? msg.pvs : []).find((p) => p.multipv === 1);
@@ -38641,6 +38789,7 @@
       st.gathered = 0;
       st.deepened = 0;
       st.deepenFailed = new Set();
+      st.deepenLeft = 0;
       st.funnel = newFunnel();   // §14.17, §19
       st.exhausted = false;
       // Its own ceiling, far above a session's: this IS the long burst, and it
@@ -38718,8 +38867,8 @@
           storeTotal(), 'in all');
         log('storm: scored', st.deepened, 'position(s) with Stockfish;',
           deepenedCount(st.store), 'of', Object.keys(st.store || {}).length,
-          'in this course now carry an engine list,',
-          undeepened(st.store).length, 'still on ChessDB');
+          'in this course carry a depth-' + C.deepenDepth + ' engine list,',
+          undeepened(st.store).length, 'still to be scored');
         // §14.17: the breakdown, and the reason tables with it — which is the
         // half that says what to change. One line each so a console filtered on
         // [CLO] reads as a block.
@@ -38858,7 +39007,8 @@
       st.gathering = false; // the loop reads this and falls out of its `while`
       // §23) …AND THE SEARCH IT IS INSIDE. The loops check the flag between
       // positions, so without this a stop pressed during a deepen search does
-      // nothing visible for up to `deepenPhaseMs` — and it is exactly the pass
+      // nothing visible until the search ends by itself — which since the
+      // budget was removed may be a very long time — and it is exactly the pass
       // a user stops, being the long one. Only OUR job: a grade belongs to a
       // session, which this pass has already ended.
       if (st.eng && st.eng.kind === 'list') endEngineJob(st.eng, null);
@@ -38961,7 +39111,16 @@
       const out = [];
       for (const ck of Object.keys(store)) {
         const e = store[ck];
-        if (!e || !Array.isArray(e.m) || !e.m.length || e.d > 0) continue;
+        if (!e || !Array.isArray(e.m) || !e.m.length) continue;
+        // §23.7) BELOW THE STANDARD COUNTS AS NOT DONE, and this is what makes
+        // the target a target rather than a preference. The test used to be
+        // `e.d > 0` — any engine list at all — which was right while the depth
+        // could vary by device, and is exactly wrong now: a depth-18 list
+        // written by an older build, or by a phone before this rule existed,
+        // would then be the one thing a gather pass can never fix. `>=`, not
+        // `===`, because a search may overshoot the target and a deeper list is
+        // not something to redo.
+        if (e.d >= C.deepenDepth) continue;
         // A POSITION THE SEARCH HAS ALREADY REFUSED IS NOT OFFERED AGAIN, and
         // this is what makes the pass terminate: phase two re-asks the store
         // until it is empty, so one position the engine cannot score — an
@@ -38975,11 +39134,15 @@
       return out;
     }
 
-    /** How much of this course's store carries an engine list. */
+    /** How much of this course's store carries an engine list AT THE STANDARD
+     *  — the same test `undeepened` refuses on, so the two halves of the
+     *  end-of-pass line cannot disagree. */
     function deepenedCount(store) {
       if (!store) return 0;
       let n = 0;
-      for (const ck of Object.keys(store)) if (store[ck] && store[ck].d > 0) n++;
+      for (const ck of Object.keys(store)) {
+        if (store[ck] && store[ck].d >= C.deepenDepth) n++;
+      }
       return n;
     }
 
@@ -39020,7 +39183,8 @@
       const todo = list || undeepened(st.store);
       for (const ck of todo) {
         if (!st.gathering || done >= n) break;
-        setDeepenNote(todo.length - done);
+        st.deepenLeft = todo.length - done;
+        setDeepenNote();
         const ok = await deepenOne(ck);
         if (ok) st.deepened++;
         // A REFUSAL STILL SPENDS THE SLICE. It is also remembered by
@@ -39033,10 +39197,17 @@
       return done;
     }
 
-    function setDeepenNote(left) {
+    function setDeepenNote() {
+      // THE ELAPSED TIME IS PART OF THE NOTE now that there is no total budget:
+      // a search with no ceiling that is getting nowhere looks exactly like one
+      // that is nearly finished, and this is the only thing on screen that can
+      // tell the two apart. Read off the live job, so it advances as the poll
+      // re-renders.
+      const on = (st.eng && st.eng.kind === 'list' && st.eng.startedAt)
+        ? ' · ' + Math.round((Date.now() - st.eng.startedAt) / 1000) + 's on this one'
+        : '';
       setNote('Analysing… ' + st.deepened + ' position(s) scored by Stockfish, ' +
-        left + ' left, depth ' +
-        (C.deepenDepth[engineProfile()] || C.deepenDepth.desktop) +
+        st.deepenLeft + ' left, depth ' + C.deepenDepth + on +
         ' · leave this open');
     }
 
@@ -41585,7 +41756,18 @@
       // A gather pass is the one state with nothing on a board, so none of the
       // teardowns below apply to it — and it must keep its note current, which
       // is the only sign it is still running.
-      if (st.gathering) { setGatherNote(); render(); return; }
+      //
+      // §23) WHICH note depends on what the pass is doing. It used to be the
+      // gather one unconditionally, which repainted over `setDeepenNote` on
+      // every poll — tolerable while a search was capped at two minutes and not
+      // at all now that it has no ceiling: the elapsed figure is the only thing
+      // on screen that separates a long search from a stuck one, and it has to
+      // be redrawn to say anything.
+      if (st.gathering) {
+        if (st.eng && st.eng.kind === 'list') setDeepenNote(); else setGatherNote();
+        render();
+        return;
+      }
       // Section 18's board can be closed from its own Exit, its Escape, or
       // anything else that tears a run down. Noticed here rather than through a
       // callback, the discipline 24g settled on: a teardown that has to

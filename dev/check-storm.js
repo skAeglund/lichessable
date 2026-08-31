@@ -159,6 +159,12 @@ const src = [
   sliceDecl('onStormEngineUpdate'),
   sliceDecl('keepEngineBest'),
   sliceDecl('keepEngineChild'),
+  // §23) THE STORED LIST'S DEPTH RULE (v0.159.0). Both PURE. This is the one
+  // place that decides whether a search is allowed to become a STANDARD, and
+  // every way of getting it wrong stores a list that is indistinguishable from
+  // a right one — `d` is the only thing that tells two lists apart.
+  sliceDecl('deepestCompleteList'),
+  sliceDecl('deepenPickDepth'),
   sliceDecl('stormReachBucket'),
   sliceDecl('stormReachLabel'),
   sliceDecl('stormStoreDraw'),
@@ -224,6 +230,7 @@ const src = [
   '         stormFunnelNote, stormFunnelLines,' +
   '         storeAdd, harvestCandidates, __setEnv,' +
   '         stormEngineLoss, onStormEngineUpdate, endEngineJob,' +
+  '         deepestCompleteList, deepenPickDepth,' +
   '         stormWirePack, stormWireUnpack, stormWireMerge,' +
   '         stormStatBlank, stormStatApply, stormStatPlus, stormStatSum,' +
   '         stormStatGraded,' +
@@ -346,6 +353,12 @@ const C = {
   // else here, so an assertion about the rule cannot drift from the rule.
   uncMinShare: num('uncMinShare'), uncMinGames: num('uncMinGames'),
   uncMaxPerPosition: num('uncMaxPerPosition'), uncMovesLimit: num('uncMovesLimit'),
+  // §23's gather depth (v0.159.0). A SCALAR, unlike `engineDepth` above, and
+  // section 15 asserts that — the two profiles are what it stopped being, and a
+  // map restored here would put a phone's depth-18 lists into the same store as
+  // a desktop's depth-20 ones under the same `d` field.
+  deepenDepth: num('deepenDepth'), deepenMinMoves: num('deepenMinMoves'),
+  deepenMultipv: num('deepenMultipv'), deepenStallMs: num('deepenStallMs'),
 };
 
 let pass = 0, fail = 0;
@@ -2932,6 +2945,110 @@ const leadsTo = (arrived, fen) => {
     eq('…and names the engine best, not the card\'s', line.indexOf('Nf3') >= 0, true);
     eq('…never the stored one', line.indexOf('WRONG'), -1);
     eq('…and prints no win rate', line.indexOf('%'), -1);
+  }
+
+  // --- 15) the gather's depth rule (§23, v0.159.0) -------------------------
+  //
+  // "Depth 20 or do not store it." EVERY failure here is silent in the same way
+  // section 14's are: a list is a list whichever iteration filled it, every
+  // verdict computed from one still prints, and `d` — which is what says how
+  // deep it is — is written from the same number that chose the iteration. So a
+  // rule that picks an iteration IN FLIGHT files a partial list under a depth
+  // most of its moves never reached, and nothing downstream can tell.
+  {
+    console.log('\n-- 15) the gather\'s depth rule (§23) --\n');
+    const rows = (n) => new Map(Array.from({ length: n }, (_, i) => ['a' + i, 0]));
+
+    // A search IN PROGRESS: depth 19 finished at twelve lines, depth 20 has the
+    // first three of its own. This is the shape of every update while a search
+    // is running, and reading 20 off it is the silent bug.
+    const inFlight = () => ({
+      depth: 20, multipv: 12,
+      byDepth: new Map([[18, rows(12)], [19, rows(12)], [20, rows(3)]]),
+    });
+    eq('an iteration in flight is not the complete one',
+      S.deepestCompleteList(inFlight()), 19);
+    eq('…so a running search short of the target stores nothing',
+      S.deepenPickDepth(inFlight(), false, C), 0);
+
+    // The same search a moment later, with the target iteration whole. This is
+    // both the completion TRIGGER and the answer.
+    const done20 = () => ({
+      depth: 20, multipv: 12,
+      byDepth: new Map([[19, rows(12)], [20, rows(12)]]),
+    });
+    eq('a whole target iteration is the complete one',
+      S.deepestCompleteList(done20()), 20);
+    eq('…and is what gets stored', S.deepenPickDepth(done20(), false, C), 20);
+
+    // THE RULE THIS VERSION EXISTS FOR. A search that ran out of time at depth
+    // 17 used to be TAKEN at 17; it is now refused, whether or not the engine
+    // stopped of its own accord.
+    const cut = () => ({
+      depth: 20, multipv: 12,
+      byDepth: new Map([[16, rows(12)], [17, rows(12)]]),
+    });
+    eq('a search cut short of the target stores nothing',
+      S.deepenPickDepth(cut(), false, C), 0);
+    eq('…and finishing early does not rescue it',
+      S.deepenPickDepth(cut(), true, C), 0);
+
+    // …AND THE ONE RELAXATION, which is about WIDTH and never depth. A finished
+    // search whose last iteration lost a line to a bounded score is still a
+    // depth-20 search, and refusing it throws away minutes of a phone's work.
+    const narrow = () => ({
+      depth: 20, multipv: 12,
+      byDepth: new Map([[19, rows(12)], [20, rows(11)]]),
+    });
+    eq('a narrow final iteration is not the complete one',
+      S.deepestCompleteList(narrow()), 19);
+    eq('…so a RUNNING search does not take it',
+      S.deepenPickDepth(narrow(), false, C), 0);
+    eq('…but a FINISHED one does, at its own depth',
+      S.deepenPickDepth(narrow(), true, C), 20);
+
+    // …down to `deepenMinMoves` and no further: a two-move list at depth 20 is
+    // barely better than the anchor alone, which is that floor's whole job.
+    const thin = (n) => ({
+      depth: 20, multipv: 12,
+      byDepth: new Map([[19, rows(12)], [20, rows(n)]]),
+    });
+    eq('the relaxation stops at deepenMinMoves',
+      S.deepenPickDepth(thin(C.deepenMinMoves), true, C), 20);
+    eq('…and refuses below it',
+      S.deepenPickDepth(thin(C.deepenMinMoves - 1), true, C), 0);
+
+    // MultiPV is clamped to the legal move count, so a five-move position
+    // completes at five and must not read as four-fifths of a full iteration.
+    eq('a position with few legal moves completes at its own width',
+      S.deepenPickDepth({ depth: 20, multipv: 12,
+        byDepth: new Map([[19, rows(5)], [20, rows(5)]]) }, false, C), 20);
+
+    // A search that got PAST the target is stored at what it reached, never at
+    // the target: `d` has to be the depth that ran.
+    eq('a deeper complete iteration is stored at ITS depth',
+      S.deepenPickDepth({ depth: 20, multipv: 12,
+        byDepth: new Map([[20, rows(12)], [22, rows(12)]]) }, false, C), 22);
+
+    eq('nothing at all stores nothing',
+      S.deepenPickDepth({ depth: 20, multipv: 12, byDepth: new Map() }, true, C), 0);
+
+    // THE CONFIG ITSELF. `deepenDepth` is a SCALAR, and that is the whole of
+    // "one standard for every device" — a per-profile map would put a phone's
+    // depth-18 lists and a desktop's depth-20 ones in one store, wearing the
+    // same `d`. It must also sit under BOTH engine.js profile ceilings, or
+    // engine.js's own `Math.min` lowers it and that device quietly stores a
+    // shallower standard than the one it was asked for.
+    eq('deepenDepth is one number, not a per-profile map',
+      typeof C.deepenDepth, 'number');
+    eq('…at or below the desktop profile ceiling',
+      C.deepenDepth <= Number(PROF[1]), true);
+    eq('…and at or below the MOBILE one, which is the lower of the two',
+      C.deepenDepth <= Number(PROF_M[1]), true);
+    // The stall watchdog has to outlast a slow iteration, or it becomes the
+    // truncation this version removed wearing a different name.
+    eq('the stall watchdog is minutes, not seconds',
+      C.deepenStallMs === 0 || C.deepenStallMs >= 300000, true);
   }
 
   console.log('\n' + SRC_PATH);

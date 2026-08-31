@@ -2998,6 +2998,31 @@ Currently working (v0.18.x).
       false for BOTH engine sources. `stormBestLine` treats it like `engine`
       for the same reason: both halves come from one search, so it names the
       ENGINE's best and prints no win rate, which is a book figure.
+    - DEPTH 20 OR IT IS NOT STORED (§23.7, v0.159.0), and `deepenDepth` is a
+      SCALAR for the same reason — a stored list is a STANDARD, used for as
+      long as the position is in the store and carried to other devices, so
+      "as deep as this machine managed" is not a cheaper version of the answer
+      but a different one wearing the same `d`. A per-profile target would put
+      a phone's depth-18 lists beside a desktop's depth-20 ones in one store
+      with nothing able to tell them apart. It is under BOTH `PROFILES`
+      ceilings (30 desktop, 25 mobile), so engine.js's `Math.min` never lowers
+      it. THREE things an edit elsewhere can break:
+      * THERE IS NO TIME BUDGET, deliberately the opposite of `armEnginePhase`'s
+        rule for the GRADING tier — that one has a user watching a clock and so
+        TAKES a search that runs out; this one has nobody waiting and must
+        ABANDON one. What bounds it is `deepenStallMs`, a PROGRESS watchdog
+        re-armed on each new iteration, over engine.js's own 15 s line-silence
+        respawn. Restoring a wall-clock cap restores the truncation.
+      * THE COMPLETION TRIGGER IS `deepestCompleteList`, NEVER `job.bestDepth`.
+        That is multipv 1's depth and bumps at the START of an iteration, so
+        under the strict rule it ends the search one line in and then refuses
+        the position for being one short — i.e. the pass stores NOTHING, on
+        every device, while looking like it is working.
+      * `deepenPickDepth(job, ended, C)` IS PURE AND IS THE WHOLE RULE, split
+        out of `finishEngineList` so `dev/check-storm.js` can execute it. Its
+        one relaxation is WIDTH and only once the engine has STOPPED (a
+        finished search can lose a line to a bounded score); depth never
+        relaxes.
     - THE DEEPEN PASS IS A SECOND PASS OVER THE STORE, NEVER A STEP INSIDE
       `storeAdd`. That function is synchronous and returns the boolean §14.17's
       funnel counts, whose four outcomes must account for every candidate
@@ -4027,6 +4052,22 @@ biased while labelling it a search. Controls run 2026-08-30, each failing on
 exactly its own assertions and no others: `d` dropped from the wire pack → 2;
 `stormEstimated` reverted to `v.source !== 'engine'` → 1; the merge's
 deeper-list rule disabled → 2.
+
+…and after touching §23.7's DEPTH RULE — `deepenPickDepth`,
+`deepestCompleteList`, `armDeepenStall`, the completion trigger in
+`onStormEngineUpdate`, or `CONFIG.storm`'s `deepenDepth` / `deepenStallMs` /
+`deepenMinMoves`. A stored list is a STANDARD, and every failure here writes one
+that is indistinguishable from a right one: `d` is the only thing that tells two
+lists apart and it is written from the same number that chose the iteration, so
+a rule picking an iteration IN FLIGHT files a partial list under a depth most of
+its moves never reached. The check executes the rule against the per-depth table
+a real search builds — in flight, complete, cut short, narrow-but-finished, a
+position with few legal moves — and asserts the config's own shape, which is
+where "one standard for every device" actually lives. Controls run 2026-08-31,
+each failing on exactly its own assertions and no others: the pre-v0.159.0 rule
+(take the deepest complete iteration, whatever it is) → 7; the width test
+dropped, so an iteration in flight counts as complete → 5; `deepenDepth`
+restored as a per-profile map → the config read throws by name.
 
 …and after touching §17's SET rules — `stormSetClean`, `stormSetHeld`,
 `stormSetOutcome`, `stormSetTally`, or `CONFIG.storm`'s `setCleanOn` /

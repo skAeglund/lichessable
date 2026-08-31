@@ -4947,3 +4947,121 @@ covered by `dev/check-storm.js` §14.
   `spread5` are still ChessDB's, and they decide which positions are OFFERED —
   a different question from how a move is graded, and every one of them is a
   §6 measurement that would have to be re-run.
+
+### 23.7 One depth for every device, and no truncation (v0.159.0)
+
+v0.158.0 shipped the deepen pass with `armEnginePhase`'s rule borrowed whole
+from the GRADING tier: a per-position budget (`deepenPhaseMs` 120 s) after which
+the search was **taken** at its deepest complete iteration, and a depth target
+that differed per profile (20 desktop, 18 mobile). Both are wrong here, and the
+reason is the same for both.
+
+**A stored list is a STANDARD, not an answer.** The grading tier's budget rule
+is right because a user is watching a clock: a depth-17 evaluation delivered now
+beats a depth-20 one delivered after the card is gone, and the answer is used
+once and discarded. This list is used for as long as the position is in the
+store, is what every later grade of that position is measured against, and
+crosses devices on §14.12's wire. Nothing downstream can see how deep it is
+except `d` — so a truncated list is not a cheaper version of the answer, it is a
+**different one wearing the same field**. The two failure modes it produces are
+both silent:
+
+* a depth-13 list from a slow phone sitting beside depth-20 lists from a desktop
+  in one store, with §16's bands applied identically to both;
+* the same position graded differently on two devices, with neither able to say
+  why.
+
+So: **`deepenDepth` is a scalar 20**, and a search that does not reach a complete
+iteration at it is **abandoned**, not stored. It is below both `PROFILES`
+ceilings (30 desktop, 25 mobile), so engine.js's `Math.min(pendingDepth,
+prof.depth)` never lowers it and a phone really does search to 20 — what a phone
+pays is TIME.
+
+**And time is what stops being budgeted.** There is no total cap. What replaces
+it is a PROGRESS watchdog (`deepenStallMs`, 20 min): a search is cut only when
+it has stopped producing iterations, never for being slow. On the lite build's
+two threads a single depth-19 → 20 iteration can take many minutes on a sharp
+middlegame position, and cutting that is exactly the truncation this removes.
+`job.bestDepth` advances at the START of every iteration (multipv 1 lands
+first), so the gap between advances IS one iteration — the right granularity,
+and it is re-armed on the advance rather than on every update, or a search
+re-flushing the same iteration would look like progress for ever.
+
+The lower half of the safety story is engine.js's own `SEARCH_SILENCE_MS` (15 s
+with no output at all ⇒ respawn), which sees every worker LINE including the
+`currmove` chatter this side never hears about. So a dead worker is caught there
+in seconds and the stall watchdog only has to cover the shape that one cannot
+see: a worker that is alive, answering, and getting nowhere. `stopGather` is
+always the escape hatch, and it already kills the search it is inside.
+
+#### 23.7.1 Two things the strict rule cost
+
+**The completion trigger had to move.** It was `job.bestDepth >= job.depth` —
+multipv 1's depth, which bumps at the START of an iteration. Under the old
+lenient rule that was harmless: the search ended and `finishEngineList` fell back
+to the last whole iteration. Under the strict one it would have ended every
+search one line into the target iteration and then refused the position for
+being one short — i.e. the feature would have stored nothing at all, on every
+device, while looking like it was working. It is now the deepest COMPLETE
+iteration (`deepestCompleteList`), which is both the trigger and the answer.
+
+**A finished search may be narrower than an earlier iteration.** engine.js's
+parser drops a line whose score came back `lowerbound`/`upperbound`, so the last
+iteration can carry eleven of twelve moves while the one before it carries all
+twelve. Refusing that throws away a completed depth-20 search over one missing
+line — many minutes of a phone's work. So `deepenPickDepth` relaxes **width**,
+and only once the engine has stopped (`ended`, i.e. a `bestmove` flush), never
+depth: `deepenMinMoves` is the floor and the target is still the target. It is
+unreachable while a search is running, so nothing is ever cut short to get there.
+
+The whole rule is one pure function, `deepenPickDepth(job, ended, C)`, separated
+from `finishEngineList` for exactly that reason — see §14 of the verification
+list. Controls run 2026-08-31, each failing on exactly its own assertions and no
+others: the pre-v0.159.0 rule (take the deepest complete iteration, whatever it
+is) → 7; the width test dropped, so an iteration in flight counts as complete →
+5; `deepenDepth` restored as a per-profile map → the config read throws.
+
+#### 23.7.2 A list below the standard counts as not done
+
+`undeepened`'s test was `e.d > 0` — *does this entry carry an engine list at
+all* — which was the right question while the depth could legitimately vary by
+device, and is exactly the wrong one now. A depth-18 list written by a phone
+before this rule existed would otherwise be the one thing a gather pass can
+never fix: it is not ChessDB's, so nothing re-scores it, and the only route to
+depth 20 would be another device happening to deepen the same position and the
+merge preferring it.
+
+So the test is `e.d >= deepenDepth`, and `>=` rather than `===` because a search
+may overshoot (the profile ceilings are 30 and 25) and a deeper list is not
+something to redo. `deepenedCount` uses the same comparison, so the two halves
+of the end-of-pass line cannot disagree about what is outstanding — which is
+also why that line stopped saying "still on ChessDB": a below-standard entry is
+not on ChessDB, it is simply not finished.
+
+The consequence for an existing store is that the next gather **upgrades it in
+place**. Nothing needs clearing, and the miss counts, reachability figures and
+arrivals on those entries are untouched — `deepenOne` overwrites `m` and `d` and
+nothing else.
+
+#### 23.7.3 What it costs, and what it does not
+
+A position that cannot reach depth 20 is **refused**, and refused positions keep
+whatever list they already have — a ChessDB one, or none — and are offered again
+by the next gather pass (`st.deepenFailed` is per-pass and in memory). So the
+worst case is a phone that gathers all night and stores nothing, which is
+visible: the end-of-pass line says how many of the store carry an engine list,
+and every refusal names its position and the depth it reached.
+
+The progress note gained the **elapsed time on the current position**, and the
+tick stopped painting the gather note over it. Both are consequences of removing
+the cap: a search with no ceiling that is getting nowhere looks exactly like one
+that is nearly finished, and the elapsed figure is the only thing on screen that
+separates them. The old code called `setGatherNote()` on every poll while
+`st.gathering`, which repainted over `setDeepenNote` — tolerable at a two-minute
+cap and not at all now.
+
+**Not measured:** how long depth 20 at 12 PV actually takes on the lite build's
+two threads. §23.6's third bullet is unchanged and is now the question that
+decides whether a phone should gather at all — the honest advice until it is
+answered is to gather on the desktop and let §14.12's wire carry the lists over,
+which is what that field exists for.
