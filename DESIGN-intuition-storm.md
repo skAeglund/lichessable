@@ -5065,3 +5065,92 @@ two threads. §23.6's third bullet is unchanged and is now the question that
 decides whether a phone should gather at all — the honest advice until it is
 answered is to gather on the desktop and let §14.12's wire carry the lists over,
 which is what that field exists for.
+
+## 24. The screen stays on while a gather runs (v0.161.0)
+
+**Asked for directly, 2026-08-31: "when gathering positions on mobile, is there
+any way we can keep the screen active?"** There is, and it needs nothing this
+project has to have a conversation about.
+
+### 24.1 Why the gather in particular
+
+A gather is the one pass here with nobody touching anything. It walks frontiers
+for minutes, and since §23 it then sits on a Stockfish search for tens of
+seconds a position, writing after each one. It is explicitly the pass a user
+"leaves running and walks away from" — that sentence is already in the code, as
+the reason the sync push at the end happens unasked.
+
+On a phone that is exactly the shape of a pass the screen timeout kills. A
+hidden Android tab has every timer clamped to ~1 s (the same clamp section 12's
+driver popup exists to escape, and the same one that livelocks the Lichess panel
+under automation), and may be discarded outright under memory pressure. So the
+hour the user thought they were spending buys whatever had been written to the
+store before the screen went off — which, because `saveStore()` runs after every
+position, is not nothing, but is not what they asked for either.
+
+### 24.2 The mechanism, and why it is this one
+
+`navigator.wakeLock.request('screen')`. It is a plain DOM API, reachable from a
+content script like any other, and it costs **no manifest permission** — which
+is the whole reason it is the answer. The alternatives all do cost one, or worse:
+a looping silent `<video>` is a hack that browsers keep tightening, and an alarm
+or a service-worker keepalive does not keep a SCREEN on at all, which is the
+thing being asked for.
+
+chessable.com is https, so the secure-context requirement is met.
+
+### 24.3 Three ways it can be unavailable, all fail-soft
+
+The pass runs exactly as it did before in every one of them, and says one line
+in the console:
+
+* **No API at all.** Every Chromium fork is a candidate — the Android side of
+  this project is a fork, and that is where `chrome.windows` turned out to be
+  missing (section 12's `openDriverSurface` fallback, ground-truthed on Lemur
+  2026-08-10). Guarded by feature-testing `navigator.wakeLock.request`, not by a
+  browser test.
+* **A Permissions-Policy header from Chessable.** The feature's default
+  allowlist is `self`, so a top-level chessable.com document is allowed as
+  things stand; a header could withdraw that at any time and the request would
+  reject with `NotAllowedError`.
+* **A request made while the document is hidden**, which rejects by spec.
+
+None of the three is a `warn`. All are ordinary, and none costs the pass
+anything.
+
+### 24.4 The rule that makes it actually work
+
+**The browser drops the lock whenever the document goes hidden, and never puts
+it back by itself.** This is the part an implementation gets wrong: without a
+`visibilitychange` listener re-requesting it, one glance at another app ends the
+lock for the rest of the pass — and from the outside that is indistinguishable
+from the feature not working at all.
+
+So `wakeWanted` is the INTENTION and the listener is what re-states it.
+`takeWakeLock()` is a no-op unless a gather is still running, so the listener
+needs no condition of its own beyond `!document.hidden`.
+
+### 24.5 Scoped to this pass alone
+
+Not a timed session: someone is watching that one and touching the screen, and a
+storm is bounded by its own clock anyway.
+
+And above all **not §14.24's background top-up.** That pass runs in the window's
+dead time, counts its requests separately so it cannot end the session the user
+is in, and yields to everything — holding a phone awake for a quiet trickle is
+the opposite of what it is for.
+
+### 24.6 What it does not do
+
+It is a screen-timeout fix and nothing more. It does not stop Android evicting
+the tab under memory pressure, and on some devices the screen still dims (the
+spec leaves dimming to the implementation). If a gather has to survive being
+backgrounded, that is a different and much larger question — and the store being
+written after every position is the answer that already exists for it.
+
+### 24.7 What is not verified
+
+The live phone. Everything here was checked on the desktop build; what a live
+Android session has to answer is whether the lock is granted on the user's own
+browser at all (24.3's first two cases), and whether the screen genuinely stays
+on for the length of a real pass rather than dimming to nothing.

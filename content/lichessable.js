@@ -38783,6 +38783,85 @@
       nextCard();
     }
 
+    // ----------------------------------------------------------------------
+    // §24) THE SCREEN STAYS ON WHILE A GATHER RUNS
+    //
+    // A gather is minutes of walking and then, since v0.159.0, tens of seconds
+    // of Stockfish per position — with nothing to touch the whole time. On a
+    // phone that is exactly the shape of a pass that dies at the screen
+    // timeout: a hidden Android tab has every timer clamped to ~1 s and may be
+    // evicted outright, so the pass the user left running is simply gone.
+    //
+    // `navigator.wakeLock` is a plain DOM API and costs NO manifest permission
+    // — which is why it is the answer here rather than any of the alternatives
+    // (a silent looping video, an alarm) that would need one.
+    //
+    // THREE WAYS IT CAN BE UNAVAILABLE, and all three are the same fail-soft
+    // shape — the pass runs exactly as it did before and one console line says
+    // so:
+    //   * no API at all. Every Chromium fork is a candidate, the way
+    //     `chrome.windows` is absent on Lemur (section 12) — and the forks are
+    //     the Android side of this project.
+    //   * a Permissions-Policy header from Chessable. The feature's default
+    //     allowlist is `self`, so a top-level chessable.com document is allowed
+    //     today; a header could withdraw that without notice.
+    //   * a request made while the document is hidden, which rejects.
+    //
+    // AND THE BROWSER DROPS THE LOCK WHENEVER THE DOCUMENT GOES HIDDEN, never
+    // putting it back by itself — so `wakeWanted` is the INTENTION and the
+    // `visibilitychange` listener is what re-states it. Without that, one
+    // glance at another app ends the lock for the rest of the pass, which from
+    // the outside is indistinguishable from the feature not working at all.
+    //
+    // SCOPED TO THIS PASS ALONE. Not a timed session — someone is watching that
+    // one and touching the screen — and above all not §14.24's background
+    // top-up, which runs in the window's dead time and yields to everything:
+    // holding a phone awake for a quiet trickle is the opposite of what that
+    // pass is for.
+    //
+    // It is a screen-timeout fix and nothing more: it does not stop Android
+    // evicting the tab under memory pressure, and some devices still dim.
+    // ----------------------------------------------------------------------
+    let wakeLock = null;    // the live sentinel, or null
+    let wakeWanted = false; // …and whether we still want one at all
+
+    async function takeWakeLock() {
+      if (wakeLock || !wakeWanted || document.hidden) return;
+      if (!navigator.wakeLock || !navigator.wakeLock.request) return;
+      try {
+        const sentinel = await navigator.wakeLock.request('screen');
+        // The browser releases it on its own (a hidden document, and on some
+        // devices a low battery), so the sentinel is what says it has gone
+        // rather than us going on assuming we hold one.
+        sentinel.addEventListener('release', () => {
+          if (wakeLock === sentinel) wakeLock = null;
+        });
+        wakeLock = sentinel;
+        // The await above is long enough for the pass to have ended underneath
+        // it — a lock taken after that would be held with nothing running.
+        if (!wakeWanted) dropWakeLock();
+        else log('storm: holding the screen awake for the gather pass');
+      } catch (err) {
+        // Deliberately not a `warn`: all three unavailable cases above are
+        // ordinary, and none of them costs the pass anything.
+        log('storm: no screen wake lock —', String((err && err.message) || err));
+      }
+    }
+
+    function dropWakeLock() {
+      wakeWanted = false;
+      const sentinel = wakeLock;
+      wakeLock = null;
+      if (!sentinel) return;
+      // Belt and braces on a path that exists for browsers that may not have
+      // the API at all: the spec says `release()` answers a promise, and a
+      // fork that answers nothing must not throw out of a teardown.
+      try {
+        const done = sentinel.release();
+        if (done && done.catch) done.catch(() => {});
+      } catch (err) { /* nothing to do and nothing to report */ }
+    }
+
     async function gather() {
       if (st.gathering) { stopGather(); return; }
       if (!st.bid) return;
@@ -38807,6 +38886,11 @@
         if (st.boardUp && continuationStormApi) { continuationStormApi.close(); st.boardUp = false; }
       }
       st.gathering = true;
+      // §24: and keep the phone awake for it. Not awaited — a permission
+      // round trip must never sit in front of the pass it is only convenience
+      // for, and every failure of it is a no-op.
+      wakeWanted = true;
+      takeWakeLock();
       st.gathered = 0;
       st.deepened = 0;
       st.deepenFailed = new Set();
@@ -38881,6 +38965,7 @@
         // looking. Every early return above sits before the flag is set, so
         // reaching here means this pass ran.
         st.gathering = false;
+        dropWakeLock();   // §24: unconditional, for this `finally`'s own reason
         await saveStore();
         setNote('');
         log('storm: gathered', st.gathered, 'position(s) in',
@@ -39033,6 +39118,10 @@
       // a user stops, being the long one. Only OUR job: a grade belongs to a
       // session, which this pass has already ended.
       if (st.eng && st.eng.kind === 'list') endEngineJob(st.eng, null);
+      // §24: the `finally` above will do this too, but only once the loop has
+      // noticed the flag — which during a deepen search is not immediate. The
+      // screen is the one thing the user can see us still holding.
+      dropWakeLock();
       setNote('');
     }
 
@@ -41886,10 +41975,17 @@
     stormPanelSlot = panelSlot;
 
     document.addEventListener('keydown', onKey, true);
+    // §24: the browser drops a screen wake lock on every hide and never puts
+    // it back, so this is what re-states the intention. `takeWakeLock` is a
+    // no-op unless a gather is still running.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) takeWakeLock();
+    });
     window.addEventListener('pagehide', () => {
       clearInterval(st.clockTimer);
       clearTimeout(st.nextTimer);
       clearTimeout(st.gradeTimer);
+      dropWakeLock();
     });
 
     // One try/catch around the whole tick, section 21's discipline: the interval

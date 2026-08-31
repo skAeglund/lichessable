@@ -3383,6 +3383,23 @@ Currently working (v0.18.x).
       ENDS whatever session is running — `tick` returns early while it runs, so a
       session left alive underneath burns its clock with no board and no way out
       (seen live).
+    - …AND IT HOLDS A SCREEN WAKE LOCK (§24, v0.161.0). It is the pass with
+      nobody touching anything — minutes of walking, then tens of seconds of
+      Stockfish per position — so on a phone it is the one that dies at the
+      screen timeout. `navigator.wakeLock` is a plain DOM API and costs NO
+      manifest permission, which is why it is the answer here. THREE things an
+      edit elsewhere can break: the `visibilitychange` listener is what makes it
+      WORK AT ALL (the browser drops the lock on every hide and never puts it
+      back, so without that one glance at another app ends it for the rest of
+      the pass — indistinguishable from the feature being absent); the scope is
+      THIS PASS, never a timed session and above all never §14.24's background
+      top-up, which yields to everything and must not hold a phone awake for a
+      quiet trickle; and every unavailable case fails SOFT with one `log` line,
+      never a `warn` — a fork with no API (the Lemur shape), a
+      Permissions-Policy header from Chessable, or a request made while hidden
+      are all ordinary. It is a screen-timeout fix and nothing else: Android may
+      still evict the tab, which is what `saveStore()` after every position
+      already answers.
   * THE STORE IS CARRIED BY SECTION 16E'S TRANSPORT (§14.12) through
     `pinSyncApi.carrier` — a bridge rather than a hoist, because which course,
     the JWT, the informational-card shape, base32-not-base64 and the `oid`
