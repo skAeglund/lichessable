@@ -3036,9 +3036,38 @@ Currently working (v0.18.x).
       positions already stored rather than stranding them.
     - AN UNDEEPENED POSITION IS STILL USABLE and is graded exactly as it was
       before this existed. Nothing waits for the pass, it never has to finish,
-      and it is deliberately NOT a filter or a term in `stormStoreDraw` —
-      §14.15's rule (a re-weighted comparator there is silent) and §14.21's
-      (filter the input, never the order).
+      and it is NEVER A FILTER — §14.21's rule, and a filter here would strand
+      an undeepened store with nothing to play at all.
+    - …BUT THE DEEPENED HALF IS DEALT FIRST (§23.8, v0.163.0), which REVERSES
+      v0.158.0's "not a term in `stormStoreDraw`" — a store is normally only
+      PARTLY deepened (§23.5a's own run: 1 of 4, then 2 of 10, then 4 of 10), so
+      without this a session opens on a ChessDB verdict most of the time and the
+      CPU the pass spent buys nothing the user meets. §14.15's objection is
+      answered the way §14.19's term answered it — pure, rnd-injected, executed
+      by `dev/check-storm.js` with four controls. THREE things an edit elsewhere
+      can break:
+      * IT SITS SECOND, `(a.k - b.k) || (b.deep - a.deep) || (b.reach - a.reach)
+        || (a.r - b.r)`. NEVER above `k`: §14.15 is a rule about STARVATION and
+        this term in front of it reinstates exactly that — a deepened position
+        missed twice would open every session ahead of everything unseen, which
+        is v0.130.0's hardest-first order arriving by another door. Above
+        `reach`, because that one asks how often anybody MEETS the position and
+        this asks how well the answer can be GRADED.
+      * IT IS A BOOLEAN ON `d > 0`, NOT `undeepened`'s `d >= deepenDepth`. Those
+        answer different questions: that one is "is this list up to the standard
+        the pass writes", right for deciding what to SEARCH; this is "will this
+        grade with an engine", which a depth-18 list from an older build does
+        just as much as a depth-20 one. The stricter test sorts a perfectly
+        engine-scored position back in among ChessDB's. And a boolean rather
+        than the depth, for §14.19's reason one field over: a raw depth makes
+        the order deterministic inside the group and spends the random term's
+        variety on a distinction that changes no verdict.
+      * THE COUNT IS PRINTED (`storeScored()`, on the ready chip beside
+        `storeCount()`), because the order alone is INVISIBLE — a gather that
+        deepened few looks exactly like one that deepened many, which is the
+        whole of the report this came from. Source-scoped for `storeCount`'s
+        reason, and the clause is omitted at zero rather than reading
+        "· 0 engine-scored", which would reproach a pass nobody has run yet.
     - THE BACKGROUND TOP-UP (§18.2) DOES NOT DEEPEN, and must not be "improved"
       into doing so: it runs while a review is up, and a search started there
       holds the engine claim a review retry's own grade needs — which fails as
@@ -4061,7 +4090,10 @@ silently switches §14.18.4's walk stop off) — or the STORE'S DRAW ORDER
 reversed comparator returns every position in a plausible-looking sequence and
 is otherwise undetectable from the outside) — or the REACHABILITY term beside it
 (`stormReachBucket`, `stormReachLabel`, §14.19, whose UNKNOWN arm decides
-whether a store written by an older build is still reachable at all) — or the RETIREMENT rule
+whether a store written by an older build is still reachable at all) — or the
+DEEPENED-FIRST term between them (§23.8, and `storeScored`, which is the only
+thing on screen that can tell a store the deepen pass has worked on from one it
+has not) — or the RETIREMENT rule
 (`stormDone`) and the random game pick (`stormPickGames`), §14.16, whose failing
 case needs a position answered WELL in one session and the same frontier drawn
 in the NEXT and so is close to unreachable from a live sitting — or the FUNNEL

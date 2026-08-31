@@ -1652,6 +1652,61 @@ const leadsTo = (arrived, fen) => {
   eq('…counting exactly under ten', S.stormReachLabel(3), '3 game(s) at the line end');
   eq('…and saying zero plainly', S.stormReachLabel(0), 'no games at the line end');
 
+  // --- DEEPENED FIRST (§23.8) ---------------------------------------------
+  // The deepen pass buys a Stockfish list per position at tens of seconds of
+  // CPU each, and a store is only ever partly deepened — so which half a
+  // session opens on is decided here and NOWHERE else. Every failure mode is
+  // the family's usual one: the term dropped, or put in the wrong place, still
+  // returns every position in a plausible sequence, and the session simply
+  // grades by ChessDB while looking exactly as it should.
+  const deepStore = {
+    plain:  { f: fFen, n: 'Plain',  m: [['g1f3', 'Nf3', 12]], k: 0 },
+    // `g` DELIBERATELY LOW. With no figure this would read as UNKNOWN, which
+    // §14.19 puts in the TOP reach bucket — it would then tie with `busy`
+    // below and the deepened term would decide by default, so the assertion
+    // about WHERE the term sits would pass however it was placed.
+    scored: { f: fFen, n: 'Scored', m: [['g1f3', 'Nf3', 12]], k: 0, d: 20, g: 3 },
+    // A list written by an older build, or by a device that stopped short of
+    // the standard. It still grades with the engine, so it is still deepened
+    // HERE — `undeepened`'s stricter `d >= deepenDepth` answers a different
+    // question and using it in the draw would sort this back among ChessDB's.
+    older:  { f: fFen, n: 'Older',  m: [['g1f3', 'Nf3', 12]], k: 0, d: 18 },
+    // …and the case that pins the term BELOW `k`.
+    missed: { f: fFen, n: 'Missed', m: [['g1f3', 'Nf3', 12]], k: 2, d: 20 },
+    // …and the one that pins it ABOVE `reach`: unseen, undeepened, and as
+    // reachable as a position gets.
+    busy:   { f: fFen, n: 'Busy',   m: [['g1f3', 'Nf3', 12]], k: 0, g: 36363 },
+  };
+  const deepOrder = S.stormStoreDraw(deepStore, () => 0.5, C).map((x) => x.ck);
+  eq('every position is still drawn — it is a preference, not a filter',
+    deepOrder.length, 5);
+  eq('a position Stockfish has scored is asked before one only ChessDB has',
+    deepOrder.indexOf('scored') < deepOrder.indexOf('plain'), true);
+  // THE ONE THAT PLACES IT. Above `reach` — without that, the most-played
+  // undeepened position opens the session and the request is not honoured.
+  eq('…and before an undeepened one however reachable',
+    deepOrder.indexOf('scored') < deepOrder.indexOf('busy'), true);
+  // AND THE ONE THAT KEEPS IT BELOW `k` (§14.15). A deepened position already
+  // missed twice must still come behind every unseen one, or this reinstates
+  // exactly the hardest-first order v0.137.0 reversed — the deepened half
+  // would open every session for as long as it kept being got wrong.
+  eq('the failure count still outranks it',
+    deepOrder[deepOrder.length - 1], 'missed');
+  eq('a sub-standard engine list still counts as engine-scored',
+    deepOrder.indexOf('older') < deepOrder.indexOf('plain'), true);
+  eq('the flag is a boolean, so depth does not order within the group',
+    S.stormStoreDraw(deepStore, () => 0.5, C)
+      .filter((x) => x.ck === 'older')[0].deep, 1);
+  eq('…and an entry with no `d` is not deepened',
+    S.stormStoreDraw(deepStore, () => 0.5, C)
+      .filter((x) => x.ck === 'plain')[0].deep, 0);
+  // The round trip the flag is read through — asserted here rather than taken
+  // on trust, since a `d` lost in the pack or the unpack is the same silence.
+  eq('the depth survives pack → unpack',
+    S.stormUnpack(S.stormPack(
+      { fen: fFen, ply: 2, userColor: 'w', listDepth: 20,
+        scored: [{ uci: 'g1f3', san: 'Nf3', score: 12 }] }, null)).listDepth, 20);
+
   // --- RETIREMENT (§14.16, v0.142.0) --------------------------------------
   // The half of the retention rule that was missing. `stormRetain` takes an
   // answered position OUT of the store; leaving the store is not the same as

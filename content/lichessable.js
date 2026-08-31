@@ -37101,16 +37101,45 @@
         out.push({ ck, cand, k: store[ck].k || 0, r: rnd(),
           name: store[ck].n || '', oid: store[ck].o || '',
           games: typeof store[ck].g === 'number' ? store[ck].g : null,
-          reach: stormReachBucket(store[ck].g, C) });
+          reach: stormReachBucket(store[ck].g, C),
+          // §23.8) DOES THIS POSITION CARRY A STOCKFISH LIST? A BOOLEAN, and
+          // deliberately not `cand.listDepth` itself: a deeper list is not a
+          // better CARD, it is the same card graded by the same evaluator, and
+          // a raw depth in the comparator would make the order deterministic
+          // inside the group and take away the variety the random term exists
+          // for — §14.19's argument for a bucket rather than a count, one
+          // field over.
+          //
+          // AND IT IS `d > 0`, NOT `undeepened`'s `d >= deepenDepth`. Those two
+          // answer different questions: that one asks "is this list up to the
+          // standard the pass writes", which is right for deciding what to
+          // SEARCH, and this asks "will this position grade with an engine",
+          // which a depth-18 list written by an older build does just as much
+          // as a depth-20 one. Using the stricter test here would sort a
+          // perfectly engine-scored position back in among ChessDB's.
+          deep: (cand.listDepth || 0) > 0 ? 1 : 0 });
       }
       // §14.19: REACHABILITY IS A SEPARATE TERM AND IT IS NOT THE PRIMARY KEY.
       // `k` ascending stays first — unseen before most-missed, §14.15, which is
       // the ordering a reversed comparator would break silently — and the
       // random term stays last, so positions of equal failure count and equal
-      // reachability still come round in a different order every session. All
-      // this adds is: among positions nobody has answered, ask first about the
-      // line ends real games actually reach.
-      out.sort((a, b) => (a.k - b.k) || (b.reach - a.reach) || (a.r - b.r));
+      // reachability still come round in a different order every session.
+      //
+      // §23.8: …and a position Stockfish has scored is asked BEFORE one only
+      // ChessDB has, which is what the deepen pass is spent on. It sits SECOND,
+      // between the two:
+      //   * never above `k`, because §14.15's rule is about starvation and this
+      //     term would reintroduce exactly it — a deepened position missed
+      //     three times would otherwise open every session ahead of everything
+      //     unseen, which is the hardest-first order v0.137.0 reversed.
+      //   * above `reach`, because that is the request: reachability says how
+      //     often anybody meets the position and this says how well the answer
+      //     can be graded, and a well-graded card is worth more than a
+      //     well-travelled one when only one of them can go first.
+      // It is a PREFERENCE and never a filter: an undeepened position is
+      // perfectly playable (§23.3) and is still dealt, just behind.
+      out.sort((a, b) => (a.k - b.k) || (b.deep - a.deep) ||
+        (b.reach - a.reach) || (a.r - b.r));
       return out;
     }
 
@@ -40980,6 +41009,25 @@
      *  therefore the only place the wider number is the honest one. */
     const storeTotal = () => (st.store ? Object.keys(st.store).length : 0);
 
+    /** §23.8) …and how many of `storeCount()` carry a Stockfish list, i.e. how
+     *  many of the positions about to be dealt will be graded by a search
+     *  rather than by ChessDB's ranking.
+     *
+     *  It is REPORTED because the draw order alone is invisible: a gather that
+     *  walked plenty and deepened few looks exactly like one that deepened
+     *  plenty, and the session then opens on ChessDB verdicts with nothing
+     *  saying why. Source-scoped for `storeCount`'s own reason — it is a
+     *  fraction OF that number and the two must be about the same set.
+     *
+     *  `d > 0`, the same test the draw uses and for the same reason. */
+    const storeScored = () => {
+      if (!st.store) return 0;
+      const mine = stormFilterSource(st.store, st.source);
+      let n = 0;
+      for (const ck of Object.keys(mine)) if (mine[ck].d > 0) n++;
+      return n;
+    };
+
     function syncSettings() {
       if (!st.ui) return;
       // §14.24) …and whether something is quietly adding to it. This is the ONLY
@@ -40987,12 +41035,27 @@
       // or `setStatus`, both of which belong to things the user is waiting on,
       // and a pass nobody asked for must not put a sentence over the review
       // they are reading.
+      // §23.8) …and how many of them Stockfish has scored. Resolved ONCE: this
+      // runs from `render`, and the helper walks the store behind a filter.
+      const scored = storeScored();
       st.ui.ready.textContent = st.store
         ? storeCount() + ' position(s) ready' +
+          // Printed only when the deepen pass has actually done something on
+          // this course: on a store it has never touched the honest reading is
+          // the plain count, and "· 0 engine-scored" beside it would be a
+          // reproach for a pass the user may simply not have run yet.
+          (scored ? ' · ' + scored + ' engine-scored' : '') +
           (st.backfilling ? ' · filling…' : '') : '';
-      st.ui.ready.title = st.backfillStored
-        ? st.backfillStored + ' of them found in the background this session'
-        : '';
+      st.ui.ready.title = [
+        scored
+          ? scored + ' of them carry a Stockfish list and are dealt first; ' +
+            'the rest are graded by the ChessDB ranking'
+          : 'None of them carry a Stockfish list yet — gather again to score ' +
+            'them with the engine',
+        st.backfillStored
+          ? st.backfillStored + ' were found in the background this session'
+          : '',
+      ].filter(Boolean).join('. ') + '.';
       st.ui.ready.hidden = !st.store;
       st.ui.minSel.value = String(st.minPly);
       st.ui.maxSel.value = String(st.maxPly);

@@ -5295,3 +5295,101 @@ uncovered source is one ply deep by construction, so this only concerns the
 frontier walk, where §14.18.4 already stops at the first covered position. A walk
 that leaves the book and comes back three moves on is not stopped and probably
 should not be — the improvising happened.
+
+### 23.8 The deepened half is dealt first (v0.163.0)
+
+Reported by the author, 2026-08-31: *"I did some testing after I had gathered a
+bunch of positions, but when I started the storm all I got was ChessDB
+evaluations."*
+
+Nothing was broken. §23.3 built the deepen pass as a **preference over the
+store**, not a property of it: a gather deepens one position between frontiers
+and then works through the rest, so a store is normally only *partly* deepened —
+§23.5a's own live run went `1 of 4` → `2 of 10` → `4 of 10` across three passes.
+The draw order knew nothing about it, so a session dealt from the whole store at
+random and a store 40% deepened opened on a ChessDB verdict three times in five.
+Which is precisely what the author saw, and there was nothing on screen to
+distinguish it from the pass having done nothing at all.
+
+§23.3 says a position that has not been deepened is *"still perfectly usable"*
+and that *"nothing waits for the pass"*. Both stay true. What was missing is that
+the two are not equally *valuable*: one costs tens of seconds of CPU and grades
+against a real search, the other is ChessDB's ranking with the bias §23.1
+measured. When only one of them can go first, it should be the one that was paid
+for.
+
+**A term in `stormStoreDraw`, second of four.** §23.3 recorded the pass as
+"deliberately NOT a filter or a term in `stormStoreDraw`", on §14.15's argument
+(a re-weighted comparator there is silent) and §14.21's (filter the input, never
+the order). The first still applies and is answered the way §14.19's own term
+answered it — the function is pure and rnd-injected, and `dev/check-storm.js`
+executes it, with four controls below. The second does not apply at all: §14.21
+is about a *scope*, which is a narrowing and belongs on the input. This is a
+preference among positions that are all wanted, which is exactly what an order
+is for. A filter here would be the wrong shape twice over — it would strand an
+undeepened store with nothing to play.
+
+```
+(a.k - b.k) || (b.deep - a.deep) || (b.reach - a.reach) || (a.r - b.r)
+```
+
+**Never above `k`.** §14.15 is a rule about starvation, and this term put in
+front of it reintroduces exactly that: a deepened position missed twice would
+open every session ahead of everything unseen, for as long as it kept being got
+wrong — v0.130.0's hardest-first order, arriving by a different door. The
+retention rule is what keeps the deepened set churning (a position answered well
+leaves the store), and that only works if unseen positions still come first.
+
+**Above `reach`.** §14.19 asks how often anybody *meets* the position; this asks
+how well the answer can be *graded*. Both are real, and the request settles the
+tie: the CPU has already been spent on one of them.
+
+**A boolean, and `d > 0`.** Not the depth itself — a raw depth in the comparator
+would make the order deterministic inside the group and take away the variety the
+random term exists for, which is §14.19's own argument for a bucket rather than a
+count, one field over. And `d > 0` rather than `undeepened`'s `d >= deepenDepth`:
+those answer different questions. That one asks whether a list is up to the
+standard the pass writes, which is right for deciding what to **search** (§23.7);
+this asks whether the position will grade with an **engine**, which a depth-18
+list from an older build does just as much as a depth-20 one. Using the stricter
+test here would sort a perfectly engine-scored position back in among ChessDB's.
+
+**And it is said on screen.** The ready chip now reads `10 position(s) ready · 4
+engine-scored`, with the fraction and what it means in its tooltip. The ordering
+alone is invisible — a gather that walked plenty and deepened few looks exactly
+like one that deepened plenty — and the whole complaint above was a user with no
+way to tell the two apart. The clause is printed only when the count is non-zero:
+on a store the pass has never touched, "· 0 engine-scored" would be a reproach
+for a pass that may simply not have been run yet. `storeScored()` is
+source-scoped for `storeCount()`'s reason — it is a fraction *of* that number and
+the two must be about the same set.
+
+#### 23.8.1 Controls (2026-08-31)
+
+Every failure here is the family's usual silence: the term dropped, or placed
+wrongly, still returns every position in a plausible sequence and the session
+simply grades by ChessDB while looking exactly as it should. Each control fails
+on exactly its own assertions and no others:
+
+| control | fails |
+|---|---|
+| the term dropped altogether | **3** |
+| the term put in front of `k` | **1** (`the failure count still outranks it`) |
+| `d >= deepenDepth` in place of `d > 0` | **2** |
+| the term put below `reach` | **2** |
+
+The fixture's deepened entry carries `g: 3` **deliberately**. With no figure it
+would read as UNKNOWN, which §14.19 puts in the *top* reach bucket — it would
+then tie with the reachable undeepened entry and the deepened term would decide
+by default, so the assertion about where the term sits would pass however it was
+placed. The first draft of this block had that bug and its fourth control came
+back green.
+
+#### 23.8.2 What is not done
+
+**The deepened count is not a gate on Start.** A session on a wholly undeepened
+store is a legitimate thing to want — it is what every session before v0.158.0
+was — and the chip now says what it will be.
+
+**The background top-up (§18.2) still does not deepen**, for §23.6's reason, so
+positions it finds sort behind until the next gather reaches them.
