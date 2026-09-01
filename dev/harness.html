@@ -3463,6 +3463,11 @@ body {
                    reads as two different buttons. -->
               <button type="button" class="clo-st-start" disabled>Finding a position&hellip;</button>
               <button type="button" class="clo-st-gather">Gather positions</button>
+              <!-- &sect;27) THE ROUND, beside it and wearing the same green outline,
+                   because it IS the gather pass &mdash; the same walk, run on every course
+                   that has one. Never a fill: this window has one primary and Start
+                   is it. -->
+              <button type="button" class="clo-st-gather clo-st-roundbtn">Gather all courses</button>
               <button type="button" class="clo-st-sync clo-st-clearbtn clo-st-clearbtn--armed">Clear positions?</button>
               <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
                    Gather and deliberately not its green: green outline in this row is
@@ -3525,6 +3530,11 @@ body {
                    only one of them is the storm. -->
               <button type="button" class="clo-st-start">Start</button>
               <button type="button" class="clo-st-gather">Gather positions</button>
+              <!-- &sect;27) THE ROUND, beside it and wearing the same green outline,
+                   because it IS the gather pass &mdash; the same walk, run on every course
+                   that has one. Never a fill: this window has one primary and Start
+                   is it. -->
+              <button type="button" class="clo-st-gather clo-st-roundbtn">Gather all courses</button>
               <button type="button" class="clo-st-sync clo-st-clearbtn">Clear positions</button>
               <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
                    Gather and deliberately not its green: green outline in this row is
@@ -3599,6 +3609,7 @@ body {
               <!-- It fills only while RUNNING, which is the one moment it IS the
                    thing happening. -->
               <button type="button" class="clo-st-gather clo-st-gather--on">Stop gathering</button>
+              <button type="button" class="clo-st-gather clo-st-roundbtn" disabled>Gather all courses</button>
               <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
                    Gather and deliberately not its green: green outline in this row is
                    an ordinary ACTION, and this one starts nothing &mdash; it says whether a
@@ -3657,6 +3668,11 @@ body {
               <span class="clo-st-ready">41 position(s) ready</span>
               <button type="button" class="clo-st-start">Start</button>
               <button type="button" class="clo-st-gather">Gather positions</button>
+              <!-- &sect;27) THE ROUND, beside it and wearing the same green outline,
+                   because it IS the gather pass &mdash; the same walk, run on every course
+                   that has one. Never a fill: this window has one primary and Start
+                   is it. -->
+              <button type="button" class="clo-st-gather clo-st-roundbtn">Gather all courses</button>
               <button type="button" class="clo-st-sync clo-st-clearbtn">Clear positions</button>
               <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
                    Gather and deliberately not its green: green outline in this row is
@@ -3668,6 +3684,55 @@ body {
               <!-- &sect;15.4) NEUTRAL, beside Sync and for the same reason: it is the
                    action away from both storming and gathering. -->
               <button type="button" class="clo-st-sync clo-st-statsbtn">Stats</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="hx-card" style="flex:1 1 100%">
+      <h3>&sect;27 &mdash; the round, running</h3>
+      <p>&ldquo;Gather all courses&rdquo;: the same gather pass, run on every course the
+        store already holds positions for, one after another, both sources each, a
+        bounded leg at a time. The pass to leave on overnight. Three things to read
+        here: the ROUND button is the one filled &mdash; it is what is happening &mdash;
+        while &ldquo;Gather positions&rdquo; is DISABLED, because a leg is already
+        gathering and stopping it here would end one leg and watch the next begin;
+        the note carries the leg&rsquo;s own context (which pass, which course, which
+        source) in front of the ordinary gather figures; and the source selector is
+        disabled, since the round walks both itself.</p>
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:150px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Caro-Kann for Black</span>
+            <span class="clo-st-clock clo-st-clock--off">3:00</span>
+            <span class="clo-st-stat">0 pts</span>
+            <span class="clo-st-stat">streak 0</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <div class="clo-st-note">Round 2 &middot; Caro-Kann for Black &middot; line ends &mdash; Analysing&hellip; 3 position(s) scored by Stockfish, 41 left, depth 20 &middot; 74s on this one &middot; leave this open</div>
+            <div class="clo-st-settings">
+              <select class="clo-st-sel clo-st-modesel" disabled><option>Storm &middot; 3 minutes</option></select>
+              <select class="clo-st-sel clo-st-sourcesel" disabled><option>Past the end of a line</option></select>
+              <span class="clo-st-set-group">
+                <span class="clo-st-set-label">Offer positions</span>
+                <select class="clo-st-sel" disabled><option>1</option></select>
+                <span class="clo-st-set-label">to</span>
+                <select class="clo-st-sel" disabled><option>16</option></select>
+                <span class="clo-st-set-label">moves past the end of a line</span>
+              </span>
+              <span class="clo-st-set-spacer"></span>
+              <span class="clo-st-ready">18 position(s) ready &middot; 12 engine-scored</span>
+              <button type="button" class="clo-st-gather" disabled>Gather positions</button>
+              <button type="button" class="clo-st-gather clo-st-roundbtn clo-st-gather--on">Stop the round</button>
+              <button type="button" class="clo-st-sync clo-st-bgbtn">Background: on</button>
+              <button type="button" class="clo-st-sync" disabled>Sync</button>
+              <button type="button" class="clo-st-sync clo-st-statsbtn">Stats</button>
+            </div>
+            <div class="clo-st-stage hx-slots">
+              <div class="clo-st-slot clo-st-slot--board" data-hx-slot="no board: the round shows nothing"></div>
+              <div class="clo-st-slot clo-st-slot--panel" data-hx-slot=""></div>
             </div>
           </div>
         </div>
@@ -3718,6 +3783,7 @@ body {
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">31 position(s) ready</span>
               <button type="button" class="clo-st-gather clo-st-gather--on">Stop gathering</button>
+              <button type="button" class="clo-st-gather clo-st-roundbtn" disabled>Gather all courses</button>
               <!-- &sect;14.24) left ENABLED mid-gather, unlike the selectors beside it:
                    those describe the pass now running, and this is a standing
                    preference for what happens when it is over. -->
@@ -3992,6 +4058,11 @@ body {
                    this window is storm, and this is the other thing. It fills only
                    while RUNNING, which is the one moment it IS the thing happening. -->
               <button type="button" class="clo-st-gather">Gather positions</button>
+              <!-- &sect;27) THE ROUND, beside it and wearing the same green outline,
+                   because it IS the gather pass &mdash; the same walk, run on every course
+                   that has one. Never a fill: this window has one primary and Start
+                   is it. -->
+              <button type="button" class="clo-st-gather clo-st-roundbtn">Gather all courses</button>
               <button type="button" class="clo-st-sync clo-st-clearbtn">Clear positions</button>
               <!-- &sect;14.12. NEUTRAL, per DESIGN-ui-inventory &sect;3: the action away
                    from both of the others &mdash; you neither storm nor gather by
@@ -4174,6 +4245,11 @@ body {
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">19 position(s) ready</span>
               <button type="button" class="clo-st-gather">Gather positions</button>
+              <!-- &sect;27) THE ROUND, beside it and wearing the same green outline,
+                   because it IS the gather pass &mdash; the same walk, run on every course
+                   that has one. Never a fill: this window has one primary and Start
+                   is it. -->
+              <button type="button" class="clo-st-gather clo-st-roundbtn">Gather all courses</button>
               <button type="button" class="clo-st-sync clo-st-clearbtn">Clear positions</button>
               <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
                    Gather and deliberately not its green: green outline in this row is

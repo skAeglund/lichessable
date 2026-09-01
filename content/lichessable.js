@@ -2152,6 +2152,53 @@
       gatherMaxCdb: 4000,
       gatherTarget: 200,   // …and it stops here, or when the pool runs out
 
+      // --- §27) THE ROUND: every gathered course, both sources -------------
+      // The gather pass answers "fill THIS course". This answers "fill the
+      // lot, while I am asleep": it takes the courses the store already holds
+      // positions for — the ones this profile has gathered to before — one at a
+      // time, both sources each, a bounded slice at a time, and goes round
+      // again for as long as it is left running.
+      //
+      // A LEG IS BOUNDED BY A CLOCK BEFORE IT IS BOUNDED BY A COUNT, and that
+      // is the one non-obvious decision here. A gather is DEEPEN-bound, not
+      // walk-bound: §26.4 measured a single depth-20 MultiPV-12 search at 207 s
+      // WITHOUT FINISHING on the author's own desktop, against §14.23's 20.7 s
+      // at MultiPV 3 — the width is what costs. `deepenPerFrontier` runs one of
+      // those after every frontier walked, so "15 positions" is anywhere from
+      // twenty minutes to two hours depending on the machine, the position and
+      // the profile. A round bounded only by a count would therefore cycle on a
+      // fast desktop and simply not cycle at all on a phone, and there is no
+      // number that is right for both.
+      //
+      // So `cycleLegMs` is the operative bound and `cycleTarget` is a ceiling
+      // that a fast machine on a small course may reach first. A leg overruns
+      // its clock by at most ONE search — §23.7 is emphatic that a deepen search
+      // has no wall-clock budget and is bounded by `deepenStallMs`, a progress
+      // watchdog — so ten minutes lands at ten to fourteen, and a five-course
+      // round is about two hours whatever the hardware.
+      cycleLegMs: 10 * 60 * 1000,
+      cycleTarget: 15,
+      // …and the request ceiling that bounds a SATURATED course. A store with
+      // nothing left to find still costs ~11 lookups per candidate to discover
+      // that, and a round must not spend an hour learning it. Read through
+      // `st.gatherCap` so the two passes cannot disagree about which ceiling is
+      // in force.
+      cycleMaxCdb: 500,
+      // …and how much of the BACKLOG a leg scores before handing on. The walk's
+      // own interleaved deepening roughly keeps pace with what the leg stores;
+      // this is what eats into the positions gathered before §23 existed. Phase
+      // two is deliberately unbounded in a gather pass and must not be here: a
+      // course with three hundred unscored positions would never hand over.
+      cycleDeepen: 8,
+      // A beat between legs, so a stop pressed at a boundary is noticed at once
+      // and so a night is a trickle rather than a flood.
+      cycleGapMs: 3000,
+      // …and how many courses one pass over the list will take on. There is no
+      // course this excludes today — a profile with a dozen repertoires is not
+      // the shape this is for — but an unbounded list read out of storage is not
+      // a thing to hand to a loop that runs all night.
+      cycleMaxCourses: 12,
+
       // --- §14.24) THE BACKGROUND TOP-UP -----------------------------------
       // The gather pass is the burst you ASK for and then watch: it ends the
       // session, clears the board, owns the pool and reports a funnel. This is
@@ -2194,7 +2241,25 @@
       // this rides it because the phone is exactly where you do NOT want to
       // spend eleven ChessDB lookups per position.
       syncKey:  'cloStormSync',    // storage.local: { [bid]: { at, gone } }
-      cardName: 'CLO-STORM · do not delete',
+      // §27b) ONE CARD PER COURSE (v0.166.0), and the reason is a defect rather
+      // than a capacity limit. Until now there was ONE card and the payload
+      // carried no course id, so a second course synced overwrote the first —
+      // and the next device to open a storm on the FIRST course merged the
+      // other course's positions and tombstones into it, silently, in a session
+      // that then attributed them to the wrong lines. `stormCardName(bid)` is
+      // what closes it; `b` in the payload is the belt to that braces.
+      //
+      // THE OLD CARD IS LEFT WHERE IT IS, deliberately: it cannot be attributed
+      // to a course, so it is neither read nor deleted, and it ages out with the
+      // rest of the user's own course. The cost of the rename is that a device
+      // still on ≤0.165.0 stops exchanging until it is updated.
+      cardPrefix: 'CLO-STORM',
+      cardName: 'CLO-STORM · do not delete',   // the pre-v0.166.0 card. UNUSED.
+      // §27b) …and where new cards are created. A NAME, resolved per course by
+      // the carrier, because a lid is per course. Absent from the course = Main
+      // Level and one console line: this is tidying, and it must never be able
+      // to stop a sync.
+      cardChapter: 'Intuition Storm',
       wireVersion: 1,
       // What the SAN costs: it is derivable from the uci and the position, so
       // the wire drops it and `stormWireUnpack` recomputes. Roughly a third of
@@ -16063,7 +16128,11 @@
      *  in a second card of the same shape — section 27's position store. The
      *  pin card's own name is the default, so every existing caller is
      *  unchanged. */
-    function cardEntry(comment, oid, name) {
+    /** …and `lid` for the same reason one level down (§27b): a card is created
+     *  in a CHAPTER now. 0 is Main Level, which is where every card of ours went
+     *  before this existed — and, measured, is what the server falls back to
+     *  only at CREATE time; on an overwrite the field is ignored entirely. */
+    function cardEntry(comment, oid, name, lid) {
       const fen = C.startFen;
       const cardName = name || C.cardName;
       const row = {
@@ -16080,7 +16149,7 @@
           eventDate: '', source: '', sourceData: '', fen, setup: '',
         },
         color: 'white', name: cardName, orig: cardName,
-        lid: 0, moves: [row], line: '1.' + C.cardMove,
+        lid: Number(lid) || 0, moves: [row], line: '1.' + C.cardMove,
       };
       // THE WHOLE OVERWRITE IS THIS FIELD (§4.2). Without it the write creates
       // a second card every time and the store forks silently.
@@ -16131,23 +16200,113 @@
     }
 
     /**
+     * §27b) WHICH CHAPTER A CARD BELONGS IN, resolved from its NAME.
+     *
+     * A caller names a chapter ("Intuition Storm") rather than a lid, because a
+     * lid is per course and this transport writes into whichever course the
+     * user chose. `getImportData` already enumerates every chapter of every
+     * course you can add to (§19d), memoised per document, so this costs one
+     * read the storm window has usually made already.
+     *
+     * `lid` IS HONOURED AT CREATE AND IGNORED ON OVERWRITE. Ground-truthed
+     * 2026-08-31 on course 453453 with a throwaway card: created with `lid: 1`
+     * it appeared in chapter 1 and NOT in Main Level; overwritten with `lid: 0`
+     * it STAYED in chapter 1 while its comment text updated normally. So a
+     * card's chapter is decided once, by the create, and nothing this module
+     * does afterwards can move it.
+     *
+     * Three consequences, and the first is the one an earlier draft of this
+     * comment got backwards:
+     *  * A CARD MOVED BY HAND STAYS MOVED. It is not dragged back by the next
+     *    sync, and `ensureSlot` finds it by name wherever it ends up.
+     *  * The lid is still resolved and sent on every write, which is now
+     *    belt-and-braces rather than load-bearing: it costs one memoised lookup
+     *    and it is what would keep a card in place if Chessable ever started
+     *    honouring the field on an overwrite.
+     *  * A FAILED RESOLVE CANNOT MOVE ANYTHING — it can only put a card being
+     *    CREATED right now into Main Level.
+     *
+     * The failure is NOT memoised even so: a course with no such chapter is a
+     * real answer worth remembering, while a thrown read (no writable course, no
+     * connection) is a fact about this minute, and the next card created should
+     * get another chance at the right chapter.
+     */
+    const chapterLidMemo = new Map();   // `<bid>|<name>` → lid
+    async function cardChapterLid(cr, bid, chapter) {
+      if (!chapter) return 0;
+      const key = String(bid) + '|' + chapter;
+      if (chapterLidMemo.has(key)) return chapterLidMemo.get(key);
+      const want = String(chapter).trim().toLowerCase();
+      const find = (targets) => {
+        const hit = ((targets && targets.chapters) || []).find((c) =>
+          c.bid === String(bid) && String(c.name).trim().toLowerCase() === want);
+        return hit ? (Number(hit.lid) || 0) : 0;
+      };
+      let lid = 0;
+      try {
+        lid = find(await importTargetsOnce(cr));
+        // §27b.9) A MISS IS THE ONE ANSWER WORTH DOUBTING, and this is what
+        // makes creating the chapter take effect NOW rather than after a reload.
+        //
+        // `importTargetsOnce` is memoised for the LIFE OF THE DOCUMENT and is
+        // shared with 19d and 24g, so a tab that was open before the chapter was
+        // created holds a list without it — for ever. Reported live: cards for
+        // the courses synced from such a tab were created in Main Level while
+        // the first course's went to the chapter, which looks exactly like the
+        // chapter setting not working. A miss therefore re-reads ONCE, fresh,
+        // and the fresh answer replaces the shared memo so every other reader
+        // stops being wrong too.
+        if (!lid) {
+          const fresh = await fetchImportTargets(cr);
+          importTargetsMemo = fresh;
+          lid = find(fresh);
+        }
+      } catch (err) {
+        // Not memoised: a thrown read is a fact about this minute (no writable
+        // course, no connection), and the next card deserves another chance at
+        // the right chapter.
+        log('pin sync: could not read the chapters of course', bid, '—',
+          String((err && err.message) || err));
+        return 0;
+      }
+      // A HIT IS REMEMBERED; A MISS IS NOT. Chapters are not created often, but
+      // the one moment they ARE is exactly when somebody is setting this up and
+      // watching to see whether it worked — so "no such chapter" must stay a
+      // question we re-ask rather than an answer we keep. It costs one
+      // `getImportData` per card write on a course that genuinely has no such
+      // chapter, and a card write is once per course per pass.
+      if (lid) chapterLidMemo.set(key, lid);
+      else {
+        log('pin sync: no chapter called "' + chapter + '" in course', bid,
+          '— cards go to Main Level');
+      }
+      return lid;
+    }
+
+    /**
      * Where the card is, creating it if the chosen course has none.
      *
      * PRESENCE IS ASKED OF `getList`, NEVER OF `getLesson`: a deleted variation
      * still answers the lesson call (§4.6), so a user who deletes the card by
      * hand would otherwise keep reading its ghost for ever.
+     *
+     * …AND IT IS ASKED WITHOUT A CHAPTER. `getList` answers the whole course, so
+     * a card is found wherever it lives — which is what makes §27b's move to a
+     * chapter need no migration and cost nothing if the chapter is missing.
      */
-    async function ensureSlot(cr, bid, name, blankText) {
+    async function ensureSlot(cr, bid, name, blankText, chapter) {
       const cardName = name || C.cardName;
+      const lid = await cardChapterLid(cr, bid, chapter);
       const course = await fetchCourse(bid, cr, false);
       const found = (course.vars || []).find((v) => v.name === cardName);
-      if (found) return { bid: String(bid), oid: String(found.oid), lid: 0 };
+      if (found) return { bid: String(bid), oid: String(found.oid), lid };
       const blank = blankText !== undefined ? blankText
         : (await encodeBlob({ v: C.blobVersion, at: Date.now(), pins: {}, gone: {} })).text;
-      const oid = await postCard(cr, bid, cardEntry(blank, null, cardName));
+      const oid = await postCard(cr, bid, cardEntry(blank, null, cardName, lid));
       await dropCourseCache(bid);
-      log('pin sync: created the card "' + cardName + '" in course', bid, '— oid', oid);
-      return { bid: String(bid), oid, lid: 0 };
+      log('pin sync: created the card "' + cardName + '" in course', bid,
+        '— oid', oid, 'chapter', lid);
+      return { bid: String(bid), oid, lid };
     }
 
     // --- the slot pointer ----------------------------------------------------
@@ -16368,7 +16527,10 @@
      * elsewhere is a copy that will one day disagree.
      *
      * It carries TEXT and knows nothing about what is in it: the payload's own
-     * shape, its version and its merge are the caller's business.
+     * shape, its version and its merge are the caller's business — INCLUDING
+     * which course a payload is about (§27b). A caller wanting one card per
+     * course asks for one card per course, by name, and puts the course id in
+     * its own payload; this module would have no way to check it.
      */
     const carrier = {
       /** The course chosen for syncing, or null. `on` is the user's own switch
@@ -16397,7 +16559,7 @@
        * (2026-08-28, course 453453), so a bigger payload has evidence behind it
        * — but the pin store's own conservatism is left exactly where it was.
        */
-      async write(name, text, limit) {
+      async write(name, text, limit, chapter) {
         const bid = carrier.course();
         const cr = bid && chessableCreds();
         if (!cr) throw new Error('no course is chosen for syncing');
@@ -16405,9 +16567,13 @@
         if (text.length > cap) {
           throw new Error('payload is ' + text.length + ' bytes; the ceiling is ' + cap);
         }
-        const slot = await ensureSlot(cr, bid, name, text);
+        const slot = await ensureSlot(cr, bid, name, text, chapter);
         // ensureSlot wrote the text itself if it had to create the card.
-        const oid = await postCard(cr, bid, cardEntry(text, slot.oid, name));
+        // §27b) `slot.lid` rides the overwrite too. MEASURED to be ignored there
+        // (see `cardChapterLid`), so this is belt-and-braces — but sending the
+        // right value costs nothing and is what would keep a card in place if
+        // that ever changed.
+        const oid = await postCard(cr, bid, cardEntry(text, slot.oid, name, slot.lid));
         await dropCourseCache(bid);
         return oid;
       },
@@ -34902,6 +35068,34 @@
       // than 48 tombstones, because a tombstone here means RETIRED (§14.16) and
       // would stop the very re-gather a clear is asking for.
       clearedAt: 0,
+      // --- §27) THE ROUND ---------------------------------------------------
+      // Its own flags beside the gather pass's and never sharing them:
+      // `st.gathering` is FALSE in the gaps between legs, so every gate that has
+      // to hold for the whole night asks `filling()` rather than either one.
+      cycling: false,     // a round is running
+      cycleHome: null,    // where the window was, so it can be put back
+      cycleBad: null,     // the courses this run could not read
+      cycleRound: 0,      // which pass over the list it is on
+      cycleStored: 0,     // …and what the whole run has bought
+      cycleScored: 0,
+      // §27b) WHAT HAS ACTUALLY BEEN PUSHED, and what is still owed. The
+      // closing sentence is written from `cycleSynced` and not from "a sync
+      // course is configured" — it claimed every course had been synced on a
+      // round stopped before its first push, which is a sentence that is wrong
+      // exactly when the user is reading it (live 2026-09-01).
+      cycleSynced: 0,
+      cyclePending: false,
+      // WHICH WINDOW THIS IS, bumped by `startSession` and `closeStorm`, and
+      // read by the one piece of state a round puts BACK. The unwind is
+      // asynchronous, so a round stopped by a teardown can still be inside a
+      // network round trip when the storm has been reopened on another course —
+      // and `cycleGoHome` would then move that new session onto the old one's
+      // course. §14.24's `backfillBid` hazard, one level up.
+      gen: 0,
+      // §27) The ChessDB ceiling of the pass running NOW — `gatherMaxCdb` for
+      // one pressed by hand, `cycleMaxCdb` for a leg of a round. `askCdb` reads
+      // it, so a leg cannot quietly spend the burst budget.
+      gatherCap: 0,
       // --- §14.24) the BACKGROUND top-up ------------------------------------
       // Its own everything, deliberately: sharing the gather pass's flag would
       // make `tick`, `nextCard` and `syncSettings` all treat a quiet trickle as
@@ -35200,7 +35394,49 @@
      * `budget` is in BASE32 characters, which is 8/5 of the bytes — so the
      * check is made against the encoded size and not the JSON's.
      */
-    function stormWirePack(store, gone, C, budget, clearedAt) {
+    /**
+     * §27b) THIS COURSE'S CARD.
+     *
+     * Pure, and in this block rather than beside `syncStore`, so
+     * `dev/check-storm.js` can assert the one property that matters: two
+     * different courses never produce the same name. That was the whole of the
+     * pre-v0.166.0 defect — one name for every course — and it failed silently,
+     * which is exactly the shape this file exists to catch.
+     *
+     * The bid is stringified and trimmed but NOT otherwise sanitised: it comes
+     * from `/course/<bid>/` and Chessable's own listings, it is always digits,
+     * and a name is matched exactly (`ensureSlot`), so a surprise here creates a
+     * new card rather than reading somebody else's.
+     */
+    function stormCardName(bid, C0) {
+      const c = C0 || C;
+      return c.cardPrefix + ' · ' + String(bid || '').trim() + ' · do not delete';
+    }
+
+    /**
+     * §27b) IS THIS CARD ABOUT ANOTHER COURSE?
+     *
+     * Pure, and split out of `syncStore` so `dev/check-storm.js` can execute the
+     * one rule that has already been got wrong once: a payload that does not SAY
+     * which course it is (every one written before v0.166.0) is NOT foreign —
+     * refusing those would break the one exchange an upgrading device still
+     * wants — while one that names a different course is, and must be refused
+     * whole rather than filtered. The store is a snapshot and the tombstones
+     * suppress keys for sixty days; there is no half of it worth taking.
+     *
+     * REFUSING IS A DEAD END, and deliberately so. `syncStore` reads before it
+     * writes, so a card this fires on is never replaced and every later sync
+     * refuses identically — the user has to delete it by hand, which is why the
+     * message names the card. That is the right trade: the alternative is
+     * overwriting a card whose contents we have just said we do not understand,
+     * and on a correctly named card this cannot fire at all.
+     */
+    function stormWireForeign(got, bid) {
+      const said = got && got.bid ? String(got.bid) : '';
+      return Boolean(said) && said !== String(bid || '');
+    }
+
+    function stormWirePack(store, gone, C, budget, clearedAt, bid) {
       const now = Date.now();
       const keys = Object.keys(store || {}).sort((a, b) =>
         ((store[b].k || 0) - (store[a].k || 0)) || ((store[b].t || 0) - (store[a].t || 0)));
@@ -35210,6 +35446,12 @@
         .sort((a, b) => (gone[b] || 0) - (gone[a] || 0))
         .slice(0, C.goneMax);
       const out = { v: C.wireVersion, at: now, g: {}, p: {} };
+      // §27b) WHICH COURSE THIS IS ABOUT. Set before the budget loop so its own
+      // bytes are inside every measurement below, and optional for `cl`'s
+      // reason — absence is what every payload written before v0.166.0 has, and
+      // is read as "cannot say", never as a mismatch. NO `wireVersion` bump:
+      // valid in both directions.
+      if (bid) out.b = String(bid);
       // §22.6) THE CLEAR MARK, set before the budget loop so its own bytes are
       // inside every measurement below. Omitted where there has never been a
       // clear, which is what every payload written before v0.156.0 looks like —
@@ -35310,7 +35552,11 @@
       }
       const gone = {};
       for (const ck of Object.keys(blob.g || {})) gone[ck] = blob.g[ck];
-      return { store, gone, at: blob.at || 0, clearedAt: Number(blob.cl) || 0 };
+      return { store, gone, at: blob.at || 0, clearedAt: Number(blob.cl) || 0,
+        // §27b) '' means the payload does not say, which is every payload
+        // written before v0.166.0 — never a mismatch, and the caller's guard
+        // is written to let it through.
+        bid: blob.b ? String(blob.b) : '' };
     }
 
     /**
@@ -37303,7 +37549,9 @@
         // The gather pass has a ceiling of its own, far above a session's: it is
         // the burst the user asked for by name, where a session's is the one they
         // did not.
-        const cap = st.gathering ? C.gatherMaxCdb : C.cdbMaxPerSession;
+        // §27) …and a ROUND's leg is a smaller burst again, so the figure is
+        // read off the pass rather than off the config: `st.gatherCap`.
+        const cap = st.gathering ? (st.gatherCap || C.gatherMaxCdb) : C.cdbMaxPerSession;
         if (st.cdbCount >= cap) {
           if (!st.exhausted) log('storm: ChessDB request cap reached —', st.cdbCount);
           st.exhausted = true;
@@ -38316,7 +38564,16 @@
         // §14.24) `st.over` IS TRUE FOR THE WHOLE REVIEW, which is the longest
         // stretch a window is open and the one the background pass exists for —
         // so it stops a session's producer, as it must, and never this.
-        if (!st.running || (st.over && !storeOnly)) break;
+        //
+        // §27) …AND NEVER THE GATHER PASS EITHER (v0.165.0). That pass is not a
+        // producer: it fills the store and shows nothing. Its control sits in a
+        // row that IS on screen throughout the review — which is exactly where a
+        // user presses it — and there `st.over` is true and `storeOnly` false,
+        // so every game loop broke on its first iteration and the pass walked
+        // absolutely nothing while reporting "Nothing new to store". Silent
+        // since v0.130.0, and the round would have inherited it on every leg
+        // after the first (its own first leg ends the session).
+        if (!st.running || (st.over && !storeOnly && !st.gathering)) break;
         const sans = await askPgn(g.id, st.mastersOnly);
         if (!sans) { stormFunnelBump(fn, 'gamesFailed'); continue; }
         const walked = await stormWalkGame(
@@ -38375,7 +38632,8 @@
       const covered = frontierCovered(f);
       const cands = [];
       for (const mv of gaps) {
-        if (!st.running || (st.over && !storeOnly)) break;
+        // §27) …and the same here: see the frontier walk's own note.
+        if (!st.running || (st.over && !storeOnly && !st.gathering)) break;
         const step = stormAdvance(f.fen, pos, mv.uci, mv.san);
         if (!step) continue;
         const child = CloSan.parseFen(step.fen);
@@ -38610,8 +38868,9 @@
 
     async function produce() {
       // A gather pass owns the pool while it runs, and there is nothing on the
-      // other end of it to fill a queue for.
-      if (st.gathering) return;
+      // other end of it to fill a queue for. §27) …and a round owns it across
+      // every leg of the night, its gaps included.
+      if (filling()) return;
       if (st.producing || !st.running || st.over) return;
       // FREE FIRST, ALWAYS. A stored position needs no request and no await, so
       // it must be taken before the network path is even considered — otherwise
@@ -38725,7 +38984,10 @@
       render();
       try {
         let merged = { added: 0, dropped: 0, bumped: 0, wiped: 0 };
-        const text = await carrier.read(C.cardName);
+        // §27b) ONE CARD PER COURSE. Named from the bid, so two courses can
+        // never overwrite one another's snapshot.
+        const cardName = stormCardName(st.bid);
+        const text = await carrier.read(cardName);
         if (text) {
           let blob = null;
           try {
@@ -38738,6 +39000,22 @@
           }
           const got = stormWireUnpack(blob, C);
           if (!got) throw new Error('the stored payload is from a newer version');
+          // §27b) THE COURSE GUARD, and it must REFUSE rather than filter: the
+          // payload is one snapshot of one course's store, so a mismatch means
+          // this card is not ours and merging any of it would put another
+          // repertoire's positions — and its tombstones, which suppress keys for
+          // sixty days — into this course. It cannot fire on a correctly named
+          // card; it is here because the failure it guards against was silent
+          // for a whole release and looked like a feature.
+          if (stormWireForeign(got, st.bid)) {
+            // §27b.5a) IT SAYS WHAT TO DO, because this is a DEAD END the
+            // feature cannot dig itself out of: the read comes before the write,
+            // so every later sync refuses the same way and the card is never
+            // replaced. Verified live 2026-09-01 — the store was untouched, the
+            // card was untouched, and the only way out is deleting it by hand.
+            throw new Error('that card holds course ' + got.bid + ', not this one. ' +
+              'Delete "' + cardName + '" in your sync course, then sync again.');
+          }
           merged = stormWireMerge(st.store, got.store, st.gone, got.gone,
             st.clearedAt, got.clearedAt);
           st.gone = merged.gone;
@@ -38747,9 +39025,30 @@
           st.clearedAt = merged.clearedAt;
           st.storeDirty = true;
         }
-        const packed = stormWirePack(st.store, st.gone, C, C.maxWireBytes, st.clearedAt);
+        const packed = stormWirePack(st.store, st.gone, C, C.maxWireBytes,
+          st.clearedAt, st.bid);
         const wire = carrier.encode(new TextEncoder().encode(JSON.stringify(packed)));
-        await carrier.write(C.cardName, wire, C.maxWireBytes);
+        // §27b.8) IT ALWAYS WRITES, and a skip-if-unchanged was tried and
+        // WITHDRAWN — recorded here because it is an obvious optimisation that
+        // somebody will reach for again now that §27b.8 pushes once per course
+        // per pass rather than only on a find.
+        //
+        // Comparing against WHAT WE LAST WROTE is wrong: the exchange has just
+        // MERGED, so when the card was written by another device holding a
+        // subset of our store, `merged.added` is 0, our payload is unchanged
+        // from our own last write, and skipping leaves THEIR smaller snapshot on
+        // the card — our positions silently dropped from the transport.
+        //
+        // Comparing against WHAT WE JUST READ is the right question and does not
+        // work either: `stormWirePack` stamps `at` on every call, so the encoded
+        // text never matches even for an identical store. Making it work means
+        // a field-by-field compare that ignores `at`, which is a new way for two
+        // payloads to be called equal when they are not.
+        //
+        // And it is not worth that: a push is one card write per course per pass
+        // — a handful over a night — against a lost position, which is what
+        // getting it wrong costs.
+        await carrier.write(cardName, wire, C.maxWireBytes, C.cardChapter);
         st.lastPull = Date.now();
         await saveStore();
         await saveSyncMeta();
@@ -38773,7 +39072,7 @@
         // Re-drawing the WHOLE store is safe and is the simple thing: every key
         // already queued is in `st.seen`, which is what `produceFromStore`
         // filters on, so nothing can be offered twice.
-        if (merged.added && st.running && !st.over && !st.gathering) {
+        if (merged.added && st.running && !st.over && !filling()) {
           st.storeQueue = storeDraw();
           if (produceFromStore()) {
             render();
@@ -39075,7 +39374,9 @@
         stormStatsPrune(st.stats, C, Date.now());
         const packed = stormStatsWirePack(st.stats, C, C.statsMaxWireBytes, Date.now());
         const wire = carrier.encode(new TextEncoder().encode(JSON.stringify(packed)));
-        await carrier.write(C.statsCardName, wire, C.statsMaxWireBytes);
+        // §27b) …the same chapter, and deliberately still ONE card: §15's record
+        // is about EVERY course by construction, so there is nothing to split.
+        await carrier.write(C.statsCardName, wire, C.statsMaxWireBytes, C.cardChapter);
         st.statsDirty = true;
         await saveStats();
         setStatsNote('Record synced — ' + packed.n + ' line(s) carried' +
@@ -39115,7 +39416,7 @@
      * sync exchange takes.
      */
     function startStorm() {
-      if (!st.running || st.over || st.started || st.gathering) return;
+      if (!st.running || st.over || st.started || filling()) return;
       if (!st.queue.length) return;
       st.started = true;
       // §17) A set has no deadline, so its clock counts UP — and it is armed
@@ -39209,7 +39510,21 @@
       } catch (err) { /* nothing to do and nothing to report */ }
     }
 
-    async function gather() {
+    /**
+     * @param {{round?: boolean, want?: number, legMs?: number, maxCdb?: number,
+     *          deepenMax?: number}} [opts] — §27's round hands its per-leg
+     *   bounds in here; a press by hand passes nothing and gets the burst.
+     *
+     * IT IS WIRED `() => gather()`, NEVER BARE. 24g's trap: a bare listener
+     * hands argument 0 the MouseEvent, and an Event HAS a `target` — which is
+     * why the per-leg size is called `want`. Every option is read through a
+     * default, so the wrong argument would be entirely silent.
+     */
+    async function gather(opts) {
+      const o = opts || {};
+      const round = o.round === true;
+      const want = Number(o.want) > 0 ? Number(o.want) : C.gatherTarget;
+      const deepenMax = Number.isFinite(o.deepenMax) ? o.deepenMax : Infinity;
       if (st.gathering) { stopGather(); return; }
       if (!st.bid) return;
       // GATHERING ENDS WHATEVER IS RUNNING, and it has to: this pass owns the
@@ -39240,13 +39555,24 @@
       takeWakeLock();
       st.gathered = 0;
       st.deepened = 0;
-      st.deepenFailed = new Set();
+      // §27) A ROUND'S LEG INHERITS THE REFUSAL LIST from the leg before it on
+      // the same course — `cycleSwitch` is what empties it, once per course per
+      // pass over the list. Emptying it here would hand a position the engine
+      // has already declined back to every leg for the rest of the night.
+      if (!round || !st.deepenFailed) st.deepenFailed = new Set();
       st.deepenLeft = 0;
       st.funnel = newFunnel();   // §14.17, §19
       st.exhausted = false;
       // Its own ceiling, far above a session's: this IS the long burst, and it
       // is the one the user asked for by name.
       st.cdbCount = 0;
+      // §27) …and the ceiling it is measured against, which is the whole of
+      // what makes a leg smaller than a burst.
+      st.gatherCap = Number(o.maxCdb) > 0 ? Number(o.maxCdb) : C.gatherMaxCdb;
+      // §27) …and the leg's clock, which is what actually ends it. Resolved
+      // HERE rather than passed as a deadline, so the round has nothing to get
+      // wrong about when a leg really begins.
+      const until = Number(o.legMs) > 0 ? Date.now() + Number(o.legMs) : 0;
       // §26) …and the walk's search budget, which is per PASS for the same
       // reason. The scored LISTS are deliberately not dropped with it: a search
       // costs seconds where a request costs milliseconds, so re-searching a
@@ -39278,8 +39604,9 @@
           dropCoveredStored();
         }
         while (st.gathering &&
-               st.gathered < C.gatherTarget &&
-               st.cdbCount < C.gatherMaxCdb) {
+               st.gathered < want &&
+               st.cdbCount < st.gatherCap &&
+               (!until || Date.now() < until)) {
           const f = stormDrawFrontier(st.pool, Math.random);
           if (!f) break;
           setGatherNote();
@@ -39301,11 +39628,17 @@
         // `gatherTarget` and finishes in minutes, while a search is tens of
         // seconds a position. It writes after every one, so stopping it costs
         // at most the position in flight.
-        while (st.gathering) {
+        //
+        // §27) …BOUNDED IN A ROUND, unbounded by hand. `deepenSome` returns what
+        // it SPENT — a refusal costs a slice too — so a course the engine keeps
+        // declining cannot hold the night up either.
+        let scored = 0;
+        while (st.gathering && scored < deepenMax &&
+               (!until || Date.now() < until)) {
           const todo = undeepened(st.store);
           if (!todo.length) break;
           const before = st.deepened;
-          await deepenSome(1, todo);
+          scored += await deepenSome(1, todo);
           // A refused position has been added to `st.deepenFailed`, so the next
           // `undeepened` is strictly shorter whether or not this one succeeded
           // — which is what guarantees this loop ends.
@@ -39322,9 +39655,13 @@
         // looking. Every early return above sits before the flag is set, so
         // reaching here means this pass ran.
         st.gathering = false;
-        dropWakeLock();   // §24: unconditional, for this `finally`'s own reason
+        st.gatherCap = 0;
+        // §24: unconditional for this `finally`'s own reason — EXCEPT under a
+        // round, which holds ONE lock across every leg of the night and drops it
+        // in a `finally` of its own.
+        if (!st.cycling) dropWakeLock();
         await saveStore();
-        setNote('');
+        if (!round) setNote('');
         log('storm: gathered', st.gathered, 'position(s) in',
           st.cdbCount, 'ChessDB requests;', storeCount(), 'in store for this source,',
           storeTotal(), 'in all');
@@ -39336,43 +39673,66 @@
         // half that says what to change. One line each so a console filtered on
         // [CLO] reads as a block.
         for (const line of stormFunnelLines(st.funnel)) log('storm:  ' + line);
-        // The paused count rides along on the pool the same way it does in
-        // `startSession`: with every line paused this pass has nothing to walk,
-        // and "every line has been walked" would be the wrong explanation.
-        const skipped = (st.pool && st.pool.paused) || 0;
-        // …and §14.18's, which on a stub-heavy chapter is the bigger of the two
-        // and is otherwise indistinguishable from the course simply being small.
-        const inside = (st.pool && st.pool.covered) || 0;
-        // §14.17: THE HEADLINE IS STILL THE STORE — that is what a session
-        // will draw on — but the funnel now says how it was arrived at, which
-        // is the question "2 new" could never answer on its own.
-        const funnelNote = stormFunnelNote(st.funnel);
-        setStatus([
-          st.gathered
-            ? 'Stored ' + st.gathered + ' new position(s) — ' +
-              storeCount() + ' ready on this course.'
-            : 'Nothing new to store — ' +
-              storeCount() + ' ready on this course.',
-          funnelNote,
-          skipped ? skipped + ' paused or skipped variation(s) are not walked.' : '',
-          inside ? inside + ' line end(s) sit inside other lines and are not frontiers.' : '',
-        ].filter(Boolean).join(' '), '');
-        // THE QUEUE THIS PASS EMPTIED IS REFILLED FROM WHAT IT STORED. Gathering
-        // during the pre-roll clears the queue (it owns the pool), so without
-        // this the session it interrupted is left with nothing ready and
-        // "Start" can never light up again — free here, since the store is
-        // exactly what the pass has just been filling.
-        if (st.running && !st.over && !st.started) {
-          st.storeQueue = storeDraw();
-          produceFromStore();
+        if (round) {
+          // §27) THE ROUND OWNS THE STATUS LINE, THE QUEUE AND THE SYNC, each
+          // for its own reason. A sentence per leg would be twenty over a night,
+          // each overwriting the last. The queue belongs to the course the
+          // window will be put BACK on, not to whichever one this leg happened
+          // to be about. And the SYNC is per COURSE rather than per leg (§27b) —
+          // both legs of a course write the same card, so a push between them
+          // would be a round trip for a snapshot the next leg replaces. It is
+          // `roundSync`, awaited by `runRound` before the course is switched.
+          st.cycleStored += st.gathered;
+          st.cycleScored += st.deepened;
+        } else {
+          // The paused count rides along on the pool the same way it does in
+          // `startSession`: with every line paused this pass has nothing to walk,
+          // and "every line has been walked" would be the wrong explanation.
+          const skipped = (st.pool && st.pool.paused) || 0;
+          // …and §14.18's, which on a stub-heavy chapter is the bigger of the two
+          // and is otherwise indistinguishable from the course simply being small.
+          const inside = (st.pool && st.pool.covered) || 0;
+          // §14.17: THE HEADLINE IS STILL THE STORE — that is what a session
+          // will draw on — but the funnel now says how it was arrived at, which
+          // is the question "2 new" could never answer on its own.
+          const funnelNote = stormFunnelNote(st.funnel);
+          setStatus([
+            st.gathered
+              ? 'Stored ' + st.gathered + ' new position(s) — ' +
+                storeCount() + ' ready on this course.'
+              : 'Nothing new to store — ' +
+                storeCount() + ' ready on this course.',
+            funnelNote,
+            skipped ? skipped + ' paused or skipped variation(s) are not walked.' : '',
+            inside ? inside + ' line end(s) sit inside other lines and are not frontiers.' : '',
+          ].filter(Boolean).join(' '), '');
+          // THE QUEUE THIS PASS EMPTIED IS REFILLED FROM WHAT IT STORED. Gathering
+          // during the pre-roll clears the queue (it owns the pool), so without
+          // this the session it interrupted is left with nothing ready and
+          // "Start" can never light up again — free here, since the store is
+          // exactly what the pass has just been filling.
+          if (st.running && !st.over && !st.started) {
+            st.storeQueue = storeDraw();
+            produceFromStore();
+          }
+          // A gather is the one moment there is definitely something worth
+          // carrying — it is also the pass a user leaves running and walks away
+          // from, so the push has to happen without being asked.
+          //
+          // §27b.8) THE TEST IS "IS THERE ANYTHING TO CARRY", NOT "DID WE FIND
+          // SOMETHING NEW" (v0.168.0). It was `st.gathered`, which was right
+          // while one shared card held whatever was last synced and wrong the
+          // moment cards became per COURSE: the first push for a course is what
+          // CREATES its card, and a course already walked out gains nothing, so
+          // it never pushed and its card never existed. Reported live — two
+          // courses gathered, one card. The card is the only way those positions
+          // reach another device, so "nothing new today" must not mean "nothing
+          // to carry ever".
+          if (storeTotal() && pinSyncApi && pinSyncApi.carrier && pinSyncApi.carrier.course()) {
+            syncStore('after gathering');
+          }
         }
         render();
-        // A gather is the one moment there is definitely something worth
-        // carrying — it is also the pass a user leaves running and walks away
-        // from, so the push has to happen without being asked.
-        if (st.gathered && pinSyncApi && pinSyncApi.carrier && pinSyncApi.carrier.course()) {
-          syncStore('after gathering');
-        }
         // §14.17: the funnel belongs to the PASS, and it has been reported.
         // Left alive, the producer's own `harvestFrontier` calls would go on
         // adding to it for the rest of the session — into a total nothing reads
@@ -39380,6 +39740,375 @@
         // be describing two different things at once.
         st.funnel = null;
       }
+    }
+
+    // ----------------------------------------------------------------------
+    // §27) THE ROUND — every course that has been gathered to, both sources
+    //
+    // The gather pass fills ONE course and is watched. This is the pass you
+    // leave on overnight: it takes the courses the store already holds
+    // positions for, one after another, both sources each, a bounded slice at a
+    // time, and goes round again for as long as it is left running.
+    //
+    // IT IS THE SAME `gather()`, called in a loop with smaller numbers — the
+    // rule this whole feature is built on (`harvestFrontier` is shared by four
+    // passes for exactly this reason): a second gather written for the round
+    // would be a second set of pick rules, a second funnel and a second answer
+    // to "what is a usable position".
+    //
+    // FOUR THINGS THE ROUND OWNS, and each is a thing a leg must NOT do:
+    //   * THE COURSE. `st.bid`, `st.store`, `st.gone` and `st.clearedAt` are all
+    //     per course and are switched together (`cycleSwitch`), and the window
+    //     is put back where it started when the round ends (`cycleGoHome`).
+    //   * THE SOURCE, through `applyStormSource` and never `saveStormSource`:
+    //     the round walks both, and the user's own preference is a setting they
+    //     chose and must find unchanged in the morning.
+    //   * THE CHAPTER SCOPE, which it CLEARS. A round is course-wide by
+    //     definition, and an `oidFilter` built from one course's chapter map
+    //     applied to another course's oids yields an empty pool and no
+    //     explanation. Restored with the rest of the home state.
+    //   * THE SYNC. Deliberately none — see the leg's own `finally`.
+    // ----------------------------------------------------------------------
+
+    /**
+     * The courses one pass over the list walks, in order: the one this window
+     * was opened on FIRST — it is the one the user is standing on, and starting
+     * anywhere else would look like the button had gone somewhere unasked — then
+     * every other course the store already holds positions for.
+     *
+     * READ FRESH EACH PASS, so a course gathered by the round itself joins the
+     * list on the next one, and a course that could not be read drops out of it.
+     */
+    async function cycleCourses() {
+      const all = await loadStoreAll();
+      const seen = new Set();
+      const out = [];
+      const add = (bid) => {
+        const b = String(bid || '');
+        if (!b || seen.has(b)) return;
+        if (st.cycleBad && st.cycleBad.has(b)) return;
+        seen.add(b);
+        out.push(b);
+      };
+      add(st.cycleHome && st.cycleHome.bid);
+      for (const bid of Object.keys(all).sort()) add(bid);
+      return out.slice(0, C.cycleMaxCourses);
+    }
+
+    /**
+     * Move the window onto another course.
+     *
+     * THE STORE, THE TOMBSTONES AND THE CLEAR MARK ARE ALL PER COURSE and are
+     * written back and re-read TOGETHER — a leg that took one and left another
+     * would retire positions in the wrong course's name.
+     *
+     * `st.seen` GOES WITH THEM, and that is not tidiness: a position key is a
+     * board, not a course, so a `seen` carried across would silently hide from
+     * course B a position it shares with course A — repertoires for the same
+     * colour overlap by construction. The ChessDB and engine CACHES are
+     * deliberately kept: they are keyed by position too, which here makes them
+     * correct rather than wrong, and an engine list costs seconds. `st.pgn` is
+     * dropped only to bound it — a night's worth of game exports is the one
+     * thing here with no ceiling of its own.
+     */
+    async function cycleSwitch(bid) {
+      const same = String(bid) === String(st.bid);
+      // §23) Per course, so a position the engine declined is retried once per
+      // pass over the list rather than on every leg — and never carried into
+      // another course's store, where the key would mean nothing.
+      st.deepenFailed = new Set();
+      // The pool is per (course, source) AND is consumed by the draw, so it is
+      // dropped on every leg boundary and rebuilt by the leg itself.
+      st.pool = [];
+      st.poolSize = 0;
+      if (same) return;
+      await saveStore();
+      if (st.goneDirty) await saveSyncMeta();
+      st.bid = String(bid);
+      st.name = '';
+      st.store = null;
+      st.gone = null;
+      st.clearedAt = 0;
+      st.lastPull = 0;
+      st.storeQueue = null;
+      st.seen = new Set();
+      st.pgn = new Map();
+      await loadStore();
+      await loadSyncMeta();
+      render();
+    }
+
+    /** …and onto it far enough to have a NAME, which is what every note the
+     *  night prints is about. The read is the one the leg would make anyway and
+     *  lands in the same session cache, so this costs nothing; what it buys is
+     *  a course that cannot be read being skipped with a reason instead of
+     *  failing silently inside a pass. */
+    async function cycleOpen(bid) {
+      await cycleSwitch(bid);
+      const creds = chessableCreds();
+      if (!creds) throw new Error('not signed in to Chessable in this tab');
+      const course = await fetchCourse(st.bid, creds, true);
+      st.name = course.name || ('course ' + st.bid);
+    }
+
+    /** Put the window back where the round found it. Called from the round's
+     *  own `finally`, so every way out of it — the stop button, an error, the
+     *  nothing-left ending — comes home. */
+    async function cycleGoHome() {
+      const home = st.cycleHome;
+      st.cycleHome = null;
+      if (!home) return;
+      applyStormSource(home.source);
+      st.lid = home.lid;
+      st.lidName = home.lidName;
+      st.oidFilter = home.oidFilter;
+      await cycleSwitch(home.bid);
+      st.name = home.name || st.name;
+      // The first leg emptied the queue (a gather owns the pool), so without
+      // this the window the user comes back to has nothing ready and "Start"
+      // never lights up again — the same repair the ordinary pass makes, on the
+      // course it is now back on.
+      if (st.running && !st.over && !st.started) {
+        st.storeQueue = storeDraw();
+        produceFromStore();
+      }
+    }
+
+    const cyclePause = () => new Promise((done) => setTimeout(done, C.cycleGapMs));
+
+    /**
+     * §27b) Push this course's card, if syncing is on at all.
+     *
+     * `syncStore` never throws — it catches its own failures into `syncNote` —
+     * so this needs no try of its own; what it needs is the carrier check, or a
+     * round on a profile with no sync course would write a status line about it
+     * once per course all night.
+     */
+    async function roundSync() {
+      const carrier = pinSyncApi && pinSyncApi.carrier;
+      // Nothing to push to: the debt is cleared either way, or the `finally`
+      // would try again on a profile that has never chosen a course.
+      if (!carrier || !carrier.course()) { st.cyclePending = false; return; }
+      await syncStore('a round pass over ' + (st.name || st.bid));
+      st.cyclePending = false;
+      st.cycleSynced++;
+    }
+
+    /**
+     * One pass over the list, then another, for as long as the round is on.
+     *
+     * IT STOPS BY ITSELF WHEN A WHOLE PASS BUYS NOTHING — nothing stored
+     * anywhere and nothing scored anywhere. Going round again would spend the
+     * same requests on the same courses to meet the same silence, all night, and
+     * the honest answer is to say so and stop. Every other ending is the user's
+     * press or an error.
+     */
+    async function runRound() {
+      for (;;) {
+        const bids = await cycleCourses();
+        if (!bids.length) {
+          setStatus('No course has any gathered positions yet. "Gather positions" ' +
+            'fills this one; the round then has somewhere to go.', 'warn');
+          return;
+        }
+        st.cycleRound++;
+        const storedAt = st.cycleStored;
+        const scoredAt = st.cycleScored;
+        for (const bid of bids) {
+          if (!st.cycling) return;
+          try {
+            await cycleOpen(bid);
+          } catch (err) {
+            // A course that cannot be read is dropped for the REST of the run,
+            // not just this pass: whatever is wrong with it — deleted, no longer
+            // owned, a signed-out tab — will still be wrong in an hour, and a
+            // list that retried it every pass would say nothing new all night.
+            warn('storm: the round is skipping course', bid, '—', err);
+            if (st.cycleBad) st.cycleBad.add(String(bid));
+            continue;
+          }
+          if (!st.cycling) return;
+          for (const source of ['frontier', 'uncovered']) {
+            if (!st.cycling) return;
+            // NEVER `saveStormSource`: that one persists the choice and, in the
+            // pre-roll, restarts the session.
+            applyStormSource(source);
+            st.pool = [];
+            setRoundNote();
+            render();
+            // What this LEG is about to add, so the debt below is recorded per
+            // leg rather than per course.
+            const legStored = st.cycleStored, legScored = st.cycleScored;
+            await gather({ round: true, want: C.cycleTarget, legMs: C.cycleLegMs,
+              maxCdb: C.cycleMaxCdb, deepenMax: C.cycleDeepen });
+            // §27b) THE DEBT IS RECORDED **ABOVE** THE STOP CHECK, and that is
+            // the whole of what makes it work: a round is normally ended BY
+            // HAND, in the middle of a leg — an overnight pass is stopped in the
+            // morning — and `stopRound` makes the very next line return out of
+            // this function. Recorded after it, the newest work in the whole run
+            // would be the one thing never pushed, which is the opposite of what
+            // this is for. Measured 2026-09-01: a round that stored 17 positions
+            // left its course's card holding the 1 it had before.
+            //
+            // §27b.8) AND IT IS OWED BY ANY COURSE WITH A STORE, not only by one
+            // that gained something this leg — the gather pass's own rule, for
+            // the same reason: a walked-out course gains nothing for ever, and
+            // the push is what creates its card. The cost is one card write per
+            // course per pass — see `syncStore`, where skipping the unchanged
+            // ones was tried and withdrawn as unsafe.
+            if (storeTotal() || st.cycleStored > legStored ||
+                st.cycleScored > legScored) {
+              st.cyclePending = true;
+            }
+            if (!st.cycling) return;
+            await cyclePause();
+          }
+          // §27b) AND NOW IT SYNCS — once per COURSE per pass, not once per leg:
+          // both legs write the same card, so a sync between them would be a
+          // Chessable round trip for a snapshot the next leg replaces.
+          //
+          // AWAITED, and that is load-bearing rather than tidy: `syncStore`
+          // reads `st.bid`, `st.store`, `st.gone` and `st.clearedAt` across
+          // several awaits of its own, and the very next thing this loop does is
+          // switch all four. Fired and forgotten, it would merge one course's
+          // card into another course's store — the exact defect §27b exists to
+          // close, reintroduced from the other end.
+          //
+          // …AND DEEPENING COUNTS AS SOMETHING TO CARRY, not only storing.
+          // §23's whole point is that a phone cannot run that search, so a
+          // desktop that spent a night scoring positions it already held is
+          // exactly the case this transport exists for — and `stormWireMerge`
+          // already takes the deeper list. Gating on new stores alone would
+          // leave the night's most expensive work at home.
+          //
+          // The debt was recorded per leg above; `gatherRound`'s `finally`
+          // settles whatever a stop leaves outstanding.
+          if (st.cyclePending) await roundSync();
+          if (!st.cycling) return;
+        }
+        if (st.cycleStored === storedAt && st.cycleScored === scoredAt) {
+          setStatus('Every course is walked out — ' + st.cycleRound + ' pass(es) over ' +
+            bids.length + ' course(s) found nothing new to store and nothing left ' +
+            'to score. The round has stopped; there is nothing more to gather ' +
+            'until your repertoires grow.', '');
+          return;
+        }
+      }
+    }
+
+    async function gatherRound() {
+      if (st.cycling) { stopRound(); return; }
+      if (st.gathering) {
+        setStatus('This course is already being gathered — stop that pass first.', 'warn');
+        return;
+      }
+      if (!st.running || !st.bid) return;
+      if (!chessableCreds()) {
+        setStatus('Not signed in to Chessable in this tab.', 'warn');
+        return;
+      }
+      st.cycling = true;
+      // Everything that has to be put back, taken before the first leg moves
+      // any of it. The SOURCE is in here because the round walks both.
+      st.cycleHome = { bid: st.bid, name: st.name, source: st.source,
+        lid: st.lid, lidName: st.lidName, oidFilter: st.oidFilter };
+      // A round is course-wide: see the block comment above.
+      st.lid = '';
+      st.lidName = '';
+      st.oidFilter = null;
+      const gen = st.gen;
+      st.cycleBad = new Set();
+      st.cycleRound = 0;
+      st.cycleStored = 0;
+      st.cycleScored = 0;
+      st.cycleSynced = 0;
+      st.cyclePending = false;
+      // §24) ONE LOCK FOR THE WHOLE NIGHT, not one per leg — this is the pass
+      // that pass was written for. Not awaited: a permission round trip must
+      // never sit in front of the work it is only convenience for.
+      wakeWanted = true;
+      takeWakeLock();
+      setStatus('', '');
+      render();
+      try {
+        await runRound();
+      } catch (err) {
+        warn('storm: the round stopped:', err);
+        setStatus(String((err && err.message) || err), 'warn');
+      } finally {
+        st.cycling = false;
+        dropWakeLock();
+        // HAS THE WINDOW MOVED ON? The unwind is asynchronous — a leg is at
+        // worst one network round trip from noticing the flag — so a round
+        // stopped by a teardown can still be here when the storm has been closed
+        // and reopened on ANOTHER course. Putting "home" back then would move
+        // that new session onto the old one's course. The store is written
+        // either way; nothing else is touched.
+        const mine = st.gen === gen;
+        // §27b) SETTLE THE DEBT FIRST, i.e. while `st.bid` is still the course
+        // the round was interrupted on — `cycleGoHome` moves all four fields
+        // `syncStore` reads. Skipped when the window has moved on, where there
+        // is no longer a coherent course to push.
+        if (mine && st.cyclePending) {
+          try { await roundSync(); } catch (err) {
+            warn('storm: the round could not push its last course:', err);
+          }
+        }
+        if (mine) await cycleGoHome();
+        else { st.cycleHome = null; await saveStore(); }
+        st.cycleBad = null;
+        if (mine) {
+          setNote('');
+          log('storm: the round ended after', st.cycleRound, 'pass(es) —',
+            st.cycleStored, 'position(s) stored,', st.cycleScored, 'scored;',
+            storeCount(), 'ready on this course');
+          // The closing sentence is written only where the round has not already
+          // written one of its own (walked out, nothing to walk, an error).
+          if (!st.ui || !st.ui.status.textContent) {
+            const carrier = pinSyncApi && pinSyncApi.carrier;
+            // §27b) WRITTEN FROM WHAT WAS ACTUALLY PUSHED. It used to be written
+            // from "a sync course is configured", which claimed every course had
+            // been synced on a round stopped before its first push — a sentence
+            // that is wrong exactly when somebody is reading it.
+            setStatus('Round stopped after ' + st.cycleRound + ' pass(es) — ' +
+              st.cycleStored + ' position(s) stored and ' + st.cycleScored +
+              ' scored across your courses.' +
+              (st.cycleSynced
+                ? ' ' + st.cycleSynced + ' course(s) pushed to their own sync cards.'
+                : !carrier || !carrier.course()
+                  ? ' Nothing was synced — no course is chosen for syncing on the ' +
+                    'options page.'
+                  : ' Nothing needed syncing.'), '');
+          }
+          render();
+        }
+      }
+    }
+
+    /** Stops the round AND the leg inside it. `gatherRound`'s own `finally` is
+     *  what puts the window back — this only sets the two flags the loops read,
+     *  which is what makes a stop take effect inside a search. */
+    function stopRound() {
+      if (!st.cycling) return;
+      st.cycling = false;
+      stopGather();
+      dropWakeLock();
+      setNote('');
+    }
+
+    /** §27) Which leg of the round a note is about. Prefixed onto the gather and
+     *  deepen notes rather than replacing them: over a night the progress
+     *  figures are still the thing being watched, and "which course, which
+     *  source, which pass" is the context they were missing. Empty outside a
+     *  round, so the ordinary pass reads exactly as it did. */
+    function roundPrefix() {
+      if (!st.cycling) return '';
+      return 'Round ' + st.cycleRound + ' · ' + (st.name || 'course ' + st.bid) +
+        ' · ' + (uncoveredOn() ? 'replies you don’t answer' : 'line ends') + ' — ';
+    }
+
+    function setRoundNote() {
+      setNote(roundPrefix() + 'starting…');
     }
 
     // --- §14.24) the background top-up --------------------------------------
@@ -39407,7 +40136,7 @@
      */
     function backfillOk() {
       if (!st.backfillOn || !st.running || !st.bid) return false;
-      if (st.backfilling || st.gathering || st.producing) return false;
+      if (st.backfilling || filling() || st.producing) return false;
       if (st.backfillDone || st.grading) return false;
       if (solving()) return false;
       if (st.backfillCdb >= C.backfillMaxCdb) return false;
@@ -39478,7 +40207,11 @@
       // §24: the `finally` above will do this too, but only once the loop has
       // noticed the flag — which during a deepen search is not immediate. The
       // screen is the one thing the user can see us still holding.
-      dropWakeLock();
+      //
+      // §27) …and NOT while a round is running: that one holds a single lock
+      // across every leg of the night, and a leg ending is not the night ending.
+      // `stopRound` calls this and then drops the lock itself.
+      if (!st.cycling) dropWakeLock();
       setNote('');
     }
 
@@ -39510,8 +40243,11 @@
      * the wider number itself.
      */
     async function clearStore() {
-      if (st.gathering) {
-        setStatus('Stop gathering first — that pass is still writing positions.', 'warn');
+      if (filling()) {
+        setStatus(st.cycling
+          ? 'Stop the round first — it is still writing positions, and not ' +
+            'necessarily into this course.'
+          : 'Stop gathering first — that pass is still writing positions.', 'warn');
         return;
       }
       // The row is hidden while anything is timed, so this is the guard for the
@@ -39673,7 +40409,7 @@
       const on = (st.eng && st.eng.kind === 'list' && !st.eng.walk && st.eng.startedAt)
         ? ' · ' + Math.round((Date.now() - st.eng.startedAt) / 1000) + 's on this one'
         : '';
-      setNote('Analysing… ' + st.deepened + ' position(s) scored by Stockfish, ' +
+      setNote(roundPrefix() + 'Analysing… ' + st.deepened + ' position(s) scored by Stockfish, ' +
         st.deepenLeft + ' left, depth ' + C.deepenDepth + on +
         ' · leave this open');
     }
@@ -39684,7 +40420,7 @@
       // store is already full; "0 stored, 0 examined" is a pass finding
       // nothing, and those two used to read identically.
       const f = st.funnel;
-      setNote('Gathering… ' + st.gathered + ' stored of ' +
+      setNote(roundPrefix() + 'Gathering… ' + st.gathered + ' stored of ' +
         ((f && f.examined) || 0) + ' examined, ' +
         (st.pool ? st.pool.length : 0) + ' ' + ((f && f.what) || 'line end') + 's left, ' +
         st.cdbCount + ' ChessDB lookups');
@@ -39745,6 +40481,7 @@
     };
 
     async function startSession(spec) {
+      st.gen++;   // §27
       st.bid = String(spec.bid);
       st.name = spec.name || '';
       // §14.21) A CHAPTER SCOPE, or none. `lid` is Chessable's own chapter id
@@ -39995,7 +40732,7 @@
       // before the first card, which is exactly when a user decides they would
       // rather fill the store than play — must not be interrupted by the card
       // the producer was already fetching.
-      if (st.gathering) return;
+      if (filling()) return;
       // …AND NEITHER DOES ANYTHING ELSE BEFORE "Start" (§14.13). This is the
       // one gate: `produce`'s finally, the store path and the sync refill all
       // reach here, so barring it once bars every route into the first card.
@@ -40572,8 +41309,25 @@
      * v0.134.0 raise it from 9 s to 30 s, so the two move together.)
      */
     function solving() {
-      return st.running && !st.over && !st.gathering &&
+      return st.running && !st.over && !filling() &&
         Boolean(st.card) && !st.verdict && !st.grading;
+    }
+
+    /**
+     * §27) IS THE STORE BEING FILLED RIGHT NOW — by the pass the user pressed,
+     * or by the round that runs a pass per course all night?
+     *
+     * Every gate that used to ask `st.gathering` asks this instead, and the
+     * reason is one line: `st.gathering` is FALSE in the gaps between a round's
+     * legs, while a course is being switched and a pool walked into shape. Those
+     * gaps are the same state from the user's side, and a card put on a board in
+     * one of them is a card shown over a pass nobody is watching.
+     *
+     * A function declaration rather than a `const` arrow, deliberately: it is
+     * called from `produce` and `nextCard`, which are declared above it.
+     */
+    function filling() {
+      return st.gathering || st.cycling;
     }
 
     /** §17) IS SOMETHING RUNNING? — which is not the same question as
@@ -40735,6 +41489,7 @@
      *  stand-down. Idempotent. */
     function closeStorm() {
       const wasRunning = st.running;
+      st.gen++;   // §27
       // Before endSession, which calls `continuationStormApi.close()` itself —
       // this is what keeps the flag from outliving the board it names.
       //
@@ -40743,6 +41498,10 @@
       // a board two statements before `endSession` tears it down again.
       if (st.analysing) closeAnalyse(false);
       if (st.retry) endRetry();
+      // §27) THE ROUND FIRST, and never from `endSession`: `gather` calls that
+      // itself on its first leg ("gathering instead"), so a `stopRound` in there
+      // would have the round stop itself the moment it started.
+      stopRound();
       stopGather();
       endSession('closed by hand');
       st.running = false;
@@ -40875,7 +41634,21 @@
       startBtn.addEventListener('click', startStorm);
       const gatherBtn = el('button', 'clo-st-gather', 'Gather positions');
       gatherBtn.type = 'button';
-      gatherBtn.addEventListener('click', gather);
+      // §27) `() => gather()`, NEVER bare. 24g's trap, and here it would be
+      // silent rather than loud: a bare listener hands argument 0 the
+      // MouseEvent, whose `target` is this very button, and every per-leg bound
+      // would be read off it.
+      gatherBtn.addEventListener('click', () => gather());
+      // §27) THE ROUND, beside it and wearing the same green outline, because it
+      // IS the gather pass — the same walk, run on every course that has one,
+      // one after another. Not a fill: DESIGN-ui-inventory §3 allows this window
+      // one primary and Start is it. Not a `<select>` on the gather button
+      // either: gathering the course you are standing on is what most presses
+      // mean, and burying it behind a chooser would cost that press to buy a
+      // control used once a night.
+      const roundBtn = el('button', 'clo-st-gather clo-st-roundbtn', 'Gather all courses');
+      roundBtn.type = 'button';
+      roundBtn.addEventListener('click', () => gatherRound());
       // §22) …and its inverse, beside it. NEUTRAL outline (`.clo-st-sync`'s
       // vocabulary), never green and never a fill: the green in this window is
       // spent on "storm" and "gather", which are the two things it is FOR, and
@@ -41006,8 +41779,8 @@
         el('span', 'clo-st-set-label', 'of the games there or more'));
       settings.append(
         modeSel, sourceSel, plyGroup, uncGroup,
-        el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, clearBtn, bgBtn,
-        syncBtn, statsBtn);
+        el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, roundBtn,
+        clearBtn, bgBtn, syncBtn, statsBtn);
       const stage = el('div', 'clo-st-stage');
       const boardSlot = el('div', 'clo-st-slot clo-st-slot--board');
       const panelSlot = el('div', 'clo-st-slot clo-st-slot--panel');
@@ -41133,7 +41906,8 @@
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
         settings, modeSel, sourceSel, plyGroup, uncGroup, shareSel,
         statsTabA, statsTabB,
-        minSel, maxSel, startBtn, gatherBtn, clearBtn, bgBtn, ready, syncBtn, syncNote,
+        minSel, maxSel, startBtn, gatherBtn, roundBtn, clearBtn, bgBtn, ready,
+        syncBtn, syncNote,
         review, revBoard, revGrid, revLayer, revShapes, revHead, revLegend, revList,
         revActions, revRetry, revBest, revAnalyse, dbSlot,
         statsBtn, stats, statsHead, statsChapters, statsSync, statsNote, statsBody };
@@ -41189,7 +41963,7 @@
       try {
         chrome.storage.local.set({ [C.sourceKey]: st.source }).catch(() => {});
       } catch (err) { /* orphaned content script */ }
-      if (st.running && !st.over && !st.started && !st.gathering) {
+      if (st.running && !st.over && !st.started && !filling()) {
         stormAgain({ bid: st.bid, name: st.name, lid: st.lid, lidName: st.lidName,
           mode: st.mode, source: st.source });
         return;
@@ -41291,13 +42065,15 @@
       st.ui.minSel.value = String(st.minPly);
       st.ui.maxSel.value = String(st.maxPly);
       st.ui.modeSel.value = st.mode;
-      st.ui.modeSel.disabled = st.gathering;
+      st.ui.modeSel.disabled = filling();
       // §19) The source, and the one setting group that belongs to it. Never
       // both groups: each describes positions the other source does not have.
       st.ui.sourceSel.value = st.source;
-      st.ui.sourceSel.disabled = st.gathering;
+      // §27) …and a ROUND walks both sources itself, so the selector is not
+      // describing anything while one runs.
+      st.ui.sourceSel.disabled = filling();
       st.ui.shareSel.value = String(st.uncShare);
-      st.ui.shareSel.disabled = st.gathering;
+      st.ui.shareSel.disabled = filling();
       st.ui.plyGroup.hidden = uncoveredOn();
       st.ui.uncGroup.hidden = !uncoveredOn();
       // The button IS the stop button while it runs — one control, because
@@ -41307,7 +42083,7 @@
       // "Start" during a session would be a control with nothing to do, and
       // after one the summary's own "Storm again" is the way back.
       const haveCard = Boolean(st.queue && st.queue.length);
-      st.ui.startBtn.hidden = st.started || st.over || st.gathering;
+      st.ui.startBtn.hidden = st.started || st.over || filling();
       st.ui.startBtn.disabled = !haveCard;
       st.ui.startBtn.textContent = haveCard
         ? (setModeOn() ? 'Start the set' : 'Start') : 'Finding a position…';
@@ -41326,7 +42102,7 @@
           '; "Gather positions" pays that in advance, and syncing brings ' +
           'over what another device already found.';
       st.ui.statsBtn.textContent = st.viewStats ? 'Back' : 'Stats';
-      st.ui.syncBtn.disabled = st.syncing || st.gathering;
+      st.ui.syncBtn.disabled = st.syncing || filling();
       st.ui.syncBtn.textContent = st.syncing ? 'Syncing…' : 'Sync';
       // §14.24) …and the quiet one beside it. The label IS the state.
       st.ui.bgBtn.textContent = 'Background: ' + (st.backfillOn ? 'on' : 'off');
@@ -41346,7 +42122,7 @@
       // store is running (it refuses then anyway, and a control that can only
       // say no is worse than one that is not there) and once a session has
       // started, where the row itself is gone.
-      const canClear = !st.gathering && !st.started && !st.over;
+      const canClear = !filling() && !st.started && !st.over;
       if (!canClear && st.clearArmed) disarmClearStore();
       st.ui.clearBtn.hidden = !canClear;
       st.ui.clearBtn.disabled = !storeTotal();
@@ -41365,8 +42141,13 @@
             'is not free. Your performance record and everything you have answered ' +
             'well are untouched.'
           : 'Nothing is stored for this course yet.');
-      st.ui.gatherBtn.textContent = st.gathering ? 'Stop gathering' : 'Gather positions';
-      st.ui.gatherBtn.classList.toggle('clo-st-gather--on', st.gathering);
+      // §27) …and it is not the control while a ROUND owns the pass: the round's
+      // own button is the one that stops it, and "Stop gathering" here would end
+      // one leg and watch the next begin.
+      st.ui.gatherBtn.disabled = st.cycling;
+      st.ui.gatherBtn.textContent = st.gathering && !st.cycling
+        ? 'Stop gathering' : 'Gather positions';
+      st.ui.gatherBtn.classList.toggle('clo-st-gather--on', st.gathering && !st.cycling);
       st.ui.gatherBtn.title = st.gathering
         ? 'Stop after the line end being walked now. Everything found so far is ' +
           'already stored.'
@@ -41377,13 +42158,32 @@
           'none of them — so a later storm starts instantly. Leave it running as ' +
           'long as you like; it saves as it goes.\nIt reads the Lichess opening ' +
           'explorer and the ChessDB analysis book, and says how many lookups it spent.';
+      // §27) THE ROUND. One control for both halves of one intention, the
+      // gather button's own rule — and it fills only while running, which is the
+      // one moment it is the thing happening.
+      st.ui.roundBtn.disabled = st.gathering && !st.cycling;
+      st.ui.roundBtn.textContent = st.cycling ? 'Stop the round' : 'Gather all courses';
+      st.ui.roundBtn.classList.toggle('clo-st-gather--on', st.cycling);
+      st.ui.roundBtn.title = st.cycling
+        ? 'Stop after the position being walked or scored now. Everything found ' +
+          'so far is already stored, and the window goes back to the course you ' +
+          'opened it on.'
+        : 'The pass to leave running overnight: every course you have already ' +
+          'gathered positions for, one after another, both sources each — about ' +
+          Math.round(C.cycleLegMs / 60000) + ' minutes on each, or up to ' +
+          C.cycleTarget + ' new positions, whichever comes first — then round ' +
+          'again until nothing new is found.' +
+          '\nIt walks whole courses, so it ignores any chapter you have scoped ' +
+          'to, and it leaves your own choice of source alone. Each course is ' +
+          'synced to a card of its own as the round leaves it, so what it finds ' +
+          'overnight is on your other devices in the morning.';
       // The selectors are meaningless mid-gather: the pass is walking with the
       // range it started on.
-      st.ui.minSel.disabled = st.gathering;
-      st.ui.maxSel.disabled = st.gathering;
+      st.ui.minSel.disabled = filling();
+      st.ui.maxSel.disabled = filling();
       // Only while nothing is being timed: see the note where this is built.
       // A gather pass is never timed, so its own control cannot hide under it.
-      st.ui.settings.hidden = timing() && !st.gathering;
+      st.ui.settings.hidden = timing() && !filling();
     }
 
     function setNote(text) {
@@ -41848,6 +42648,20 @@
      * whole course included, is chosen.
      */
     function stormAgain(spec) {
+      // §27) NOT WHILE THE STORE IS BEING FILLED, and this closes a hole the
+      // gather pass has had since v0.130.0: both passes end the session and then
+      // own `st.bid`, while the review they are usually started FROM keeps its
+      // "Storm again" on screen throughout. A session started underneath a
+      // gather would race its loops for the pool; started underneath a round it
+      // would additionally be moved to another course the moment the round's
+      // `finally` puts the window back. Said in words rather than by hiding the
+      // button: the review is meant to be readable while the store fills.
+      if (filling()) {
+        setStatus(st.cycling
+          ? 'The round is still walking your courses — stop it first.'
+          : 'The gather pass is still running — stop it first.', 'warn');
+        return;
+      }
       // §17) THE MODE RIDES ALONG WITH THE SCOPE, and for the same reason: both
       // are part of what the session the user just finished WAS, and "again"
       // means again.
@@ -42278,6 +43092,15 @@
         // and the wrong clock.
         if (st.eng && st.eng.kind === 'list' && !st.eng.walk) setDeepenNote();
         else setGatherNote();
+        render();
+        return;
+      }
+      // §27) …and the gaps BETWEEN a round's legs, which are the same state
+      // again: a course being switched, a course listing being read, a pool
+      // being walked into shape. Nothing below applies to those either, and the
+      // note is the only sign the round is still alive.
+      if (st.cycling) {
+        setRoundNote();
         render();
         return;
       }

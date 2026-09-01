@@ -5639,3 +5639,504 @@ measured 207 s here without finishing (it reached depth 17 of 20 and was
 abandoned by hand). So on this machine a gather is DEEPEN-bound, not walk-bound:
 one frontier's walk is seconds and the search that follows it is minutes. §14.23's
 20.7 s figure is MultiPV 3; the width is what costs. Not changed - only measured.
+
+---
+
+## 27. The round: every gathered course, both sources, overnight (v0.165.0)
+
+Asked for by name: *"a general position gathering mode — all courses that are
+already part of the saved data. Leaving this on would cycle through the courses
+that have been gathered to previously, gathering x positions for both settings
+(post variation & uncovered responses) before moving on to the next in the
+cycle. Meant to be left overnight."*
+
+The gather pass (§14.11) fills **one** course and is watched. This is the pass
+you leave on: the same walk, run on every course in turn, both sources each, a
+bounded slice at a time, going round again until nothing new is found.
+
+### 27.1 What it is, mechanically
+
+**It is `gather()` in a loop with smaller numbers.** Not one line of walking,
+picking, storing, retiring or scoring is new. That is the rule this whole
+feature is built on — `harvestFrontier` is shared by four passes for exactly
+this reason (§14.17.3, §14.24, §18.2) — and a second gather written for the
+round would be a second set of pick rules, a second funnel and a second answer
+to "what is a usable position", diverging silently.
+
+What `gather()` grew is an options object:
+
+```js
+gather({ round: true, want: C.cycleTarget,
+         maxCdb: C.cycleMaxCdb, deepenMax: C.cycleDeepen })
+```
+
+and the four things a leg must **not** do, which the round owns instead:
+
+| | why the leg must not do it |
+|---|---|
+| **the status line** | a sentence per leg is twenty over a night, each overwriting the last |
+| **the queue refill** | the queue belongs to the course the window will be put **back** on, not to whichever one this leg was about |
+| **the sync** | §14.12's card carries **one course**; a write per leg is a Chessable round trip an hour to leave behind whichever course came last |
+| **the wake lock** | §24's lock is held **once**, across the whole night, not taken and dropped ten times an hour |
+
+### 27.2 The course list
+
+`cloStormPositions` is `{ [bid]: { [ck]: entry } }`, and its keys *are* "the
+courses that have been gathered to previously" — no second list, no new storage
+key, and `saveStore` already deletes an empty slice (§22), so a key in it always
+means positions.
+
+Read **fresh on every pass**, so a course the round itself gathers joins the
+list next time round, and a course that could not be read drops out of it. The
+course the window was opened on goes **first**: it is the one the user is
+standing on, and starting anywhere else would read as the button having gone
+somewhere unasked.
+
+A course that cannot be read (deleted, no longer owned, a signed-out tab) is
+skipped and remembered in `st.cycleBad` for the **rest of the run** — whatever
+is wrong with it will still be wrong in an hour, and a list that retried it
+every pass would say nothing new all night.
+
+### 27.3 The leg is bounded by a CLOCK before it is bounded by a count
+
+This is the one non-obvious decision in the change, and the request as stated
+("gathering x positions … before moving on") does not survive contact with
+§26.4's own measurement.
+
+**A gather is deepen-bound, not walk-bound.** §26.4, on the author's desktop: a
+single depth-20 MultiPV-12 deepen search ran **207 s without finishing**, against
+§14.23's 20.7 s at MultiPV 3 — the width is what costs. `deepenPerFrontier` runs
+one of those after *every* frontier walked. So "15 positions" is anywhere from
+twenty minutes to two hours depending on the machine, the position and the
+engine profile, and a round bounded only by a count would cycle briskly on a
+fast desktop and **simply not cycle at all** on a phone. There is no count that
+is right for both.
+
+So:
+
+| | |
+|---|---|
+| `cycleLegMs` | **10 min** — the operative bound. A leg overruns it by at most ONE search (§23.7 is emphatic that a deepen search has no wall-clock budget and is bounded by `deepenStallMs`, a *progress* watchdog), so ten minutes lands at ten to fourteen and a five-course round is about two hours **whatever the hardware**. |
+| `cycleTarget` | **15** — a ceiling a fast machine on a small course may reach first, an order of magnitude under `gatherTarget`'s 200. The point of a round is BREADTH; a leg allowed to run to 200 would spend the night on the first course, which is the pass that already exists. |
+| `cycleDeepen` | **8** — bounds **phase two**, the "keep scoring until the store has nothing left" loop, which is deliberately unbounded in a gather pass and must not be here: a course with three hundred unscored positions would never hand over. What it buys is the *backlog* — positions stored before §23 existed — being eaten into on every visit, while the walk's own interleaving keeps pace with what the leg is storing now. |
+| `cycleMaxCdb` | **500** — bounds a **saturated** course. A store with nothing left to find still costs ~11 lookups per candidate to discover that. Read through `st.gatherCap` in `askCdb` rather than off `CONFIG`, so the two passes cannot disagree about which ceiling is in force. |
+
+What a night therefore looks like on a machine where a search is ~3 minutes:
+roughly three frontiers walked and three positions scored per leg, ~48 legs, so
+on the order of a hundred positions — **all of them engine-scored**, spread
+across every course, which is exactly the shape §23.8's draw order wants.
+
+### 27.4 When it stops by itself
+
+**A whole pass that buys nothing ends the round** — nothing stored anywhere and
+nothing scored anywhere. Going round again would spend the same requests on the
+same courses to meet the same silence, all night. Said in words ("every course
+is walked out"), because a round that stopped quietly is indistinguishable from
+one that crashed.
+
+Every other ending is the user's press, a teardown, or an error.
+
+### 27.5 What an edit elsewhere can break
+
+* **`filling()`, not `st.gathering`.** `st.gathering` is **false** in the gaps
+  between legs — a course being switched, a listing being read, a pool being
+  walked into shape — and those gaps are the same state from the user's side. So
+  every gate that used to ask `st.gathering` asks `filling()`: `produce`,
+  `nextCard`, `startStorm`, `backfillOk`, `solving`, `clearStore`,
+  `saveStormSource`, the sync refill and eight lines of `syncSettings`. A gate
+  left on the old flag is a card put on a board during a pass nobody is
+  watching. It is a **function declaration**, not a `const` arrow: `produce` and
+  `nextCard` are declared above it.
+* **`applyStormSource`, never `saveStormSource`.** The round walks both sources;
+  the user's own choice is a setting they made and must find unchanged in the
+  morning. `saveStormSource` additionally *restarts the session* during the
+  pre-roll, which under a round would be a session started inside a pass.
+* **The chapter scope is CLEARED for the round and restored after it.** A round
+  is course-wide by definition, and `st.oidFilter` is a set of **one course's**
+  oids: applied to another course's pool by `stormScope` it yields nothing at
+  all, with no explanation — a round that looked like it was working and stored
+  nothing after its first course.
+* **`st.seen` is switched with the course.** A position key is a board, not a
+  course, so a `seen` carried across silently hides from course B a position it
+  shares with course A — and repertoires for the same colour overlap by
+  construction. The ChessDB and engine **caches** are deliberately *kept* for
+  the same reason read the other way: they are keyed by position too, which here
+  makes them correct rather than wrong, and an engine list costs seconds.
+  `st.pgn` is dropped only to bound it — a night's worth of game exports is the
+  one thing here with no ceiling of its own.
+* **`st.deepenFailed` is per COURSE, not per leg.** §23's list is "per pass" and
+  a leg is not a pass: emptied at every leg the engine would be handed the same
+  refused position all night. `cycleSwitch` empties it, i.e. once per course per
+  pass over the list, which is also the retry the original "a reload retries"
+  rule intends.
+* **`stopRound` must not be called from `endSession`.** `gather` calls
+  `endSession('gathering instead')` itself on its first leg, so a `stopRound`
+  in there would have the round stop itself the moment it started. `closeStorm`
+  is where it belongs, above `stopGather`.
+* **`st.gen` guards the way home.** The unwind is asynchronous — a leg is at
+  worst one network round trip from noticing the flag — so a round stopped by a
+  teardown can still be in its `finally` when the storm has been closed and
+  reopened on **another** course. `cycleGoHome` would then move that new session
+  onto the old one's course. §14.24's `backfillBid` hazard, one level up;
+  `startSession` and `closeStorm` bump the counter and the `finally` compares it.
+  The store is written either way; nothing else is touched.
+
+### 27.6 Two bugs it exposed in shared code
+
+Neither is the round's, and both were silent.
+
+**(a) A gather pass walked nothing during a review.** `harvestFrontier`'s and
+`harvestUncovered`'s loops break on `!st.running || (st.over && !storeOnly)` —
+§14.24's rule, whose comment says it "stops a session's producer, as it must,
+and never this [the background pass]". But a **gather** pass is not a producer
+either: it fills the store and shows nothing. Its control sits in a row that is
+on screen throughout the review — which is exactly where a user presses it —
+and there `st.over` is true and `storeOnly` false, so every game loop broke on
+its first iteration. The pass ran, spent its pool draws, deepened, and reported
+"Nothing new to store". Silent since v0.130.0. The guard is now
+`(st.over && !storeOnly && !st.gathering)`.
+
+The round would have inherited it on every leg after the first, since its own
+first leg ends the session.
+
+**(b) "Storm again" was pressable during a gather.** Both passes end the session
+and then own `st.bid`, while the review they are usually started *from* keeps
+its "Storm again" on screen. A session started underneath a gather races its
+loops for the pool; under a round it would additionally be moved to another
+course the moment the round's `finally` puts the window back. `stormAgain` now
+refuses while `filling()` and says why — rather than hiding the button, because
+the review is meant to be readable while the store fills.
+
+**(c)** …and `gatherBtn` was wired **bare** (`addEventListener('click', gather)`),
+which is 24g's trap. It cost nothing while `gather` took no arguments and would
+have cost everything the moment it did: an Event has a `target`, so the per-leg
+size is called `want` and every option is read through a default. Both buttons
+are `() => f()` now.
+
+### 27.7 What it deliberately does NOT do
+
+* **It does not sync.** §14.12's card is one course's snapshot overwritten in
+  place; a round writing it per leg would spend a Chessable round trip an hour
+  to leave behind whichever course happened to come last. The closing sentence
+  says so and points at "Sync". *Carrying more than one course is the obvious
+  next thing and is not in this change* — it is a wire-format question (a card
+  per course, or a `{ [bid]: … }` payload against `maxWireBytes`), not a
+  scheduling one.
+* **It never writes to a course**, never touches Chessable's board and
+  reschedules nothing — §11, unchanged and untouched: every leg is `gather()`.
+* **It never calls ChessDB's `queue` or `store`** — §11 again, and the reason it
+  is worth restating here of all places is that this is the pass with the
+  biggest appetite in the whole extension. `handleChessdbFetch`'s allow-list is
+  what makes them unreachable.
+* **It is not persisted.** "Leaving this on" means leaving the pass running; the
+  window is where it lives, and a mode that resumed by itself on the next page
+  load would be a night's requests nobody pressed anything for.
+
+### 27.8 Measurements
+
+The settings row (`dev/harness.html`, 2026-08-31, stylesheet cache busted).
+The button is free at the width the storm panel actually has, and never causes
+horizontal overflow at any width:
+
+| panel width | desktop, before → after | touch, before → after |
+|---|---|---|
+| 1873 (full window at 1920) | 26 → **26** | 35 → **35** |
+| 1400 | 26 → 58 | — |
+| 1200 / 1000 / 880 / 780 | 58 / 58 / 56 / 56 → unchanged | 74 (980) / 115 (780) → unchanged |
+| 600 / 480 | 118 → unchanged | 154 → unchanged |
+| 380 | 118 → 150 | 220 → 261 |
+
+`scrollWidth - clientWidth` is 0 at every width in both modes: the row is
+`flex-wrap: wrap`, so what a sixth button costs is a line, never an overflow.
+The row is only on screen when nothing is being timed.
+
+### 27.8a The live run (2026-08-31, v0.165.0, the author's desktop)
+
+Two and a bit legs, driven through Claude in Chrome on the account's own
+courses. **Every mechanism in 27.1-27.5 was exercised except the wake lock.**
+
+| | |
+|---|---|
+| **leg 1** | 453453 "Testing course", *line ends*. 10:50:40 → 11:01:01 = **10 min 21 s**. Store 10 → 22 ready, 9 → 21 engine-scored, i.e. **12 stored and 12 scored**. `0 ChessDB lookups` throughout — `gatherWalkSource: 'engine'` behaving as §26 declares. |
+| **leg 2** | the SAME course, *replies you don't answer*. 11:01:01 → ~11:13:10 = **12 min 9 s**. 10 → 13 ready, 4 → 9 scored. The pool rebuilt for the new source (`225 decision points left`), the header read `Testing course › replies you don't answer`, and `storeCount()` flipped to that source's own figure. |
+| **leg 3** | **Intermediate Starter Kit**, *line ends* — the COURSE SWITCH, at ~11:13:10. Name from `fetchCourse`, source reset to frontier, that course's own store loaded (`25 left` to score). Stopped by hand 28 s in. |
+| **stop** | `Round stopped after 1 pass(es) — 15 position(s) stored and 16 scored across your courses. Nothing was synced…`, the header back to **Testing course**, its own source restored, `22 position(s) ready · 22 engine-scored`, Start re-enabled, note cleared. |
+
+**The overrun is real and is exactly one search.** Leg 2's clock expired at
+11:11:01 and the pass was still inside a deepen search reading `144s on this
+one`; it handed over the moment that search ended. 12 min 9 s against a 10 min
+bound — which is what 27.3 predicts and why the bound is a clock at all.
+
+**Search timings, from the console.** Walk searches (depth 14, MultiPV 6):
+0.8 / 1.3 / 1.7 / 1.8 / 2.0 / 2.3 / 2.6 / 3.1 / 3.8 / 3.9 s. Deepen searches
+(depth 20, MultiPV 12): 55.7 s for the first, then 30-60 s typical and **144 s**
+for the worst seen. §26.4's 207 s is not an outlier. A leg is deepen-bound by a
+factor of about twenty, and a count-bounded leg really would have been
+unusable on slower hardware.
+
+**Not exercised: the wake lock.** A CDP-driven tab reports `document.hidden`,
+so `takeWakeLock` returns before it asks — the same limitation §24 already has,
+and the reason it logs nothing here rather than a failure.
+
+### 27.9 Still open
+
+* **The multi-course wire** (27.7). Until then a night's gathering reaches the
+  phone one course at a time, by hand.
+* **A saturated course still costs its `cycleMaxCdb`** to prove it is saturated,
+  every pass, until the "nothing anywhere" rule fires. A per-course "walked out
+  at <time>" mark would skip it cheaply; it is not obviously worth a field.
+* **The review's other controls** (Try again, Analyse, Best move) are live
+  during a round, as they are during a gather. Nothing is corrupted — the round
+  never touches the board — but `tick` returns early while a pass runs, so a
+  board closed from its own Exit is not noticed until the pass ends.
+* **A whole night has not been run.** 27.8a is two and a bit legs; what a round
+  does over eight hours — how many passes, whether the "nothing anywhere" stop
+  ever fires, what a saturated course costs on the third pass — is unobserved.
+  So is anything at all on a **phone**, where a deepen search is far slower and
+  `cycleLegMs` may want to be the same ten minutes for entirely different
+  reasons.
+* **`cycleTarget` was never reached.** Leg 1 stored 12 of its 15 in 10 minutes
+  and leg 2 stored 3. So the ceiling is doing nothing yet on this hardware, and
+  whether it is the right number is still an open question rather than a
+  measured one.
+* **The interleave is not switchable off for a round.** A leg that walked
+  without deepening would store far more per ten minutes; a leg that deepened
+  without walking would clear the backlog far faster. Doing both at
+  `deepenPerFrontier`'s ratio is the unexamined middle, inherited from the pass
+  it reuses rather than chosen for this one.
+
+---
+
+## 27b. One card per course, and the bug that made it urgent (v0.166.0)
+
+§27 shipped with "the round does not sync", justified as a capacity limit: the
+card carries one course, so a write per leg would leave whichever course came
+last. Asked to check that, the transport turned out to have a **correctness**
+problem, not a capacity one.
+
+### 27b.1 The defect
+
+`stormWirePack` wrote `{v, at, g, p, n, cl}` and `stormWireUnpack` returned
+`{store, gone, at, clearedAt}`. **Neither carried a course id.** `syncStore`
+merged whatever it read straight into `st.store`, which is the *current*
+course's slice, against one fixed card name.
+
+So once a second course was ever synced:
+
+1. gathering or syncing course B overwrote the single card with B's snapshot;
+2. course A's next storm session pulled — its own 30-minute timer, per course —
+   and merged **B's positions and B's tombstones into A's store**;
+3. those positions were then dealt inside an A session, attributed to A's lines
+   by `backfillStoreOids`, and swept against A's coverage index; B's tombstones
+   suppressed those keys in A for `goneDays` (60).
+
+Nothing errored. Being asked a position from your other repertoire is not
+obviously wrong from the outside — which is why this survived from v0.130.0.
+
+Established by reading `stormWirePack` / `stormWireUnpack` / `stormWireMerge` /
+`syncStore`, **not reproduced live**. Treat it as a code reading.
+
+§27's round would have hit it every ten minutes, which is how it surfaced.
+
+### 27b.2 What replaced it
+
+* **`stormCardName(bid)`** — `CLO-STORM · <bid> · do not delete`. The carrier
+  has always been keyed by card *name* (`read(name)` / `write(name, …)`) and
+  already ran three cards, so this is a naming change, not a mechanism.
+* **`b: <bid>` in the payload**, optional, absence read as "cannot say" — the
+  `cl` / `g` / `u` / `d` discipline, and **no `wireVersion` bump**: valid in both
+  directions.
+* **`stormWireForeign(got, bid)`** — pure, split out of `syncStore` so the check
+  can execute it. A foreign payload is **refused whole**, never filtered: the
+  store is one snapshot and the tombstones suppress keys for sixty days, so
+  there is no half of it worth taking.
+
+**The old card is left in place.** It cannot be attributed to a course, so it is
+neither read nor deleted, and it ages out with the rest of the user's course.
+The cost of the rename is that a device still on ≤0.165.0 stops exchanging until
+it is updated — accepted deliberately.
+
+A side effect worth naming: per-course cards also **raise total capacity**.
+Every course used to compete for one 150 KB budget; now each gets one.
+
+### 27b.3 The chapter
+
+`postCard` posts to the same `importGame` endpoint §19d uses, and §19d sends
+`lid: Number(plan.dest.lid)` — so a chapter is a *field*, not a mechanism.
+`cardEntry` hardcoded `lid: 0` (Main Level).
+
+`cardChapterLid(cr, bid, chapter)` resolves a chapter **by name** —
+`CONFIG.storm.cardChapter`, `"Intuition Storm"` — through the memoised
+`importTargetsOnce`, which the storm window has usually called already.
+
+**`lid` is honoured at CREATE and ignored on OVERWRITE** — ground-truthed
+2026-08-31 on course 453453, and it contradicts what the first draft of this
+section asserted. See 27b.3a.
+
+Three rules:
+
+* **`ensureSlot` still asks `getList` with no chapter.** That call answers the
+  whole course, so a card is found wherever it lives — which is what makes this
+  need **no migration**, cost nothing when the chapter is absent, and keep
+  working when a card is moved by hand.
+* **The lid is still resolved and sent on every write**, which is
+  belt-and-braces rather than load-bearing: one memoised lookup, and it is what
+  would keep a card in place if the server ever started honouring the field on
+  an overwrite.
+* **It fails soft to Main Level, and the failure is not memoised.** "No such
+  chapter" is a real answer worth remembering; a *thrown* read (no writable
+  course, no connection) is a fact about this minute, and the next card created
+  deserves another chance at the right chapter. A failed resolve **cannot move
+  anything** — it can only put a card being created right now in Main Level.
+
+### 27b.3a Ground truth: what `lid` actually does (2026-08-31, course 453453)
+
+A throwaway card (`CLO-CHAPTER-PROBE · delete me`), built by replicating
+`cardEntry` and posted through the real `importGame`, then deleted with
+`updateOpening&mode=del` and proven gone by re-reading both chapters.
+
+| step | sent | `getList?lid=1` | `getList?lid=0` |
+|---|---|---|---|
+| create | `lid: 1` | **present** | absent |
+| overwrite | `lid: 1` | present | absent |
+| overwrite | **`lid: 0`** | **still present** | **still absent** |
+| overwrite | `lid: 1` | present | absent |
+| delete | — | absent | absent |
+
+The comment text updated on every overwrite (`getLesson` read back
+`PROBE-FOUR`), so the writes were real and only the *chapter* was ignored.
+
+Two claims died here, both of which had been written into this document and
+CLAUDE.md before being measured:
+
+* "a write that sent 0 would move a card out of its chapter" — **false**;
+* "move one by hand and the next sync moves it back" — **false**, it stays
+  moved.
+
+The code is unchanged by this: it already sent the right lid. What changed is
+that the per-write resolve is now documented as insurance rather than as the
+mechanism.
+
+There is **no create-a-chapter call** anywhere in the codebase — `getImportData`
+only enumerates. So the chapter must exist; absent, everything works and one
+console line says where the cards went.
+
+The **stats** card goes in the same chapter and stays **one** card: §15's record
+is about every course by construction, so there is nothing to split.
+
+### 27b.4 The round syncs
+
+Once per **course** per pass, not once per leg — both legs of a course write the
+same card, so a push between them would be a round trip for a snapshot the next
+leg replaces. Roughly one POST per course per hour.
+
+Three rules:
+
+* **It is awaited.** `syncStore` reads `st.bid`, `st.store`, `st.gone` and
+  `st.clearedAt` across several awaits of its own, and the very next thing
+  `runRound` does is switch all four. Fired and forgotten it would merge one
+  course's card into another course's store — 27b.1's defect reintroduced from
+  the other end.
+* **Deepening counts, not only storing.** §23's whole point is that a phone
+  cannot run that search, so a desktop that spent a night scoring positions it
+  already held is exactly what this transport is for, and `stormWireMerge`
+  already takes the deeper list. Gating on new stores alone would leave the
+  night's most expensive work at home.
+* **The debt is recorded ABOVE the stop check** (`st.cyclePending`, set inside
+  the source loop immediately after `await gather(...)`, before
+  `if (!st.cycling) return`). A round is normally ended **by hand, in the middle
+  of a leg** — an overnight pass is stopped in the morning — and `stopRound`
+  makes that very next line return out of `runRound`. Recorded after it, the
+  newest work of the whole run is the one thing never pushed.
+  `gatherRound`'s `finally` settles whatever is outstanding, **before**
+  `cycleGoHome`, i.e. while `st.bid` is still the interrupted course.
+
+Both of those last points are 27b.7's findings, not predictions.
+
+### 27b.5 The check, and a vacuous pass it caught
+
+`dev/check-storm.js` §18 covers the name and the guard — both silent when
+wrong. Controls run 2026-08-31, each failing on exactly its own assertions and
+no others: one name for every course → 3; the guard removed → 1; the guard
+refusing a payload that does not say → 2; `b` dropped from the pack → 2.
+
+**The first version of those assertions passed vacuously.** That file's `C` is
+hand-built from *numeric* config fields, so `C.cardPrefix` was `undefined` and
+`stormCardName` returned `"undefined · 453453 · do not delete"` — which contains
+the bid and still differs per course, satisfying every assertion about it. The
+same shape `check-popup-placement.js` records in its own header: a missing value
+that loses every comparison rather than failing one. Fixed by a `str()` reader
+and an assertion on the prefix that an absent prefix cannot pass — which is what
+turned control 1 from a thrown `TypeError` into three real failures.
+
+### 27b.7 The live run (2026-09-01)
+
+The user created a **LiChessable** course (bid 465386) with an **Intuition
+Storm** chapter (lid 1). Everything below is against the live account.
+
+**What worked first time:**
+
+* **Auto-adopt.** `pin sync active (course 465386)` on the first page load, with
+  no configuration — §16e's rule, exercised for the first time by a course that
+  did not exist when the profile was last asked.
+* **The chapter.** `CLO-STORM · 453453 · do not delete` and
+  `CLO-STATS · do not delete` were both created in *Intuition Storm*;
+  `CLO-SYNC · do not delete` (pins) stayed in *Main Level*, untouched. All three
+  report `moves: 0`, the informational-card signature our own walks skip.
+* **The payload.** base32-clean, `b: "453453"`, `n: 35`, 35 positions, 27,564
+  characters of a 150,000 budget, sample entry carrying `d: 20` and 12 moves —
+  §23's stored Stockfish list crossing the wire.
+* **Two courses.** Syncing 455941 created its own card (`b: "455941"`) and left
+  453453's **byte-identical**. That is precisely the sequence that used to
+  corrupt (27b.1).
+* **The guard.** 453453's card was overwritten by hand with `b: "999999"`. The
+  next sync answered *"that card holds course 999999, not this one"*, the local
+  store was untouched (22 ready before and after), **and so was the card** — the
+  refusal is total, nothing taken and nothing written. The good payload was
+  restored byte-exact afterwards.
+* **The dead end is real**, as predicted: the read precedes the write, so a card
+  the guard fires on is never replaced and every later sync refuses identically.
+  The message now names the card to delete (v0.166.1).
+
+**Two things it caught, both in the round's own sync:**
+
+* **The closing sentence lied.** It read *"Each course was synced to its own card
+  as the round left it"* on a round stopped before its first push, because it was
+  written from "a sync course is configured" rather than from anything having
+  happened. It now counts (`st.cycleSynced`) and says *"N course(s) pushed"*,
+  *"Nothing needed syncing"*, or names the missing setting.
+* **A round stopped mid-leg never pushed that course** — see 27b.4's third rule.
+  Measured: a round that stored 17 positions into course 455941 left its card
+  holding the **1** it had before. After the fix, stopping mid-leg pushed it and
+  the card went **778 → 14,671 characters** (20 positions, all 20 engine-scored)
+  while 453453's stayed at 27,564.
+
+**One measurement that weakens 27.3.** A single depth-20 deepen search on course
+455941 ran **919 s and counting** — over fifteen minutes — holding a leg whose
+clock is ten. §23.7 gives that search no wall-clock budget on purpose
+(`deepenStallMs` is a *progress* watchdog at 20 min), and the leg can only check
+its clock between searches. So 27.3's "a five-course round is about two hours
+whatever the hardware" is optimistic: the bound is ten minutes **plus one
+search**, and one search can exceed the leg. Not changed — changing it means
+either truncating a search, which §23.7 forbids for good reason, or refusing to
+*start* one late in a leg, which does not help a search already running. Worth
+deciding before trusting the two-hour figure.
+
+**Not exercised:** the wake lock (a CDP-driven tab reports `document.hidden`, so
+`takeWakeLock` returns before asking — §24's own limitation), and a full pass
+over three or more courses.
+
+### 27b.6 Still open
+
+* **Two devices have never actually exchanged.** 27b.7 proves one device writes
+  the right cards and refuses the wrong one, but every merge so far has been
+  this device reading its own snapshot back. The `added` / `dropped` / `wiped` /
+  `deepened` arms of `stormWireMerge` are covered by `dev/check-storm.js` and
+  not by a second machine.
+* **The leg's overrun is unbounded in practice** — 27b.7's 919 s search. The
+  ten-minute figure is a floor, not a bound.
+* **The chapter is not configurable** — a constant, not a picker. If "Intuition
+  Storm" is the wrong name for somebody it is a one-line change, but there is no
+  UI for it.
+* **A device on ≤0.165.0 silently stops exchanging.** There is no version
+  handshake and no warning; it simply reads a card nobody writes any more.

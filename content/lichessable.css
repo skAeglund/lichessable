@@ -6464,6 +6464,20 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
   color: #fff;
 }
 
+/* §27) THE ROUND wears this same class (`.clo-st-roundbtn` is a hook, not a
+   look): it IS the gather pass, run on every course that has one. What it added
+   is a DISABLED state — while one of the two passes owns the store the other
+   button is not a control — and without these two rules it stayed fully green
+   and still lit up under the pointer, which is the one thing a control that
+   cannot be pressed must not do. Doubled on the hover arm so it outranks
+   `.clo-st-gather:hover`. */
+.clo-st-gather:disabled { opacity: 0.5; cursor: default; }
+
+.clo-st-gather:disabled:hover {
+  background: transparent;
+  color: var(--clo-accent-text);
+}
+
 /* §14.13) START. A FILL, and the only one in this window — the row palette's
    "the one thing to do next" (DESIGN-ui-inventory §3). Gather beside it keeps
    its outline for exactly that reason: the two are now a real choice, and only

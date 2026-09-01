@@ -4041,6 +4041,132 @@ Currently working (v0.18.x).
       a plausible-looking board about a position nobody saw. Both storm entry
       points (`toggleAnalyse`, `setAnalyse`) go through it.
 
+  * THE ROUND — EVERY GATHERED COURSE, BOTH SOURCES, OVERNIGHT (§27, v0.165.0):
+    "Gather all courses" beside "Gather positions". It walks the courses the
+    STORE already holds positions for — its keys ARE "the courses gathered to
+    before", so no second list and no new storage key — one after another, both
+    sources each, a bounded leg at a time, going round until a whole pass buys
+    nothing. **READ `DESIGN-intuition-storm.md` §27 BEFORE CHANGING IT.**
+    - IT IS `gather()` IN A LOOP WITH SMALLER NUMBERS, and that is this feature's
+      own rule (`harvestFrontier` is shared by four passes for exactly this
+      reason). A second gather written for the round is a second set of pick
+      rules that will one day disagree about what a usable position is. The
+      options are `{ round, want, legMs, maxCdb, deepenMax }`.
+    - A LEG IS BOUNDED BY A CLOCK BEFORE A COUNT (`cycleLegMs`, 10 min). §26.4
+      measured ONE depth-20 MultiPV-12 deepen search at 207 s without finishing,
+      and `deepenPerFrontier` runs one after every frontier — so "15 positions"
+      is twenty minutes on a desktop and two hours on a phone, and a round
+      bounded only by a count cycles on one and not at all on the other.
+      `cycleTarget` is the ceiling a fast machine reaches first; `cycleDeepen`
+      bounds PHASE TWO, which is unbounded by design in a pass pressed by hand
+      and must not be here; `cycleMaxCdb` (through `st.gatherCap`, read in
+      `askCdb`) bounds a SATURATED course.
+    - `filling()`, NEVER `st.gathering`, at every gate. That flag is FALSE in the
+      gaps between legs — a course being switched, a pool being walked into shape
+      — and those gaps are the same state from the user's side. Nine sites plus
+      eight lines of `syncSettings`. It is a FUNCTION DECLARATION, not a `const`
+      arrow: `produce` and `nextCard` are declared above it.
+    - IT OWNS FOUR THINGS A LEG MUST NOT DO — the status line (a sentence per leg
+      is twenty a night), the queue refill (it belongs to the course the window
+      is put BACK on), the WAKE LOCK (§24's, held once across the night rather
+      than taken and dropped ten times an hour) and THE SYNC, which is per COURSE
+      (§27b) and not per leg: both legs of a course write the same card, so a
+      push between them is a round trip for a snapshot the next leg replaces.
+      `roundSync` is AWAITED by `runRound` before the course is switched —
+      `syncStore` reads `st.bid`/`st.store`/`st.gone`/`st.clearedAt` across
+      awaits of its own, and firing it and forgetting it merges one course's card
+      into another course's store, which is 27b's own defect from the other end.
+      It fires on DEEPENING as well as storing: a phone cannot run §23's search,
+      so a night spent scoring positions already held is exactly what the
+      transport is for. AND THE DEBT (`st.cyclePending`) IS RECORDED ABOVE THE
+      STOP CHECK, which is what makes it work at all: a round is ended BY HAND
+      mid-leg — an overnight pass is stopped in the morning — and `stopRound`
+      makes the next line return out of `runRound`, so recorded after it the
+      NEWEST work of the run is the one thing never pushed (measured: a round
+      that stored 17 positions left that course's card holding 1).
+      `gatherRound`'s finally settles it BEFORE `cycleGoHome`, while `st.bid` is
+      still the interrupted course, and the closing sentence counts what was
+      actually pushed (`st.cycleSynced`) rather than whether a course is
+      configured — it claimed every course had been synced on a round stopped
+      before its first push.
+    - `applyStormSource`, NEVER `saveStormSource` — the round walks both, and
+      that one persists the choice AND restarts the session in the pre-roll.
+    - THE CHAPTER SCOPE IS CLEARED FOR THE ROUND and restored after it.
+      `st.oidFilter` is a set of ONE course's oids; applied to another's pool by
+      `stormScope` it yields nothing at all with no explanation.
+    - `st.seen` IS SWITCHED WITH THE COURSE (a position key is a board, not a
+      course, and repertoires for one colour overlap), while the ChessDB and
+      ENGINE caches are deliberately KEPT — same reason read the other way, and
+      a search costs seconds. `st.deepenFailed` is per COURSE, not per leg:
+      §23's "per pass" list emptied at every leg hands the engine the same
+      refused position all night.
+    - `stopRound` IS CALLED FROM `closeStorm`, NEVER FROM `endSession`: `gather`
+      calls that itself on its first leg ("gathering instead"), so a stop in
+      there would have the round end itself the moment it started.
+    - `st.gen` GUARDS THE WAY HOME. The unwind is asynchronous, so a round
+      stopped by a teardown can still be in its `finally` when the storm has been
+      reopened on ANOTHER course — and `cycleGoHome` would move that new session
+      onto the old one's course. §14.24's `backfillBid` hazard one level up;
+      `startSession` and `closeStorm` bump it.
+    - IT OWNS NO BRIDGES and is called by nothing.
+
+  * ONE CARD PER COURSE (§27b, v0.166.0), and it is a CORRECTNESS fix, not the
+    capacity limit v0.165.0 called it. **READ `DESIGN-intuition-storm.md` §27b.**
+    - THE PAYLOAD CARRIED NO COURSE ID and there was ONE card name. So a second
+      course synced overwrote the first, and the next device to open the FIRST
+      course merged the other repertoire's positions AND its tombstones into it —
+      dealt in a session that attributed them to lines not in that course, with
+      those keys suppressed there for `goneDays`. Silent since v0.130.0; found by
+      reading the wire, NOT reproduced live.
+    - `stormCardName(bid)` is the name, `b` on the payload is the belt to that
+      braces, and `stormWireForeign(got, bid)` is the guard — PURE, split out of
+      `syncStore` so `dev/check-storm.js` §18 can execute it. A foreign payload is
+      REFUSED WHOLE, never filtered: the store is one snapshot and a tombstone
+      suppresses a key for sixty days, so no half of it is worth taking. A
+      payload that does not SAY is NOT foreign — that is every payload written
+      before v0.166.0, and refusing those breaks the one exchange an upgrading
+      device still wants. NO `wireVersion` bump (`cl`/`g`/`u`/`d`'s precedent).
+    - THE OLD CARD IS LEFT IN PLACE: it cannot be attributed to a course, so it
+      is neither read nor deleted. The cost is that a device on ≤0.165.0 silently
+      stops exchanging — no handshake, no warning.
+  * THE CARDS LIVE IN A CHAPTER (§27b.3) — `CONFIG.storm.cardChapter`,
+    "Intuition Storm", resolved by NAME through the memoised `importTargetsOnce`
+    because a lid is per course. Three rules in SHARED code (section 16e's
+    `cardEntry` / `ensureSlot` / `carrier.write` all took the parameter):
+    - `lid` IS HONOURED AT CREATE AND IGNORED ON OVERWRITE (ground-truthed
+      2026-08-31, §27b.3a: created at `lid: 1` then overwritten with `lid: 0`, the
+      card STAYED in chapter 1 while its text updated). So a card's chapter is
+      decided once, A CARD MOVED BY HAND STAYS MOVED, and a failed resolve can
+      only put a card being CREATED into Main Level — it can never move one. The
+      lid is still resolved and sent on every write as insurance, not mechanism.
+    - `ensureSlot` STILL ASKS `getList` WITH NO CHAPTER — that call answers the
+      whole course, so a card is found wherever it lives. This is what makes the
+      move need NO migration and cost nothing when the chapter is absent.
+    - IT FAILS SOFT TO MAIN LEVEL AND THE FAILURE IS NOT MEMOISED: "no such
+      chapter" is a real answer worth remembering, a thrown read is a fact about
+      this minute. There is NO create-a-chapter call anywhere in this codebase.
+    The STATS card goes there too and stays ONE card — §15's record is about
+    every course by construction, so there is nothing to split.
+
+  * IT EXPOSED TWO SILENT BUGS IN SHARED CODE (§27.6), and both fixes are in
+    code older features use:
+    - A GATHER PASS WALKED NOTHING DURING A REVIEW. `harvestFrontier` and
+      `harvestUncovered` break on `!st.running || (st.over && !storeOnly)` —
+      §14.24's rule, whose own note says it stops "a session's producer, as it
+      must". A GATHER is not a producer either: it fills the store and shows
+      nothing, its control is on screen throughout the review (which is where it
+      is pressed), and there `st.over` is true and `storeOnly` false — so every
+      game loop broke on its first iteration while the pass reported "Nothing new
+      to store". Silent since v0.130.0. The guard is now
+      `(st.over && !storeOnly && !st.gathering)`.
+    - "STORM AGAIN" WAS PRESSABLE DURING A GATHER. Both passes end the session
+      and then own `st.bid`, while the review keeps that button on screen.
+      `stormAgain` refuses while `filling()` and says why — rather than hiding
+      it, since the review is meant to be readable while the store fills.
+    - …and `gatherBtn` was wired BARE (24g's trap). Both gather buttons are
+      `() => f()` now, and the per-leg size is called `want` because an Event has
+      a `target`.
+
 - SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
   (`quickEditSelectMoveEl`, hoisted out of `quickEditSelectMove` — which now just
@@ -4210,6 +4336,31 @@ restores the store dealing positions the user has already prepared:
 ```
 node dev/check-storm.js
 ```
+
+§27's ROUND adds nothing to that file, deliberately: it is orchestration —
+`gatherRound` / `runRound` / `cycleSwitch` / `cycleGoHome` / `filling` — and it
+holds no rule a pure function could execute. What it DOES hold is a list of
+gates that must all read `filling()` rather than `st.gathering`, which is a
+grep and not an assertion:
+
+```bash
+grep -n "st\.gathering" content/lichessable.js
+```
+
+Every survivor must be inside the gather pass itself, its own note/label, or
+`filling`. One left behind elsewhere is a card put on a board during a pass
+nobody is watching — and it would look exactly like the round working.
+
+§27b's two pure pieces ARE in that file, §18: `stormCardName` (two courses must
+never share a name) and `stormWireForeign` (a foreign card is refused, one that
+does not SAY is not). Both fail silently — the defect they close ran from
+v0.130.0 to v0.166.0 looking like a feature. Note what the first version of
+those assertions caught about the CHECK itself: `C` there is hand-built from
+NUMERIC config fields, so a string setting reads `undefined` and
+`stormCardName` returned "undefined · 453453 · do not delete", which contains
+the bid and differs per course and therefore PASSED. Any string setting added to
+`CONFIG.storm` and asserted there needs `str()`, and an assertion an absent
+value cannot satisfy.
 
 …and after touching §26's WALK SCORER — `askScores`, `walkScorer`,
 `askEngineScores`, `harvestFrontier`'s explorer-first branch, `stormCandidate`'s

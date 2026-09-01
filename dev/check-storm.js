@@ -177,6 +177,11 @@ const src = [
   sliceDecl('stormReachBucket'),
   sliceDecl('stormReachLabel'),
   sliceDecl('stormStoreDraw'),
+  // 27b) ONE CARD PER COURSE and the guard behind it. Both PURE, and both
+  // silent when wrong: one name for every course is what let a second synced
+  // course overwrite the first and then be merged into it (see section 18).
+  sliceDecl('stormCardName'),
+  sliceDecl('stormWireForeign'),
   sliceDecl('stormWirePack'),
   sliceDecl('stormWireUnpack'),
   sliceDecl('stormWireMerge'),
@@ -241,6 +246,7 @@ const src = [
   '         stormEngineLoss, onStormEngineUpdate, endEngineJob,' +
   '         deepestCompleteList, deepenPickDepth,' +
   '         stormWirePack, stormWireUnpack, stormWireMerge,' +
+  '         stormCardName, stormWireForeign,' +
   '         stormStatBlank, stormStatApply, stormStatPlus, stormStatSum,' +
   '         stormStatGraded,' +
   '         stormStatRoll, stormStatRate, stormStatLoss,' +
@@ -286,12 +292,26 @@ const num = (name) => {
   if (!m) throw new Error('CONFIG.storm.' + name + ' not found');
   return Number(m[1]);
 };
+// §27b) …and the first STRING settings this file has needed. Without it `C`
+// held only numbers, so `C.cardPrefix` was `undefined` and `stormCardName`
+// happily returned "undefined · 453453 · do not delete" — which still contains
+// the bid and still differs per course, so every assertion about it PASSED
+// while the name was wrong. The same shape of vacuous pass that
+// `check-popup-placement.js` records in its own header: a missing value that
+// loses every comparison rather than failing one.
+const str = (name) => {
+  const m = new RegExp('\\b' + name + ":\\s*'([^']*)'").exec(cfgBody);
+  if (!m) throw new Error('CONFIG.storm.' + name + ' not found');
+  return m[1];
+};
 const numF = (name) => {
   const m = new RegExp('\\b' + name + ':\\s*(-?[0-9.]+)').exec(cfgBody);
   if (!m) throw new Error('CONFIG.storm.' + name + ' not found');
   return Number(m[1]);
 };
 const C = {
+  // §27b) the card names. STRINGS — see `str`.
+  cardPrefix: str('cardPrefix'), cardName: str('cardName'),
   minVarPlies: num('minVarPlies'), chunkVars: num('chunkVars'),
   userLoCp: num('userLoCp'), userHiCp: num('userHiCp'),
   maxPly: num('maxPly'), minPly: num('minPly'),
@@ -3334,6 +3354,64 @@ const leadsTo = (arrived, fen) => {
       long.stop, 'the walk reached its ply limit');
     eq('...and so yields strictly more candidates',
       long.out.length > short.out.length, true);
+  }
+
+  // ----------------------------------------------------------------------
+  // 18) ONE CARD PER COURSE, AND THE GUARD BEHIND IT (§27b)
+  //
+  // Both failures here are silent and both have already happened once. The
+  // pre-v0.166.0 transport had ONE card name for every course, so a second
+  // course synced overwrote the first and the next device to open the first
+  // course merged the other repertoire's positions AND its tombstones into it —
+  // in a session that then dealt them, attributed them to lines that are not in
+  // that course, and suppressed their keys for sixty days. Nothing errored, and
+  // being asked a position from your other repertoire looks like a feature.
+  //
+  // So two things are asserted: the NAME distinguishes courses, and the GUARD
+  // refuses a foreign payload while still accepting one that simply does not
+  // say (which is what an upgrading device's own card looks like).
+  // ----------------------------------------------------------------------
+  console.log('\n-- 18) one card per course, and the guard (§27b) --\n');
+  {
+    const a = S.stormCardName('453453', C);
+    const b = S.stormCardName('291847', C);
+    // FIRST, because it is what catches a prefix that is not there at all:
+    // "undefined · 453453 · do not delete" satisfies every other assertion here.
+    eq('a card name starts with the configured prefix',
+      a.startsWith(C.cardPrefix + ' · '), true);
+    eq('a card name carries the course id', a.includes('453453'), true);
+    eq('…and two courses never share one', a === b, false);
+    eq('…while one course is stable', S.stormCardName('453453', C), a);
+    // The pre-v0.166.0 name must not be reproducible from any bid: it is left
+    // in the user's course on purpose and must never be read as a course's own.
+    eq('…and none of them is the old shared card',
+      a === C.cardName || b === C.cardName, false);
+
+    const store = { [cacheKey(START_FEN)]: {
+      f: START_FEN, p: 1, c: 'w', n: 'x', i: 0, a: ['e2e4', 'e4', null],
+      t: Date.now(), k: 0, m: [['e2e4', 'e4', 10]] } };
+    const packed = S.stormWirePack(store, {}, C, 0, 0, '453453');
+    eq('the payload names its course', packed.b, '453453');
+    const got = S.stormWireUnpack(packed, C);
+    eq('…and it survives the round trip', got.bid, '453453');
+
+    // Omitted rather than empty when no bid is given — that is what a payload
+    // written before v0.166.0 looks like, and it must read as "cannot say".
+    const old = S.stormWirePack(store, {}, C, 0, 0);
+    eq('a payload with no course omits the field',
+      Object.prototype.hasOwnProperty.call(old, 'b'), false);
+    eq('…and unpacks as "cannot say"', S.stormWireUnpack(old, C).bid, '');
+
+    eq('a foreign card is refused', S.stormWireForeign({ bid: '291847' }, '453453'), true);
+    eq('…this course\'s own is not', S.stormWireForeign({ bid: '453453' }, '453453'), false);
+    eq('…and one that does not say is NOT foreign',
+      S.stormWireForeign({ bid: '' }, '453453'), false);
+    eq('…nor is a payload with no bid field at all',
+      S.stormWireForeign({}, '453453'), false);
+    // Numbers and strings meet here: `st.bid` is a string but a payload is
+    // whatever another build wrote.
+    eq('…and the compare survives a numeric bid',
+      S.stormWireForeign({ bid: 453453 }, '453453'), false);
   }
 
   console.log('\n' + SRC_PATH);
