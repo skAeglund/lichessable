@@ -185,6 +185,51 @@ quality signal; taking the top serves a diet of 2900s.
 `puzzlesPerAnchor` (8) caps what one anchor contributes: the ply 10–16 band on
 291847 found 10923 puzzles at 117 positions, heavily concentrated.
 
+### 4.0 Where the stages sit in a pass — and the v0.171.0 defect (fixed v0.171.1)
+
+**The stages run FIRST in a gather leg, before a single frontier is walked.**
+They were LAST from v0.171.0, on the argument that they compete for nothing the
+walk wants — no ChessDB request, no engine, no explorer — so there is no reason
+to interleave them. That argument is correct and it is also the argument for not
+putting them last, which is what was missed.
+
+Sitting after the walk they were guarded on `st.gathering` and the leg's clock,
+i.e. on the pass **not having ended** — and both of the ways a real pass ends
+clear exactly those:
+
+* a hand-pressed gather walks up to `gatherTarget` (200) frontiers with a
+  depth-20 MultiPV-12 search after each one (§26.4 measured a single such search
+  at 207 s without finishing), so it is **stopped**, never finished, and
+  `stopGather` clears `st.gathering`;
+* a round's leg is bounded by `cycleLegMs` (10 min) against 33–72 frontiers,
+  so it **times out**, and `Date.now() < until` is false by the time the block
+  is reached.
+
+So the stages almost never ran, on either route. Reported live 2026-09-01:
+puzzles set to 100%, gathered by hand and by round, and not one index shard was
+ever fetched. The failure is silent in the worst way this feature has — an empty
+store looks exactly like a dataset with nothing for the course, and the gather's
+own puzzle log line is skipped too, because it is guarded on
+`pz.shardsFetched || pz.bodiesFetched`.
+
+Going first is cheap precisely because both stages are bounded per pass: a leg
+buys at most `puzzleShardsPerPass` shards and `puzzleBodiesPerPass` bodies
+(4 and 6 under a round), so a pass stopped in its opening seconds has spent
+eight fetches on the thing the user switched on by name.
+
+Two more things the same report exposed, both in the same commit:
+
+* **`pz.store` did not switch with the course in a round.** `cycleSwitch`
+  reset every position-side field and left the puzzle slice alone, while
+  `savePuzzleStore` writes it back under `st.bid` — so a leg that changed
+  courses filed the new course's anchors, candidates and tombstones into the old
+  course's slice. §27b's contamination one store over, and just as silent: every
+  number stays plausible and the puzzles are simply about the wrong repertoire.
+* **The puzzle queue was not refilled after a pass.** §14.13's rule — a pass
+  must feed the session it lands in — was applied to `st.storeQueue` and not to
+  `pz.queue`, which is drawn once in `startSession`. So a gather could buy a
+  dozen puzzles and the session that asked for them would still deal none.
+
 ### 4.1 Live end-to-end, 2026-09-01
 
 `node dev/probe-puzzles.js --bid 453453 --max 40`:

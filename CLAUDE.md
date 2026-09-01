@@ -4321,6 +4321,21 @@ Currently working (v0.18.x).
     (candidates → ready) is one ~331 KB body fetch per puzzle, because ids hash
     across all 4096 body shards and batching cannot help. Only stage B is small
     enough for §14.24's background top-up; stage A must never run there.
+  * …AND THEY RUN FIRST IN A GATHER PASS, before the frontier walk. Moving them
+    back after it does not make the feature slower, it makes it UNREACHABLE, and
+    silently: guarded there on `st.gathering` and the leg's clock, they are
+    skipped by exactly the two ways a real pass ends — a hand gather is STOPPED
+    (200 frontiers with a depth-20 search after each, §26.4 measured one such
+    search at 207 s) and a round's leg TIMES OUT on `cycleLegMs`. An empty
+    puzzle store is also what a course with no puzzles looks like, and the
+    pass's own puzzle log line is guarded on the fetch counters, so it is
+    skipped with them. Shipped that way in v0.171.0, reported live, fixed in
+    v0.171.1 along with the two things the same report exposed: `pz.store` must
+    SWITCH WITH THE COURSE in `cycleSwitch` (it is written back under
+    `st.bid`, so a round filed one course's anchors, candidates and tombstones
+    into another course's slice — §27b's contamination one store over), and
+    `fillPuzzleQueue()` must be called after a pass, which is §14.13's rule
+    applied to the position queue and not to this one.
   * PICKED AT RANDOM AMONG SURVIVORS, never top-rated first: the build keeps at
     most 2000 puzzles per position BY RATING, so "highest rating" is the
     dataset's own truncation bias and would serve a diet of 2900s.

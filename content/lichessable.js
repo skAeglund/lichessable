@@ -41402,6 +41402,47 @@
           // spends tens of seconds of Stockfish on a position about to go.
           dropCoveredStored();
         }
+        // §29) THE PUZZLE STAGES, FIRST — before a single frontier is walked,
+        // and this is a REPAIR of where they sat from v0.171.0.
+        //
+        // They compete for nothing the loop below wants: no ChessDB request, no
+        // engine, no explorer. That was already the argument for not
+        // interleaving them; what it missed is that it is also the argument for
+        // not putting them LAST. Sitting after the walk they were guarded on
+        // `st.gathering` and the leg's clock — i.e. on the pass NOT having
+        // ended — and both of the ways a real pass ends clear exactly those:
+        // `stopGather` (a hand-pressed gather walks up to `gatherTarget` = 200
+        // frontiers with a depth-20 search after each, so it is stopped, not
+        // finished) and `cycleLegMs` (a round's leg times out long before 33-72
+        // frontiers are walked). So they almost never ran. Reported live: 100%
+        // puzzles, gathered by hand and by round, and not one index shard was
+        // ever fetched — which is indistinguishable from the dataset simply
+        // having nothing for the course.
+        //
+        // BOTH ARE BOUNDED PER PASS and stage A is the one that matters:
+        // ~0.9 MB parsed per index shard against 161-182 anchors on a real
+        // course, so a course is covered over roughly twenty legs of an
+        // overnight round rather than in one sitting. That bound is what makes
+        // going first cheap: a pass stopped in its opening seconds has spent
+        // eight shard fetches on the thing the user switched on by name.
+        //
+        // ONLY WHEN THE USER HAS SWITCHED PUZZLES ON. This is the fourth host
+        // permission and a third party seeing the repertoire's positions, so a
+        // profile that has not asked for puzzles must never send it a request —
+        // section 26's gate, for section 26's reason.
+        //
+        // …AND THE STORE MAY NOT BE LOADED YET. `startSession` reads it, but a
+        // gather pressed during the pre-roll can beat that read home, and a
+        // round switches courses without going through it at all — and stage A
+        // answers 0 with no store rather than saying so.
+        if (pz.on && st.gathering) {
+          if (!pz.store) await loadPuzzleStore(st.bid);
+          await ensurePuzzleMeta();
+          await gatherPuzzleCandidates(o.puzzleShards);
+          if (st.gathering) await gatherPuzzleBodies(o.puzzleBodies);
+          await savePuzzleStore();
+          render();
+        }
         while (st.gathering &&
                st.gathered < want &&
                st.cdbCount < st.gatherCap &&
@@ -41421,28 +41462,6 @@
           if (C.deepenPerFrontier > 0 && st.gathering) {
             if (await deepenSome(C.deepenPerFrontier)) await saveStore();
           }
-        }
-        // §29) THE PUZZLE STAGES, between the walk and the scoring. Here
-        // rather than interleaved with the frontiers because they compete for
-        // nothing — no ChessDB request, no engine, no explorer — so there is
-        // no reason to spend a leg alternating, and a pass stopped early is
-        // better having finished one job than having half-done two.
-        //
-        // BOTH ARE BOUNDED PER PASS and stage A is the one that matters:
-        // ~0.9 MB parsed per index shard against 161-182 anchors on a real
-        // course, so a course is covered over roughly twenty legs of an
-        // overnight round rather than in one sitting.
-        //
-        // ONLY WHEN THE USER HAS SWITCHED PUZZLES ON. This is the fourth host
-        // permission and a third party seeing the repertoire's positions, so a
-        // profile that has not asked for puzzles must never send it a request —
-        // section 26's gate, for section 26's reason.
-        if (pz.on && st.gathering && (!until || Date.now() < until)) {
-          await ensurePuzzleMeta();
-          await gatherPuzzleCandidates(o.puzzleShards);
-          if (st.gathering) await gatherPuzzleBodies(o.puzzleBodies);
-          await savePuzzleStore();
-          render();
         }
         // §23) PHASE TWO: keep scoring until the store has nothing left. This
         // is the half that is meant to be left running — the walk is bounded by
@@ -41543,6 +41562,13 @@
           if (st.running && !st.over && !st.started) {
             st.storeQueue = storeDraw();
             produceFromStore();
+            // §29) …AND THE PUZZLE QUEUE, on §14.13's rule exactly: a pass must
+            // feed the session it lands in. It is drawn once, in
+            // `startSession`, and this pass is what has just filled the store
+            // behind it — so without this a gather could buy a dozen puzzles
+            // and the session that asked for them would still deal none, which
+            // is indistinguishable from the gather having found nothing.
+            fillPuzzleQueue();
           }
           // A gather is the one moment there is definitely something worth
           // carrying — it is also the pass a user leaves running and walks away
@@ -41652,6 +41678,9 @@
       st.poolSize = 0;
       if (same) return;
       await saveStore();
+      // §29) …and the puzzle slice, which is dirty for the same reasons and is
+      // about to be pointed at another course.
+      await savePuzzleStore();
       if (st.goneDirty) await saveSyncMeta();
       st.bid = String(bid);
       st.name = '';
@@ -41662,8 +41691,18 @@
       st.storeQueue = null;
       st.seen = new Set();
       st.pgn = new Map();
+      // §29) THE PUZZLE STORE IS PER COURSE AND MUST SWITCH WITH IT. It is
+      // written back under `st.bid`, so a leg that changed courses without this
+      // filed the NEW course's anchors, candidates and tombstones into the OLD
+      // course's slice — §27b's contamination one store over, and just as
+      // silent: every number stays plausible and the puzzles are simply about
+      // the wrong repertoire. `seen` and `queue` are per session and go too.
+      pz.store = null;
+      pz.seen = new Set();
+      pz.queue = [];
       await loadStore();
       await loadSyncMeta();
+      await loadPuzzleStore(st.bid);
       render();
     }
 
@@ -41704,6 +41743,9 @@
       if (st.running && !st.over && !st.started) {
         st.storeQueue = storeDraw();
         produceFromStore();
+        // §29) …and the puzzle queue with it, for the same reason and on the
+        // same course: `cycleSwitch` above has just loaded this course's slice.
+        fillPuzzleQueue();
       }
     }
 
