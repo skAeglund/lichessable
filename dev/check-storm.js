@@ -80,12 +80,47 @@
  *     castling cases, and NOTHING else — which is exactly why it is invisible)
  *   * …its comparator reversed                             → 4 fail
  *   * `stormFilterSource` returning the whole store        → 3 fail
+ *
+ * §29's controls, run 2026-09-01, each failing on exactly its own assertions
+ * and no others. Everything here is silent in the same way: a puzzle that will
+ * not replay still looks like a puzzle in storage, and a wire merge that
+ * double-counts keeps producing plausible, growing numbers.
+ *   * `moves[0]` applied as an opponent set-up move        → 4 fail (the raw
+ *     Lichess CSV's convention, which this dataset does NOT use)
+ *   * every ply counted as the user's                      → 2 fail (an
+ *     even-length puzzle then counts up to a move never asked for)
+ *   * the draw order reversed, hardest first               → 1 fail (§14.15's
+ *     rule in its third home, and silent from the outside)
+ *   * the random tie-break dropped                         → 1 fail
+ *   * the anchor FLOOR removed                             → 1 fail (the floor
+ *     IS the feature: below it a "match" means the game shares an opening)
+ *   * `minPly` kept per line instead of course-wide        → 1 fail
+ *   * the line end left out of the anchors                 → 3 fail
+ *   * a malformed body stored rather than refused          → 1 fail
+ *   * `statMapOf` not knowing about puzzles                → 1 fail (the third
+ *     map then stays empty for ever while looking implemented)
+ *   * the puzzle retention rule inverted                   → 2 fail
+ *   * a zero tombstone read as a real retirement           → 1 fail (and note
+ *     the assertion had to be asked NEAR THE EPOCH: at the far clock the first
+ *     version of it passed for the wrong reason and covered nothing)
+ *   * the anchor scope filter passing everything           → 1 fail
+ *   * the wire merge summing `k` instead of taking the max → 1 fail
+ *   * …ignoring the LOCAL tombstones                       → 2 fail
+ *   * …ignoring the REMOTE tombstones                      → 3 fail
+ *   * the wire pack ignoring its budget                    → 2 fail
+ *   * …carrying candidates as well as ready puzzles        → 1 fail
+ *   * the payload no longer naming its course (§27b)       → 1 fail
  */
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const { sliceDecl, findDecl, SRC_PATH } = require('./slice-source.js');
 const CloSan = require('../engine/san.js');
+// §29) The puzzle dataset primitives. Required rather than sliced: that file
+// is a module in its own right (engine/san.js's idiom) and has its own check,
+// `dev/check-puzzles.js`. What is needed here is only that the sliced walks
+// can call `fenPositionKey` while collecting anchors.
+const CloPuzzles = require('../content/puzzles.js');
 
 // --- the surrounding closure, faithful to the shipped file -------------------
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -223,6 +258,27 @@ const src = [
   sliceDecl('stormSetHeld'),
   sliceDecl('stormSetOutcome'),
   sliceDecl('stormSetTally'),
+  // §29) The anchor collector, which BOTH walks now call — so without it the
+  // slice throws before a single assertion runs.
+  sliceDecl('stormAnchorAdd'),
+  sliceDecl('stormFilterAnchors'),
+  // …and the pure puzzle rules. Every one of them fails silently: a draw
+  // comparator that is wrong still returns every puzzle in a plausible order
+  // (§14.15), a retention rule that is wrong still keeps a store, and a ply
+  // walk that mis-reads the move list still produces a card.
+  sliceDecl('stormPuzzleBlank'),
+  sliceDecl('stormPuzzleCand'),
+  sliceDecl('stormPuzzleReady'),
+  sliceDecl('stormPuzzlePlies'),
+  sliceDecl('stormPuzzleUserPlies'),
+  sliceDecl('stormPuzzleRetain'),
+  sliceDecl('stormPuzzleDraw'),
+  sliceDecl('stormPuzzleDone'),
+  sliceDecl('cardLineRef'),
+  sliceDecl('stormPuzzleCardName'),
+  sliceDecl('stormPuzzleWirePack'),
+  sliceDecl('stormPuzzleWireUnpack'),
+  sliceDecl('stormPuzzleWireMerge'),
   sliceDecl('stormCandidate'),
   sliceDecl('stormAdvance'),
   sliceDecl('stormReentered'),
@@ -268,6 +324,12 @@ const src = [
   '         stormSetClean, stormSetHeld, stormSetOutcome, stormSetTally,' +
   '         stormEstimated, stormSourceLabel, stormSourceTitle,' +
 '         stormVerdictLine, stormBestLine,' +
+  '         walkVariation, stormAnchorAdd, stormFilterAnchors,' +
+  '         stormPuzzleBlank, stormPuzzleCand, stormPuzzleReady,' +
+  '         stormPuzzlePlies, stormPuzzleUserPlies, stormPuzzleRetain,' +
+  '         stormPuzzleDraw, stormPuzzleDone, cardLineRef,' +
+  '         stormPuzzleCardName, stormPuzzleWirePack,' +
+  '         stormPuzzleWireUnpack, stormPuzzleWireMerge,' +
   '         sanToUci, fenAfterUci };',
 ].join('\n');
 // eslint-disable-next-line no-new-func
@@ -282,9 +344,21 @@ const engineHost = {
   sync: () => { engineHost.synced++; },
   synced: 0,
 };
-const S = new Function('CloSan', 'squareName', 'cacheKey', 'START_FEN', 'warn', 'log',
+// §29) `pliesBefore` is 19c's, top level in the shipped file and used by the
+// anchor collector to number a position ABSOLUTELY in the game — which is what
+// makes a custom-start line fall out of the band by itself instead of having
+// its first position numbered 0.
+const pliesBefore = (fen) => {
+  const parts = String(fen || '').trim().split(/\s+/);
+  const full = Number(parts[5]);
+  if (!Number.isInteger(full) || full < 1) return null;
+  if (parts[1] !== 'w' && parts[1] !== 'b') return null;
+  return 2 * (full - 1) + (parts[1] === 'b' ? 1 : 0);
+};
+const S = new Function('CloSan', 'CloPuzzles', 'pliesBefore',
+  'squareName', 'cacheKey', 'START_FEN', 'warn', 'log',
   'sleepMs', 'state', 'engineSend', 'engineProfile', 'pingEngineIfSilent', 'syncEngine', src)(
-  CloSan, squareName, cacheKey, START_FEN, warn, warn, sleepMs,
+  CloSan, CloPuzzles, pliesBefore, squareName, cacheKey, START_FEN, warn, warn, sleepMs,
   engineHost.state,
   (msg) => engineHost.send(msg),
   () => engineHost.profile(),
@@ -397,6 +471,16 @@ const C = {
   // section 15 asserts that — the two profiles are what it stopped being, and a
   // map restored here would put a phone's depth-18 lists into the same store as
   // a desktop's depth-20 ones under the same `d` field.
+  // §29) The puzzle retention list. Read the way `storeDropOn` is, and
+  // asserted to have the same membership — the two are written out twice on
+  // purpose, so a change to either has to be a deliberate change to the other.
+  puzzleDropOn: (cfgBody.match(/puzzleDropOn:\s*\[([^\]]*)\]/) || [, ''])[1]
+    .split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean),
+  puzzleAnchorMinPly: num('puzzleAnchorMinPly'),
+  puzzleAnchorMaxPly: num('puzzleAnchorMaxPly'),
+  puzzlesPerAnchor: num('puzzlesPerAnchor'),
+  puzzleReadyMax: num('puzzleReadyMax'),
+  puzzleCandMax: num('puzzleCandMax'),
   deepenDepth: num('deepenDepth'), deepenMinMoves: num('deepenMinMoves'),
   deepenMultipv: num('deepenMultipv'), deepenStallMs: num('deepenStallMs'),
 };
@@ -3635,6 +3719,375 @@ const leadsTo = (arrived, fen) => {
       eq('a position stored under a line the scope excludes is dropped',
         Object.keys(S.stormFilterStore(wrongFirst, through).kept).length, 0);
     }
+  }
+
+
+  // ----------------------------------------------------------------------
+  // 29) PUZZLES FROM THE GAMES THAT PLAYED YOUR LINES (§29)
+  //
+  // Everything here fails SILENTLY, which is why it is executed rather than
+  // read. A puzzle that will not replay still looks like a puzzle in storage;
+  // a draw comparator that is wrong still returns every puzzle in a plausible
+  // order (§14.15's rule, third home); an anchor band that has lost its floor
+  // still produces anchors, just generic ones; and the two-list store still
+  // holds things whichever list they are in.
+  //
+  // FOUR THINGS IN PARTICULAR:
+  //  * the BODY'S `fen` IS THE SOLVER'S POSITION and `moves[0]` is the USER's
+  //    move. The raw Lichess CSV differs, so an implementation that "helpfully"
+  //    applies the first move as the opponent's produces a card that asks the
+  //    user for the reply to a move nobody saw.
+  //  * an EVEN-LENGTH `moves` means the opponent has the last word. Get the
+  //    user's-move count wrong and the panel counts up to a move that is never
+  //    asked for.
+  //  * the ANCHOR BAND's floor, without which a game sharing two opening moves
+  //    is treated as a game that played the line.
+  //  * `minPly` IS COURSE-WIDE, not per line: a position any line reaches
+  //    shallowly is a generic position however deep another line gets to it.
+  // ----------------------------------------------------------------------
+  // Its own clock: the one at section 14.16 is local to that block.
+  const NOW29 = 1e12;
+  console.log('\n-- 29) puzzles (§29) --\n');
+  {
+    const body = {
+      id: 'aBcD1',
+      // White to move and to solve.
+      fen: 'r3k2r/1pp1nppp/p2pR3/7Q/8/B1q5/P1P2PPP/R5K1 w kq - 0 16',
+      moves: ['a1e1', 'e8g8', 'e6e3', 'c3c6', 'e3e7'],
+      previousFen: 'r3k2r/1pp1nppp/p1qpR3/7Q/8/B1P5/P1P2PPP/R5K1 b kq - 0 15',
+      previousMove: 'c6c3',
+      rating: 2147,
+      themes: ['advantage', 'fork', 'long', 'middlegame'],
+      gameUrl: 'https://lichess.org/aOg3Z6Zd',
+      opening: 'Scotch Game',
+    };
+    const cand = { i: 'aBcD1', r: 2147, c: 'w', p: 14, s: 30,
+      k: 'anchor-key', o: 'oid-1', n: 'Scotch: 4...Qh4', t: 1 };
+
+    const ready = S.stormPuzzleReady(body, cand);
+    eq('a body becomes a ready puzzle', Boolean(ready), true);
+    eq('...keeping the solver own FEN verbatim', ready.f, body.fen);
+    eq('...the moves as one uci string', ready.m, 'a1e1 e8g8 e6e3 c3c6 e3e7');
+    eq('...the game url, the only route back to the game', ready.g, body.gameUrl);
+    // §15) The ANCHOR's line, not the puzzle's — a body knows nothing about
+    // this course, so if this is ever dropped the third stats map fills up
+    // under one blank oid and every row reads "line not recorded".
+    eq('...and the anchor line, carried from the candidate', ready.o, 'oid-1');
+    eq('...with the anchor depth beside it', ready.ap, 14);
+    eq('a fresh puzzle has never been missed', ready.k, 0);
+
+    eq('a body with no moves is refused, not stored half-built',
+      S.stormPuzzleReady({ ...body, moves: [] }, cand), null);
+    eq('a body with no fen is refused',
+      S.stormPuzzleReady({ ...body, fen: '' }, cand), null);
+    // A move too short to be a uci would produce a ply list that silently
+    // stopped early — a puzzle solved one move before its real end.
+    eq('a body with a malformed move is refused',
+      S.stormPuzzleReady({ ...body, moves: ['a1e1', 'e8'] }, cand), null);
+
+    const plies = S.stormPuzzlePlies(ready);
+    eq('every move of the solution replays', plies.length, 5);
+    // THE GOVERNING RULE: `fen` is where the SOLVER moves, so ply 0 is theirs.
+    eq('the first ply is the USER move, not an opponent set-up move',
+      plies[0].color, 'w');
+    eq('...and it is moves[0] itself', plies[0].uci, 'a1e1');
+    eq('the plies alternate', plies.map((p) => p.color).join(''), 'wbwbw');
+    eq('each ply carries the position after it', plies[4].fen.split(' ')[1], 'b');
+    // SAN is what the panel and the review print; a null renders as
+    // "undefined is not it."
+    eq('every ply resolves to a SAN', plies.every((p) => Boolean(p.san)), true);
+
+    // ODD length: the user has the last word, so 3 of the 5 are theirs.
+    eq('an odd-length puzzle ends on the user, who plays 3 of its 5 plies',
+      S.stormPuzzleUserPlies(plies, 'w'), 3);
+    // EVEN length: the opponent replies last, and that reply is NOT asked for.
+    // Counting it makes the panel say "move 3 of 3" for a move never asked.
+    const evenReady = S.stormPuzzleReady(
+      { ...body, moves: ['a1e1', 'e8g8', 'e6e3', 'c3c6'] }, cand);
+    const evenPlies = S.stormPuzzlePlies(evenReady);
+    eq('an even-length puzzle ends on the OPPONENT', evenPlies[3].color, 'b');
+    eq('...so only two of its four plies are asked for',
+      S.stormPuzzleUserPlies(evenPlies, 'w'), 2);
+
+    // Refused rather than guessed at (`drillLine`'s rule), and BEFORE a board
+    // is opened rather than after.
+    eq('a puzzle whose moves will not replay is refused',
+      S.stormPuzzlePlies({ ...ready, m: 'a1e1 h8h1' }), null);
+    eq('an empty move list is refused', S.stormPuzzlePlies({ ...ready, m: '' }), null);
+
+    const store = S.stormPuzzleBlank();
+    store.r.solved = { i: 'solved', k: 0, t: 1 };
+    store.r.missed = { i: 'missed', k: 0, t: 1 };
+    eq('the config says which verdicts drop a puzzle',
+      C.puzzleDropOn, ['great', 'good']);
+    // Same MEMBERSHIP as the position store's, written out twice on purpose: a
+    // change to either has to be a deliberate change to the other rather than
+    // one edit that silently moved both.
+    eq('...which is the same membership the position store drops on',
+      C.puzzleDropOn, C.storeDropOn);
+    eq('a solved puzzle leaves the store',
+      S.stormPuzzleRetain(store, 'solved', 'great', C), false);
+    eq('a missed one stays and comes round again',
+      S.stormPuzzleRetain(store, 'missed', 'blunder', C), true);
+    eq('...and so does one that was never there',
+      S.stormPuzzleRetain(store, 'absent', 'great', C), false);
+
+    // §14.16 in its second home. Stage A is deterministic given an anchor, so
+    // a solved puzzle found again at the same position would be re-bought and
+    // re-offered — absence alone is not retirement.
+    const DAY29 = 24 * 60 * 60 * 1000;
+    eq('a puzzle retired today is still retired',
+      S.stormPuzzleDone({ p1: NOW29 - DAY29 }, 'p1', C, NOW29), true);
+    eq('...and one retired beyond the horizon is offerable again',
+      S.stormPuzzleDone({ p1: NOW29 - (C.goneDays + 1) * DAY29 }, 'p1', C, NOW29), false);
+    // A zero timestamp is "no record", never "retired at the epoch" — the rule
+    // `stormDone` follows, and the one a truthiness test gets wrong.
+    eq('a puzzle with no tombstone is not retired',
+      S.stormPuzzleDone({}, 'p1', C, NOW29), false);
+    // ASKED CLOSE TO THE EPOCH, deliberately. At NOW29 a zero timestamp is
+    // millennia past the horizon, so it reads "not retired" whether the entry is
+    // tested or merely the map — i.e. the assertion passes for the wrong reason
+    // and covers nothing. One day in, the epoch IS inside the horizon, so only
+    // code that tests the ENTRY answers false. (Found by a control: the first
+    // version of this line survived the very bug it was written for.)
+    eq('...and a zero timestamp reads as no record, not as the epoch',
+      S.stormPuzzleDone({ p1: 0 }, 'p1', C, DAY29), false);
+
+    // A REVERSED COMPARATOR IS SILENT: every puzzle is still returned, in a
+    // plausible sequence, and nothing says which was meant first.
+    const drawStore = S.stormPuzzleBlank();
+    drawStore.r.fresh = { i: 'fresh', k: 0 };
+    drawStore.r.missedOnce = { i: 'missedOnce', k: 1 };
+    drawStore.r.missedTwice = { i: 'missedTwice', k: 2 };
+    const seq29 = [0.9, 0.1, 0.5];
+    let ri29 = 0;
+    eq('unseen first, most-missed last — never the other way round',
+      S.stormPuzzleDraw(drawStore, () => seq29[(ri29++) % seq29.length], C),
+      ['fresh', 'missedOnce', 'missedTwice']);
+    // The random term stops one course dealing in the same sequence every
+    // session; it must sit BELOW `k`, never above it.
+    const tied = S.stormPuzzleBlank();
+    tied.r.a = { i: 'a', k: 0 };
+    tied.r.b = { i: 'b', k: 0 };
+    tied.r.c = { i: 'c', k: 0 };
+    const tiedSeq = [0.7, 0.2, 0.4];
+    let tj = 0;
+    eq('...and ties are broken at random, not by insertion order',
+      S.stormPuzzleDraw(tied, () => tiedSeq[(tj++) % 3], C), ['b', 'c', 'a']);
+
+    // §15's third map. A puzzle is answered and a position is graded, and the
+    // two bands mean different things — pooling them makes one percentage out
+    // of two questions.
+    eq('the record has three maps now', S.STAT_MAPS, ['lines', 'ulines', 'plines']);
+    eq('a puzzle card is counted in plines',
+      S.statMapOf({ puzzle: { id: 'x' } }), 'plines');
+    eq('...a frontier card still in lines', S.statMapOf({ storm: {} }), 'lines');
+    eq('...and an uncovered one still in ulines',
+      S.statMapOf({ storm: { unc: {} } }), 'ulines');
+    // A puzzle has no `storm` block at all, so a reader that looks there finds
+    // nothing and the third map stays empty for ever while looking implemented.
+    eq('a puzzle card names its anchor line',
+      S.cardLineRef({ puzzle: { oid: 'oid-1', from: 'Scotch' } }),
+      { oid: 'oid-1', from: 'Scotch' });
+    eq('...and a graded card still names its frontier line',
+      S.cardLineRef({ storm: { oid: 'oid-2', from: 'Sicilian' } }),
+      { oid: 'oid-2', from: 'Sicilian' });
+    eq('...and a card that is neither names nothing', S.cardLineRef({}), null);
+  }
+
+  // ----------------------------------------------------------------------
+  // 29b) THE ANCHOR BAND (§3)
+  //
+  // The floor is the feature and the ceiling is the budget. Measured
+  // 2026-09-01 on a 38-ply line of course 453453: plies 2/4/6/8 list
+  // 1434/1422/1451/1322 puzzles and plies 10/12/14/16 list 33/10/37/8. Below
+  // the floor a "match" means the game shares an opening; above the ceiling a
+  // position is so specific that a 0.9 MB shard comes back with nothing.
+  // ----------------------------------------------------------------------
+  console.log('\n-- 29b) the puzzle anchor band (§3) --\n');
+  {
+    const bandCfg = { ...C, puzzleAnchorMinPly: 10, puzzleAnchorMaxPly: 16 };
+    // 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 — 12 plies, so
+    // its positions run from ply 0 to ply 12 and only plies 10-12 are in band.
+    const line = {
+      oid: 'oid-9', name: 'Ruy Lopez: Closed', color: 'white',
+      sans: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'Ba4', 'Nf6', 'O-O', 'Be7',
+        'Re1', 'b5'],
+    };
+    const w = S.walkVariation(line);
+    eq('the fixture line replays', Boolean(w), true);
+
+    const anchors = new Map();
+    S.stormAnchorAdd(anchors, w, line, 'w', bandCfg);
+    const plies29 = [...anchors.values()].map((a) => a.ply).sort((a, b) => a - b);
+    eq('only positions inside the band become anchors', plies29, [10, 11, 12]);
+    // THE LINE END IS INCLUDED. `w.plies[i].before` leaves out the position the
+    // line stops on, which on a short line is the deepest thing the course has.
+    eq('...the line end among them', plies29[plies29.length - 1], 12);
+    const one = [...anchors.values()][0];
+    eq('an anchor carries the line it belongs to', one.oids, ['oid-9']);
+    eq('...and its name, for the card', one.names, ['Ruy Lopez: Closed']);
+    eq('...and the side the LINE is written for, not the side to move',
+      one.sides, { w: true });
+
+    // THE FLOOR IS THE FEATURE. Without it every ply of every line is an
+    // anchor, and the shallow ones are exactly the generic positions that make
+    // "this game played my line" untrue.
+    const noFloor = new Map();
+    S.stormAnchorAdd(noFloor, w, line, 'w', { ...bandCfg, puzzleAnchorMinPly: 0 });
+    eq('dropping the floor admits every position of the line', noFloor.size, 13);
+
+    // §29) BAND MEMBERSHIP IS COURSE-WIDE, decided by a position's SHALLOWEST
+    // ply anywhere in the course. Two lines that transpose reach the same board
+    // at different depths, and the shallow sighting is what makes it generic —
+    // written per line instead, this still produces a plausible anchor set with
+    // the generic positions quietly back in it.
+    //
+    // The fixture: A reaches the post-Nf3/Nf6 board in 2 plies, B reaches the
+    // SAME board in 6 by shuffling the knights out and back.
+    const shallow = { oid: 'oid-S', name: 'Direct', color: 'white',
+      sans: ['Nf3', 'Nf6'] };
+    const roundabout = { oid: 'oid-R', name: 'Roundabout', color: 'white',
+      sans: ['Nc3', 'Nc6', 'Nb1', 'Nb8', 'Nf3', 'Nf6'] };
+    const openBand = { ...C, puzzleAnchorMinPly: 0, puzzleAnchorMaxPly: 20 };
+    const sharedKey = CloPuzzles.fenPositionKey(S.walkVariation(shallow).end);
+    eq('the two fixture lines really do transpose',
+      CloPuzzles.fenPositionKey(S.walkVariation(roundabout).end), sharedKey);
+    // DEEP FIRST, then shallow: the shallow sighting must LOWER it.
+    const orderA = new Map();
+    S.stormAnchorAdd(orderA, S.walkVariation(roundabout), roundabout, 'w', openBand);
+    S.stormAnchorAdd(orderA, S.walkVariation(shallow), shallow, 'w', openBand);
+    eq('a transposed position keeps the shallowest ply, deep line seen first',
+      orderA.get(sharedKey).ply, 2);
+    // …and the other way round, which is what makes the rule order-independent
+    // rather than an accident of which line the course lists first.
+    const orderB = new Map();
+    S.stormAnchorAdd(orderB, S.walkVariation(shallow), shallow, 'w', openBand);
+    S.stormAnchorAdd(orderB, S.walkVariation(roundabout), roundabout, 'w', openBand);
+    eq('…and shallow line seen first', orderB.get(sharedKey).ply, 2);
+    eq('…attributed to both lines either way',
+      orderB.get(sharedKey).oids.slice().sort(), ['oid-R', 'oid-S']);
+    // A position both colours reach keeps both sides: the lookup then filters
+    // each separately, since `m[2]` is the colour that SOLVES a puzzle.
+    const mixed = new Map();
+    S.stormAnchorAdd(mixed, w, line, 'w', bandCfg);
+    S.stormAnchorAdd(mixed, w, { ...line, oid: 'oid-B' }, 'b', bandCfg);
+    eq('a position reached by lines of both colours keeps both',
+      [...mixed.values()][0].sides, { w: true, b: true });
+
+    // The scope filter, §14.21's rule applied to anchors: any line in scope
+    // keeps the anchor, and the map's identity survives.
+    const scoped = S.stormFilterAnchors(anchors, new Set(['oid-9']));
+    eq('an anchor whose line is in scope survives', scoped.size, anchors.size);
+    const cut29 = S.stormFilterAnchors(anchors, new Set(['nope']));
+    eq('...and one whose lines are all out of scope does not', cut29.size, 0);
+    eq('no scope is a no-op', S.stormFilterAnchors(anchors, null), anchors);
+  }
+
+
+  // ----------------------------------------------------------------------
+  // 29c) THE PUZZLE WIRE (§29)
+  //
+  // A CARD OF ITS OWN (§15.3), because the position payload is CUT to fit its
+  // budget and a puzzle folded into it would be dropped whenever a position
+  // list ran long — silently, and after the ~331 KB body fetch had been paid
+  // for. Only the READY list travels: candidates are index tuples any machine
+  // with the dataset can regenerate.
+  //
+  // Every failure here is invisible from the outside — a merge that loses a
+  // tombstone puts a solved puzzle back for ever, and one that drops the
+  // budget check writes a card Chessable will not hold.
+  // ----------------------------------------------------------------------
+  console.log('\n-- 29c) the puzzle wire (§29) --\n');
+  {
+    const mk = (id, t) => ({ i: id, f: 'r3k2r/1pp1nppp/p2pR3/7Q/8/B1q5/P1P2PPP/R5K1 w kq - 0 16',
+      m: 'a1e1 e8g8', r: 1500, o: 'oid-1', n: 'Line', ap: 12,
+      pf: '', pm: '', g: '', op: '', th: [], k: 0, t });
+
+    const local = S.stormPuzzleBlank();
+    local.r.mine = mk('mine', 3);
+    const packed = S.stormPuzzleWirePack(local, C, 120000, '453453');
+    eq('the payload names its course (§27b)', packed.b, '453453');
+    eq('...and carries the ready puzzle', Object.keys(packed.p), ['mine']);
+    eq('...and says how many', packed.n, 1);
+    // CANDIDATES DO NOT TRAVEL. They are regenerable and would eat the budget.
+    local.c.acand = { i: 'acand' };
+    eq('candidates are not carried',
+      Object.keys(S.stormPuzzleWirePack(local, C, 120000, '453453').p), ['mine']);
+
+    const round = S.stormPuzzleWireUnpack(packed, C);
+    eq('a payload round-trips', Object.keys(round.store), ['mine']);
+    eq('...keeping the solver position', round.store.mine.f, local.r.mine.f);
+    eq('...and the moves', round.store.mine.m, 'a1e1 e8g8');
+    eq('...and the anchor line, which §15 counts against', round.store.mine.o, 'oid-1');
+    // A version this build does not understand is refused WHOLE: every field it
+    // has is a field this one also has, so a half-read is the silent shape.
+    eq('a payload of another wire version is refused',
+      S.stormPuzzleWireUnpack({ ...packed, v: 99 }, C), null);
+    eq('a payload with no puzzle map is refused',
+      S.stormPuzzleWireUnpack({ v: C.puzzleWireVersion }, C), null);
+
+    // §27b's guard, reused verbatim rather than copied.
+    eq('a card naming another course is foreign',
+      S.stormWireForeign(round, '291847'), true);
+    eq('...and one naming this course is not',
+      S.stormWireForeign(round, '453453'), false);
+    // An upgrading device's own card says nothing, and refusing THAT is the one
+    // thing that would break the exchange this guard exists to protect.
+    eq('...and one that does not say is not foreign',
+      S.stormWireForeign({ ...round, bid: '' }, '453453'), false);
+
+    // --- the merge ------------------------------------------------------
+    const a = S.stormPuzzleBlank();
+    a.r.shared = mk('shared', 1);
+    a.r.onlyA = mk('onlyA', 1);
+    const remote = { shared: mk('shared', 1), onlyB: mk('onlyB', 1) };
+    const m1 = S.stormPuzzleWireMerge(a, remote, {});
+    eq('the merge takes what the other device has', m1.added, 1);
+    eq('...and holds all three', Object.keys(a.r).sort(), ['onlyA', 'onlyB', 'shared']);
+    // A SECOND EXCHANGE ADDS NOTHING. §15's own lesson: a merge that
+    // double-counts keeps producing plausible, growing numbers, and this is the
+    // only assertion a double-count can be seen in.
+    const m2 = S.stormPuzzleWireMerge(a, remote, {});
+    eq('a second exchange adds nothing', m2.added, 0);
+    eq('...and the store is unchanged', Object.keys(a.r).length, 3);
+
+    // `k` takes the HIGHER: both devices' misses are real misses.
+    const bumped = S.stormPuzzleBlank();
+    bumped.r.x = mk('x', 1);
+    S.stormPuzzleWireMerge(bumped, { x: { ...mk('x', 1), k: 3 } }, {});
+    eq('a miss count merges upwards', bumped.r.x.k, 3);
+    S.stormPuzzleWireMerge(bumped, { x: { ...mk('x', 1), k: 1 } }, {});
+    eq('...and never downwards', bumped.r.x.k, 3);
+
+    // TOMBSTONES, APPLIED AFTER THE UNION. Without them a puzzle the retention
+    // rule dropped comes back from the other device's snapshot every exchange.
+    const solved = S.stormPuzzleBlank();
+    solved.g.gonepz = NOW29;
+    const m3 = S.stormPuzzleWireMerge(solved, { gonepz: mk('gonepz', 1) }, {});
+    eq('a puzzle retired HERE is not taken back', Boolean(solved.r.gonepz), false);
+    eq('...and is counted as already learned', m3.dropped, 1);
+    // …and the other direction: their retirement removes ours.
+    const keeping = S.stormPuzzleBlank();
+    keeping.r.theirs = mk('theirs', 1);
+    const m4 = S.stormPuzzleWireMerge(keeping, {}, { theirs: NOW29 });
+    eq('a puzzle retired THERE leaves here too', Boolean(keeping.r.theirs), false);
+    eq('...and the tombstone is kept, so it stays gone', keeping.g.theirs, NOW29);
+    eq('...counted as learned elsewhere', m4.dropped, 1);
+
+    // --- the budget -----------------------------------------------------
+    // A card Chessable will not hold is worse than a short one, so the pack
+    // CUTS rather than overflowing — and it measures the ENCODED size, base32
+    // being what actually goes into the comment.
+    const many = S.stormPuzzleBlank();
+    for (let i = 0; i < 200; i++) many.r['p' + i] = mk('p' + i, i);
+    const cut = S.stormPuzzleWirePack(many, C, 4000, '453453');
+    eq('the pack cuts to fit its budget', cut.n < 200, true);
+    eq('...and stays inside it',
+      JSON.stringify(cut).length * 1.6 <= 4000 + 400, true);
+    // NEWEST FIRST: between two puzzles the other device may not hold, the one
+    // gathered most recently is the one it is least likely to have.
+    eq('...taking the newest first', Object.keys(cut.p)[0], 'p199');
   }
 
   console.log('\n' + SRC_PATH);

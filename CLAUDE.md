@@ -105,15 +105,28 @@ Currently working (v0.18.x).
 
 - `manifest.json` — MV3. Permissions: `storage` + `offscreen` + host
   permissions for `explorer.lichess.org`, `www.chessdb.cn` (section 26, added
-  v0.128.0 on explicit request) and `lichess.org` (section 27, v0.130.0, same
-  conversation — DESIGN-intuition-storm.md §10). Nothing else, keep it that way
-  — a FOURTH host needs the conversation the second and third ones got. The
-  third is the one whose guard does real work: that host serves the user's whole
-  account, so the worker allows the single path prefix
-  `https://lichess.org/game/export/` and nothing more.
+  v0.128.0 on explicit request), `lichess.org` (section 27, v0.130.0, same
+  conversation — DESIGN-intuition-storm.md §10) and
+  `skaeglund.github.io/puzzle-explorer-data/*` (section 29, v0.171.0, on
+  explicit request — DESIGN-storm-puzzles.md §9). Nothing else, keep it that way
+  — a FIFTH host needs the conversation the second, third and fourth ones got.
+  TWO of them have guards that do real work, for opposite reasons. The THIRD
+  host serves the user's whole account, so the worker allows the single path
+  prefix `https://lichess.org/game/export/` and nothing more. The FOURTH is
+  harmless by comparison — static CC0 JSON, no account, no writable endpoint —
+  and has the TIGHTEST guard anyway, because there it costs nothing: the content
+  script names a PATH and never a url, so nothing on that side can name a host
+  at all, and the manifest asks for the path prefix rather than the host.
   The CSP (`wasm-unsafe-eval`) and COOP/COEP keys exist solely so the
   offscreen document can compile WASM and use SharedArrayBuffer (engine
   threads) — do not remove them.
+- `content/puzzles.js` — the Puzzle Explorer dataset's primitives (section 29):
+  the position key, the shard hash, the theme vocabulary and the filters. Loaded
+  before `content/lichessable.js` in every frame, requireable from node
+  (`engine/san.js`'s idiom, and `dev/check-puzzles.js` executes it). Pure: no
+  `chrome.*`, no fetching — the fetch goes through the worker. IT IS A MIRROR OF
+  A PUBLISHED DATASET'S OWN CODE, not code to improve; see CLAUDE.md's section 29
+  entry for the three things in it that cannot be changed on this side alone.
 - `content/lichessable.js` — the main content script (`engine/san.js` is
   loaded before it in every frame: pure, no `chrome.*`, and section 13 needs
   its move generator). The panel runs inside
@@ -225,6 +238,12 @@ Currently working (v0.18.x).
     §16 = win probability replacing centipawns as the grade, whose §16.2 is the
     calibration against the system it replaced; §28 = the position scope, whose
     §28.2 is the castling normalisation that fails totally and silently)
+  * `DESIGN-storm-puzzles.md` — section 29 (§2 = why a puzzle is ANSWERED and
+    never graded, and the four edits section 18 needed; §3 = the anchor band,
+    which is the measurement the whole feature rests on and the thing the first
+    draft got wrong; §4 = the two gather stages and why they are split; §8 =
+    what it must never do; §10 = the two lessons about controls; §11 = what is
+    still open)
 - `DESIGN-ui-inventory.md` — every control by host and state, what competes with
   what, the agreed visual hierarchy, and the remaining change list. Read it
   before adding a control to the overstudy row or picking a colour for one; §3
@@ -4246,7 +4265,178 @@ Currently working (v0.18.x).
     being how a selector is driven). The selector half was already live: the mode,
     source and share selectors have been in this row since v0.150.0.
 
-- SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
+
+- Puzzles from the games that played your lines (section 29, v0.171.0): a
+  tactic from a real game that went through one of the course's own positions,
+  dealt instead of an ordinary storm card some fraction of the time. Source is
+  the published `puzzle-explorer-data` set, through the extension's FOURTH host
+  permission. Opt-IN and a PER CENT (`cloStormPuzzlePct`, absent = 0), in the
+  pre-roll row beside the mode and the source.
+  **READ `DESIGN-storm-puzzles.md` BEFORE CHANGING ANYTHING HERE.** What
+  follows is only what an edit ELSEWHERE can break.
+  * A PUZZLE IS ANSWERED, NOT GRADED, and the two must never be "unified". A
+    storm position has no right answer and is judged by how much of the game
+    the move gave up (§16); a Lichess puzzle has a SOLUTION, so it is played by
+    section 18's ordinary QUIZ path — which already walks a multi-ply line and
+    auto-plays the opponent's replies. No ChessDB request, no engine search, no
+    round trip. Routed through §3.4's three tiers instead, a tactic would be
+    graded "decent" for a move that is not the win, which is the one answer it
+    must not give.
+  * THE CARD SAYS WHICH MODE IT IS. `continuationStormApi.open`/`next` read
+    `card.puzzle ? 'puzzle' : 'storm'`, so no flag can disagree with a card —
+    and a storm deals both kinds from one queue, so consecutive cards regularly
+    differ. `isStormMode()` is the predicate for "section 27 is driving this
+    board"; where a test really means "a GRADED card" it stays
+    `cr.mode === 'storm'` (`tryMove`'s intercept and `moverColor`'s answer are
+    both of that kind, a puzzle being played by the quiz path).
+  * `step()`'S LINE-DONE ARM MUST NOT FALL THROUGH TO `nextLine`. A storm hands
+    cards in ONE AT A TIME — `cr.queue` holds exactly the card on the board — so
+    `nextLine` finds nothing after it and calls `finish()`, which tears the
+    overlays down and ends the session on the first puzzle solved. Section 27
+    owns the queue and the pause between cards, as it does for a position.
+  * THE ANCHOR BAND IS A FLOOR AND A CEILING, AND THE FLOOR IS THE FEATURE.
+    Measured (§3): on one 38-ply line, plies 2/4/6/8 list 1434/1422/1451/1322
+    puzzles and plies 10/12/14/16 list 33/10/37/8. Below the floor a "match"
+    means the game shared an opening. THREE rules in `stormAnchorAdd`: band
+    membership is decided by a position's SHALLOWEST ply anywhere in the course
+    (per line, it still produces a plausible anchor set with the generic
+    positions quietly back in it); ply is ABSOLUTE in the game (`pliesBefore`),
+    never an index into the line, or a custom-FEN tactics line numbers its
+    first position 0; and side comes from the LINE (24h's rule), `m[2]` being
+    the colour that SOLVES a puzzle.
+  * THE CEILING IS CLAMPED TO THE LIVE `maxEmissionPly`, never a hardcoded 22.
+    Positions deeper than that are not indexed AT ALL — a hard cliff, not a
+    taper — but it is a publish threshold a republish can raise, and a hardcoded
+    copy leaves the band permanently narrower than the data allows with nothing
+    saying so.
+  * THE PUZZLE'S OWN START PLY IS DELIBERATELY UNFILTERED. That is a different
+    question and the answer is no: the median puzzle from these games begins
+    around ply 55, so a start-ply band keeps only tactics inside the opening
+    and throws away ~95% of the supply. What matters is that the GAME played
+    the line, which is `m[3]`. Every host says so in those words and never
+    implies the tactic itself is in the opening.
+  * TWO GATHER STAGES, SPLIT BECAUSE THE COSTS ARE DIFFERENT PROBLEMS. Stage A
+    (anchors → candidates) is index-shard bound at ~0.9 MB parsed each, 136-161
+    of them for a real course, and is a ONE-OFF recorded in `store.a`. Stage B
+    (candidates → ready) is one ~331 KB body fetch per puzzle, because ids hash
+    across all 4096 body shards and batching cannot help. Only stage B is small
+    enough for §14.24's background top-up; stage A must never run there.
+  * PICKED AT RANDOM AMONG SURVIVORS, never top-rated first: the build keeps at
+    most 2000 puzzles per position BY RATING, so "highest rating" is the
+    dataset's own truncation bias and would serve a diet of 2900s.
+  * ITS STORE IS A PARALLEL SLICE (`cloStormPuzzles`), not a third entry kind in
+    `cloStormPositions`. That object is keyed on `cacheKey(fen)` and every
+    reader — `stormUnpack`, `stormStoreDraw`, `dropCoveredStored`,
+    `stormWirePack`, `backfillStoreOids`, `stormFilterSource` — assumes a
+    position shape; a discriminator inside it would put a branch in a dozen
+    functions §14 is emphatic must stay pure and executable.
+  * EACH KIND OF CARD TO ITS OWN STORE. `storeNote` is NOT called for a puzzle:
+    its FEN keyed into the POSITION store can — rarely, but a puzzle IS found
+    from a game that played these lines — collide with a real stored position
+    and retire it for an answer that was never about it. `notePuzzle` is the
+    puzzle half, and `puzzleDropOn`/`storeDropOn` are written out twice so a
+    change to either is a deliberate change to both.
+  * TOMBSTONES ARE NOT OPTIONAL (§14.16's rule, second home). Stage A is
+    deterministic given an anchor, so a solved puzzle found again at the same
+    position would be re-bought and re-offered — absence alone is not
+    retirement.
+  * ITS WIRE IS A CARD OF ITS OWN (§15.3's rule): the position payload is CUT to
+    fit its budget, so a puzzle folded into it would be dropped whenever a
+    position list ran long, silently and after the body fetch was paid for.
+    ONLY THE READY LIST TRAVELS — candidates are regenerable and would eat the
+    budget, while a ready puzzle is what a phone cannot produce. §27b's
+    `stormWireForeign` is reused VERBATIM, which is why
+    `stormPuzzleWireUnpack` must return `bid` and not `b`: named `b` it answered
+    "not foreign" for every card of every course, silently.
+  * §15 GAINS A THIRD MAP, `plines`. A puzzle is answered and a position is
+    graded, and the two bands mean different things, so pooling them makes one
+    percentage out of two questions. `statsWireVersion` stays 2 (§19's
+    precedent). `cardLineRef` is the join — a puzzle has NO `storm` block, so a
+    reader that looks there finds nothing and the map stays empty for ever while
+    looking implemented. Answers are counted against the ANCHOR's line.
+  * EITHER QUEUE IS A CARD (`haveAnyCard`, v0.171.0, found live). Puzzles live
+    in `pz.queue` and positions in `st.queue`, and `nextCard` draws
+    `puzzlePick() || st.queue.shift()` — so a ready puzzle is dealable on its
+    own. BOTH Start guards read the one predicate, or they disagree and the bug
+    wears two faces: `syncSettings` asked only about `st.queue` and left Start
+    disabled on "Finding a position…" for ever whenever the position store was
+    empty and could not be filled (a course whose frontiers ChessDB does not
+    know, a narrow scope), while the selector beside it said a puzzle was ready;
+    `startStorm` asked the same thing, so even a forced press did nothing. The
+    count sentence names whichever queue is ready, or a puzzles-only start
+    reads "0 position(s) are ready".
+  * IN `pass()` THE SET ARM COMES BEFORE THE PUZZLE ARM. Routed the other way,
+    "no idea" on a set's puzzle produces a `blunder` verdict which
+    `stormSetHeld` holds BLIND — offering "try again" to somebody who has just
+    said they have no idea, with the solution still hidden.
+  * THE REVIEW HAD TO LEARN ABOUT IT OR IT CRASHES. `revMoves`, the arrival
+    tint and the row tooltip all dereferenced `card.storm` unguarded, and the
+    review opens after EVERY session — so the first answered puzzle would have
+    thrown. A puzzle row's "best" is the SOLUTION's first move, still behind
+    §14.10a's `item.shown` gate, which matters more here than anywhere: on a
+    graded card the best move is a fact about the position, on a puzzle it IS
+    the answer.
+    …AND SO DID THE LEGEND ABOVE IT (v0.171.0, found live). `stormBestLine` and
+    `stormVerdictLine` are about a GRADED card and read the `storm` block for
+    the rank, the scored list and the win rates. `renderReview` handed one
+    `undefined` and `stormBestLine` THREW — silently, since `toggleBest` had
+    already flipped `item.shown`, so "Best move" simply did nothing on every
+    press. `stormPuzzleReviewLine(v, bestSan, shown)` is the puzzle's own pair
+    of lines and is TOP LEVEL beside the other three, for §14.7's reason. The
+    same omission ran through §14.20's three predicates: `stormEstimated`,
+    `stormSourceLabel` and `stormSourceTitle` all answered as if ChessDB had
+    scored the card — which is DESIGN-chessdb.md §3.3's rule broken about a
+    feature that never touches ChessDB at all — so each takes `v.puzzle` first.
+  * THE LIVE CARD TINTS THE BLUNDER FROM THE CARD, NOT FROM `storm`
+    (`applyStormArrival`, v0.171.0, found live). A puzzle has no `storm` block,
+    so the graded arm alone left every puzzle opening with nothing tinted while
+    its own row in the review afterwards showed the move — `renderReview`
+    already read it the right way. One expression, two readers; keep them the
+    same shape.
+  * "SHOW THE MOVE" MUST SHOW THE MOVE (`syncPuzzleUi`, v0.171.0, found live).
+    §17's masking rule is that the solution is off the panel while a position
+    is held AND the answer has not been asked for — so the gate is
+    `hold.revealed` AND NOTHING ELSE. It was absent, and both doors that set
+    that flag ("Show the move", and a set's "no idea") left the panel saying
+    only "…is not it." — a button whose own tooltip promises the solution and
+    does nothing. A live card, a blind hold and a storm's failed card are all
+    still masked, the last of those because §14.10a's review gate answers there
+    instead.
+  * IT OWNS NO BRIDGE. `stormApi` grew two members (`puzzleSolved`,
+    `puzzleFailed`), called from section 18's quiz path.
+  * NOTHING MAY BE FETCHED ON A PROFILE THAT HAS NOT SWITCHED IT ON. It is a
+    third party seeing the user's repertoire positions — section 26's gate, for
+    section 26's reason. The gather stages check `pz.on` before a single
+    request; the store is still LOADED regardless, since a wire exchange can
+    land on a session that is dealing none.
+  * IT MUST NEVER WRITE TO THE COURSE (section 24's rule, and §11's), and this
+    feature has the tempting button one line away: "add this puzzle to my
+    course" from a card. 19d/19e already do that safely, from a BOARD.
+
+- THE FOURTH HOST PERMISSION (section 29): `skaeglund.github.io/puzzle-explorer-data/*`,
+  a GitHub Pages site serving static CC0 JSON — no account, no auth, no endpoint
+  that could write. Its guard is nevertheless the TIGHTEST of the four because
+  here it costs nothing: the content script names a PATH, never a url, so no
+  argument on that side can name a host at all, and `PUZZLE_PATH_RE` is an
+  allow-list of three shapes in `handleChessdbFetch`'s discipline. No token is
+  ever sent — this host has no notion of the user, so the Lichess bearer would
+  be a leak with no purpose. `raw.githubusercontent.com` is DELIBERATELY absent:
+  the integration guide offers it as a mirror, and a second host permission for
+  a fallback nothing needs is not a trade worth making. A 404 on an index shard
+  is "no puzzles here", not an error.
+
+- `content/puzzles.js` IS A MIRROR, NOT CODE TO IMPROVE, and that is why it is a
+  file of its own rather than a block in lichessable.js. Loaded by the manifest
+  before it, requireable from node (`engine/san.js`'s idiom), no `chrome.*` and
+  no fetching. Three things in it are shared with a published 60-million-entry
+  dataset and cannot be changed on this side alone: `fenPositionKey` must stay
+  byte-identical to upstream (its EN-PASSANT normalisation above all — drop it
+  and every position after a double pawn push misses, silently); `THEME_LIST` is
+  APPEND-ONLY, a theme's code being its array index; and `SHARD_HEX_LEN` is 3.
+  One rule reads like a bug and is not: A MISSING TUPLE FIELD PASSES EVERY
+  FILTER, so older shards keep working — branch on field PRESENCE, never on a
+  schema version, there isn't one. Themes are the single exception: `undefined`
+  PASSES and `[]` DROPS, and collapsing them is wrong in both directions at once.- SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
   (`quickEditSelectMoveEl`, hoisted out of `quickEditSelectMove` — which now just
   calls it and returns the textarea):
@@ -4267,6 +4457,7 @@ Currently working (v0.18.x).
 
 ```
 node --check content/lichessable.js
+node --check content/puzzles.js
 node --check content/pagestate.js
 node --check background.js
 node --check options/options.js
@@ -4344,6 +4535,48 @@ is exactly what a hand-picked list of cases misses. Controls run 2026-08-27:
 perspective flip) fails on 8 assertions, six of them the range sweep; collapsing
 the mate/tablebase steps into the ordinary ramp fails on 6.
 
+After touching `content/puzzles.js` — the position key, the shard hash, the
+theme vocabulary or the filters:
+
+```
+node dev/check-puzzles.js
+```
+
+It REQUIRES that file rather than slicing it (it is a module in its own right,
+`engine/san.js`'s idiom); point `CLO_PUZZLES` at a copy to run a control. Every
+failure mode in it is SILENT — it returns "no puzzles at this position", which
+is also the correct answer for most positions, so a broken key derivation and
+an empty opening are the same observation from the outside. The EN-PASSANT
+normalisation is the one the dataset's own guide calls "the single most likely
+integration bug": miss it and every position after a double pawn push returns
+nothing. Controls run 2026-09-01, each failing on exactly its own assertions:
+ep normalisation removed so everything is stripped → 1; ep KEPT without the
+capture check, which is the guide's own bug → 2; `undefined`/`[]` collapsed in
+the theme filter → 1; `m[3]`/`m[4]` swapped in both ply filters → 3;
+`filterByColor` written so a missing colour fails → 2. BOTH ep controls are
+needed and neither alone is enough — "always strip" passes the 1.e4 case and
+fails only the capturable one, "never strip" does the reverse.
+
+…and after touching section 29's own half — `stormAnchorAdd`,
+`stormFilterAnchors`, `stormPuzzleCand`/`Ready`/`Plies`/`UserPlies`/
+`Retain`/`Draw`/`Done`, `cardLineRef`, or the wire's
+`stormPuzzleCardName`/`WirePack`/`WireUnpack`/`WireMerge`. `dev/check-storm.js`
+§29, §29b and §29c execute all of them, and every failure there is silent in
+the same way: a puzzle that will not replay still looks like a puzzle in
+storage, a draw comparator that is wrong still returns every puzzle in a
+plausible order (§14.15, third home), an anchor band that has lost its floor
+still produces anchors — just generic ones — and a wire merge that
+double-counts keeps producing plausible, growing numbers. 18 controls, listed
+in that file's header. Two are worth repeating: the zero-tombstone assertion
+had to be asked NEAR THE EPOCH (at the far clock it passed for the wrong reason
+and covered nothing), and one control was a NO-OP until it was strengthened —
+a mutation that does not change behaviour proves nothing.
+
+`dev/probe-puzzles.js` is the measurement §3 rests on and the cheapest question
+to ask of a new course: it slices the shipped `stormAnchorAdd`, runs it against
+the live dataset, and reports how many anchors a band produces, what they cost
+in index shards and how many puzzles come back. `--bands` is the floor/ceiling
+sweep and needs no network at all.
 After touching section 27's producer — `stormFrontiers`, `stormDrawFrontier`,
 `stormUserEval`, `stormPgnMoves`, `stormPickReject`, `stormMoveLoss`,
 `stormMoverCp`, `stormGrade`, `stormPoints`, `stormCandidate`, `stormAdvance`,

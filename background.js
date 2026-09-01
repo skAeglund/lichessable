@@ -112,6 +112,26 @@ const CHESSDB_URL_PREFIX = 'https://www.chessdb.cn/cdb.php';
 // having even now (§2.2 — it is the fallback that still works if this
 // permission is refused or revoked).
 const GAME_URL_PREFIX = 'https://lichess.org/game/export/';
+// Puzzle Explorer's published dataset (DESIGN-storm-puzzles.md §2). The
+// extension's FOURTH host permission, and the least of the four: a GitHub
+// Pages site serving static CC0 JSON, no account behind it, no auth, and no
+// endpoint that could write anything even if one were asked for.
+//
+// The guard is nevertheless the tightest of the four, because here it costs
+// nothing to make it so: the content script names a PATH, never a url, so the
+// host is not something a caller can get wrong. The manifest asks for that same
+// path prefix rather than for the host, so nothing else on skaeglund.github.io
+// is reachable either.
+//
+// raw.githubusercontent.com is DELIBERATELY not here. The integration guide
+// offers it as a mirror; a second host permission for a fallback nothing needs
+// is not a trade worth making.
+const PUZZLE_BASE = 'https://skaeglund.github.io/puzzle-explorer-data/';
+// An allow-list of three shapes, in handleChessdbFetch's discipline. A shard
+// name is a SHA-1 prefix, so three lowercase hex characters and nothing else is
+// a complete description of every file this feature will ever read.
+const PUZZLE_PATH_RE =
+  /^(?:index[/][0-9a-f]{3}[.]json|puzzles[/][0-9a-f]{3}[.]ndjson|meta[.]json)$/;
 const TOKEN_KEY = 'lichessToken'; // must match content/lichessable.js and options/options.js
 
 // A token this browser profile can start with, so a new profile (or a reinstall,
@@ -215,6 +235,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg && msg.type === 'clo-fetch-game') {
     handleGameFetch(msg.url).then(sendResponse);
+    return true;
+  }
+  if (msg && msg.type === 'clo-fetch-puzzles') {
+    handlePuzzleFetch(msg.path, msg.as).then(sendResponse);
     return true;
   }
   if (msg && msg.type === 'clo-open-options') {
@@ -760,6 +784,41 @@ async function handleGameFetch(url) {
       return { ok: false, status: response.status, error: `HTTP ${response.status}` };
     }
     return { ok: true, data: await response.text() };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err) };
+  }
+}
+
+/**
+ * One shard of the Puzzle Explorer dataset (DESIGN-storm-puzzles.md §2).
+ *
+ * THE CALLER NAMES A PATH, NOT A URL, and that is the whole guard: no argument
+ * here can name a host, so unlike the other three fetch handlers this one
+ * cannot be pointed anywhere by a caller at all. The path is then matched
+ * against an allow-list of three shapes rather than a block-list —
+ * handleChessdbFetch's discipline, for its reason.
+ *
+ * NO TOKEN. This host has no notion of the user and nothing to authenticate
+ * against, so sending the Lichess bearer to it would be a leak with no purpose.
+ * Do not "unify" this with handleExplorerFetch.
+ *
+ * A 404 ON AN INDEX SHARD IS "NO PUZZLES HERE", NOT AN ERROR (integration guide
+ * §4.1). All 4096 currently exist, but a republish with different thresholds
+ * can drop one, so it comes back as ok with null data rather than as a failure
+ * the storm would report and retry.
+ */
+async function handlePuzzleFetch(path, as) {
+  try {
+    if (typeof path !== 'string' || !PUZZLE_PATH_RE.test(path)) {
+      return { ok: false, status: 0, error: 'blocked non-puzzle path' };
+    }
+    const response = await fetch(PUZZLE_BASE + path);
+    if (response.status === 404) return { ok: true, data: null };
+    if (!response.ok) {
+      return { ok: false, status: response.status, error: `HTTP ${response.status}` };
+    }
+    const data = as === 'text' ? await response.text() : await response.json();
+    return { ok: true, data };
   } catch (err) {
     return { ok: false, status: 0, error: String(err) };
   }

@@ -2213,6 +2213,12 @@
       // A beat between legs, so a stop pressed at a boundary is noticed at once
       // and so a night is a trickle rather than a flood.
       cycleGapMs: 3000,
+      // §29) What one leg spends on puzzles. Smaller than a hand-pressed
+      // pass's for the same reason every other leg bound is: a round is many
+      // legs over many hours, and the point is a trickle that survives being
+      // stopped rather than a burst that has to finish.
+      cyclePuzzleShards: 4,
+      cyclePuzzleBodies: 6,
       // …and how many courses one pass over the list will take on. There is no
       // course this excludes today — a profile with a dozen repertoires is not
       // the shape this is for — but an unbounded list read out of storage is not
@@ -2362,7 +2368,74 @@
       statsWireVersion: 2,
       statsMaxWireBytes: 60000,
 
+      // --- §29) PUZZLES FROM THE GAMES THAT PLAYED YOUR LINES -------------
+      // A tactic, from a real game that went through one of this course's own
+      // positions, dealt instead of an ordinary card some fraction of the time.
+      // See DESIGN-storm-puzzles.md; everything here was measured 2026-09-01
+      // against the live dataset and the account's three courses.
+      //
+      // THE STAGES ARE SPLIT BECAUSE THE TWO COSTS ARE DIFFERENT PROBLEMS.
+      // Stage A turns anchors into CANDIDATES and is index-shard bound: ~0.9 MB
+      // parsed per shard, roughly one shard per anchor, 161-182 of them for a
+      // real course — and it is a ONE-OFF, since a course's anchors do not
+      // move. Stage B turns candidates into PLAYABLE cards and is body-shard
+      // bound: ~331 KB each, one per puzzle, because puzzle ids hash across all
+      // 4096 body shards and no batching helps. Splitting them is what lets
+      // stage B run in the background top-up (§14.24), which stage A must never
+      // do — one 331 KB fetch is a trickle, a 0.9 MB parse is not.
+      puzzleStoreKey: 'cloStormPuzzles', // storage.local: { [bid]: { c: {}, r: {} } }
+      puzzleBuildKey: 'cloPuzzleBuild',  // storage.local: the dataset's meta.builtAt
+      // OFF BY DEFAULT and a per-cent, not a boolean: this is a third party
+      // seeing the user's repertoire positions, which is section 26's gate for
+      // section 26's reason. 0 means nothing is ever fetched.
+      puzzlePctKey: 'cloStormPuzzlePct', // storage.local: 0..100, absent = 0
+      puzzlePctChoices: [0, 10, 25, 50, 75, 100],
+      // THE ANCHOR BAND (§3). The floor is the feature; the ceiling saves
+      // requests. Both are user settings, and the ceiling is additionally
+      // clamped to the live meta.filterStats.maxEmissionPly — NEVER to a
+      // hardcoded 22, which is a publish threshold and not a law.
+      puzzleAnchorMinPly: 10,
+      puzzleAnchorMaxPly: 16,
+      puzzleAnchorMinPlyKey: 'cloStormPuzzleMinPly',
+      puzzleAnchorMaxPlyKey: 'cloStormPuzzleMaxPly',
+      puzzleAnchorPlyChoices: [6, 8, 10, 12, 14, 16, 18, 20, 22],
+      // The rating band a candidate must fall in. Wide on purpose: §10.2's
+      // build cap keeps the top 2000 BY RATING at popular positions, so a
+      // narrow band at a shallow anchor returns nothing and reads as a broken
+      // filter. null at either end disables that end.
+      puzzleRatingMin: 1200,
+      puzzleRatingMax: 2600,
+      puzzleRatingKey: 'cloStormPuzzleRating', // storage.local: [min, max]
+      // Per gather leg. Stage A's number is the one that matters: 8 shards is
+      // ~7 MB parsed, and 161 anchors is therefore ~20 legs to cover a course
+      // once — which is what an overnight round is for.
+      puzzleShardsPerPass: 8,
+      puzzleBodiesPerPass: 12,
+      // …and what one anchor may contribute, so a single popular position
+      // cannot fill the store on its own. Measured: on 291847 the ply 10-16
+      // band found 10923 puzzles at 117 positions, heavily concentrated.
+      puzzlesPerAnchor: 8,
+      puzzleCandMax: 3000,  // candidate index entries kept per course
+      puzzleReadyMax: 150,  // playable puzzles (with bodies) kept per course
+      // A shard is ~0.9 MB parsed. MEMORY ONLY, never storage.local — the
+      // quota there is 10 MB shared with every other feature here, and
+      // storeMax: 900 positions is already ~0.6 MB of it.
+      puzzleShardCacheMax: 2,
+      puzzleGapMs: 200,     // between shard fetches, so a pass is a trickle
+      // The wire: a card of its own, §15.3's rule — the position payload is CUT
+      // to fit its budget, and a puzzle dropped because a position list ran long
+      // would be a puzzle lost silently, after the fetches were paid for.
+      puzzleCardName: 'CLO-PUZZLES',
+      puzzleWireVersion: 1,
+      puzzleMaxWireBytes: 120000,
+      // Retention mirrors §14.11's exactly: a puzzle SOLVED has taught what it
+      // can and leaves (with a tombstone, §14.16); one FAILED stays and comes
+      // round again. Written out separately from storeDropOn so a change to
+      // either is a deliberate change, not a shared edit nobody reviewed.
+      puzzleDropOn: ['great', 'good'],
+
       // --- costs and politeness (§9) --------------------------------------
+      // ~230 ChessDB requests for a 20-position session, at a volunteer      // --- costs and politeness (§9) --------------------------------------
       // ~230 ChessDB requests for a 20-position session, at a volunteer
       // network. The cap is not a performance guard: it is the promise that a
       // session's burst has a ceiling however long the user leaves it running.
@@ -18737,12 +18810,30 @@
     // user answers — so it hands cards in ONE AT A TIME rather than filling
     // `cr.queue` the way a drill does, and `nextLine()`/`finish()` are never
     // reached: a card's single ply is spent by the answer, not by `step()`.
+    /**
+     * §29) The two modes section 27 owns. Everything that used to test
+     * `cr.mode === 'storm'` in order to mean "section 27 is driving this
+     * board" has to ask this instead, because a puzzle card is section 27's
+     * too — it is dealt from the same queue, closed by the same Exit, and
+     * placed in the same slots.
+     *
+     * Where a test really does mean "a GRADED card" it stays `cr.mode ===
+     * 'storm'` — `tryMove`'s intercept and `moverColor`'s answer are both of
+     * that kind, since a puzzle is played by the ordinary quiz path.
+     */
+    const isStormMode = () => cr.mode === 'storm' || cr.mode === 'puzzle';
     continuationStormApi = {
       open(card, slot, opts) {
         if (cr.active || !card || !card.startFen || typeof slot !== 'function') return false;
         cr.hostSlot = slot;
         cr.hostKind = 'storm';
-        cr.mode = 'storm';
+        // §29) THE CARD SAYS WHICH MODE IT IS, and section 27 never has to.
+        // A card carrying `puzzle` has a solution and is played as a quiz; one
+        // without has no right answer and is graded. Reading it off the card
+        // rather than off a flag is what stops the two ever disagreeing —
+        // there is no state here that could say 'storm' about a card with a
+        // solution in it.
+        cr.mode = card.puzzle ? 'puzzle' : 'storm';
         cr.stormRetry = Boolean(opts && opts.retry);
         cr.stormHold = null;
         cr.queue = [card];
@@ -18770,11 +18861,16 @@
         return true;
       },
       next(card) {
-        if (!cr.active || cr.mode !== 'storm' || !card) return false;
+        // §29) EITHER MODE, and the mode is re-decided from the card: a storm
+        // deals puzzles and positions from one queue, so consecutive cards
+        // regularly differ. Testing for one mode here is what would make the
+        // FIRST card after a switch refuse and end the session.
+        if (!cr.active || !isStormMode() || !card) return false;
         clearTimer();
         cr.busy = false;
         cr.stormVerdict = null;
         cr.stormHold = null;
+        cr.mode = card.puzzle ? 'puzzle' : 'storm';
         cr.queue = [card];
         startLine(0);
         applyStormArrival(card);
@@ -18783,7 +18879,7 @@
       /** §8.1's line. Section 27 owns the words; this owns the element, and
        *  holds the board shut for as long as the verdict is up. */
       verdict(v, hold) {
-        if (!cr.active || cr.mode !== 'storm') return;
+        if (!cr.active || !isStormMode()) return;
         cr.stormVerdict = v || null;
         // §17) A HOLD IS A VERDICT THE SESSION HAS NOT ACCEPTED YET. The board
         // stays shut either way — the refused move is still on it — but the
@@ -19992,6 +20088,27 @@
         // off the list. Skipping a card goes straight to nextLine and so can
         // never mark anything, which is the point of that button.
         if (cr.mode === 'drill') finishDrillCard();
+        // §29) …and a PUZZLE, which reaches here the same way and means the
+        // same thing: a line only ever ends by its moves being PLAYED — a
+        // refused move is never applied — so arriving here is the solution
+        // having been found. An even-length puzzle ends on the opponent's
+        // reply, which `step` above has just auto-played, so both shapes
+        // land here with nothing left to ask.
+        //
+        // IT MUST NOT FALL THROUGH TO `nextLine`. A storm hands cards in ONE
+        // AT A TIME — `cr.queue` holds exactly the card on the board — so
+        // `nextLine` finds nothing after it and calls `finish()`, which tears
+        // the overlays down and ends the session on the first puzzle solved.
+        // Section 27 owns the queue and the pause between cards, exactly as it
+        // does for a graded position, so the whole of what happens here is to
+        // tell it and stop.
+        if (cr.mode === 'puzzle') {
+          cr.busy = true;
+          clearTimer();
+          if (stormApi) stormApi.puzzleSolved();
+          syncUi();
+          return;
+        }
         cr.busy = true;
         syncUi();
         clearTimer();
@@ -20314,6 +20431,19 @@
       cr.attempts++;
       if (cr.attempts >= C.wrongHintAfter) cr.hint = true;
       flashSquare(mv.to, 'bad');
+      // §29) A PUZZLE IS ANSWERED ONCE. Every other line on this board lets a
+      // wrong move be tried again — a clickable line is practice and a drill
+      // card is a mistake being worked on — but a puzzle card is a QUESTION in
+      // a scored session, and a second guess after the first was refused is a
+      // different exercise. Section 27 decides what happens next (a set holds
+      // the position and offers exactly that second guess; a storm scores it
+      // and moves on), which is why this reports rather than acts.
+      if (cr.mode === 'puzzle' && stormApi) {
+        cr.busy = true;
+        syncUi();
+        stormApi.puzzleFailed(squareName(mv.from) + squareName(mv.to) + (mv.promo || ''));
+        return;
+      }
       syncUi();
     }
 
@@ -20355,7 +20485,14 @@
      * of what makes it readable.
      */
     function applyStormArrival(card) {
-      const arrived = card && card.storm && card.storm.cand && card.storm.cand.arrived;
+      // §29) A PUZZLE HAS NO `storm` BLOCK, so the move that led here is on the
+      // card itself — the losing side's mistake, which the dataset gives as
+      // `previousMove`. `renderReview` already reads it exactly this way; with
+      // only the graded arm here a live puzzle opened with nothing tinted while
+      // its own row in the review afterwards showed the move.
+      const arrived = card && (card.puzzle
+        ? { uci: card.puzzle.prevUci }
+        : (card.storm && card.storm.cand && card.storm.cand.arrived));
       const uci = arrived && arrived.uci;
       if (!uci || uci.length < 4) return;
       cr.lastMove = { from: squareIndexOf(uci.slice(0, 2)), to: squareIndexOf(uci.slice(2, 4)) };
@@ -22997,7 +23134,7 @@
         // held set card, or a review row being played again — so it decides
         // which position the board opens on; this side only knows that the user
         // asked for one.
-        if (cr.mode === 'storm') {
+        if (isStormMode()) {
           if (stormApi) stormApi.analyse();
           blurButton(e);
           return;
@@ -23020,7 +23157,7 @@
         // the user cannot see is exactly what that change was for. Section 27
         // owns the hold; `cr.busy` is true throughout one (the refused move is
         // still on the board), so this has to be reached before the guard below.
-        if (cr.mode === 'storm' && cr.stormHold && stormApi) {
+        if (isStormMode() && cr.stormHold && stormApi) {
           stormApi.reveal();
           return;
         }
@@ -23048,7 +23185,7 @@
         // has been shown. Three meanings for one button because all three are
         // what a user means by pressing it in that state — which is the same
         // argument §14.10b already made for the second.
-        if (cr.mode === 'storm') {
+        if (isStormMode()) {
           if (!stormApi) return;
           if (cr.stormHold) {
             if (cr.stormHold.revealed) stormApi.advance();
@@ -23405,6 +23542,11 @@
       // Section 27 owns its own wording end to end — a storm card is not "move
       // n of m" of anything, and nothing below this line describes it.
       if (cr.mode === 'storm') { syncStormUi(); return; }
+      // §29) …and a PUZZLE is section 27's too. It IS "move n of m", but of a
+      // tactic rather than of a course line, and everything else on the panel
+      // — the rating, where it came from, what a wrong move costs — belongs to
+      // the session rather than to the line.
+      if (cr.mode === 'puzzle') { syncPuzzleUi(); return; }
       const total = cr.queue.length;
       // A drill card is a quiz line, so only the wording differs: which mistake
       // of how many, and what was played instead of it — a move is much easier
@@ -23704,6 +23846,141 @@
               'back to zero and it costs points');
       cr.ui.exit.textContent = (stormApi && stormApi.isSet()) ? 'End set' : 'End storm';
       cr.ui.exit.title = retry
+        ? 'Stop playing this position and go back to the list'
+        : 'Stop and see how it went';
+    }
+
+
+    /**
+     * §29) A PUZZLE card's panel.
+     *
+     * Beside `syncStormUi` rather than inside it, because the two say almost
+     * nothing in common: that one reports a GRADE — a band, a loss, a best move
+     * and which of three sources answered — and this one reports PROGRESS
+     * through a solution that is either found or not. Folding them together
+     * would mean a function whose every line was behind a branch.
+     *
+     * NO BEST MOVE, EVER, WHILE THE CARD IS LIVE. §14.10a's rule at its
+     * strictest: on a graded card the "best" line is a fact about the position
+     * that can be revealed once the answer is in, but here it IS the answer, and
+     * the whole card is the question. It appears only where section 27 has
+     * already decided the position is finished with — a set's revealed hold —
+     * and even then it is section 27 that decides, not this.
+     *
+     * IT SAYS WHERE THE PUZZLE CAME FROM AND HOW DEEP THE GAME WENT, which is
+     * the sentence that makes it a repertoire exercise rather than a random
+     * tactic: "your Scotch line, 14 plies in". Without it a puzzle in a storm is
+     * an interruption; with it, it is the reason the feature exists.
+     */
+    function syncPuzzleUi() {
+      const p = cr.line.puzzle;
+      const v = cr.stormVerdict;
+      const hold = cr.stormHold;
+      const path = linePath();
+      // Which of the USER's moves is being asked for — not `cr.plyIdx`, which
+      // counts the opponent's auto-played replies too.
+      let asked = 0;
+      for (let i = 0; i < cr.plyIdx && i < path.length; i++) {
+        if (path[i].color === cr.userColor) asked++;
+      }
+      const total = p.asks || 1;
+
+      cr.ui.title.textContent = v
+        ? (v.solved ? 'Solved' : 'Not this time')
+        : (total > 1 ? 'Find the win — move ' + Math.min(asked + 1, total) +
+            ' of ' + total
+          : 'Find the win');
+
+      // The row palette's own two treatments, and the same two `syncStormUi`
+      // uses: green for what scores, red for what costs, nothing in between.
+      cr.ui.prompt.className = 'clo-cr-prompt' + (v
+        ? (v.solved ? ' clo-cr-prompt--ok' : ' clo-cr-prompt--bad')
+        : '');
+
+      if (!v) {
+        cr.ui.prompt.textContent =
+          (cr.userColor === 'w' ? 'White' : 'Black') + ' to play' +
+          (cr.busy ? ' — …' : '');
+      } else if (v.solved) {
+        cr.ui.prompt.textContent = 'Solved' +
+          (total > 1 ? ' in ' + total + ' moves' : '') + '.';
+      } else {
+        // WHAT WAS PLAYED, AND NOT WHAT SHOULD HAVE BEEN. The move the user
+        // chose is theirs and they have just seen it; the solution is the thing
+        // being withheld, and a set will offer the position again.
+        //
+        // §17) …UNTIL IT IS ASKED FOR. "Show the move" and a set's "no idea"
+        // both mean exactly that, and both leave a hold marked `revealed` — at
+        // which point withholding it is no longer a rule about the exercise but
+        // a button that does nothing. THE GATE IS `hold.revealed` AND NOTHING
+        // ELSE: on a live card, on a blind hold, and on a storm's failed card
+        // (where §14.10a's review gate is what answers instead) it stays hidden.
+        const answer = (hold && hold.revealed && cr.line && cr.line.plies &&
+          cr.line.plies[0] && cr.line.plies[0].san) || '';
+        cr.ui.prompt.textContent = (v.playedSan
+          ? v.playedSan + ' is not it.'
+          : 'Not it.') + (answer ? ' The move is ' + answer + '.' : '');
+      }
+
+      // The provenance line. It is the one thing here that is NOT about the
+      // move, so it stays put whether or not a verdict is up.
+      const bits = [];
+      if (p.from) bits.push(shortDrillTitle(p.from));
+      if (typeof p.anchorPly === 'number' && p.anchorPly > 0) {
+        bits.push('a game ' + p.anchorPly + ' plies in');
+      }
+      if (typeof p.rating === 'number') bits.push(p.rating + ' rated');
+      cr.ui.progress.textContent = bits.join(' · ');
+      // NOT `.clo-cdb--est`. That class means "ChessDB computed this for us just
+      // now" (DESIGN-chessdb.md §3.3) and there is no ChessDB anywhere near a
+      // puzzle — the rating is Lichess's own, published, and not an estimate of
+      // anything.
+      cr.ui.progress.classList.remove('clo-cdb--est');
+      cr.ui.progress.title = p.themes && p.themes.length
+        ? p.themes.map((t) => CloPuzzles.themeLabel(t)).join(', ')
+        : '';
+
+      // Analyse, on the same two states as a graded card: a held set card and
+      // a review retry. Never during a live puzzle — the database and the
+      // engine would both name the move (section 20's rule).
+      const canAnalyse = Boolean(hold) || cr.stormRetry;
+      cr.ui.browseBtn.hidden = !canAnalyse;
+      if (canAnalyse) {
+        cr.ui.browseBtn.textContent = 'Analyse';
+        cr.ui.browseBtn.title = 'Open the analysis board here — play it out, ' +
+          'with the engine and the database beside it.';
+      }
+
+      if (hold) {
+        const blind = !hold.revealed;
+        cr.ui.hint.hidden = !blind;
+        cr.ui.hint.disabled = false;
+        cr.ui.hint.textContent = 'Show the move';
+        cr.ui.hint.title = 'Give up on this one and see the solution. It still ' +
+          'has to be cleared, and it comes back in the second pass.';
+        cr.ui.skip.hidden = blind && hold.left <= 0;
+        cr.ui.skip.textContent = blind
+          ? 'Try again (' + hold.left + ')'
+          : 'Next position';
+        cr.ui.skip.title = blind
+          ? 'Put the position back and play a different move — the solution stays hidden'
+          : 'This one is done with; go on to the next position in the set';
+        cr.ui.exit.textContent = 'End set';
+        cr.ui.exit.title = 'Stop here and see how the set went';
+        return;
+      }
+      cr.ui.hint.hidden = true;
+      cr.ui.skip.hidden = cr.stormRetry ? !v : Boolean(v);
+      cr.ui.skip.textContent = cr.stormRetry ? 'Try another move' : 'No idea';
+      cr.ui.skip.title = cr.stormRetry
+        ? 'Put the position back and play something else — still nothing is scored'
+        : (stormApi && stormApi.isSet()
+            ? 'Show me the solution — nothing is scored either way, and it comes ' +
+              'back in the second pass'
+            : 'Move on without answering — it counts as a miss, so the streak goes ' +
+              'back to zero and it costs points');
+      cr.ui.exit.textContent = (stormApi && stormApi.isSet()) ? 'End set' : 'End storm';
+      cr.ui.exit.title = cr.stormRetry
         ? 'Stop playing this position and go back to the list'
         : 'Stop and see how it went';
     }
@@ -34746,7 +35023,41 @@
     // so it is no more an estimate than the engine tier is. The class this
     // gates means "ChessDB computed this for us just now" and nothing else
     // (DESIGN-chessdb.md §3.3), so it must be false for BOTH engine sources.
-    return Boolean(v) && v.source !== 'engine' && v.source !== 'sflist';
+    // §29) …and false for a PUZZLE, which section 18's own panel already had
+    // right: there is no ChessDB anywhere near one, so the class would make a
+    // claim about a rating that is Lichess's own and published.
+    return Boolean(v) && !v.puzzle && v.source !== 'engine' && v.source !== 'sflist';
+  }
+
+  /**
+   * §29) THE REVIEW'S TWO LINES FOR A PUZZLE ROW.
+   *
+   * `stormVerdictLine`/`stormBestLine` are about a GRADED card and read the
+   * card's `storm` block for the rank, the scored list and the win rates — a
+   * puzzle has none of that, and `stormBestLine` dereferenced it and THREW.
+   * That failure is silent from the outside: `toggleBest` had already flipped
+   * `item.shown`, so "Best move" simply did nothing, twice.
+   *
+   * Top level beside the other two, for §14.7's reason — section 18's panel
+   * and section 27's review are two closures and a helper living in either one
+   * is a ReferenceError in the other.
+   *
+   * The solution is passed in rather than read off the verdict because it is a
+   * property of the CARD, and it is the caller that applies §14.10a's gate:
+   * on a graded card the best move is a fact about the position, on a puzzle
+   * it IS the answer.
+   */
+  function stormPuzzleReviewLine(v, bestSan, shown) {
+    if (!v) return '';
+    if (v.unanswered) return 'Not answered — the storm ended on this puzzle';
+    const bits = [v.passed
+      ? 'Passed — no answer given'
+      : v.solved
+        ? 'Solved'
+        : (v.playedSan ? v.playedSan + ' is not it' : 'Not found')];
+    if (v.points) bits.push((v.points > 0 ? '+' : '') + v.points);
+    if (shown && bestSan) bits.push('solution ' + bestSan);
+    return bits.join(' · ');
   }
 
   /**
@@ -34763,6 +35074,8 @@
    * two evaluations, and the tooltip is where the sentence goes.
    */
   function stormSourceLabel(v) {
+    // §29) Nothing scored a puzzle, so there is no source to name.
+    if (v && v.puzzle) return '';
     if (v.source === 'engine' || v.source === 'sflist') {
       return 'by Stockfish' + (v.depth ? ' d' + v.depth : '');
     }
@@ -34783,6 +35096,14 @@
    */
   function stormSourceTitle(v) {
     if (!v) return '';
+    // §29) A PUZZLE IS ANSWERED, NOT GRADED, so none of the three sentences
+    // below is true of it: there is no scored list, no child lookup and no
+    // search — the solution came out of the store with the card. Without this
+    // arm a puzzle row's tooltip claimed a ChessDB ranking it never had.
+    if (v.puzzle) {
+      return 'A Lichess puzzle: the solution is published with it, so nothing was ' +
+        'evaluated here — the move was either the solution or it was not.';
+    }
     if (v.source === 'sflist') {
       return 'This position was scored by a local Stockfish search' +
         (v.depth ? ' to depth ' + v.depth : '') +
@@ -35179,6 +35500,44 @@
       eng: null,     // { reqId, phase, resolve, timer, moverColor, best, child, childMover }
       engSeq: 0,
     };
+    // §29) PUZZLES — its own state object beside `st`, and deliberately not
+    // fields on it. Almost everything here is about a SOURCE OF CARDS rather
+    // than about a session: the store and its two lists outlive every session,
+    // the shard cache outlives none of them, and the settings are the user's.
+    // Keeping them apart is also what makes `st` still readable as "the
+    // session", which is the object nine other functions reason about.
+    const pz = {
+      // The user's settings. `on` is a PER CENT and 0 is off, which is the
+      // default: this host is a third party seeing the user's repertoire
+      // positions, so nothing may be fetched from it on a profile that has
+      // switched nothing on (section 26's gate, for section 26's reason).
+      on: 0,
+      minPly: C.puzzleAnchorMinPly,
+      maxPly: C.puzzleAnchorMaxPly,
+      ratingMin: C.puzzleRatingMin,
+      ratingMax: C.puzzleRatingMax,
+      // The course's slice of the store: { c, r, a, g }. Null until loaded,
+      // and every reader must cope with that — `startSession` loads it behind
+      // the first card, exactly as the position store is loaded.
+      store: null,
+      dirty: false,
+      // Index shards, IN MEMORY ONLY (~0.9 MB parsed each) and capped at two.
+      shards: new Map(),
+      // meta.json, once per document, and the promise so two callers share
+      // one fetch.
+      meta: null,
+      metaPromise: null,
+      // This session's queue of ready puzzle ids, and what it has already
+      // shown. A SEPARATE set from `st.seen`, which is keyed by `cacheKey`:
+      // one namespace holding board keys and puzzle ids would collide only
+      // rarely and only in a way nobody could reproduce.
+      queue: [],
+      seen: new Set(),
+      // What the passes have spent, for the line that reports them.
+      shardsFetched: 0,
+      bodiesFetched: 0,
+    };
+
 
     stormActive = () => st.running;
 
@@ -35246,11 +35605,49 @@
         ? n : C.uncMinShare;
     }
 
+    /**
+     * §29) How often a puzzle is dealt instead of an ordinary card, as a per
+     * cent. Clamped into the selector's own choices for `applyUncShare`'s
+     * reason, and ABSENT MEANS 0: this is the switch that decides whether a
+     * fourth host ever hears from this profile at all.
+     */
+    function applyPuzzlePct(v) {
+      const n = Number(v);
+      pz.on = (Number.isFinite(n) && C.puzzlePctChoices.indexOf(n) >= 0) ? n : 0;
+    }
+
+    /**
+     * §29) The anchor band. The FLOOR is the feature — below it a game merely
+     * shares an opening — so an unusable value falls back to the declared
+     * default rather than to "no floor", which would quietly fill the store
+     * with games that played two of your moves.
+     */
+    function applyPuzzleBand(lo, hi) {
+      const a = Number(lo);
+      const b = Number(hi);
+      pz.minPly = (Number.isFinite(a) && C.puzzleAnchorPlyChoices.indexOf(a) >= 0)
+        ? a : C.puzzleAnchorMinPly;
+      pz.maxPly = (Number.isFinite(b) && C.puzzleAnchorPlyChoices.indexOf(b) >= 0)
+        ? b : C.puzzleAnchorMaxPly;
+      if (pz.maxPly < pz.minPly) pz.maxPly = pz.minPly;
+    }
+
+    /** §29) …and the rating band. Either end may be null, which disables it. */
+    function applyPuzzleRating(v) {
+      const pair = Array.isArray(v) ? v : [];
+      const lo = Number(pair[0]);
+      const hi = Number(pair[1]);
+      pz.ratingMin = Number.isFinite(lo) ? lo : C.puzzleRatingMin;
+      pz.ratingMax = Number.isFinite(hi) ? hi : C.puzzleRatingMax;
+    }
+
     (async () => {
       try {
         const got = await chrome.storage.local.get(
           [C.minPlyKey, C.maxPlyKey, C.setModeKey, C.backfillKey,
-            C.sourceKey, C.uncMinShareKey]);
+            C.sourceKey, C.uncMinShareKey,
+            C.puzzlePctKey, C.puzzleAnchorMinPlyKey, C.puzzleAnchorMaxPlyKey,
+            C.puzzleRatingKey]);
         applyPlyRange(
           Object.prototype.hasOwnProperty.call(got, C.minPlyKey) ? got[C.minPlyKey] : C.minPly,
           Object.prototype.hasOwnProperty.call(got, C.maxPlyKey) ? got[C.maxPlyKey] : C.maxPly);
@@ -35259,6 +35656,15 @@
         applyStormSource(got[C.sourceKey]);
         applyUncShare(Object.prototype.hasOwnProperty.call(got, C.uncMinShareKey)
           ? got[C.uncMinShareKey] : C.uncMinShare);
+        // §29) …and the puzzle settings. `puzzlePctKey` absent is 0, which is
+        // the whole of "this profile has not switched the fourth host on".
+        applyPuzzlePct(got[C.puzzlePctKey]);
+        applyPuzzleBand(
+          Object.prototype.hasOwnProperty.call(got, C.puzzleAnchorMinPlyKey)
+            ? got[C.puzzleAnchorMinPlyKey] : C.puzzleAnchorMinPly,
+          Object.prototype.hasOwnProperty.call(got, C.puzzleAnchorMaxPlyKey)
+            ? got[C.puzzleAnchorMaxPlyKey] : C.puzzleAnchorMaxPly);
+        applyPuzzleRating(got[C.puzzleRatingKey]);
         syncSettings();
       } catch (err) {
         // An orphaned content script, or a profile with no storage: the
@@ -35667,6 +36073,776 @@
     }
 
     // ----------------------------------------------------------------------
+    // ----------------------------------------------------------------------
+    // §29) PUZZLES FROM THE GAMES THAT PLAYED YOUR LINES
+    //
+    // A tactic from a real game that went through one of this course's own
+    // positions, dealt instead of an ordinary card some fraction of the time.
+    // See DESIGN-storm-puzzles.md; what follows is the store's shape and the
+    // pure rules over it, all of which `dev/check-storm.js` executes.
+    //
+    // A PUZZLE IS NOT GRADED, IT IS ANSWERED. Every other card in this feature
+    // is a position with no right answer, judged by how much of the game the
+    // move gave up; a Lichess puzzle has a solution, and section 18's ordinary
+    // quiz machinery already walks a multi-ply line and auto-plays the
+    // opponent's replies. So this costs no ChessDB request, no engine search
+    // and no round trip at all — which is also why the two must never be
+    // "unified": a tactic graded "decent" for a move that is not the win is
+    // exactly the wrong answer.
+    //
+    // TWO LISTS PER COURSE, and the split is the whole cost model (§4):
+    //   `c` CANDIDATES — index tuples, ~40 bytes, thousands of them. Bought by
+    //       stage A at ~0.9 MB of parsed index shard each, once per course.
+    //   `r` READY — full bodies, ~230 bytes, a hundred or so. Bought by stage B
+    //       at one ~331 KB body shard each, because puzzle ids hash across all
+    //       4096 body shards and batching cannot help.
+    // Only `r` can be dealt, and only `r` rides the wire.
+    // ----------------------------------------------------------------------
+
+    /**
+     * An empty per-course slice — never null, so no caller has to branch.
+     * `a` is the anchor keys stage A has already scanned (so a second pass does
+     * not re-buy the same 0.9 MB shard) and `g` is the tombstone list, §14.16's
+     * rule in its second home: a puzzle solved is retired, not merely absent,
+     * or the next gather re-buys it and offers it again.
+     */
+    const stormPuzzleBlank = () => ({ c: {}, r: {}, a: {}, g: {} });
+
+    /**
+     * One index tuple as a stored CANDIDATE. Short keys, and deliberately not
+     * the tuple itself: `m[3]` and `m[4]` are positional, a reader that got
+     * them the wrong way round would be silent (see content/puzzles.js), so
+     * they are named once, here, at the boundary.
+     *
+     * `k` is the ANCHOR the puzzle was found at and `o` the line that anchor
+     * belongs to (§15). Both are carried rather than looked up later: the
+     * anchor map is rebuilt from the course walk, and a candidate outlives any
+     * one shape of the course.
+     */
+    function stormPuzzleCand(m, anchor) {
+      return {
+        i: String(m[0]),
+        r: typeof m[1] === 'number' ? m[1] : null,
+        c: m[2] === 'b' ? 'b' : 'w',
+        p: typeof m[3] === 'number' ? m[3] : null,   // ply of the ANCHOR in the game
+        s: typeof m[4] === 'number' ? m[4] : null,   // ply the PUZZLE begins at
+        k: (anchor && anchor.key) || '',
+        o: (anchor && anchor.oids && anchor.oids[0]) || '',
+        n: (anchor && anchor.names && anchor.names[0]) || '',
+        t: Date.now(),
+      };
+    }
+
+    /**
+     * A fetched body as a stored READY puzzle, or null when it cannot be one.
+     *
+     * IT REFUSES RATHER THAN STORING A HALF-PUZZLE. A body with no moves, or a
+     * move the dataset has never sent in that shape, would otherwise become a
+     * card that cannot be built — and would be discovered at the moment it was
+     * dealt, with a board already open and a clock already running.
+     *
+     * `pf`/`pm` are the position and move immediately BEFORE the puzzle's own,
+     * i.e. the losing side's mistake. Both may be absent, which simply means
+     * the card opens with nothing tinted. Carried rather than derived for §20's
+     * reason: a FEN cannot be un-played, so the position before a move is the
+     * one thing about a card that no amount of later computation recovers.
+     *
+     * `g` is the game url, kept at ~40 bytes because it is the only route back
+     * to the game a puzzle came from — the source PGN was dropped upstream for
+     * size, so there is no other.
+     */
+    function stormPuzzleReady(body, cand) {
+      if (!body || !body.id || !Array.isArray(body.moves) || !body.moves.length) return null;
+      if (!body.fen || typeof body.fen !== 'string') return null;
+      const moves = body.moves.filter((u) => typeof u === 'string' && u.length >= 4);
+      if (moves.length !== body.moves.length) return null;
+      return {
+        i: String(body.id),
+        f: body.fen,
+        m: moves.join(' '),
+        r: typeof body.rating === 'number' ? body.rating : ((cand && cand.r) || null),
+        th: Array.isArray(body.themes) ? body.themes.slice(0, 6) : [],
+        pf: body.previousFen || '',
+        pm: body.previousMove || '',
+        g: body.gameUrl || '',
+        op: body.opening || '',
+        // The anchor's line, carried from the candidate (§15) — a body knows
+        // nothing about this course.
+        o: (cand && cand.o) || '',
+        n: (cand && cand.n) || '',
+        ap: (cand && cand.p) || null,   // how deep into the line the game went
+        t: Date.now(),
+        // How many times it has been offered and NOT solved. §14.15's rule
+        // applies unchanged: unseen first, most-missed last.
+        k: 0,
+      };
+    }
+
+    /**
+     * The plies a ready puzzle is played as, or null.
+     *
+     * THE BODY'S `fen` IS THE SOLVER'S POSITION, and `moves[0]` is the USER's
+     * move — not an opponent set-up move. That differs from the raw Lichess
+     * puzzle CSV, where `fen` precedes a move that has to be applied first, and
+     * re-applying it here would silently produce a card asking for the
+     * opponent's reply to a move nobody saw (PUZZLE-DATA-INTEGRATION.md §12.7).
+     *
+     * AN EVEN-LENGTH `moves` MEANS THE OPPONENT HAS THE LAST WORD: the puzzle is
+     * solved once the user plays `moves[length - 2]`, and the final reply is
+     * played out as a flourish rather than waited on. Section 18's `step()`
+     * auto-plays any ply that is not the user's colour and ends the line when
+     * the path runs out, so both shapes work with no branch — but a card whose
+     * last ply is the OPPONENT's would HANG if anything downstream ever asked
+     * the user for it, which is why the rule is written down and asserted
+     * rather than left to emerge.
+     *
+     * IT REFUSES RATHER THAN GUESSING (`drillLine`'s rule): a puzzle whose
+     * moves will not replay on its own FEN is dropped with one console line.
+     * That catches a body corrupted in storage or carried by a wire version
+     * this build does not understand, and it catches it BEFORE a board opens.
+     */
+    function stormPuzzlePlies(entry) {
+      if (!entry || !entry.f || !entry.m || typeof CloSan === 'undefined') return null;
+      const ucis = String(entry.m).split(' ').filter(Boolean);
+      if (!ucis.length) return null;
+      let fen = entry.f;
+      const out = [];
+      for (const uci of ucis) {
+        const pos = CloSan.parseFen(fen);
+        const mv = pos && CloSan.uciToMove(pos, uci);
+        const san = mv && CloSan.moveToSan(pos, uci);
+        const after = san && fenAfterUci(fen, uci);
+        if (!after) return null;
+        out.push({ san, uci, color: pos.side, fen: after });
+        fen = after;
+      }
+      return out;
+    }
+
+    /**
+     * How many of a puzzle's plies the USER is actually asked for. The answer
+     * is what the card's progress line counts, and it is not `plies.length`:
+     * on an even-length puzzle the last ply is the opponent's.
+     */
+    function stormPuzzleUserPlies(plies, userColor) {
+      let n = 0;
+      for (const p of plies || []) if (p.color === userColor) n++;
+      return n;
+    }
+
+    /**
+     * §14.11's retention rule, in its second home and written out rather than
+     * shared: a puzzle SOLVED has taught what it can and leaves; one FAILED
+     * stays and comes round again. `puzzleDropOn` and `storeDropOn` have the
+     * same membership today, and a change to either must be a deliberate change
+     * to the other rather than one edit that silently moved both.
+     *
+     * Returns true when the puzzle should be KEPT.
+     */
+    function stormPuzzleRetain(store, id, verdict, C) {
+      if (!store || !store.r || !store.r[id]) return false;
+      return C.puzzleDropOn.indexOf(verdict) === -1;
+    }
+
+    /**
+     * Which ready puzzle to deal next. Pure and rnd-injected, `stormStoreDraw`'s
+     * shape and for its reason — §14.15 is emphatic that a comparator here is
+     * SILENT when it is wrong: every puzzle is still returned, in a plausible
+     * order, and nothing anywhere says which one was meant to come first.
+     *
+     * `k` ASCENDING, unseen first, exactly as the position store draws. Because
+     * the retention rule above already removes anything solved, every `k > 0`
+     * entry is one the user has been shown and failed — so hardest-first would
+     * open every session with the same failures and starve material that has
+     * been paid for and never met.
+     *
+     * RATING IS NOT A TERM. It is a property of the puzzle rather than of this
+     * user's history with it, and sorting by it would deal a course's easiest
+     * hundred before its hardest one was ever seen.
+     */
+    function stormPuzzleDraw(store, rnd, C) {
+      const out = [];
+      for (const id of Object.keys((store && store.r) || {})) {
+        const e = store.r[id];
+        if (!e) continue;
+        out.push({ id, k: e.k || 0, r: rnd() });
+      }
+      out.sort((a, b) => (a.k - b.k) || (a.r - b.r));
+      return out.map((x) => x.id);
+    }
+
+    /**
+     * §14.16's retirement rule in its second home: a puzzle SOLVED is not
+     * merely absent from the store, it is TOMBSTONED — because stage A is
+     * deterministic given an anchor, so the very next gather would find the
+     * same id at the same position, re-buy its body and offer it again.
+     *
+     * It AGES the tombstone itself rather than relying on a pruner, and reads a
+     * zero timestamp as "no record" and never as "retired at the epoch".
+     */
+    function stormPuzzleDone(gone, id, C, now) {
+      const at = gone && gone[id];
+      if (!at) return false;
+      return (now - at) < C.goneDays * 24 * 60 * 60 * 1000;
+    }
+
+    // --- §29) the fetch, the store, and the two gather stages ---------------
+
+    /**
+     * One file of the dataset, through the service worker.
+     *
+     * THE CONTENT SCRIPT NAMES A PATH, NEVER A URL — background.js builds the
+     * url from its own prefix and matches the path against an allow-list of
+     * three shapes. So there is no argument anywhere on this side that can name
+     * a host, which is a stronger guard than the other three fetch paths have
+     * and costs nothing.
+     *
+     * A MISSING SHARD COMES BACK AS `null`, NOT AS A FAILURE (integration guide
+     * §4.1): 404 means "no puzzles here", which is an ordinary answer.
+     */
+    async function puzzleFetch(path, as) {
+      const res = await chrome.runtime.sendMessage({
+        type: 'clo-fetch-puzzles', path, as: as || 'json',
+      });
+      if (!res || !res.ok) {
+        throw new Error((res && res.error) || 'puzzle fetch failed');
+      }
+      return res.data;
+    }
+
+    /** meta.json, once per document. Null on any failure — every reader treats
+     *  that as "use the declared defaults", never as a reason to stop. */
+    async function puzzleMeta() {
+      if (pz.metaPromise) return pz.metaPromise;
+      pz.metaPromise = puzzleFetch('meta.json')
+        .catch((err) => {
+          warn('storm: could not read the puzzle dataset meta:', err);
+          return null;
+        });
+      return pz.metaPromise;
+    }
+
+    /**
+     * The anchor band actually in force: the user's, with the ceiling clamped
+     * to the live `maxEmissionPly`.
+     *
+     * NEVER A HARDCODED 22. Positions deeper than that threshold are not in the
+     * index at all — a hard cliff, not a taper — but it is a PUBLISH setting
+     * that a republish can raise, and a hardcoded copy would leave this band
+     * permanently narrower than the data allows with nothing saying so. Where
+     * meta cannot be read the user's own ceiling stands: asking for a shard
+     * that turns out to hold nothing costs one fetch, which is the cheaper
+     * mistake.
+     */
+    function puzzleBand() {
+      const lo = pz.minPly;
+      let hi = pz.maxPly;
+      const cap = pz.meta && pz.meta.filterStats &&
+        pz.meta.filterStats.maxEmissionPly;
+      if (typeof cap === 'number' && cap > 0) hi = Math.min(hi, cap);
+      return { lo, hi: Math.max(lo, hi) };
+    }
+
+    /** The whole puzzle store, or {} — never null. */
+    async function loadPuzzleStoreAll() {
+      try {
+        const got = await chrome.storage.local.get(C.puzzleStoreKey);
+        const raw = got && got[C.puzzleStoreKey];
+        return (raw && typeof raw === 'object') ? raw : {};
+      } catch (err) {
+        warn('storm: the puzzle store is unreadable — continuing without it:', err);
+        return {};
+      }
+    }
+
+    /** This course's slice, loaded into `pz.store`. */
+    async function loadPuzzleStore(bid) {
+      const all = await loadPuzzleStoreAll();
+      const mine = all[bid];
+      pz.store = (mine && typeof mine === 'object')
+        ? {
+          c: (mine.c && typeof mine.c === 'object') ? mine.c : {},
+          r: (mine.r && typeof mine.r === 'object') ? mine.r : {},
+          a: (mine.a && typeof mine.a === 'object') ? mine.a : {},
+          g: (mine.g && typeof mine.g === 'object') ? mine.g : {},
+        }
+        : stormPuzzleBlank();
+      pz.dirty = false;
+      log('storm: puzzle store holds', Object.keys(pz.store.r).length, 'ready and',
+        Object.keys(pz.store.c).length, 'candidate(s) for', bid);
+    }
+
+    /**
+     * …and back. RE-READS BEFORE IT WRITES, 24b's `flushDbCache` rule in its
+     * fourth home: one object lives under this key and a write replaces it
+     * whole, so only this course's slice is ours to replace. Another course's
+     * gather running in another tab must not be erased by ours.
+     *
+     * An EMPTY slice is DELETED rather than written as `{}` — §22.5's rule:
+     * "nothing stored" is the honest record, not "a store containing nothing".
+     */
+    async function savePuzzleStore() {
+      if (!pz.dirty || !st.bid || !pz.store) return;
+      try {
+        const all = await loadPuzzleStoreAll();
+        const empty = !Object.keys(pz.store.c).length &&
+          !Object.keys(pz.store.r).length &&
+          !Object.keys(pz.store.a).length &&
+          !Object.keys(pz.store.g).length;
+        if (empty) delete all[st.bid];
+        else all[st.bid] = pz.store;
+        await chrome.storage.local.set({ [C.puzzleStoreKey]: all });
+        pz.dirty = false;
+      } catch (err) {
+        warn('storm: could not write the puzzle store:', err);
+      }
+    }
+
+    /**
+     * One index shard, memory-cached.
+     *
+     * NEVER `storage.local`. A shard is ~0.9 MB once parsed, against a 10 MB
+     * quota shared with every other feature here — the position store alone is
+     * ~0.6 MB per course at its cap. The cache is two entries and dies with the
+     * pass, which is the right size because stage A groups its anchors BY SHARD
+     * and so never asks for the same one twice in a run.
+     */
+    async function puzzleShard(shard) {
+      const hit = pz.shards.get(shard);
+      if (hit !== undefined) return hit;
+      const data = await puzzleFetch('index/' + shard + '.json');
+      pz.shards.set(shard, data);
+      while (pz.shards.size > C.puzzleShardCacheMax) {
+        pz.shards.delete(pz.shards.keys().next().value);
+      }
+      return data;
+    }
+
+    /** One body shard as raw ndjson text. Not cached: ids hash across all 4096
+     *  of them, so a second hit is a coincidence rather than a pattern. */
+    function puzzleBodyShard(shard) {
+      return puzzleFetch('puzzles/' + shard + '.ndjson', 'text');
+    }
+
+    /**
+     * §29 STAGE A — anchors into CANDIDATES.
+     *
+     * The index-shard-bound half, and a ONE-OFF: a course's anchors do not move,
+     * so an anchor scanned once is recorded in `store.a` and never re-bought.
+     * Bounded at `puzzleShardsPerPass` because one shard is ~0.9 MB parsed and a
+     * real course has 161-182 of them — roughly twenty legs of an overnight
+     * round to cover one course, which is what that round is for.
+     *
+     * ANCHORS ARE TAKEN DEEPEST FIRST. That is a QUALITY order and not a yield
+     * order: within the band, deeper is a stronger claim that the game really
+     * played this line, so a bounded pass spends its shards on the strongest
+     * evidence it has. They are then GROUPED BY SHARD so no shard is fetched
+     * twice in a pass (integration guide §7), which is why the two loops below
+     * are not one.
+     *
+     * `puzzlesPerAnchor` caps what one anchor may contribute. Measured: the ply
+     * 10-16 band on course 291847 found 10923 puzzles at 117 positions, heavily
+     * concentrated — without the cap one popular position fills the store.
+     */
+    async function gatherPuzzleCandidates(limitShards) {
+      const anchors = st.pool && st.pool.anchors;
+      if (!anchors || !anchors.size || !pz.store) return 0;
+      const band = puzzleBand();
+      // Deepest first, and only the ones this profile has not already scanned.
+      const todo = [];
+      for (const a of anchors.values()) {
+        if (a.ply < band.lo || a.ply > band.hi) continue;
+        if (pz.store.a[a.key]) continue;
+        todo.push(a);
+      }
+      if (!todo.length) return 0;
+      todo.sort((x, y) => y.ply - x.ply);
+
+      // Group by shard so a shard bought for one anchor answers every other
+      // anchor that happens to live in it.
+      const byShard = new Map();
+      for (const a of todo) {
+        const shard = await CloPuzzles.shardIdFor(a.key);
+        if (!byShard.has(shard)) byShard.set(shard, []);
+        byShard.get(shard).push(a);
+      }
+
+      let fetched = 0;
+      let added = 0;
+      const cap = Math.max(1, limitShards || C.puzzleShardsPerPass);
+      for (const [shard, group] of byShard) {
+        if (fetched >= cap) break;
+        // §27.6's TRAP, avoided by construction: this tests `st.running` and
+        // NOT `st.over`. A gather calls `endSession` before it starts, which
+        // sets `st.over` while leaving `st.running` true — so a loop that
+        // stopped on `st.over` would break on its first iteration while the
+        // pass went on reporting that it had found nothing. That is exactly
+        // what `harvestFrontier` did, silently, from v0.130.0 to v0.165.0.
+        if (!st.running) break;
+        let idx = null;
+        try {
+          idx = await puzzleShard(shard);
+        } catch (err) {
+          warn('storm: puzzle index shard', shard, 'failed:', err);
+          break;   // a failing host is not something to hammer
+        }
+        fetched++;
+        pz.shardsFetched++;
+        for (const a of group) {
+          // MARKED SCANNED EVEN WHEN THE SHARD HELD NOTHING. "This anchor has
+          // no puzzles" is an answer worth remembering, and re-buying 0.9 MB to
+          // learn it again is the whole cost this feature is bounded by.
+          pz.store.a[a.key] = Date.now();
+          pz.dirty = true;
+          const raw = (idx && idx[a.key]) || [];
+          if (!raw.length) continue;
+          added += takeCandidatesAt(a, raw, band);
+        }
+        await sleepMs(C.puzzleGapMs);
+      }
+      if (added) log('storm:', added, 'puzzle candidate(s) from', fetched, 'shard(s)');
+      return added;
+    }
+
+    /**
+     * The survivors at one anchor, filtered and capped.
+     *
+     * TWO FILTERS AND NEITHER IS `startPly`. The COLOUR is the anchor's own
+     * line's (24h's rule) and is what `m[2]` must match — a Caro-Kann studied
+     * as Black sits on white-to-move positions for half of every line, so the
+     * side to move in the anchor is the wrong question. The PLY band is checked
+     * again on `m[3]`, because an anchor's own depth in THIS course says
+     * nothing about how deep the GAME was when it passed through: the index
+     * lists every game that reached this position, and one that reached it at
+     * ply 4 by another move order did not play the line.
+     *
+     * THE PUZZLE'S OWN START PLY IS DELIBERATELY UNFILTERED. It is a different
+     * question and the answer to it is "no" — measured, the median puzzle from
+     * these games begins around ply 55, so a start-ply band keeps only tactics
+     * that happen inside the opening itself and throws away 95% of the supply
+     * for a distinction the user did not ask for. What matters is that the GAME
+     * played the line, which is `m[3]`.
+     *
+     * PICKED AT RANDOM AMONG SURVIVORS, never top-rated first: the build keeps
+     * at most 2000 puzzles per position BY RATING (integration guide §10.2), so
+     * "highest rating" is the dataset's own truncation bias and not a quality
+     * signal — taking the top would serve a diet of 2900s at every popular
+     * anchor.
+     */
+    function takeCandidatesAt(anchor, raw, band) {
+      let added = 0;
+      for (const side of ['w', 'b']) {
+        if (!anchor.sides[side]) continue;
+        const keep = CloPuzzles.applyFilters(raw, {
+          color: side,
+          plyMin: band.lo,
+          plyMax: band.hi,
+          ratingMin: pz.ratingMin,
+          ratingMax: pz.ratingMax,
+        });
+        // A partial Fisher-Yates over a COPY, `stormPickGames`'s shape and for
+        // its reason: the index's order is stable, so taking a prefix asks the
+        // same question of the same anchor for ever.
+        const pool = keep.slice();
+        // `want` bounds the DRAWS, not the additions: a draw that lands on a
+        // puzzle already stored or already retired is spent. That is the
+        // intended reading of "up to eight from one anchor" — the alternative,
+        // looping until eight are added, walks the whole list at a popular
+        // anchor to find what a later pass would have found anyway.
+        const want = Math.min(C.puzzlesPerAnchor, pool.length);
+        for (let i = 0; i < want; i++) {
+          const j = i + Math.floor(Math.random() * (pool.length - i));
+          const pick = pool[Math.min(j, pool.length - 1)];
+          pool[Math.min(j, pool.length - 1)] = pool[i];
+          pool[i] = pick;
+          const id = pick && String(pick[0]);
+          if (!id) continue;
+          if (pz.store.c[id] || pz.store.r[id]) continue;
+          // §14.16 in its second home: a puzzle solved is retired, and a fresh
+          // scan finding it again must not put it back.
+          if (stormPuzzleDone(pz.store.g, id, C, Date.now())) continue;
+          pz.store.c[id] = stormPuzzleCand(pick, anchor);
+          pz.dirty = true;
+          added++;
+        }
+      }
+      prunePuzzleStore();
+      return added;
+    }
+
+    /**
+     * §29 STAGE B — candidates into PLAYABLE puzzles.
+     *
+     * The body-bound half: one ~331 KB fetch per puzzle, because ids hash
+     * across all 4096 body shards and no batching helps. Small enough to run in
+     * the background top-up, which stage A must never do.
+     *
+     * A body that will not become a card is DROPPED WITH ITS CANDIDATE, not
+     * retried: `getPuzzle` answering nothing means the id is dead (a republish
+     * with different thresholds), which the guide is explicit is not a
+     * transient error (§10.4).
+     */
+    async function gatherPuzzleBodies(limitBodies) {
+      if (!pz.store) return 0;
+      const ready = Object.keys(pz.store.r).length;
+      if (ready >= C.puzzleReadyMax) return 0;
+      const ids = Object.keys(pz.store.c);
+      if (!ids.length) return 0;
+      const cap = Math.min(
+        Math.max(1, limitBodies || C.puzzleBodiesPerPass),
+        C.puzzleReadyMax - ready);
+      let added = 0;
+      let tried = 0;
+      for (const id of ids) {
+        if (added >= cap || !st.running) break;
+        tried++;
+        const cand = pz.store.c[id];
+        delete pz.store.c[id];
+        pz.dirty = true;
+        if (!cand) continue;
+        let body = null;
+        try {
+          const shard = await CloPuzzles.shardIdFor(id);
+          const text = await puzzleBodyShard(shard);
+          body = text ? findPuzzleBody(text, id) : null;
+          pz.bodiesFetched++;
+        } catch (err) {
+          warn('storm: puzzle body', id, 'failed:', err);
+          break;
+        }
+        const entry = stormPuzzleReady(body, cand);
+        // BUILT ONCE, HERE, rather than at the moment it is dealt. A puzzle
+        // whose moves will not replay is a card that cannot be shown, and
+        // finding that out with a board open and a clock running is the one
+        // failure this feature can produce that the user would see.
+        if (!entry || !stormPuzzlePlies(entry)) {
+          if (body) log('storm: puzzle', id, 'will not replay — dropped');
+          continue;
+        }
+        pz.store.r[id] = entry;
+        added++;
+        await sleepMs(C.puzzleGapMs);
+      }
+      if (tried) prunePuzzleStore();
+      if (added) log('storm: fetched', added, 'puzzle body(ies)');
+      return added;
+    }
+
+    /** One line of an ndjson body shard. */
+    function findPuzzleBody(text, id) {
+      for (const line of String(text).split('\n')) {
+        if (!line || line.indexOf(id) === -1) continue;
+        let obj = null;
+        try { obj = JSON.parse(line); } catch (err) { continue; }
+        if (obj && obj.id === id) return obj;
+      }
+      return null;
+    }
+
+    /** Caps, oldest first out, and the tombstone list aged with them. */
+    function prunePuzzleStore() {
+      if (!pz.store) return;
+      const cut = (map, max) => {
+        const keys = Object.keys(map);
+        if (keys.length <= max) return;
+        keys.sort((a, b) => (map[a].t || 0) - (map[b].t || 0));
+        for (const k of keys.slice(0, keys.length - max)) delete map[k];
+        pz.dirty = true;
+      };
+      cut(pz.store.c, C.puzzleCandMax);
+      cut(pz.store.r, C.puzzleReadyMax);
+      const now = Date.now();
+      for (const id of Object.keys(pz.store.g)) {
+        if (!stormPuzzleDone(pz.store.g, id, C, now)) {
+          delete pz.store.g[id];
+          pz.dirty = true;
+        }
+      }
+    }
+
+    /** How many puzzles are ready to deal, and how many are one body fetch
+     *  away. Both source-agnostic: a puzzle belongs to the COURSE, not to one
+     *  of the two position sources, so unlike `storeCount` there is nothing
+     *  here to scope. */
+    const puzzleReadyCount = () =>
+      (pz.store ? Object.keys(pz.store.r).length : 0);
+    const puzzleCandCount = () =>
+      (pz.store ? Object.keys(pz.store.c).length : 0);
+
+    /** meta.json, once, and kept on `pz.meta` so `puzzleBand` can read it
+     *  synchronously. Failure is ordinary and leaves the declared band in
+     *  force — see `puzzleBand`. */
+    async function ensurePuzzleMeta() {
+      if (pz.meta) return pz.meta;
+      pz.meta = await puzzleMeta();
+      if (pz.meta && pz.meta.builtAt) {
+        // Recorded rather than acted on. A republish changes shard CONTENTS at
+        // stable urls, so a client that cached shards would have to drop them
+        // — but this one caches nothing across a pass, and it stores whole
+        // BODIES, which do not go stale. What a changed build does mean is
+        // that the anchors are worth scanning again, and that is what the
+        // stored value is for.
+        try {
+          const got = await chrome.storage.local.get(C.puzzleBuildKey);
+          const was = got && got[C.puzzleBuildKey];
+          if (was && was !== pz.meta.builtAt && pz.store) {
+            // The anchor log only — never the puzzles themselves, which are
+            // still perfectly playable.
+            pz.store.a = {};
+            pz.dirty = true;
+            log('storm: the puzzle dataset was rebuilt — anchors will be rescanned');
+          }
+          if (was !== pz.meta.builtAt) {
+            await chrome.storage.local.set({ [C.puzzleBuildKey]: pz.meta.builtAt });
+          }
+        } catch (err) {
+          // An orphaned content script, or no storage: the pass still works.
+        }
+      }
+      return pz.meta;
+    }
+    /**
+     * A puzzle has been answered. The retention rule (§14.11's, in its second
+     * home) plus the tombstone that stops the next gather buying it back.
+     */
+    function notePuzzle(id, verdict) {
+      if (!pz.store || !id) return;
+      const entry = pz.store.r[id];
+      if (!entry) return;
+      if (stormPuzzleRetain(pz.store, id, verdict, C)) {
+        entry.k = (entry.k || 0) + 1;
+        pz.dirty = true;
+        return;
+      }
+      delete pz.store.r[id];
+      pz.store.g[id] = Date.now();
+      pz.dirty = true;
+    }
+
+    /**
+     * §29) A stored puzzle as a card section 18's board can play.
+     *
+     * UNLIKE `stormCard` THIS CARRIES THE WHOLE LINE, and that is the entire
+     * difference between the two kinds of card. A storm position has one ply —
+     * the best move — which exists only so that `startLine` does not read the
+     * card as already finished, and `tryMove`'s storm arm intercepts above the
+     * comparison so it is never used as an answer. A puzzle has a SOLUTION, so
+     * its plies are the answer: the user's are asked for and the opponent's are
+     * auto-played, which is exactly what `step()` already does for a drill card.
+     *
+     * `userColor` IS THE SIDE TO MOVE AT THE PUZZLE'S OWN FEN, not the course's
+     * colour. They usually agree — the puzzle was found from a game that played
+     * this repertoire — but a puzzle is its own position and the board must ask
+     * for the side that actually solves it. `m[2]` said the same thing when the
+     * candidate was stored; this reads it off the position, which cannot drift.
+     *
+     * IT REFUSES RATHER THAN GUESSING. `stormPuzzlePlies` already ran once at
+     * gather time, so a null here means the entry was corrupted in storage or
+     * carried by a wire version this build does not understand — and the card
+     * is dropped before a board is opened rather than after.
+     */
+    function stormPuzzleCard(entry) {
+      const plies = stormPuzzlePlies(entry);
+      if (!plies || !plies.length) return null;
+      const pos = CloSan.parseFen(entry.f);
+      if (!pos) return null;
+      const userColor = pos.side;
+      return {
+        key: 'puzzle:' + entry.i,
+        startFen: entry.f,
+        plies,
+        userColor,
+        label: entry.n || '',
+        // Section 18 branches on the PRESENCE of this, never on a mode string
+        // it would have to be told: a card either has a solution or it does not.
+        puzzle: {
+          id: entry.i,
+          rating: entry.r,
+          themes: entry.th || [],
+          // The blunder that made the position. Both may be absent, and then
+          // the card simply opens with nothing tinted (§20's rule).
+          prevFen: entry.pf || '',
+          prevUci: entry.pm || '',
+          gameUrl: entry.g || '',
+          opening: entry.op || '',
+          // §15) The anchor's line, so an answer can be counted against it, and
+          // how deep into that line the game went — which is the sentence that
+          // says why this puzzle is here at all.
+          oid: entry.o || '',
+          from: entry.n || '',
+          anchorPly: entry.ap || null,
+          // How many moves are actually being asked for. NOT `plies.length`: on
+          // an even-length puzzle the last ply is the opponent's, played out as
+          // a flourish rather than waited on.
+          asks: stormPuzzleUserPlies(plies, userColor),
+        },
+      };
+    }
+
+    /**
+     * §29) Whether the next card should be a puzzle.
+     *
+     * THE FALLBACK IS SILENT AND IS THE POINT. There is no guarantee a puzzle
+     * exists for a course — a repertoire of six short lines may yield none at
+     * all — so a roll that wins with an empty queue simply deals an ordinary
+     * position and says nothing. A message here would report the dataset's
+     * coverage as a fault on every card.
+     *
+     * IT IS ASKED PER CARD, not per session: the percentage is a mix, and a
+     * session that decided once would be all puzzles or none.
+     */
+    function puzzleDue() {
+      if (!pz.on || !pz.queue.length) return false;
+      return (Math.random() * 100) < pz.on;
+    }
+
+    /** The next ready puzzle as a card, skipping anything already shown or no
+     *  longer in the store (another tab's pass can have retired it). */
+    function nextPuzzleCard() {
+      while (pz.queue.length) {
+        const id = pz.queue.shift();
+        if (!id || pz.seen.has(id)) continue;
+        const entry = pz.store && pz.store.r[id];
+        if (!entry) continue;
+        const card = stormPuzzleCard(entry);
+        if (!card) {
+          // Unplayable in storage: drop it rather than meeting it again every
+          // session. `gatherPuzzleBodies` proved it once, so this is corruption.
+          delete pz.store.r[id];
+          pz.dirty = true;
+          warn('storm: stored puzzle', id, 'will not replay — dropped');
+          continue;
+        }
+        pz.seen.add(id);
+        return card;
+      }
+      return null;
+    }
+
+    /** Fills this session's puzzle queue from the store — free, no network. */
+    function fillPuzzleQueue() {
+      if (!pz.store || !pz.on) return 0;
+      pz.queue = stormPuzzleDraw(pz.store, Math.random, C)
+        .filter((id) => !pz.seen.has(id));
+      return pz.queue.length;
+    }
+
+    /**
+     * §29) IS THERE ANYTHING AT ALL TO DEAL — the question `Start` asks, and it
+     * is TWO queues now. `nextCard` draws `puzzlePick() || st.queue.shift()`, so
+     * a ready puzzle is a perfectly dealable card on its own; asking only about
+     * `st.queue` left Start disabled on "Finding a position…" for ever whenever
+     * the position store was empty and could not be filled — a course whose
+     * frontiers ChessDB does not know, or a narrow scope — while the selector
+     * beside it said a puzzle was ready. Both guards read this, or they can
+     * disagree: a disabled button and a press that silently does nothing are
+     * the same bug wearing two faces.
+     */
+    function haveAnyCard() {
+      return Boolean((st.queue && st.queue.length) || (pz.on && pz.queue.length));
+    }
+
+
     // §15) The performance record
     //
     // Every graded answer, counted against the LINE whose frontier the position
@@ -35723,13 +36899,39 @@
      * `lines` FIRST and named as it always was, so every payload and every
      * stored record written before v0.152.0 reads unchanged: a course with no
      * `ulines` has answered no uncovered positions, which is true.
+     *
+     * §29) `plines` is the THIRD, on the same terms and for the same reason.
+     * A puzzle is answered rather than graded and its bands mean something
+     * else entirely — "found the win" against "gave up 40% of the game" — so
+     * pooling them would make one percentage out of two questions. A course
+     * with no `plines` has answered no puzzles, which is true of every record
+     * written before v0.171.0.
      */
-    const STAT_MAPS = ['lines', 'ulines'];
+    const STAT_MAPS = ['lines', 'ulines', 'plines'];
 
-    /** Which of them a card is counted in. The card knows, because
-     *  `stormCard` put the reply on it. */
-    const statMapOf = (card) =>
-      (card && card.storm && card.storm.unc) ? 'ulines' : 'lines';
+    /** Which of them a card is counted in. The card knows: `stormCard` put
+     *  the uncovered reply on it, and `stormPuzzleCard` put the solution. */
+    const statMapOf = (card) => {
+      if (card && card.puzzle) return 'plines';
+      return (card && card.storm && card.storm.unc) ? 'ulines' : 'lines';
+    };
+
+    /**
+     * §29) The line a card is counted AGAINST, whichever kind it is. A graded
+     * position carries it on `storm`; a puzzle carries it on `puzzle`, having
+     * inherited it from the ANCHOR the puzzle was found at. Null for a card
+     * that is neither, which is what keeps `statNote` a single guard.
+     */
+    function cardLineRef(card) {
+      if (!card) return null;
+      if (card.puzzle) {
+        return { oid: String(card.puzzle.oid || ''), from: card.puzzle.from || '' };
+      }
+      if (card.storm) {
+        return { oid: String(card.storm.oid || ''), from: card.storm.from || '' };
+      }
+      return null;
+    }
 
     /**
      * Adds one graded answer.
@@ -35882,7 +37084,10 @@
       let dropped = 0;
       for (const bid of Object.keys(all || {})) {
         const c = all[bid];
-        if (!c || (!c.lines && !c.ulines)) { delete all[bid]; continue; }
+        // §29) …and `plines`, or a course whose only record is puzzles is
+        // deleted on the next prune — silently, and only after the user has
+        // built one up.
+        if (!c || (!c.lines && !c.ulines && !c.plines)) { delete all[bid]; continue; }
         // §19: the cap is PER MAP, not shared. They are two records of two
         // exercises, and letting a long uncovered record push a frontier line
         // out would make one source's use quietly delete the other's history.
@@ -36112,6 +37317,90 @@
      * the course does not state: an inverted answer here would ask the user to
      * find the OPPONENT's best move and then mark them wrong for their own.
      */
+    /**
+     * §3) PUZZLE ANCHORS — the positions of this course a puzzle may be looked
+     * up from, collected from the SAME walk `stormFrontiers` and
+     * `stormDecisions` already make of every variation (§14.18's idiom, and
+     * now the walk's FIFTH use). Called once per line, from both.
+     *
+     * A BAND, NOT A DEPTH, AND THE FLOOR IS THE WHOLE FEATURE. Measured
+     * 2026-09-01 on a 38-ply line of course 453453, walking its own positions:
+     * ply 2/4/6/8 list 1434/1422/1451/1322 puzzles and ply 10/12/14/16 list
+     * 33/10/37/8. That cliff is the boundary between "this game shares my first
+     * few moves" and "this game played my line", and everything below the floor
+     * is the first kind. Dropping the floor from 10 to 8 multiplies course
+     * 455941's haul by 5.8, and all of the increase is that noise.
+     *
+     * THE CEILING IS THERE TO SAVE REQUESTS, not to improve the answer. Past
+     * `anchorMaxPly` a course position is so specific that almost no game
+     * reaches it: band 10-16 returned 10923 of the 11124 puzzles that band
+     * 10-22 did, from HALF the index shards (182 against 322). A shard is
+     * ~0.9 MB parsed, so that halving is the difference between an overnight
+     * pass and two of them.
+     *
+     * …AND IT IS CLAMPED BY THE LIVE `maxEmissionPly`, never by a
+     * hardcoded 22. Positions deeper than that are not in the index AT ALL —
+     * it is a hard cliff, not a taper (PUZZLE-DATA-INTEGRATION.md §10.1) — and
+     * the figure is a publish threshold that a republish can raise. Reading it
+     * from `meta.filterStats` is what stops a raised threshold leaving
+     * this band permanently narrower than the data allows, silently.
+     *
+     * BAND MEMBERSHIP IS DECIDED BY A POSITION'S SHALLOWEST PLY ANYWHERE IN THE
+     * COURSE, not by the line that happens to be walking it. If ANY line
+     * reaches a position at ply 6 it is a generic position, however deep
+     * another line gets to it — so `minPly` is kept across lines and only
+     * ever lowered. Written per-line instead, this still produces a plausible
+     * anchor set with the generic positions quietly back in it, which is the
+     * one way this can be wrong and look right.
+     *
+     * PLY IS ABSOLUTE IN THE GAME (`pliesBefore`, 19c's), never an index
+     * into the line: a variation with a custom start FEN begins mid-game, and
+     * numbering its first position 0 would put a ply-40 tactics position inside
+     * the band. It also means such lines fall out by themselves rather than
+     * needing the source exclusion the frontier walk applies for its own
+     * reasons.
+     *
+     * SIDE COMES FROM THE LINE (24h's rule), because that is the colour whose
+     * puzzles are wanted: `m[2]` is the side that SOLVES a puzzle, and a
+     * Caro-Kann repertoire studied as Black sits on white-to-move positions for
+     * half of every line. A position both colours reach keeps both, and the
+     * lookup filters each side separately.
+     */
+    function stormAnchorAdd(anchors, w, v, side, C) {
+      if (!w || !side) return;
+      const lo = C.puzzleAnchorMinPly;
+      const hi = C.puzzleAnchorMaxPly;
+      if (!(hi >= lo)) return;
+      // Every position of the line INCLUDING the one it ends on: a line end is
+      // as real a position as any other, and on a short line it is the deepest
+      // thing the course has to offer.
+      const seen = [];
+      for (const p of w.plies) seen.push(p.before);
+      seen.push(w.end);
+      for (const fen of seen) {
+        const ply = pliesBefore(fen);
+        if (ply === null || ply < lo || ply > hi) continue;
+        const key = CloPuzzles.fenPositionKey(fen);
+        let a = anchors.get(key);
+        if (!a) {
+          anchors.set(key, a = {
+            key, fen, ply, sides: {}, oids: [], names: [],
+          });
+        }
+        // Only ever LOWERED — see the rule above. The FEN is kept from the
+        // shallowest sighting too, so the two cannot disagree.
+        if (ply < a.ply) { a.ply = ply; a.fen = fen; }
+        a.sides[side] = true;
+        // §15) The line this anchor belongs to, so a puzzle found here can be
+        // counted against it. Every oid (§14.21's chapter scope asks "does any
+        // line through here belong to that chapter") and only three names,
+        // which is a display cap.
+        const oid = String(v.oid);
+        if (a.oids.indexOf(oid) === -1) a.oids.push(oid);
+        if (a.names.length < 3 && v.name) a.names.push(v.name);
+      }
+    }
+
     async function stormFrontiers(vars, C) {
       const byEnd = new Map();
       let i = 0;
@@ -36149,6 +37438,10 @@
       // the board I named", and a line's colour has nothing to do with it — the
       // set is only ever intersected with the oids of pool entries, which carry
       // their own side rule already.
+      // §3) …AND A FOURTH USE OF THE SAME WALK: the positions a puzzle may be
+      // looked up from. Built on every session and read only by the puzzle
+      // gather, which costs one map write per ply inside the band.
+      const anchors = new Map();
       const through = new Set();
       let covered = 0;
       for (const v of vars || []) {
@@ -36166,6 +37459,7 @@
         // guess at one for exactly that reason.
         const w = side ? walkVariation(v) : null;
         if (w) for (const p of w.plies) cont[side].add(stormCoverKey(p.before));
+        stormAnchorAdd(anchors, w, v, side, C);
         if (w && C.fenKey && stormLineThrough(w, C.fenKey)) through.add(String(v.oid));
         if (v.sans.length < C.minVarPlies) continue;
         // PAUSED LINES ARE NOT STORMED. "Paused" and "skipped" are Chessable's
@@ -36238,6 +37532,10 @@
       out.cont = cont;
       // §28) …and the third index, for the same reason and by the same route.
       out.through = through;
+      // §3) …and the anchors, by the same route and for the same reason: one
+      // walk of the course, and the caller that wants them is not the caller
+      // that wants the pool.
+      out.anchors = anchors;
       return out;
     }
 
@@ -36277,6 +37575,11 @@
     async function stormDecisions(vars, C) {
       const byPos = new Map();
       const cont = { w: new Set(), b: new Set() };
+      // §3) …AND A FOURTH USE OF THE SAME WALK, exactly as in stormFrontiers:
+      // the positions a puzzle may be looked up from. Both sources must fill
+      // this, or a session on one of them would find the store's puzzle stage
+      // with nothing to walk and report a course as having no anchors.
+      const anchors = new Map();
       // §28) …AND A THIRD USE OF THE SAME WALK: which lines go through the
       // position the user asked to storm FROM. `C.fenKey` is absent on every
       // ordinary session, and then this set is built and never read, which
@@ -36305,6 +37608,7 @@
         const w = side ? walkVariation(v) : null;
         if (!w) continue;
         for (const ply of w.plies) cont[side].add(stormCoverKey(ply.before));
+        stormAnchorAdd(anchors, w, v, side, C);
         if (C.fenKey && stormLineThrough(w, C.fenKey)) through.add(String(v.oid));
         const eligible = !v.paused &&
           !(v.fen && cacheKey(v.fen) !== cacheKey(START_FEN));
@@ -36351,6 +37655,8 @@
       out.cont = cont;
       // §28) …and the third index, for the same reason and by the same route.
       out.through = through;
+      // §3) …and the anchors, likewise.
+      out.anchors = anchors;
       return out;
     }
 
@@ -36421,7 +37727,34 @@
       out.cont = pool.cont;
       out.paused = pool.paused;
       out.covered = pool.covered;
+      // §3) …and the anchors, which are NARROWED rather than copied: a scoped
+      // session's puzzles must come from the lines it is about. An anchor
+      // several lines converge on survives if ANY of them is in scope, which is
+      // the same rule the pool's own filter above applies to a frontier.
+      out.anchors = stormFilterAnchors(pool.anchors, oids);
       out.dropped = pool.length - out.length;
+      return out;
+    }
+
+    /**
+     * §3) The anchor map under a scope. Its own function beside the pool's for
+     * `stormFilterPool`'s own reason: a plain `.filter()` on the
+     * pool ARRAY silently drops `cont`/`paused`/`covered`, and
+     * the same class of mistake here is dropping the map's identity — an anchor
+     * kept but re-keyed, or the oids it is counted against thrown away.
+     *
+     * ANY LINE IN SCOPE KEEPS THE ANCHOR. A position twenty lines pass through
+     * is in scope if one of them is, exactly as a frontier is; the puzzles found
+     * there are then counted against `oids[0]`, which is §28.4a's known
+     * round-trip shape and not a new one.
+     */
+    function stormFilterAnchors(anchors, oids) {
+      if (!anchors || !oids) return anchors;
+      const out = new Map();
+      for (const [key, a] of anchors) {
+        if (!(a.oids || []).some((o) => oids.has(String(o)))) continue;
+        out.set(key, a);
+      }
       return out;
     }
 
@@ -38928,7 +40261,23 @@
      * reason: the walks stay pure and `dev/check-storm.js` keeps executing them
      * against a config it declares itself.
      */
-    const poolCfg = () => (st.fenKey ? { ...C, fenKey: st.fenKey } : C);
+    // §29) …and the puzzle band rides with it, for the SAME reason §14.9's
+    // ply range does: `stormAnchorAdd` runs inside those walks and must see
+    // the user's own floor and ceiling, while the walks stay pure and
+    // `dev/check-storm.js` keeps executing them against a config it declares
+    // itself. The ceiling is the CLAMPED one — a band wider than the
+    // dataset's own `maxEmissionPly` would collect anchors that can never
+    // match anything and spend a 0.9 MB shard finding that out.
+    const poolCfg = () => {
+      const band = puzzleBand();
+      const out = {
+        ...C,
+        puzzleAnchorMinPly: band.lo,
+        puzzleAnchorMaxPly: band.hi,
+      };
+      if (st.fenKey) out.fenKey = st.fenKey;
+      return out;
+    };
 
     async function poolFor(vars) {
       const pc = poolCfg();
@@ -39302,6 +40651,16 @@
         st.lastPull = Date.now();
         await saveStore();
         await saveSyncMeta();
+        // §29) …and the puzzles, on the same trip. A SEPARATE CARD (§15.3),
+        // so this is a second read and a second write rather than a bigger
+        // payload — but it rides the same decision to sync, since a user who
+        // wants one store carried wants the other.
+        //
+        // AWAITED, and after the position card: both write through one
+        // carrier, and `syncStore` reads `st.bid` across awaits of its own
+        // (§27b's hazard). Firing this and forgetting it is how one course's
+        // puzzles get merged into another course's card.
+        await syncPuzzles(reason);
         setSyncNote('Synced — ' + packed.n + ' of ' + storeTotal() + ' carried' +
           (merged.added ? ', ' + merged.added + ' taken from another device' : '') +
           (merged.dropped ? ', ' + merged.dropped + ' already learned elsewhere' : '') +
@@ -39345,6 +40704,191 @@
         st.ui.syncNote.hidden = !st.syncNote;
       }
     }
+
+    // --- §29) carrying the READY puzzles between devices --------------------
+    //
+    // Section 16e's transport again, for a THIRD payload — and a CARD OF ITS
+    // OWN, on §15.3's rule: the position payload is CUT to fit its budget, so a
+    // puzzle folded into it would be dropped whenever a position list ran long,
+    // silently and after the fetches were paid for.
+    //
+    // ONLY THE READY LIST TRAVELS. Candidates are index tuples any machine with
+    // the dataset can regenerate, and a course's worth of them would eat the
+    // budget on its own; a ready puzzle is the thing a phone genuinely cannot
+    // produce, being a ~331 KB body fetch each. So the desktop does both stages
+    // and the phone consumes — which is the whole reason this feature is
+    // affordable on a phone at all.
+    //
+    // ONE CARD PER COURSE (§27b), and `b` on the payload is the belt to that
+    // braces. `stormWireForeign` is reused verbatim: it is pure, it reads only
+    // `b`, and a second copy of that guard is a second place for it to rot.
+
+    /** This course's puzzle card. §27b's rule: two courses must never share a
+     *  name, and the bid is what separates them. */
+    function stormPuzzleCardName(bid, C0) {
+      const cfg = C0 || C;
+      return cfg.puzzleCardName + ' · ' + String(bid || '') + ' · do not delete';
+    }
+
+    /**
+     * The ready list as a payload, newest first and cut to fit.
+     *
+     * NEWEST FIRST rather than §14.15's `k`-ascending, and the difference is
+     * deliberate: that order decides what to DEAL, where a missed position is
+     * information; this decides what to CARRY, and between two puzzles the
+     * other device may not have, the one gathered most recently is the one it
+     * is least likely to already hold. A puzzle is also interchangeable in a
+     * way a position with a failure history is not.
+     */
+    function stormPuzzleWirePack(store, C0, budget, bid) {
+      const cfg = C0 || C;
+      const out = { v: cfg.puzzleWireVersion, at: Date.now(), b: String(bid || ''),
+        p: {}, g: {} };
+      let n = 0;
+      const rows = Object.keys((store && store.r) || {})
+        .map((id) => store.r[id])
+        .filter(Boolean)
+        .sort((a, b) => (b.t || 0) - (a.t || 0));
+      for (const e of rows) {
+        const next = {
+          ...out.p,
+          [e.i]: [e.f, e.m, e.r || 0, e.o || '', e.n || '', e.ap || 0,
+            e.pf || '', e.pm || '', e.g || '', e.op || '', e.k || 0],
+        };
+        // MEASURED ON THE ENCODED SIZE, not on a guess: the budget is a
+        // Chessable comment's, and base32 is what actually goes into it.
+        const trial = JSON.stringify({ ...out, p: next });
+        if (trial.length * 1.6 > budget) break;
+        out.p = next;
+        n++;
+      }
+      // The tombstones, so a puzzle solved here does not come back from the
+      // other device's snapshot on the next exchange (§14.16's rule, and the
+      // reason a union merge needs them at all).
+      const gone = Object.keys((store && store.g) || {})
+        .sort((a, b) => (store.g[b] || 0) - (store.g[a] || 0))
+        .slice(0, cfg.goneMax);
+      for (const id of gone) out.g[id] = store.g[id];
+      out.n = n;
+      return out;
+    }
+
+    /** …and back. A payload this build does not understand is REFUSED whole
+     *  rather than half-read: every field it has is a field this one also has,
+     *  which is exactly the shape of corruption that reads without complaint. */
+    function stormPuzzleWireUnpack(blob, C0) {
+      const cfg = C0 || C;
+      if (!blob || blob.v !== cfg.puzzleWireVersion || !blob.p) return null;
+      const store = {};
+      for (const id of Object.keys(blob.p)) {
+        const a = blob.p[id];
+        if (!Array.isArray(a) || a.length < 2) continue;
+        store[id] = {
+          i: id, f: a[0], m: a[1],
+          r: a[2] || null, o: a[3] || '', n: a[4] || '', ap: a[5] || null,
+          pf: a[6] || '', pm: a[7] || '', g: a[8] || '', op: a[9] || '',
+          th: [],
+          k: a[10] || 0,
+          t: blob.at || Date.now(),
+        };
+      }
+      // `bid`, NOT `b` — the field `stormWireForeign` actually reads. That
+      // guard is shared verbatim rather than copied (it is pure, and a second
+      // copy is a second place for §27b's rule to rot), so this shape is not
+      // free to differ: named `b` here it answered "not foreign" for every
+      // card, of every course, silently. Caught by `dev/check-storm.js` §29c.
+      return { store, gone: blob.g || {}, at: blob.at || 0,
+        bid: blob.b ? String(blob.b) : '' };
+    }
+
+    /**
+     * A UNION, with the tombstones applied AFTER it — §14.12's rule, and the
+     * reason those tombstones exist: without them a puzzle the retention rule
+     * dropped comes back from the other device's snapshot every exchange, for
+     * ever.
+     *
+     * `k` takes the HIGHER of the two. It counts how often the puzzle has been
+     * offered and not solved, and both devices' misses are real misses.
+     */
+    function stormPuzzleWireMerge(local, remote, remoteGone) {
+      const out = { added: 0, dropped: 0, bumped: 0 };
+      const mine = local || stormPuzzleBlank();
+      for (const id of Object.keys(remote || {})) {
+        const r = remote[id];
+        if (!r || !r.f || !r.m) continue;
+        // Ours, retired here: it must not come back.
+        if (mine.g[id]) { out.dropped++; continue; }
+        const have = mine.r[id];
+        if (!have) {
+          mine.r[id] = r;
+          out.added++;
+          continue;
+        }
+        const k = Math.max(have.k || 0, r.k || 0);
+        if (k !== (have.k || 0)) { have.k = k; out.bumped++; }
+      }
+      for (const id of Object.keys(remoteGone || {})) {
+        const at = remoteGone[id];
+        if (!at) continue;
+        if (!mine.g[id] || mine.g[id] < at) mine.g[id] = at;
+        if (mine.r[id]) { delete mine.r[id]; out.dropped++; }
+      }
+      return out;
+    }
+
+    /**
+     * One exchange. Read, merge, write — in that order, for `syncStore`'s
+     * reason: the card is a SNAPSHOT overwritten in place, so writing first
+     * discards whatever the other device put there.
+     *
+     * Everything about it fails soft. The local store is authoritative and the
+     * card is a copy, so a refusal costs a log line and nothing else.
+     */
+    async function syncPuzzles(reason) {
+      if (!pz.on || !pz.store) return;
+      if (!pinSyncApi || !pinSyncApi.carrier) return;
+      const carrier = pinSyncApi.carrier;
+      if (!carrier.course()) return;
+      const cardName = stormPuzzleCardName(st.bid);
+      try {
+        let merged = { added: 0, dropped: 0, bumped: 0 };
+        const blob = await carrier.read(cardName);
+        if (blob) {
+          const got = stormPuzzleWireUnpack(blob, C);
+          if (got) {
+            // §27b) A payload that names ANOTHER course is refused WHOLE, never
+            // filtered: the store is one snapshot and a tombstone suppresses a
+            // puzzle for `goneDays`, so no half of it is worth taking. One that
+            // does not SAY is not foreign — that is every payload an upgrading
+            // device wrote.
+            if (stormWireForeign(got, st.bid)) {
+              warn('storm: the puzzle card names another course — refused');
+            } else {
+              merged = stormPuzzleWireMerge(pz.store, got.store, got.gone);
+              pz.dirty = true;
+            }
+          }
+        }
+        const packed = stormPuzzleWirePack(pz.store, C, C.puzzleMaxWireBytes, st.bid);
+        const wire = carrier.encode(
+          new TextEncoder().encode(JSON.stringify(packed)));
+        await carrier.write(cardName, wire, C.puzzleMaxWireBytes, C.cardChapter);
+        await savePuzzleStore();
+        log('storm: puzzles synced (' + reason + ') —', packed.n, 'carried,',
+          merged.added, 'added,', merged.dropped, 'dropped,', wire.length, 'bytes');
+        // A PULL MUST FEED THE SESSION IT LANDED IN — `syncStore`'s rule, for
+        // its reason: the exchange is fired unawaited from `startSession`, so
+        // the queue has already been drawn. Re-drawing the whole list is safe,
+        // since `pz.seen` is what `nextPuzzleCard` filters on.
+        if (merged.added && st.running && !st.over && !filling()) {
+          fillPuzzleQueue();
+          render();
+        }
+      } catch (err) {
+        warn('storm: the puzzle sync failed:', err);
+      }
+    }
+
 
     // ----------------------------------------------------------------------
     // §15) The performance record — storage, attribution and the exchange
@@ -39469,18 +41013,23 @@
      * of how much reviewing was done.
      */
     function statNote(card, v, unhurried) {
-      if (!st.stats || !st.devId || !card || !card.storm) return;
+      // §29) …OR A PUZZLE, which is why this asks `cardLineRef` rather than
+      // reading `card.storm` directly: a puzzle has no `storm` block at all,
+      // so the old guard silently counted none of them and the third map
+      // would have stayed empty for ever while looking implemented.
+      const ref = cardLineRef(card);
+      if (!st.stats || !st.devId || !ref) return;
       const c = courseStats(true);
       if (!c) return;
-      const oid = String(card.storm.oid || '');
+      const oid = ref.oid;
       // §19) …INTO THE RECORD FOR THIS SOURCE. The card knows which it is, so
       // nothing here reads `st.source` — a review retry or a card left over
       // from a source switch is filed by what it IS rather than by what the
       // session is currently set to.
       const lines = statLines(c, statMapOf(card), true);
       let line = lines[oid];
-      if (!line) line = lines[oid] = { nm: card.storm.from || '', dv: {} };
-      if (!line.nm && card.storm.from) line.nm = card.storm.from;
+      if (!line) line = lines[oid] = { nm: ref.from || '', dv: {} };
+      if (!line.nm && ref.from) line.nm = ref.from;
       let rec = line.dv[st.devId];
       if (!rec) rec = line.dv[st.devId] = stormStatBlank();
       if (!stormStatApply(rec, v, Date.now(), unhurried)) return;
@@ -39667,7 +41216,7 @@
      */
     function startStorm() {
       if (!st.running || st.over || st.started || filling()) return;
-      if (!st.queue.length) return;
+      if (!haveAnyCard()) return;
       st.started = true;
       // §17) A set has no deadline, so its clock counts UP — and it is armed
       // HERE rather than at the first card, unlike `startClock`'s deadline.
@@ -39873,6 +41422,28 @@
             if (await deepenSome(C.deepenPerFrontier)) await saveStore();
           }
         }
+        // §29) THE PUZZLE STAGES, between the walk and the scoring. Here
+        // rather than interleaved with the frontiers because they compete for
+        // nothing — no ChessDB request, no engine, no explorer — so there is
+        // no reason to spend a leg alternating, and a pass stopped early is
+        // better having finished one job than having half-done two.
+        //
+        // BOTH ARE BOUNDED PER PASS and stage A is the one that matters:
+        // ~0.9 MB parsed per index shard against 161-182 anchors on a real
+        // course, so a course is covered over roughly twenty legs of an
+        // overnight round rather than in one sitting.
+        //
+        // ONLY WHEN THE USER HAS SWITCHED PUZZLES ON. This is the fourth host
+        // permission and a third party seeing the repertoire's positions, so a
+        // profile that has not asked for puzzles must never send it a request —
+        // section 26's gate, for section 26's reason.
+        if (pz.on && st.gathering && (!until || Date.now() < until)) {
+          await ensurePuzzleMeta();
+          await gatherPuzzleCandidates(o.puzzleShards);
+          if (st.gathering) await gatherPuzzleBodies(o.puzzleBodies);
+          await savePuzzleStore();
+          render();
+        }
         // §23) PHASE TWO: keep scoring until the store has nothing left. This
         // is the half that is meant to be left running — the walk is bounded by
         // `gatherTarget` and finishes in minutes, while a search is tens of
@@ -39915,6 +41486,14 @@
         log('storm: gathered', st.gathered, 'position(s) in',
           st.cdbCount, 'ChessDB requests;', storeCount(), 'in store for this source,',
           storeTotal(), 'in all');
+        // §29) …and what the puzzle stages bought, which is a separate
+        // sentence because it is a separate budget: index shards and bodies,
+        // neither of which is a ChessDB request.
+        if (pz.shardsFetched || pz.bodiesFetched) {
+          log('storm: puzzles —', pz.shardsFetched, 'index shard(s),',
+            pz.bodiesFetched, 'body(ies);', puzzleReadyCount(), 'ready and',
+            puzzleCandCount(), 'candidate(s) in store');
+        }
         log('storm: scored', st.deepened, 'position(s) with Stockfish;',
           deepenedCount(st.store), 'of', Object.keys(st.store || {}).length,
           'in this course carry a depth-' + C.deepenDepth + ' engine list,',
@@ -40194,7 +41773,17 @@
             // leg rather than per course.
             const legStored = st.cycleStored, legScored = st.cycleScored;
             await gather({ round: true, want: C.cycleTarget, legMs: C.cycleLegMs,
-              maxCdb: C.cycleMaxCdb, deepenMax: C.cycleDeepen });
+              maxCdb: C.cycleMaxCdb, deepenMax: C.cycleDeepen,
+              // §29) …and the puzzle stages, at the leg's own smaller size.
+              // A leg is bounded by a CLOCK before a count (§27), and stage A
+              // is the one thing here that can spend a minute without touching
+              // ChessDB or the engine — so a leg takes a slice and the night
+              // takes the course. Both are per LEG, and both legs of a course
+              // (one per source) run them, which is deliberate: the anchors are
+              // the same either way and `store.a` is what stops the second leg
+              // paying for what the first already scanned.
+              puzzleShards: C.cyclePuzzleShards,
+              puzzleBodies: C.cyclePuzzleBodies });
             // §27b) THE DEBT IS RECORDED **ABOVE** THE STOP CHECK, and that is
             // the whole of what makes it work: a round is normally ended BY
             // HAND, in the middle of a leg — an overnight pass is stopped in the
@@ -40714,7 +42303,23 @@
         // There is no score for a pass to cost and no streak for it to break,
         // and the position still has to be cleared and still comes back in the
         // second pass — so the honest reading of the button is "show me".
+        //
+        // §29) THIS ARM COMES FIRST FOR A PUZZLE TOO, and the order is the
+        // whole of what makes it right. Routed through the puzzle arm below,
+        // "no idea" on a set's puzzle would produce a `blunder` verdict, which
+        // `stormSetHeld` holds BLIND — offering "try again" to somebody who has
+        // just said they have no idea, with the solution still hidden. The set's
+        // own give-up reveals instead, which is what the press means.
         if (setModeOn()) { setGiveUp(); return; }
+        // §29) A PUZZLE'S "no idea" in a STORM is the puzzle path. It reaches
+        // the same function in the end — the same band, the same points — but
+        // it has to go through `finishPuzzleAnswer` so the PUZZLE store hears
+        // about it: routed through the graded arm below it would score
+        // correctly, print correctly, and quietly never retire.
+        if (st.card && st.card.puzzle && !st.verdict && !st.grading) {
+          onPuzzleFailed('');
+          return;
+        }
         if (!st.card || st.verdict || st.grading) return;
         // §16: THE WORST BAND, deliberately. "I have no idea" costing less than
         // a bad move would make passing the way to protect a streak, which is
@@ -40742,7 +42347,127 @@
         if (st.retry) { toggleAnalyse(); return; }
         setAnalyse();
       },
+      /**
+       * §29) A PUZZLE card's two outcomes, called from section 18's ordinary
+       * quiz path — `step()` when the line runs out, `tryMove` when a move is
+       * refused. They are the puzzle equivalent of `answer`, and they carry no
+       * position and no move list because there is nothing to grade: the
+       * solution came out of the store with the card.
+       */
+      puzzleSolved() { onPuzzleSolved(); },
+      puzzleFailed(uci) { onPuzzleFailed(uci); },
     };
+    // --- §29) what a PUZZLE card does with an answer ------------------------
+    //
+    // NO GRADE, NO REQUEST, NO ROUND TRIP. The solution came out of the store
+    // with the puzzle, so "was that right" is already known by the time the
+    // piece lands — which is most of why puzzles are cheap to deal and why they
+    // must never be routed through `grade()`. A tactic judged "decent" for a
+    // move that is not the win is exactly the wrong answer.
+    //
+    // THE VERDICT IS A BAND, so everything downstream is unchanged: `stormPoints`
+    // scores it, §16's sign rule drives the streak, `storeNote`'s twin retires
+    // it, §15's record counts it. Solved is the top band and a miss is the
+    // bottom one — a puzzle has no middle, which is the honest shape of the
+    // question rather than a simplification.
+    // ----------------------------------------------------------------------
+
+    /** The verdict object a puzzle answer produces. `solved` is what the panel
+     *  and the review row branch on; `verdict` is what everything else reads. */
+    function puzzleVerdict(solved, playedSan, playedUci) {
+      return {
+        verdict: solved ? 'great' : 'blunder',
+        // §29) A PUZZLE, so the review and the panel can tell the two kinds of
+        // row apart without inspecting the card.
+        puzzle: true,
+        solved: Boolean(solved),
+        playedSan: playedSan || '',
+        userUci: playedUci || '',
+        userSan: playedSan || '',
+        // Deliberately null, and read as "no figure" everywhere: there is no
+        // win probability given up here, because there was no scored list and
+        // no evaluator. §15's own rule already treats a missing loss as absent
+        // rather than as zero.
+        wp: null,
+        loss: null,
+        rank: null,
+      };
+    }
+
+    /** The solution was found. */
+    function onPuzzleSolved() {
+      // §14.10b) A REVIEW RETRY, where `st.card` is null and nothing is
+      // scored. Handled here rather than by the caller because which position
+      // is being played again is entirely this module's state — section 18
+      // only knows that the line ran out.
+      if (st.retry) { retryPuzzleVerdict(puzzleVerdict(true, '', '')); return; }
+      const card = st.card;
+      if (!card || !card.puzzle || st.verdict) return;
+      finishPuzzleAnswer(card, puzzleVerdict(true, '', ''));
+    }
+
+    /**
+     * §14.10b) A retry's verdict: shown on the board and nowhere else.
+     *
+     * No points, no streak, no `notePuzzle`, no `statNote`, no second history
+     * entry, and the row's own verdict — the answer given under the clock —
+     * is left exactly as it was. The same contract a graded retry has, and
+     * for the same reason: a move found at leisure afterwards is not one of
+     * the session's answers.
+     */
+    function retryPuzzleVerdict(v) {
+      if (continuationStormApi) continuationStormApi.verdict(v);
+      render();
+    }
+
+    /**
+     * …and it was not. One wrong move ends a puzzle card in a storm; in a SET it
+     * HOLDS the position, which is §17's own mechanism and needs nothing new —
+     * `stormSetHeld` is true of the `blunder` band, so the ordinary set path
+     * offers "try again" and "show the move" exactly as it does for a graded
+     * mistake.
+     */
+    function onPuzzleFailed(uci) {
+      // §14.10b) …and the same for a wrong move in a retry. The card is the
+      // review row's, not the session's.
+      const card = st.retry ? st.retry.card : st.card;
+      if (!card || !card.puzzle) return;
+      if (!st.retry && st.verdict) return;
+      let san = '';
+      const pos = CloSan.parseFen(card.startFen);
+      // The SAN is for the sentence on the panel only, so a move that will not
+      // resolve simply goes unnamed rather than stopping the answer.
+      if (pos && uci) san = CloSan.moveToSan(pos, uci) || '';
+      const v = puzzleVerdict(false, san, uci);
+      if (st.retry) { retryPuzzleVerdict(v); return; }
+      finishPuzzleAnswer(card, v);
+    }
+
+    /**
+     * The shared tail. It is `finishAnswer`/`finishSetAnswer` split by mode,
+     * exactly as the graded path is, and it goes through the SAME two functions
+     * rather than reimplementing them — so the score, the streak, the clock
+     * penalty, the retention rule, §15's record, the review and the verdict
+     * pause all behave identically for both kinds of card.
+     */
+    function finishPuzzleAnswer(card, v) {
+      // The store's own retention (§14.11's rule in its second home) is the one
+      // thing a puzzle does NOT share, because it is a different store: a
+      // solved puzzle is retired with a tombstone, a failed one stays and comes
+      // round again.
+      if (setModeOn()) {
+        // Only the FIRST attempt of the first round is evidence (§21's rule),
+        // and `finishSetAnswer` applies exactly that guard to the position
+        // store; this is the same guard for the puzzle store.
+        const first = st.cur && st.cur.attempts === 0 && st.round === 1;
+        if (first) notePuzzle(card.puzzle.id, v.verdict);
+        finishSetAnswer(v);
+        return;
+      }
+      notePuzzle(card.puzzle.id, v.verdict);
+      finishAnswer(v);
+    }
+
 
     async function startSession(spec) {
       st.gen++;   // §27
@@ -40833,6 +42558,13 @@
       st.engCount = 0;     // §26
       st.engExhausted = false;
       st.mv = new Map();   // §19
+      // §29) The puzzle side of a new session. `seen` and `queue` are per
+      // SESSION; the store, the shard cache and the settings are not.
+      pz.seen = new Set();
+      pz.queue = [];
+      pz.store = null;
+      pz.shardsFetched = 0;
+      pz.bodiesFetched = 0;
       if (spec.source) applyStormSource(spec.source);
       // §14.24) THE BACKGROUND BUDGET IS PER WINDOW, and this is the window
       // opening. `backfilling` is deliberately NOT cleared here: a walk from
@@ -40857,6 +42589,17 @@
       // arrive with no network at all.
       await loadStore();
       await loadSyncMeta();
+      // §29) …and the puzzle store, on exactly the same argument: a ready
+      // puzzle is a card that needs no fetch of any kind, so it must be in
+      // hand before the first deal rather than a round trip behind it.
+      //
+      // READ EVEN WHEN THE FEATURE IS OFF. `pz.on` decides whether puzzles are
+      // DEALT and whether the fourth host is ever asked for anything; it does
+      // not decide whether an existing store is loaded, and a gather pass can
+      // be run — and a wire exchange can land — on a session that is not
+      // dealing any.
+      await loadPuzzleStore(st.bid);
+      fillPuzzleQueue();
       // §15. Before the first answer can be graded, and cheap — one
       // storage.local read for the record and this device's own id.
       await loadStats();
@@ -41090,7 +42833,17 @@
       // exhausted session appeared in the review twice, the second time
       // claiming it was never answered.
       st.card = null;
-      const card = setModeOn() ? setPick() : st.queue.shift();
+      // §29) A PUZZLE INSTEAD, some fraction of the time. It is drawn ABOVE
+      // the ordinary pick and falls through silently when the roll loses or
+      // the queue is empty — which is the whole of "there is no guarantee a
+      // puzzle exists here". Saying so would report the dataset's coverage as
+      // a fault on every card.
+      //
+      // A SET DRAWS THEM TOO, and it is the better host of the two: no clock,
+      // and §17's hold already means "you did not find it — play it again, or
+      // be shown it", which is exactly what a failed tactic wants.
+      const card = (setModeOn() ? setPuzzlePick() : puzzlePick()) ||
+        (setModeOn() ? setPick() : st.queue.shift());
       if (!card) {
         // Nothing ready. If more can still be produced this is a pause; if not,
         // the session is over — an empty queue ENDS it cleanly rather than
@@ -41108,6 +42861,33 @@
       showCard(card);
     }
 
+    /**
+     * §29) The storm's puzzle draw: roll, and take one if the roll wins.
+     * Null on every other path, which is what makes the caller a single `||`.
+     */
+    function puzzlePick() {
+      if (!puzzleDue()) return null;
+      return nextPuzzleCard();
+    }
+
+    /**
+     * §29) …and the set's, which has one extra job: a set entry is what the
+     * hold, the second pass and the tally are all keyed on, so a puzzle has to
+     * be ENROLLED exactly as `setPick` enrols an ordinary card. Only in round
+     * ONE — the second pass re-asks what the first produced, and a puzzle
+     * appearing for the first time in it would never have been counted.
+     */
+    function setPuzzlePick() {
+      if (st.round !== 1 || st.set.length >= C.setSize) return null;
+      if (!puzzleDue()) return null;
+      const card = nextPuzzleCard();
+      if (!card) return null;
+      const entry = { card, first: null, second: null, attempts: 0,
+        outcome: null, secondOutcome: null };
+      st.set.push(entry);
+      st.cur = entry;
+      return card;
+    }
     /** Putting a card on the board — the tail both modes share. Returns false
      *  when the board refused, having already ended the session. */
     function showCard(card) {
@@ -41411,7 +43191,12 @@
       st.verdict = v;
       // §14.11's retention rule: learned positions leave the store, missed ones
       // stay and come round again.
-      if (st.card) storeNote(st.card.startFen, v.verdict);
+      // §29) NOT FOR A PUZZLE. Its retention lives in the puzzle store and is
+      // applied by `notePuzzle`; passing a puzzle's own FEN to this one would
+      // key it into the POSITION store, where — rarely, but a puzzle IS found
+      // from a game that played these lines — it can collide with a real
+      // stored position and retire it for an answer that was never about it.
+      if (st.card && !st.card.puzzle) storeNote(st.card.startFen, v.verdict);
       // §15: …and the answer itself, counted against the line this position is
       // a frontier of. Here rather than in `runGrade`, which the review's
       // retry also goes through: a move found at leisure afterwards is not one
@@ -41459,7 +43244,8 @@
       if (entry.attempts === 1) {
         if (st.round === 1) entry.first = v; else entry.second = v;
         if (st.round === 1 && st.card) {
-          storeNote(st.card.startFen, v.verdict);
+          // §29) …and not for a puzzle, for `finishAnswer`'s reason.
+          if (!st.card.puzzle) storeNote(st.card.startFen, v.verdict);
           // §21) …and §15's record, which used to be written here by nothing at
           // all. THE SAME GUARD AS THE STORE WRITE ABOVE, deliberately: both ask
           // about the FIRST thing that happened to this position, which is the
@@ -41572,7 +43358,12 @@
       if (entry && entry.attempts === 0) {
         if (st.round === 1) entry.first = v; else entry.second = v;
         if (st.round === 1) {
-          storeNote(st.card.startFen, v.verdict);
+          // §29) EACH KIND OF CARD TO ITS OWN STORE. A puzzle's FEN keyed into
+          // the POSITION store can — rarely, but a puzzle IS found from a game
+          // that played these lines — collide with a real stored position and
+          // retire it for an answer that was never about it.
+          if (st.card.puzzle) notePuzzle(st.card.puzzle.id, v.verdict);
+          else storeNote(st.card.startFen, v.verdict);
           // §21) A pass is an ANSWER here exactly as it is in the timed loop,
           // where it is counted in the worst band — "I have no idea" is the most
           // informative thing this record can be told about a position.
@@ -41801,6 +43592,10 @@
       // …and the store, whose whole value is that it outlives this session.
       // Fire and forget: nothing after this reads it back.
       saveStore();
+      // §29) …and the puzzle store, on the same argument and at the same
+      // moment. It carries this session's retirements AND the anchors a
+      // gather scanned, both of which are expensive to learn twice.
+      savePuzzleStore();
       // §14.16: and the RETIREMENTS beside it, on the same argument and at the
       // same moment — a tombstone that does not survive the tab is a position
       // that comes back next session, which is the whole of what this session's
@@ -42103,6 +43898,24 @@
         shareSel.appendChild(o);
       }
       shareSel.addEventListener('change', () => saveUncShare(shareSel.value));
+      // §29) HOW OFTEN A PUZZLE COMES UP INSTEAD. Third selector, after the
+      // mode and the source, because it modifies both rather than choosing
+      // between them — either exercise, on either source, with some fraction
+      // of the cards being a tactic instead of a position.
+      //
+      // OFF BY DEFAULT, and that is a privacy decision before it is a taste
+      // one: this is the only setting in the window that decides whether a
+      // FOURTH host ever hears from this profile. Section 26's gate, for
+      // section 26's reason.
+      const puzzleSel = document.createElement('select');
+      puzzleSel.className = 'clo-st-sel';
+      for (const v of C.puzzlePctChoices) {
+        const o = document.createElement('option');
+        o.value = String(v);
+        o.textContent = v ? ('Puzzles ' + v + '%') : 'No puzzles';
+        puzzleSel.appendChild(o);
+      }
+      puzzleSel.addEventListener('change', () => savePuzzlePct(puzzleSel.value));
       // §14.24) THE BACKGROUND PASS's switch. NEUTRAL (`.clo-st-sync`), beside
       // Gather and deliberately not sharing its green: green outline in this
       // row is an ordinary ACTION (DESIGN-ui-inventory §3) and this one starts
@@ -42149,7 +43962,7 @@
         el('span', 'clo-st-set-label', 'Ask about replies played in'), shareSel,
         el('span', 'clo-st-set-label', 'of the games there or more'));
       settings.append(
-        modeSel, sourceSel, plyGroup, uncGroup, fenBtn,
+        modeSel, sourceSel, puzzleSel, plyGroup, uncGroup, fenBtn,
         el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, roundBtn,
         clearBtn, bgBtn, syncBtn, statsBtn);
 
@@ -42337,7 +44150,7 @@
       document.body.appendChild(panel);
       st.panel = panel;
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
-        settings, modeSel, sourceSel, plyGroup, uncGroup, shareSel,
+        settings, modeSel, sourceSel, puzzleSel, plyGroup, uncGroup, shareSel,
         fenBtn, fenBox, fenInput, fenNameInput, fenGo, fenSave, fenWhole, fenMsg, fenList,
         statsTabA, statsTabB,
         minSel, maxSel, startBtn, gatherBtn, roundBtn, clearBtn, bgBtn, ready,
@@ -42355,6 +44168,34 @@
       st.ui.status.classList.toggle('clo-st-status--warn', kind === 'warn');
     }
 
+    /**
+     * §29) What the puzzle selector says about itself.
+     *
+     * THE PERCENTAGE ALONE SAYS NOTHING USEFUL. "10%" is a promise the store
+     * may not be able to keep — a course whose lines are short, or one never
+     * gathered, has no puzzles at all and the setting then does nothing
+     * whatever it reads. So the tooltip carries the count, which is the only
+     * place the difference between "off" and "empty" is visible.
+     */
+    function puzzleSelTitle() {
+      const ready = puzzleReadyCount();
+      if (!pz.on) {
+        return "Puzzles are off. Turned on, some fraction of the cards are a " +
+          "tactic from a real game that played one of this course's own lines " +
+          "— found, and asked for, exactly as the position cards are.\n" +
+          "Nothing is fetched from the puzzle dataset while this is off.";
+      }
+      const band = puzzleBand();
+      return pz.on + "% of the cards will be a tactic from a game that went " +
+        "through one of this course's positions between ply " + band.lo +
+        " and ply " + band.hi + " — deep enough that the game really played " +
+        "the line.\n" +
+        (ready
+          ? ready + " are ready to deal."
+          : "None are ready yet — \"Gather positions\" is what finds them, and " +
+            "a course with only short lines may have none.") +
+        "\nA card falls back to an ordinary position whenever none is ready.";
+    }
     /** Writes the range through, then persists it. Storage is best-effort: the
      *  setting is in force either way, it just may not survive the tab. */
     function savePlyRange(lo, hi) {
@@ -42417,6 +44258,25 @@
       syncSettings();
       try {
         chrome.storage.local.set({ [C.uncMinShareKey]: st.uncShare }).catch(() => {});
+      } catch (err) { /* orphaned content script */ }
+    }
+
+    /**
+     * §29) …and how often a puzzle is dealt. Same best-effort terms, and it
+     * takes effect on the NEXT card rather than restarting anything: the
+     * percentage is a roll per card, so a mid-session change simply changes
+     * the odds from there — unlike the source or the ply range, which describe
+     * what the positions already queued ARE.
+     */
+    function savePuzzlePct(v) {
+      const was = pz.on;
+      applyPuzzlePct(v);
+      // Turning it on mid-window with a store already loaded should not need a
+      // restart to have anything to deal.
+      if (!was && pz.on) fillPuzzleQueue();
+      syncSettings();
+      try {
+        chrome.storage.local.set({ [C.puzzlePctKey]: pz.on }).catch(() => {});
       } catch (err) { /* orphaned content script */ }
     }
 
@@ -42511,6 +44371,13 @@
       st.ui.sourceSel.disabled = filling();
       st.ui.shareSel.value = String(st.uncShare);
       st.ui.shareSel.disabled = filling();
+      // §29) The puzzle mix. Disabled while a pass runs for the same reason
+      // the others are — the pass is what fills the store it draws from — and
+      // its TITLE carries the state of the store, since "10%" says nothing
+      // about whether there is anything to deal.
+      st.ui.puzzleSel.value = String(pz.on);
+      st.ui.puzzleSel.disabled = filling();
+      st.ui.puzzleSel.title = puzzleSelTitle();
       st.ui.plyGroup.hidden = uncoveredOn();
       st.ui.uncGroup.hidden = !uncoveredOn();
       // The button IS the stop button while it runs — one control, because
@@ -42519,7 +44386,17 @@
       // Shown only before the first card and hidden for good once it is spent:
       // "Start" during a session would be a control with nothing to do, and
       // after one the summary's own "Storm again" is the way back.
-      const haveCard = Boolean(st.queue && st.queue.length);
+      // §29) EITHER QUEUE IS A CARD. `nextCard` draws a puzzle above the
+      // ordinary pick, so a ready puzzle alone is enough to begin — and the
+      // count sentence has to say which of the two is ready, or a
+      // puzzles-only start reads "0 position(s) are ready".
+      const nPos = (st.queue && st.queue.length) || 0;
+      const nPz = (pz.on && pz.queue.length) || 0;
+      const readyPhrase = nPos
+        ? nPos + ' position(s)' + (nPz ? ' and ' + nPz + ' puzzle(s)' : '') +
+          ' are ready and the rest are found while you play.'
+        : nPz + ' puzzle(s) are ready; positions are still being found.';
+      const haveCard = haveAnyCard();
       st.ui.startBtn.hidden = st.started || st.over || filling();
       st.ui.startBtn.disabled = !haveCard;
       st.ui.startBtn.textContent = haveCard
@@ -42528,10 +44405,8 @@
         ? (setModeOn()
           ? 'Begin. Up to ' + C.setSize + ' positions, no clock, and none of them is ' +
             'left behind: more than 6% of the game given up and the position is played ' +
-            'again until it is found or the move is shown. ' + st.queue.length +
-            ' position(s) are ready and the rest are found while you play.'
-          : 'Begin. The clock starts with the first card — ' + st.queue.length +
-          ' position(s) are ready and the rest are found while you play.')
+            'again until it is found or the move is shown. ' + readyPhrase
+          : 'Begin. The clock starts with the first card — ' + readyPhrase)
         : 'Nothing is ready yet. Finding a position costs ' +
           (uncoveredOn()
             ? 'an explorer lookup and a ChessDB one'
@@ -43333,6 +45208,21 @@
      *  rule the verdict line follows, for the same reason. */
     function revMoves(item) {
       if (!item) return null;
+      // §29) A PUZZLE ROW. Its "best" is the SOLUTION's first move, which is
+      // on the card's own ply list rather than in a scored list — and every
+      // reader below is unchanged, including §14.10a's `item.shown` gate,
+      // which matters more here than anywhere: on a graded card the best move
+      // is a fact about the position, and on a puzzle it IS the answer.
+      if (item.card.puzzle) {
+        const v0 = item.verdict || {};
+        const first = (item.card.plies && item.card.plies[0]) || null;
+        return {
+          bestUci: first ? first.uci : null,
+          bestSan: first ? first.san : '',
+          userSan: v0.userSan || '',
+          userUci: v0.userUci || '',
+        };
+      }
       const s2 = item.card.storm;
       const v = item.verdict || {};
       const eng = v.source === 'engine' && v.bestSan;
@@ -43375,7 +45265,11 @@
         layer.appendChild(piece);
       }
       // The move that LED here, tinted — the same context the card itself had.
-      const arrived = item.card.storm.cand.arrived;
+      // §29) …and a puzzle carries the same thing under another name: the
+      // losing side's mistake, which the dataset gives as `previousMove`.
+      const arrived = item.card.puzzle
+        ? { uci: item.card.puzzle.prevUci }
+        : item.card.storm.cand.arrived;
       if (arrived && arrived.uci && arrived.uci.length >= 4) {
         for (const n of [arrived.uci.slice(0, 2), arrived.uci.slice(2, 4)]) {
           const sq = squares.get(squareIndexOf(n));
@@ -43418,6 +45312,17 @@
         // no longer the headline.
         row.append(el('span', 'clo-st-revrow-loss',
           typeof v.wp === 'number' ? (v.wp < 0.05 ? '0' : '−' + stormWp(v.wp)) : '?'));
+        // §29) A PUZZLE ROW SAYS SOMETHING ELSE ENTIRELY — where it came
+        // from, how deep the game went, its rating and its themes — so it gets
+        // its own sentence rather than a graded row's with holes in it. Split
+        // here rather than inside the expression below, which reaches into
+        // `card.storm` five times and would throw on the first.
+        if (item.card.puzzle) {
+          row.title = puzzleRowTitle(item);
+          revRowClick(row, i);
+          host.appendChild(row);
+          return;
+        }
         const unc = item.card.storm.unc;
         row.title = (item.card.storm.from || '') +
           // §19) WHICH REPLY the course does not answer, and how popular it is
@@ -43440,18 +45345,48 @@
           // sixth column: the row is already read for four things, and adding a
           // fifth would mean re-measuring the whole grid.
           setOutcomeNote(item.card);
-        row.addEventListener('click', () => {
-          if (st.reviewIdx === i) return;
-          st.reviewIdx = i;
-          // Both describe the position being LEFT.
-          if (st.analysing) closeAnalyse();
-          if (st.retry) endRetry();
-          renderReview();
-        });
+        revRowClick(row, i);
         host.appendChild(row);
       });
     }
 
+    /** The row's click, extracted so the puzzle arm and the graded arm cannot
+     *  drift about what selecting a row does. */
+    function revRowClick(row, i) {
+      row.addEventListener('click', () => {
+        if (st.reviewIdx === i) return;
+        st.reviewIdx = i;
+        // Both describe the position being LEFT.
+        if (st.analysing) closeAnalyse();
+        if (st.retry) endRetry();
+        renderReview();
+      });
+    }
+
+    /**
+     * §29) A puzzle row's tooltip. It answers a different question from a
+     * graded row's — not "how much of the game did that give up" but "what is
+     * this and why am I being shown it" — so it names the line, how deep the
+     * game went into it, the rating and the themes.
+     */
+    function puzzleRowTitle(item) {
+      const p = item.card.puzzle;
+      const bits = [];
+      if (p.from) bits.push(p.from);
+      if (typeof p.anchorPly === 'number' && p.anchorPly > 0) {
+        bits.push('a game that played it ' + p.anchorPly + ' plies in');
+      }
+      if (p.opening) bits.push(p.opening);
+      if (typeof p.rating === 'number') bits.push(p.rating + ' rated');
+      if (p.themes && p.themes.length) {
+        bits.push(p.themes.map((t) => CloPuzzles.themeLabel(t)).join(', '));
+      }
+      // The one thing only a puzzle row can offer: the game it came from.
+      // In the tooltip because it is not actionable from here — the source
+      // PGN was dropped upstream, so the url is all there is.
+      if (p.gameUrl) bits.push(p.gameUrl);
+      return bits.join(' · ') + setOutcomeNote(item.card);
+    }
     /** " · found on the second try", or nothing at all outside a set. */
     function setOutcomeNote(card) {
       if (!setModeOn()) return '';
@@ -43478,10 +45413,16 @@
       // and "42cp behind" is what makes the position worth thinking about at
       // all. Only `stormBestLine`, which names the move, waits to be asked for.
       const shown = revShown();
+      // §29) A PUZZLE ROW TAKES THE OTHER PAIR OF LINES. Neither builder below
+      // can be handed a card with no `storm` block — `stormBestLine` threw on
+      // it, silently, since `toggleBest` had already flipped `item.shown`.
+      const pzMv = item && item.card.puzzle ? revMoves(item) : null;
       st.ui.revLegend.textContent = !item ? ''
-        : shown
-          ? stormVerdictLine(v, item.card.storm) + '   ·   ' + stormBestLine(v, item.card.storm)
-          : stormVerdictLine(v, item.card.storm);
+        : pzMv
+          ? stormPuzzleReviewLine(v, pzMv.bestSan, shown)
+          : shown
+            ? stormVerdictLine(v, item.card.storm) + '   ·   ' + stormBestLine(v, item.card.storm)
+            : stormVerdictLine(v, item.card.storm);
       // §14.20, and the same rule as section 18's panel: the class is a claim
       // about WHERE the number came from, so an engine-graded row must not
       // wear it.
