@@ -110,6 +110,11 @@ const src = [
   // through it, so a transcription that drifted would agree with itself and
   // with nothing shipped.
   sliceDecl('stormCoverKey'),
+  // §28) The scope key and the line test. Both PURE and both silent when wrong:
+  // a key that never matches is a scope that finds no line, which looks exactly
+  // like a position the course does not reach.
+  sliceDecl('stormFenKey'),
+  sliceDecl('stormLineThrough'),
   sliceDecl('stormFrontiers'),
   // §19's stage 0 and stage 1, and the store split that keeps the two sources
   // apart. Every one of them fails SILENTLY — see section 13.
@@ -119,6 +124,11 @@ const src = [
   sliceDecl('stormDrawFrontier'),
   sliceDecl('stormFilterPool'),
   sliceDecl('stormFilterStore'),
+  // §28) …and the impure resolve over them, which is where the latch and the
+  // intersection live. Sliced for `harvestCandidates`'s reason: the rule is in
+  // this function's control flow and nowhere else, and every way of getting it
+  // wrong quietly widens or empties a scope.
+  sliceDecl('stormScope'),
   sliceDecl('stormUserEval'),
   sliceDecl('PGN_COMMENT_RE'),
   sliceDecl('stormPgnMoves'),
@@ -230,6 +240,7 @@ const src = [
   sliceDecl('stormVerdictLine'),
   sliceDecl('stormBestLine'),
   'return { stormFrontiers, stormDecisions, stormUncoveredMoves, stormCoverKey,' +
+  '         stormFenKey, stormLineThrough,' +
   '         stormFilterSource, stormSharePct, stormGapNote,' +
   '         statMapOf, STAT_MAPS,' +
   '         stormDrawFrontier, stormUserEval, stormPgnMoves,' +
@@ -238,7 +249,7 @@ const src = [
 '         stormReentered,' +
   '         stormCard, stormPack, stormUnpack, stormRetain, stormStoreDraw,' +
   '         stormDone, stormPickGames,' +
-'         stormFilterPool, stormFilterStore,' +
+'         stormFilterPool, stormFilterStore, stormScope,' +
 '         stormReachBucket, stormReachLabel,' +
   '         stormFunnelBlank, stormFunnelBump, stormFunnelWhy,' +
   '         stormFunnelNote, stormFunnelLines,' +
@@ -3412,6 +3423,218 @@ const leadsTo = (arrived, fen) => {
     // whatever another build wrote.
     eq('…and the compare survives a numeric bid',
       S.stormWireForeign({ bid: 453453 }, '453453'), false);
+  }
+
+  // --- §28) STORM FROM A POSITION (v0.170.0) ------------------------------
+  // A scope, and it is §14.21's above with one thing changed: which oids the
+  // set is made of. So the only NEW rules are the two pure functions that
+  // answer "does this line go through the board I named", and both fail
+  // silently — a key that never matches is a scope that finds no line, which
+  // looks exactly like a position the course does not reach, and a key that
+  // matches too readily quietly widens the session back out to the course.
+  {
+    const step = (fen, san) => S.fenAfterUci(fen, S.sanToUci(CloSan.parseFen(fen), san));
+    const f1 = step(START_FEN, 'e4');                    // after 1.e4
+    const f2 = step(f1, 'e5');                           // after 1...e5
+    const f3 = step(f2, 'Nf3');                          // after 2.Nf3
+    const f4 = step(f3, 'Nc6');                          // after 2...Nc6
+    const f5 = step(f4, 'Bb5');                          // the Ruy frontier
+
+    // The key: placement, side, castling. EN PASSANT DROPPED, which is what a
+    // transposition differs by — §19b's rule, and this is its second reader.
+    eq('the key is three fields', S.stormFenKey(START_FEN).split(' ').length, 3);
+    eq('…and it is the coverage key of the same FEN',
+      S.stormFenKey(f5), S.stormCoverKey(f5));
+    // Two move orders reaching one board. The en passant square is exactly
+    // where two such routes disagree, so this is the whole reason the scope
+    // cannot key on `cacheKey`.
+    const epRoute = step(step(step(START_FEN, 'Nf3'), 'e5'), 'e4');
+    const noEp = step(step(step(START_FEN, 'e4'), 'e5'), 'Nf3');
+    eq('the two routes really do differ in the raw FEN', epRoute === noEp, false);
+    eq('…and the scope key calls them one position',
+      S.stormFenKey(epRoute), S.stormFenKey(noEp));
+
+    // A FEN THAT WILL NOT PARSE IS THE EMPTY STRING AND NEVER A SCOPE. That is
+    // the caller's whole contract: an unusable one widens to the course with a
+    // sentence, and must never become a filter that silently matches nothing.
+    eq('nonsense is not a key', S.stormFenKey('not a fen'), '');
+    eq('an empty string is not a key', S.stormFenKey(''), '');
+    eq('undefined is not a key', S.stormFenKey(undefined), '');
+    eq('a truncated board is not a key',
+      S.stormFenKey('rnbqkbnr/pppppppp/8 w KQkq - 0 1'), '');
+    // `parseFen` wants two fields and the key needs three, so the castling
+    // field has to be SUPPLIED rather than left missing: a two-field key would
+    // match nothing the walk ever builds.
+    eq('a FEN with only placement and side still keys in three fields',
+      S.stormFenKey('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w').split(' ').length, 3);
+    eq('padded whitespace is trimmed',
+      S.stormFenKey('  ' + START_FEN + '  '), S.stormFenKey(START_FEN));
+
+    // THE CASTLING FIELD IS NORMALISED, and this assertion is the one that
+    // catches a total, silent failure: `fenFromPos` copies `pos.castling`
+    // VERBATIM, so a FEN pasted with the rights in another order would key as
+    // written and match nothing, while one pasted in the usual order would
+    // match everything. Every key the walk builds descends from START_FEN's own
+    // "KQkq" through `makeMove`, which only ever removes characters.
+    const shuffled = START_FEN.replace(' KQkq ', ' kqKQ ');
+    eq('a scrambled castling field keys the same as the canonical one',
+      S.stormFenKey(shuffled), S.stormFenKey(START_FEN));
+    // …and a genuinely different set of rights is a different position. Only
+    // the field recording the last MOVE is dropped; castling is history the
+    // board cannot show (section 11's reasoning).
+    eq('fewer rights is NOT the same position',
+      S.stormFenKey(START_FEN.replace(' KQkq ', ' Kk ')) === S.stormFenKey(START_FEN),
+      false);
+
+    // …and whether a line goes through it. The END counts as well as every
+    // position a move is played FROM — a user pasting a line-END FEN is asking
+    // for that line's own frontier, which is the most obvious thing to paste.
+    const walk = { plies: [
+      { before: START_FEN }, { before: f1 }, { before: f2 }, { before: f3 },
+      { before: f4 }], end: f5 };
+    eq('a position in the middle of the line is found',
+      S.stormLineThrough(walk, S.stormFenKey(f2)), true);
+    eq('the START position is found',
+      S.stormLineThrough(walk, S.stormFenKey(START_FEN)), true);
+    eq('the line END is found', S.stormLineThrough(walk, S.stormFenKey(f5)), true);
+    const off = step(step(START_FEN, 'd4'), 'd5');
+    eq('a position the line never reaches is not',
+      S.stormLineThrough(walk, S.stormFenKey(off)), false);
+    eq('no key means no match', S.stormLineThrough(walk, ''), false);
+    eq('no walk means no match', S.stormLineThrough(null, S.stormFenKey(f2)), false);
+
+    // THE WALKS CARRY THE OID SET OUT, and `C.fenKey` is what turns it on. An
+    // ordinary session passes none and the set is built and never read, which
+    // is what makes this cost one string compare per ply.
+    const plain = await S.stormFrontiers(vars, C);
+    eq('with no scope the index is empty', plain.through.size, 0);
+    const scopeC = { ...C, fenKey: S.stormFenKey(f2) };
+    const withKey = await S.stormFrontiers(vars, scopeC);
+    const through = withKey.through;
+    // The position after 1...e5 is on the Ruy's own path and on the Italian's,
+    // which is the point of scoping to a position rather than to a line: it
+    // catches every line that goes THROUGH it, however they diverge later.
+    eq('the lines that go through it are named', through.has('1'), true);
+    eq('…including one that diverges only later', through.has('7'), true);
+    eq('…and a line that does not is absent', through.has('3'), false);
+    // …and a line that arrives by another MOVE ORDER. Line 2 is 1.Nf3 Nc6 2.e4
+    // e5 3.Bb5, so it never stands on the position after 1...e5 (its knights are
+    // out) and DOES reach the frontier the Ruy ends on — which is what the
+    // dropped en passant field is for. Scoping on the frontier finds both.
+    const atEnd = (await S.stormFrontiers(vars,
+      { ...C, fenKey: S.stormFenKey(f5) })).through;
+    eq('a scope on the line END finds the line itself', atEnd.has('1'), true);
+    eq('…and the one that transposes into it', atEnd.has('2'), true);
+    eq('…and NOT the position two plies earlier', through.has('2'), false);
+    // A PAUSED line is still recorded here, and that costs nothing: the set is
+    // only ever intersected with the oids of POOL entries, and a paused line
+    // contributes none. Asserted so a "tidy" that filters THIS walk instead of
+    // the pool fails rather than looking equivalent.
+    eq('a paused line going through it is still in the index', through.has('8'), true);
+    eq('a colourless line contributes nothing, having no walk kept',
+      through.has('5'), false);
+    // …and the uncovered source's stage 0 answers the same question the same
+    // way, which is what lets `stormScope` serve both with no branch.
+    const uncThrough = (await S.stormDecisions(vars,
+      { ...C, fenKey: S.stormFenKey(f5) })).through;
+    eq('the uncovered walk carries the same index', uncThrough.has('1'), true);
+    eq('…and it too finds the transposition', uncThrough.has('2'), true);
+    eq('the uncovered walk with no scope carries an empty one',
+      (await S.stormDecisions(vars, C)).through.size, 0);
+
+    // THE POOL FILTER IS §14.21's, UNCHANGED — asserted here anyway, because
+    // that is the claim this whole feature rests on: the scope is a different
+    // oid set and nothing else.
+    const scoped = S.stormFilterPool(plain, through);
+    eq('the pool filter takes the walk’s own set', scoped.length, 1);
+    eq('…and still carries the continuation index', scoped.cont, plain.cont);
+    eq('a set no frontier is in empties the pool',
+      S.stormFilterPool(plain, new Set(['999'])).length, 0);
+    // THE RESOLVE ITSELF, which is IMPURE and is here for §14.17's reason: the
+    // rule lives in this function's control flow and nowhere else. Three ways
+    // it can be wrong and every one of them is silent —
+    //  * keyed on "`st.oidFilter` is still null" instead of the latch, the FEN
+    //    scope is never applied on a session that asked for a chapter too;
+    //  * without the latch, `gather`'s own call re-derives over a set
+    //    `cycleGoHome` had just put back;
+    //  * a union instead of an intersection widens a chapter scope back out.
+    {
+      const env = { fenKey: S.stormFenKey(f2), fenResolved: false, oidFilter: null };
+      S.__setEnv(env, C);
+      const got = S.stormScope(withKey);
+      eq('the resolve fills the oid set from the walk', env.oidFilter.has('1'), true);
+      eq('…and latches', env.fenResolved, true);
+      eq('…and the pool comes back filtered', got.length, 1);
+      // A second call must change nothing: `gather` reuses a session's answer.
+      env.oidFilter = new Set(['1']);
+      S.stormScope(withKey);
+      eq('a second call does not re-derive', [...env.oidFilter], ['1']);
+      // …and the two scopes compose by INTERSECTION. Oid 7 goes through the
+      // position; a chapter holding only oid 1 must not gain it.
+      const both = { fenKey: S.stormFenKey(f2), fenResolved: false,
+        oidFilter: new Set(['1', '3']) };
+      S.__setEnv(both, C);
+      S.stormScope(withKey);
+      eq('a chapter scope is narrowed, never widened', [...both.oidFilter], ['1']);
+      // …and the latch is SET even though the set was already non-null, which is
+      // the whole reason it is the test: keyed on the null instead, the position
+      // scope is never applied on a session that asked for a chapter too, and the
+      // assertion above passes because oid 3 was simply left alone.
+      eq('…and the latch is set over a set that was already there',
+        both.fenResolved, true);
+      const other = { fenKey: S.stormFenKey(f2), fenResolved: false,
+        oidFilter: new Set(['3']) };
+      S.__setEnv(other, C);
+      eq('…and a chapter with no line through the position empties',
+        S.stormScope(withKey).length, 0);
+      // No scope at all is the pool itself, untouched.
+      const none = { fenKey: '', fenResolved: false, oidFilter: null };
+      S.__setEnv(none, C);
+      eq('no position scope leaves the pool alone', S.stormScope(withKey), withKey);
+      eq('…and sets no latch', none.fenResolved, false);
+    }
+    // THE ROUND TRIP, which is what a scope is FOR: a gather stores a position
+    // under it, and a LATER session scoped to the same position deals that
+    // position back. Two functions have to agree for that to hold and they ask
+    // slightly different questions — the pool keeps a frontier when ANY of its
+    // lines is in scope (`oids.some`), while `stormPack` writes ONE oid and
+    // `stormFilterStore` tests that. Executed end to end because "the gather
+    // pays and the session does not deal" is invisible from either half alone.
+    {
+      const scopedF = S.stormFilterPool(withKey, through)[0];
+      const gSt = { store: {}, gone: {}, seen: new Set(), gathered: 0,
+        funnel: S.stormFunnelBlank() };
+      S.__setEnv(gSt, C);
+      S.harvestCandidates([cand(FEN_D, 'f3d4', 'Nxd4')], scopedF);
+      eq('the scoped gather stored one position', Object.keys(gSt.store).length, 1);
+      const ck = Object.keys(gSt.store)[0];
+      eq('…under a line of the frontier it came from',
+        scopedF.oids.indexOf(gSt.store[ck].o) >= 0, true);
+      // The next session, same FEN: the walk is deterministic, so `through` is
+      // the same set — this is literally the same object here.
+      const back = S.stormFilterStore(gSt.store, through);
+      eq('a position gathered under a position scope is dealt back by it',
+        Object.keys(back.kept), [ck]);
+      eq('…and nothing is reported as belonging elsewhere', back.dropped, 0);
+      // …and a DIFFERENT scope does not take it. `through` for a position none
+      // of this frontier's lines pass through is empty, and an empty scope must
+      // drop rather than fall through to the whole store.
+      const elsewhere = S.stormFilterStore(gSt.store, new Set(['999']));
+      eq('…while another scope does not', Object.keys(elsewhere.kept).length, 0);
+      eq('…and counts it as another scope’s', elsewhere.dropped, 1);
+      // THE MEASURED EXCEPTION (§28.4): `stormPack` writes `oids[0]` and the
+      // pool asked `oids.some`, so a frontier several lines converge on can be
+      // stored under a line the scope excludes — and then the next scoped
+      // session drops it, re-harvesting the position rather than dealing it.
+      // Probed over all three of the account's courses (2026-09-01): 2 of 1518
+      // scoped positions, 0.08% of frontier-slots, and zero on two of the three.
+      // Asserted as a KNOWN SHAPE rather than fixed, so a later change that
+      // makes the two agree fails here and has to say so.
+      const wrongFirst = { x: { f: FEN_D, o: 'not-in-scope',
+        m: [['f3d4', 'Nxd4', 20]], k: 0 } };
+      eq('a position stored under a line the scope excludes is dropped',
+        Object.keys(S.stormFilterStore(wrongFirst, through).kept).length, 0);
+    }
   }
 
   console.log('\n' + SRC_PATH);

@@ -6944,6 +6944,123 @@ button.clo-st-strow:hover { background: var(--clo-bg-raised); }
 
 .clo-st-scope:hover { color: var(--clo-text-bright); border-color: var(--clo-accent); }
 
+/* §28) STORM FROM A POSITION — the door in the settings row and the box under
+   it. The button's LABEL carries the state (`.clo-st-bgbtn`'s rule), so the
+   modifier below only brightens it: a scope is a fact about the whole session
+   and three words say which one, where a lit border could not. Never a fill and
+   never green — DESIGN-ui-inventory §3 allows this window one primary and Start
+   is it, and this row's green is spent on "gather". */
+.clo-st-fenbtn.clo-st-fenbtn--on,
+.clo-st-fenbtn.clo-st-fenbtn--on:hover:not(:disabled) {
+  color: var(--clo-text-bright);
+  border-color: var(--clo-accent);
+}
+
+/* An IN-FLOW BLOCK, not a popover — section 6b's rule for the panel's own
+   settings menu: this window is `overflow: hidden` and its body is the scroll
+   container, so a popover would be clipped by the thing it hangs off. */
+.clo-st-fenbox {
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  padding: 8px;
+  margin: 6px 0 0;
+}
+
+.clo-st-fenbox[hidden] { display: none; }
+
+.clo-st-fenrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* The inset well every other text control in this file uses (`.clo-st-sel`'s
+   vocabulary), so it reads as something to change rather than something to
+   press. The FEN field takes the room that is left and the NAME field is
+   fixed — a FEN is 60-odd characters and a name is three or four words, so
+   letting both grow would give the shorter one half the row for nothing. */
+.clo-st-feninput {
+  flex: 1 1 260px;
+  min-width: 140px;
+  background: var(--clo-bg-sunken);
+  color: var(--clo-text-bright);
+  border: 1px solid var(--clo-bg-raised);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.clo-st-feninput:focus { outline: none; border-color: var(--clo-accent); }
+.clo-st-fenname { flex: 0 1 150px; min-width: 90px; }
+
+/* One line: what the last press did, or why it refused. `.clo-st-scopenote`'s
+   vocabulary — faint and 12px — because it is the same kind of statement, and
+   never amber: a FEN that will not parse is a typo, not something outstanding. */
+.clo-st-fenmsg {
+  color: var(--clo-text-faint);
+  font-size: 12px;
+  margin-top: 6px;
+  max-width: 70ch;
+}
+
+.clo-st-fenmsg[hidden] { display: none; }
+
+.clo-st-fenlist {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.clo-st-fenempty {
+  color: var(--clo-text-faint);
+  font-size: 12px;
+  max-width: 70ch;
+}
+
+/* A saved position is a PAIR — pick it, or forget it — drawn as one chip so the
+   × cannot be mistaken for a control over the row above. */
+.clo-st-fenitem {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--clo-bg-raised);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.clo-st-fenpick,
+.clo-st-fendrop {
+  border: 0;
+  background: transparent;
+  color: var(--clo-text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  max-width: 26ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clo-st-fenpick:hover { color: var(--clo-text-bright); }
+
+/* The one that is RUNNING. Accent TEXT, not a border: the chip already has one
+   and the pair shares it, so recolouring it would light the × as well. */
+.clo-st-fenpick--on { color: var(--clo-accent); }
+
+.clo-st-fendrop {
+  padding: 4px 8px;
+  border-left: 1px solid var(--clo-bg-raised);
+  color: var(--clo-text-faint);
+  max-width: none;
+}
+
+.clo-st-fendrop:hover { color: var(--clo-attention); }
+
 .clo-st-stname {
   flex: 1;
   min-width: 0;
@@ -7054,6 +7171,16 @@ html.clo-touch .clo-st-sel { padding: 5px 7px; }
 html.clo-touch .clo-st-gather,
 html.clo-touch .clo-st-sync { font-size: 14px; padding: 7px 14px; }
 html.clo-touch .clo-st-start { font-size: 14px; padding: 7px 16px; }
+/* §28) The position box. The FIELDS grow with the type — 16px is what stops
+   mobile Chrome and Safari scaling the whole page up around a focused input,
+   which is section 22's `lockViewport` lesson and the reason that one needed a
+   meta rewrite as well: here there is no board to be pushed off screen, so the
+   type size is the whole of the answer. */
+html.clo-touch .clo-st-feninput { font-size: 16px; padding: 6px 8px; }
+html.clo-touch .clo-st-fenmsg,
+html.clo-touch .clo-st-fenempty { font-size: 13px; }
+html.clo-touch .clo-st-fenpick { font-size: 14px; padding: 7px 12px; }
+html.clo-touch .clo-st-fendrop { font-size: 14px; padding: 7px 11px; }
 html.clo-touch .clo-st-sum-cost { font-size: 13px; }
 html.clo-touch .clo-st-revlegend { font-size: 13px; }
 html.clo-touch .clo-st-revrow { font-size: 15px; padding: 7px 8px; }

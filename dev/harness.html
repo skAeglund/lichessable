@@ -3455,6 +3455,11 @@ body {
                 <select class="clo-st-sel"><option>3%</option></select>
                 <span class="clo-st-set-label">of the games there or more</span>
               </span>
+              <!-- &sect;28) the POSITION scope&rsquo;s door. NEUTRAL outline, with the
+                   LABEL carrying the state: a scope is a fact about the whole session
+                   and three words say which one where a lit border could not. Never
+                   green &mdash; this row&rsquo;s green is spent on "gather". -->
+              <button type="button" class="clo-st-sync clo-st-fenbtn">From position&hellip;</button>
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">0 position(s) ready</span>
               <!-- &sect;14.13 waiting: still a FILL, only not pressable. What changes
@@ -3479,6 +3484,79 @@ body {
               <!-- &sect;15.4) NEUTRAL, beside Sync and for the same reason: it is the
                    action away from both storming and gathering. -->
               <button type="button" class="clo-st-sync clo-st-statsbtn">Stats</button>
+            </div>
+            <div class="clo-st-stage hx-slots">
+              <div class="clo-st-slot clo-st-slot--board" data-hx-slot="no board until Start"></div>
+              <div class="clo-st-slot clo-st-slot--panel" data-hx-slot=""></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- &sect;28) STORM FROM A POSITION. The box is an IN-FLOW BLOCK under the
+           settings row, not a popover (section 6b&rsquo;s rule: this window is
+           overflow:hidden and its body is the scroll container), and it is shown in
+           exactly the two states the row itself is &mdash; no clock running &mdash; so there
+           is nothing for it to cover. Scoped session: the sub-line says which
+           position, and the button&rsquo;s own label repeats it. -->
+      <div class="hx-stage">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:300px">
+          <div class="clo-st-head">
+            <span class="clo-st-title">Intuition storm</span>
+            <span class="clo-st-sub">Intermediate Starter Kit &rsaquo; from Najdorf</span>
+            <span class="clo-st-clock clo-st-clock--off">3:00</span>
+            <span class="clo-st-stat">0 pts</span>
+            <span class="clo-st-stat">streak 0</span>
+            <button type="button" class="clo-st-x">&times;</button>
+          </div>
+          <div class="clo-st-body">
+            <div class="clo-st-settings">
+              <select class="clo-st-sel clo-st-modesel"><option>Storm &middot; 3 minutes</option></select>
+              <select class="clo-st-sel clo-st-sourcesel"><option>Past the end of a line</option></select>
+              <span class="clo-st-set-group">
+              <span class="clo-st-set-label">Offer positions</span>
+              <select class="clo-st-sel"><option>1</option></select>
+              <span class="clo-st-set-label">to</span>
+              <select class="clo-st-sel"><option>16</option></select>
+              <span class="clo-st-set-label">moves past the end of a line</span>
+              </span>
+              <!-- the scope IS on, so the label says so and the modifier brightens it -->
+              <button type="button" class="clo-st-sync clo-st-fenbtn clo-st-fenbtn--on">From: Najdorf</button>
+              <span class="clo-st-set-spacer"></span>
+              <span class="clo-st-ready">4 position(s) ready</span>
+              <button type="button" class="clo-st-start">Start</button>
+              <button type="button" class="clo-st-gather">Gather positions</button>
+              <button type="button" class="clo-st-gather clo-st-roundbtn">Gather all courses</button>
+              <button type="button" class="clo-st-sync clo-st-clearbtn">Clear positions</button>
+              <button type="button" class="clo-st-sync clo-st-bgbtn">Background: on</button>
+              <button type="button" class="clo-st-sync">Sync</button>
+              <button type="button" class="clo-st-sync clo-st-statsbtn">Stats</button>
+            </div>
+            <div class="clo-st-fenbox">
+              <div class="clo-st-fenrow">
+                <input type="text" class="clo-st-feninput" value="rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 7">
+                <input type="text" class="clo-st-feninput clo-st-fenname" value="Najdorf">
+                <button type="button" class="clo-st-gather clo-st-fengo">Storm from this</button>
+                <button type="button" class="clo-st-sync">Save</button>
+                <button type="button" class="clo-st-sync">Whole course</button>
+              </div>
+              <div class="clo-st-fenmsg">Saved as &ldquo;Najdorf&rdquo;.</div>
+              <div class="clo-st-fenlist">
+                <!-- the chip is a PAIR: pick it, or forget it. The one that is running
+                     wears accent TEXT and not a border &mdash; the pair shares the border, so
+                     recolouring it would light the &times; as well. -->
+                <div class="clo-st-fenitem">
+                  <button type="button" class="clo-st-fenpick clo-st-fenpick--on">Najdorf</button>
+                  <button type="button" class="clo-st-fendrop">&times;</button>
+                </div>
+                <div class="clo-st-fenitem">
+                  <button type="button" class="clo-st-fenpick">Open Sicilian, 6.Be3</button>
+                  <button type="button" class="clo-st-fendrop">&times;</button>
+                </div>
+                <div class="clo-st-fenitem">
+                  <button type="button" class="clo-st-fenpick">r1bqkbnr/pp1ppppp w</button>
+                  <button type="button" class="clo-st-fendrop">&times;</button>
+                </div>
+              </div>
             </div>
             <div class="clo-st-stage hx-slots">
               <div class="clo-st-slot clo-st-slot--board" data-hx-slot="no board until Start"></div>
@@ -3523,6 +3601,11 @@ body {
                 <select class="clo-st-sel"><option>3%</option></select>
                 <span class="clo-st-set-label">of the games there or more</span>
               </span>
+              <!-- &sect;28) the POSITION scope&rsquo;s door. NEUTRAL outline, with the
+                   LABEL carrying the state: a scope is a fact about the whole session
+                   and three words say which one where a lit border could not. Never
+                   green &mdash; this row&rsquo;s green is spent on "gather". -->
+              <button type="button" class="clo-st-sync clo-st-fenbtn">From position&hellip;</button>
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">9 position(s) ready</span>
               <!-- &sect;14.13 ready: THE one fill in this window. Gather beside it keeps
@@ -3603,6 +3686,11 @@ body {
                 <select class="clo-st-sel"><option>3%</option></select>
                 <span class="clo-st-set-label">of the games there or more</span>
               </span>
+              <!-- &sect;28) the POSITION scope&rsquo;s door. NEUTRAL outline, with the
+                   LABEL carrying the state: a scope is a fact about the whole session
+                   and three words say which one where a lit border could not. Never
+                   green &mdash; this row&rsquo;s green is spent on "gather". -->
+              <button type="button" class="clo-st-sync clo-st-fenbtn">From position&hellip;</button>
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">41 position(s) ready</span>
               <button type="button" class="clo-st-start" disabled>Finding a position&hellip;</button>
@@ -3664,6 +3752,11 @@ body {
                 <select class="clo-st-sel"><option>3%</option></select>
                 <span class="clo-st-set-label">of the games there or more</span>
               </span>
+              <!-- &sect;28) the POSITION scope&rsquo;s door. NEUTRAL outline, with the
+                   LABEL carrying the state: a scope is a fact about the whole session
+                   and three words say which one where a lit border could not. Never
+                   green &mdash; this row&rsquo;s green is spent on "gather". -->
+              <button type="button" class="clo-st-sync clo-st-fenbtn">From position&hellip;</button>
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">41 position(s) ready</span>
               <button type="button" class="clo-st-start">Start</button>
@@ -3722,6 +3815,11 @@ body {
                 <select class="clo-st-sel" disabled><option>16</option></select>
                 <span class="clo-st-set-label">moves past the end of a line</span>
               </span>
+              <!-- &sect;28) the POSITION scope&rsquo;s door. NEUTRAL outline, with the
+                   LABEL carrying the state: a scope is a fact about the whole session
+                   and three words say which one where a lit border could not. Never
+                   green &mdash; this row&rsquo;s green is spent on "gather". -->
+              <button type="button" class="clo-st-sync clo-st-fenbtn">From position&hellip;</button>
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">18 position(s) ready &middot; 12 engine-scored</span>
               <button type="button" class="clo-st-gather" disabled>Gather positions</button>
@@ -3780,6 +3878,11 @@ body {
                 <select class="clo-st-sel"><option>3%</option></select>
                 <span class="clo-st-set-label">of the games there or more</span>
               </span>
+              <!-- &sect;28) the POSITION scope&rsquo;s door. NEUTRAL outline, with the
+                   LABEL carrying the state: a scope is a fact about the whole session
+                   and three words say which one where a lit border could not. Never
+                   green &mdash; this row&rsquo;s green is spent on "gather". -->
+              <button type="button" class="clo-st-sync clo-st-fenbtn">From position&hellip;</button>
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">31 position(s) ready</span>
               <button type="button" class="clo-st-gather clo-st-gather--on">Stop gathering</button>
@@ -4052,6 +4155,11 @@ body {
                 <select class="clo-st-sel"><option>3%</option></select>
                 <span class="clo-st-set-label">of the games there or more</span>
               </span>
+              <!-- &sect;28) the POSITION scope&rsquo;s door. NEUTRAL outline, with the
+                   LABEL carrying the state: a scope is a fact about the whole session
+                   and three words say which one where a lit border could not. Never
+                   green &mdash; this row&rsquo;s green is spent on "gather". -->
+              <button type="button" class="clo-st-sync clo-st-fenbtn">From position&hellip;</button>
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">19 position(s) ready</span>
               <!-- &sect;14.11. Green OUTLINE, never a fill: the one thing to do in
@@ -4242,6 +4350,11 @@ body {
                 <select class="clo-st-sel"><option>3%</option></select>
                 <span class="clo-st-set-label">of the games there or more</span>
               </span>
+              <!-- &sect;28) the POSITION scope&rsquo;s door. NEUTRAL outline, with the
+                   LABEL carrying the state: a scope is a fact about the whole session
+                   and three words say which one where a lit border could not. Never
+                   green &mdash; this row&rsquo;s green is spent on "gather". -->
+              <button type="button" class="clo-st-sync clo-st-fenbtn">From position&hellip;</button>
               <span class="clo-st-set-spacer"></span>
               <span class="clo-st-ready">19 position(s) ready</span>
               <button type="button" class="clo-st-gather">Gather positions</button>
@@ -4273,7 +4386,12 @@ body {
                   <button type="button" class="clo-st-stattab clo-st-stattab--on">Past the line</button>
                   <button type="button" class="clo-st-stattab">Uncovered replies</button>
                 </div>
-                <span class="clo-st-set-spacer"></span>
+                <!-- &sect;28) the POSITION scope&rsquo;s door. NEUTRAL outline, with the
+                   LABEL carrying the state: a scope is a fact about the whole session
+                   and three words say which one where a lit border could not. Never
+                   green &mdash; this row&rsquo;s green is spent on "gather". -->
+              <button type="button" class="clo-st-sync clo-st-fenbtn">From position&hellip;</button>
+              <span class="clo-st-set-spacer"></span>
                 <button type="button" class="clo-st-analyse">Re-read chapters</button>
                 <button type="button" class="clo-st-analyse">Sync record</button>
                 <button type="button" class="clo-st-analyse">Back</button>

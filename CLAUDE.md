@@ -223,7 +223,8 @@ Currently working (v0.18.x).
     what it must never do; §12 = what was NOT measured; §15 = the performance
     record, whose §15.2 is the three ways a statistic is wrong and plausible;
     §16 = win probability replacing centipawns as the grade, whose §16.2 is the
-    calibration against the system it replaced)
+    calibration against the system it replaced; §28 = the position scope, whose
+    §28.2 is the castling normalisation that fails totally and silently)
 - `DESIGN-ui-inventory.md` — every control by host and state, what competes with
   what, the agreed visual hierarchy, and the remaining change list. Read it
   before adding a control to the overstudy row or picking a colour for one; §3
@@ -2941,7 +2942,9 @@ Currently working (v0.18.x).
   after a popular reply the course never answers at a position it answers
   OTHER replies at, most played first — one
   at a time against a clock — or, in the SET mode (§17, v0.150.0), with no
-  clock at all and no mistake left behind — Chessable teaches a line and stops, and this asks
+  clock at all and no mistake left behind — and, since §28, narrowable to the
+  part of the course that comes after a POSITION you name, gathering included —
+  Chessable teaches a line and stops, and this asks
   what you do on the move after it stops. A move is graded for being DECENT
   rather than for matching an engine. Launched from the COURSE TREE's header
   (24), on a full-window panel of its own; the board is section 18's overlays in
@@ -4166,6 +4169,82 @@ Currently working (v0.18.x).
     - …and `gatherBtn` was wired BARE (24g's trap). Both gather buttons are
       `() => f()` now, and the per-leg size is called `want` because an Event has
       a `target`.
+  * STORM FROM A POSITION (§28, v0.170.0): a SCOPE, and it is §14.21's chapter
+    scope with ONE thing changed — where the oid set comes from. `stormFilterPool`,
+    `stormFilterStore` and `stormStoreDraw` were not touched, and both sources,
+    both modes, the gather pass, the background top-up and the wire are unaware of
+    it. **READ `DESIGN-intuition-storm.md` §28 BEFORE CHANGING IT.** What an edit
+    ELSEWHERE can break:
+    - THE KEY IS `stormCoverKey`, NOT `cacheKey` — §25's rule for the second
+      time, and it reads more directly here: a user pasting a FEN means THIS
+      BOARD, and en passant is exactly what two routes to one board disagree
+      about. `cacheKey` would tell them their course does not reach a position
+      half their repertoire plays.
+    - `stormFenKey` NORMALISES THE CASTLING FIELD, and this is a TOTAL, SILENT
+      failure when it is dropped: `parseFen` keeps `parts[2]` verbatim and
+      `fenFromPos` copies `pos.castling` verbatim, so a FEN pasted as `kqKQ`
+      would key as `kqKQ` and match NOTHING the walk builds, while the same FEN
+      in the usual order matches everything. Every key the walk produces
+      descends from START_FEN's `KQkq` through `makeMove`, which only ever
+      REMOVES characters. An unparseable FEN answers `''`, and `''` must never
+      become a scope — the caller widens to the course and says so.
+    - `stormLineThrough` COUNTS THE LINE END, not only the plies. `plies[i].before`
+      leaves out the position a line STOPS on, which is the frontier the user was
+      just looking at and so the most obvious thing to paste.
+    - THE SET IS RESOLVED IN `stormScope` AND NOWHERE ELSE, because that is the one
+      function BOTH producers reach the walk's answer through (`startSession` and
+      `gather`) — which is what makes "gathering, only narrowed" free. Resolving it
+      in `startSession` instead leaves every gather pass silently walking the whole
+      course while the window says it is storming one line. The latch is
+      `st.fenResolved`, NOT "`st.oidFilter` is still null": a chapter scope has
+      already filled that set, so the null test would leave this one unapplied on
+      exactly the sessions that asked for both. THE TWO COMPOSE BY INTERSECTION.
+    - `through` RIDES OUT ON THE POOL ARRAY beside `cont`/`paused`/`covered`
+      (§14.18.3's idiom, and now the walk's FOURTH use), off `C.fenKey` folded in
+      by `poolCfg()` — §14.9's idiom, which is what keeps both walks pure and
+      executable by `dev/check-storm.js`.
+    - THE STORE DRAW IS DEFERRED, and only under this scope. §14.11's early draw
+      is what opens a session with no network, and which lines pass through a
+      board is precisely what only the walk can say — so an unscoped or
+      chapter-scoped session is byte-for-byte unchanged and this one draws after
+      `stormScope`, before the emptiness refusal (so `st.storeCut` can explain a
+      starved scope) and fills the queue after `dropCoveredStored()`.
+    - IT IS NOT A THIRD SOURCE AND NOT A MODE, and above all not a filter on
+      POSITIONS: a stored position is up to sixteen plies past a line end, so
+      whether it is downstream of a course position is not answerable from the
+      entry. `o` is, which is the join §14.21 already uses.
+    - THE STORE ROUND TRIP IS A KNOWN SHAPE, NOT A BUG TO FIX (§28.4a). The pool
+      keeps a frontier when ANY of its lines is in scope (`oids.some`) while
+      `stormPack` writes ONE oid (`oids[0]`), so a frontier several lines converge
+      on can be stored under a line the scope excludes and then dropped by the
+      next session of that same scope — requests re-spent, nothing lost.
+      MEASURED at 2 of 1518 scoped positions, 0.08% of frontier-slots, zero on
+      two of the three courses (`dev/probe-storm-scope.js`). All three repairs
+      cost more than that: narrowing the pool to `oids[0]` drops frontiers that
+      really are in scope; REORDERING `oids` breaks the `oids[0]`/`names[0]`
+      alignment `stormPack` relies on, so §15's record would be filed against one
+      line and print another's name — a NEW silent defect; and a second oid set
+      for the store is exact but adds scope state `gatherRound`/`cycleGoHome`
+      must save and restore. `dev/check-storm.js` §28 drives the round trip end
+      to end AND asserts this shape, so a change that makes the two agree fails
+      there and has to say so. The same arithmetic has always applied to a
+      CHAPTER scope. `unattributed` is the bigger practical gap: a position
+      stored before v0.140.0 has no `o` and is in no scope at all.
+    - THE PRESETS ARE PER COURSE AND LOCAL (`cloStormFens`, storage.local), and
+      DELIBERATELY NOT on §16e's carrier: that transport is for what a device
+      cannot regenerate, and a FEN is a line of text. `writeFenPresets` re-reads
+      before it writes (24b's `flushDbCache` rule, third home) and an empty list
+      LEAVES the blob rather than being stored as `[]`.
+    - IT OWNS NO BRIDGES and is called by nothing.
+  * IT EXPOSED A SILENT BUG IN THE STORM'S OWN KEYBOARD (§28.7), and the fix is
+    in shared code: `onKey` is a `document` listener in CAPTURE phase that calls
+    `preventDefault`, and it had NO stand-down for a focused field — so an `s`
+    typed anywhere in this window opened the stats table INSTEAD of inserting a
+    letter, and `b`/`t`/the arrows walked the review underneath. It now returns
+    for `INPUT`/`TEXTAREA`/`SELECT`, with Escape BLURRING rather than closing the
+    window (section 24c's rule; 19d's for the `<select>` half, arrows and letters
+    being how a selector is driven). The selector half was already live: the mode,
+    source and share selectors have been in this row since v0.150.0.
 
 - SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
@@ -4336,6 +4415,23 @@ restores the store dealing positions the user has already prepared:
 ```
 node dev/check-storm.js
 ```
+
+§28's SCOPE adds two pure rules to that file (§28): `stormFenKey` and
+`stormLineThrough`. Both fail SILENTLY and in the same direction — a key that
+never matches is a scope that finds no line, which looks exactly like a
+position the course does not reach. The castling normalisation is the one to
+watch: without it a FEN pasted with the rights in another order matches nothing
+while the same FEN in the usual order matches everything. Controls run
+2026-09-01, each failing on exactly its own assertions and no others: the
+castling normalisation removed → 1; `stormLineThrough`'s line-END clause
+removed → 5; `stormFenKey` keying on `cacheKey` → 15. `stormScope`'s own
+resolve is executed there too (impure, through `__setEnv`, like the funnel):
+the latch replaced by "`st.oidFilter` is still null" → 2, a union in place of
+the intersection → 2, plus the store round trip end to end (§28.4a). Note what
+the FIRST version of the composition assertions missed — a chapter set of `{1}` and a position every line in it goes through is
+satisfied by the FEN scope silently not applying at all, so the set must hold a
+line the position EXCLUDES and the latch must be asserted over a set that was
+already non-null.
 
 §27's ROUND adds nothing to that file, deliberately: it is orchestration —
 `gatherRound` / `runRound` / `cycleSwitch` / `cycleGoHome` / `filling` — and it

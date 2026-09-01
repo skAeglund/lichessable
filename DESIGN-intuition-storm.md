@@ -6140,3 +6140,338 @@ over three or more courses.
   UI for it.
 * **A device on ≤0.165.0 silently stops exchanging.** There is no version
   handshake and no warning; it simply reads a card nobody writes any more.
+
+## 28. Storm from a position (v0.170.0)
+
+Asked for by name: *"Gather (and/or filter if possible) positions that occur
+after the specified FEN and practice only those for a run. Gathering should work
+like normal, except that the only variations that are considered are the ones
+that pass through the specified FEN."* Plus, as a nice-to-have, *"be able to
+save a FEN as a preset inside a course"*.
+
+### 28.1 What it is, and what it is not
+
+It is a **scope**, and it is §14.21's chapter scope with exactly one thing
+changed: where the oid set comes from.
+
+That is the whole design, and it is worth stating in those terms before
+anything else, because every other framing costs an order of magnitude more
+code and answers a worse question:
+
+* **Not a third source.** §19 added a source because "a reply the course never
+  answers" is a *different kind of position* — a different stage 0, a different
+  stage 1, its own record. Here the positions are the same positions; there are
+  simply fewer of them. Both sources work inside this scope, unchanged and
+  unaware of it.
+* **Not a mode.** §17's set changes what happens when a position arrives. This
+  changes nothing about that.
+* **Not a filter on positions.** The tempting reading is "keep the stored
+  positions that are downstream of the FEN", and it cannot be done: a stored
+  position is one to sixteen plies *past* a line end, so whether it is
+  downstream of a position inside the course is not answerable from the entry.
+  What *is* on the entry is `o`, the line it is a frontier of — which is the
+  same join §14.21 already uses.
+
+So the scope is: **the lines of this course whose walk passes through the named
+board.** The pool filter is `stormFilterPool`, the store filter is
+`stormFilterStore`, the draw order is `stormStoreDraw`, and none of the three
+was touched.
+
+### 28.2 The two new rules, and why both are silent when wrong
+
+`stormFenKey(raw)` and `stormLineThrough(w, key)`. Everything else is plumbing.
+
+**The key is `stormCoverKey`, not `cacheKey`** — placement, side to move,
+castling, **en passant dropped**. §25's argument applies here for the second
+time and reads even more directly: a user pasting a FEN means *this board*, and
+a transposition into it is that board. §25.1's own example is the case —
+1.e4 e6 2.d4 c5 and 1.e4 c5 2.d4 e6 differ in that field and nothing else — so
+keying on `cacheKey` would tell a user their course does not reach a position
+half their repertoire plays. The cost is §25's, one-sided and stated: a board
+differing only by an *available* en passant capture reads as the same board.
+
+**The castling field is normalised, and this is the failure worth naming.**
+`CloSan.parseFen` keeps `parts[2]` verbatim and `fenFromPos` copies
+`pos.castling` verbatim, so a FEN pasted as `… w kqKQ …` would key as `kqKQ`
+and match **nothing** the walk ever builds — while the same FEN pasted in the
+usual order would match everything. The failure is total, silent, and looks
+exactly like a position the course does not reach. Every key the walk produces
+descends from `START_FEN`'s own `KQkq` through `makeMove`, which only ever
+*removes* characters, so that order is the convention; `stormFenKey` is where a
+hand-typed FEN is brought into it.
+
+**A FEN that will not parse is `''`, and `''` is never a scope.** The caller
+widens to the whole course and says so in a sentence. An unusable key that
+became a filter would produce a session that finds nothing, for ever, with no
+explanation.
+
+**`stormLineThrough` counts the line END as well as every position a move is
+played from.** `walkVariation` gives `plies[i].before`, which leaves out the
+position the line stops on — and a line-end FEN is the most obvious thing for a
+user to paste, since it is the frontier they were just looking at.
+
+Both are pure. `stormScope`'s resolve is not, and it is executed too — for
+`harvestCandidates`'s reason: the latch and the intersection live in that
+function's control flow and nowhere else. Controls run 2026-09-01, each failing
+on exactly its own assertions and no others:
+
+| control | fails |
+|---|---|
+| the castling normalisation removed | 1 |
+| `stormLineThrough`'s line-END clause removed | 5 |
+| `stormFenKey` keying on `cacheKey` | 15 |
+| the latch replaced by "`st.oidFilter` is still null" | 2 |
+| a union in place of the intersection | 2 |
+
+The third is large because that one change breaks the key's *width* as well as
+its transposition tolerance, which is the point: it is not a subtle mistake, it
+just has no visible symptom in the product.
+
+**The fourth control is worth recording for what it caught about the check.**
+The first version of the composition assertions used a chapter set of `{1}` and
+a position every line in it goes through — and it **passed** against the latch
+control, because "the FEN scope silently did not apply" leaves `{1}` exactly as
+an intersection would. The set has to hold a line the position *excludes* (oid
+3, the tactics puzzle) before the two can be told apart, and the latch itself
+has to be asserted over a set that was already non-null. Same shape of vacuous
+pass as `check-popup-placement.js`'s NaN and §27b's `undefined` card name:
+an assertion the broken version can satisfy is not an assertion.
+
+### 28.3 Where the set is resolved, and the one thing that cost
+
+A chapter scope knows its lines from the performance record, so §14.21 resolves
+it in `startSession` **before a single request is made**. A position scope
+cannot: which lines pass through a board is precisely what only the course walk
+can say.
+
+So `through` rides out on the pool array beside `cont`, `paused` and `covered`
+(§14.18.3's idiom — the walk was already being made, and this is one string
+compare per ply), and `stormScope` is where it becomes `st.oidFilter`.
+
+**`stormScope`, and nowhere else**, because it is the one function *both*
+producers reach the walk's answer through — `startSession` and `gather`. That
+is what makes "gathering works like normal, only narrowed" free: the gather
+pass calls `stormScope(await poolFor(course.vars))` exactly as a session does,
+so a burst fills the store for that part of the course and nothing else. It is
+also the trap: resolving the set in `startSession` instead would have left
+every gather pass silently walking the whole course while the window said it
+was storming one line.
+
+**The latch is `st.fenResolved`, not "`st.oidFilter` is still null".** A chapter
+scope has already filled that set by the time the pool exists, so the null test
+would leave the position scope unapplied on exactly the sessions that asked for
+both. **The two compose by intersection** — both are "which of my lines", so
+both means both, and an intersection cannot invent a line either of them
+excluded.
+
+**The cost is the deferred store draw.** §14.11's whole point is that
+`storeDraw()` happens before the course is read, so a session opens with no
+network at all. Under a position scope it has to wait for the pool. So:
+
+* unscoped and chapter-scoped sessions are **byte-for-byte unchanged** — the
+  early draw still runs;
+* a position-scoped session draws after `stormScope`, which is before the
+  emptiness refusal (so `st.storeCut` can explain a starved scope) and fills
+  the queue after `dropCoveredStored()` (so the sweep runs first, exactly as it
+  does for every other session);
+* the first card therefore costs one course read, which is a session-cache hit
+  after the first time.
+
+A course that cannot be read at all refuses under a position scope where an
+unscoped session would have played its store. That is honest rather than a
+regression: without the walk there is no scope, and playing the whole course's
+store under a heading naming one line is the thing §14.21's `unattributed` arm
+exists to avoid.
+
+### 28.4 The precision, stated
+
+The pool filter is exact for the frontier source and slightly generous for the
+uncovered one:
+
+* **frontier** — the pool entry *is* a line end, and a line end is after every
+  position in its own line. So "a line ending here passes through the FEN"
+  really does mean "this frontier is past it".
+* **uncovered** — a decision point can sit *earlier* in a line that passes
+  through the FEN later. Such a position is offered. It is a position of the
+  same lines, one the user is genuinely unprepared for, and the alternative was
+  a second, narrower test on the pool that the *store* filter could not
+  reproduce — `o` is one oid, so the store can only ever ask the oid question.
+  A pool test the store cannot match is how "gather stores it, the next session
+  will not deal it" happens, silently, and that trade is not worth the
+  precision.
+
+### 28.4a The store round trip, and the one place it does not hold
+
+The question a scope has to survive is: **a gather stores a position under it,
+and a later session scoped to the same FEN deals that position back.** The walk
+is deterministic — same course, same FEN, same `through` — so the set is the
+same one, and `dev/check-storm.js` §28 now drives the whole thing: a real scoped
+frontier through `harvestCandidates` into a store, then `stormFilterStore` with
+the same set. It holds.
+
+**Except in one measured case, and it is §14.21's, inherited.** The pool keeps a
+frontier when *any* of its lines is in scope (`oids.some`), while `stormPack`
+writes ONE oid — `oids[0]` — and `stormFilterStore` tests that. So a frontier
+several lines converge on can survive the scope on line B and be stored under
+line A, which the scope excludes; the next scoped session then drops it and
+re-harvests the position instead of dealing it.
+
+Measured rather than argued (`dev/probe-storm-scope.js`, 2026-09-01, every position
+of all three courses on the account as a candidate FEN — the inverted index of
+`stormLineThrough` over one walk, so the numbers are the shipped rules' own):
+
+| course | lines | frontiers | positions with a live scope | affected |
+|---|---|---|---|---|
+| 291847 Intermediate Starter Kit | 72 | 25 | 830 | **0** |
+| 453453 Testing course | 79 | 64 | 609 | **2** (0.3%) |
+| 455941 Testing Repertoire | 6 | 5 | 79 | **0** |
+
+2 of 1518 scoped positions; 2 of 2624 frontier-slots, **0.08%**; zero on two of
+the three courses. Both cases are the same frontier, one three model-game lines
+converge on.
+
+**Not fixed, deliberately.** The consequence is requests re-spent, not data lost
+and not a wrong position: the entry stays in the store and an unscoped session
+still deals it. The fixes all cost more than 0.08% is worth —
+
+* *narrow the pool to `oids[0]`* would drop frontiers that really are in scope;
+* *reorder `oids` so an in-scope line is first* breaks the `oids[0]` / `names[0]`
+  alignment `stormPack` relies on, which would attribute §15's record to one
+  line and print another's name — a new silent defect, worse than this one;
+* *a second oid set for the store* (`∪ f.oids` over the scoped pool) is exactly
+  correct and costs a second piece of scope state that `gatherRound` /
+  `cycleGoHome` would have to save and restore, and a mechanism the chapter
+  scope does not share.
+
+So it is stated instead, and asserted as a KNOWN SHAPE in the check — a later
+change that makes the two agree fails there and has to say so. The same
+arithmetic applies to a **chapter** scope and always has; this is the first time
+it has been measured.
+
+The other store imprecision is §14.21's `unattributed` arm, and it is the bigger
+one in practice: a position stored **before v0.140.0** has no `o` at all, so it
+is excluded from every scoped session, chapter and position alike, and
+`stormScopeNote` says so.
+
+### 28.5 The presets
+
+`cloStormFens` in `storage.local`, `{ [bid]: [{ fen, name, at }] }`, newest
+first, twelve per course.
+
+**Per course, because "inside a course" is what was asked for and is also the
+right shape**: a position is only meaningful against the repertoire it is a
+place in, and the point of saving one is that *the Najdorf* is where this
+course's own work is.
+
+**Deliberately not on §16e's carrier.** That transport exists for what a device
+cannot regenerate — positions bought with ~11 ChessDB requests each, a
+performance record accumulated over sittings. A FEN is a line of text that can
+be pasted again. If they are ever wanted on the phone,
+`pinSyncApi.carrier` is there and this is a payload of a few hundred bytes; it
+is not worth a round trip and a merge rule today.
+
+**It re-reads before it writes** — 24b's `flushDbCache` rule in its third home
+(`saveStore` is the second): one object lives under that key and a write
+replaces it whole, so only this course's slice is ours to replace. A second tab
+standing on another course would otherwise lose its list to whichever tab saved
+last.
+
+**Adding replaces by coverage key** rather than growing a second row: pasting
+the same board with different move counters renames the one that is there, and
+two rows that storm identically are worse than one.
+
+### 28.6 The UI
+
+A neutral `From position…` button in the pre-roll settings row, with the two
+selectors rather than out with the store controls — those say *which positions
+are offered* and so does this. Its **label carries the state**
+(`.clo-st-bgbtn`'s rule): a scope is a fact about the whole session, and
+"From: Najdorf" says which one where a lit border could not. Never a fill and
+never green — DESIGN-ui-inventory §3 allows this window one primary and Start is
+it, and this row's green is spent on "gather".
+
+The box is an **in-flow block** under the row, not a popover — section 6b's
+ruling for the panel's own settings menu, for its reason: this window is
+`overflow: hidden` and its body is the scroll container, so a popover would be
+clipped by the thing it hangs off. It is shown in exactly the two states the
+row itself is (no clock running), so there is nothing for it to cover.
+
+In it: the FEN field, an optional name, `Storm from this` (green outline — an
+ordinary action), `Save`, and `Whole course` where there is a scope to leave.
+Then one line of status, then the saved list as chips — pick, or forget. The
+running one wears accent **text** and not a border, because the pair shares the
+border and recolouring it would light the × as well.
+
+**Enter commits in both fields.** This is a place a FEN is pasted, and reaching
+for a button after a paste is the one step worth removing.
+
+**Gathering from a position needs no control of its own**, and that is the point
+of resolving the scope in `stormScope`: "Storm from this" opens a scoped
+*pre-roll* — §14.13 means no card is shown and no clock starts until Start is
+pressed — and `Gather positions`, which lives in that same row, then walks only
+the lines through that position. The button says so in its own tooltip while a
+scope is on. A second "gather from this" in the box would be the same press
+twice.
+
+### 28.7 It exposed a bug in shared code
+
+**The storm's own keyboard had no stand-down for a focused text field**, and it
+is a `document` listener in **capture** phase that calls `preventDefault`. So
+before this feature there was nothing to type into and the gap was invisible;
+the moment there was, every `s` typed into a name opened the stats table
+*instead of inserting a letter*, and `b`, `t` and the arrows walked the review
+underneath.
+
+`onKey` now returns for `INPUT`, `TEXTAREA` and `SELECT`, with Escape blurring
+rather than closing the window — section 24c's rule, and 19d's for the
+`<select>` half ("arrows and letters are how a selector is driven"). That half
+was already a live defect: the mode, source and share selectors have been in
+this row since v0.150.0, and `s` with one of them focused opened the stats
+table.
+
+### 28.8 What was measured
+
+`dev/harness.html`, 2026-09-01, at the panel's own 880px and at two narrow
+widths, desktop and `html.clo-touch`:
+
+| width | settings row | box | FEN field | body overflow-x |
+|---|---|---|---|---|
+| 880 desktop | 858x54 (52 without the button) | 858x94 | 406x24 | 0 |
+| 880 touch | 858x106 | 858x111 | 364x32 | 0 |
+| 380 desktop | 358x140 | 358x184 | 340x24 | 0 |
+| 380 touch | 358x240 | 358x225 | 340x32 | 0 |
+| 330 desktop | 308x190 | 308x184 | 290x24 | 0 |
+| 330 touch | 308x276 | 308x263 | 290x32 | 0 |
+
+The button costs the row **2px** at 880 (it wraps into a second line that was
+already there) and nothing at all in the wider shape the real window has
+(`inset: 16px` on the viewport). No width overflows horizontally.
+
+The fields go to **16px** under `html.clo-touch`, which is what stops mobile
+Chrome and Safari scaling the whole page up around a focused input. Section 22
+needed a viewport-meta rewrite as well because a board was being pushed off
+screen; here there is no board while the pre-roll row is up, so the type size is
+the whole of the answer.
+
+### 28.9 Still open
+
+* **Never run against a live course.** Every rule here is executed by
+  `dev/check-storm.js` against the shipped source, and the surface is measured
+  in the harness — but no session has actually been scoped to a position on
+  Chessable, so the numbers in "N line(s) go through …" and the two refusal
+  sentences are unverified in place.
+* **The presets are local.** See 28.5 — a decision, not an oversight, but it
+  does mean a phone starts with an empty list.
+* **A position scope's first card costs a course read.** Bounded (session
+  cache, and the read happens anyway), unmeasured.
+* **The uncovered source's upstream decision points** — 28.4. Deliberate, and
+  the alternative is worse, but it is a place the feature is generous rather
+  than exact.
+* **0.08% of scoped positions lose their stored positions to a later session of
+  the same scope** — 28.4a, measured and deliberately not fixed. The cost is
+  requests re-spent.
+* **Positions stored before v0.140.0 are in no scope at all**, having no `o`.
+  §14.21's own gap; `stormScopeNote` reports it, and a re-gather cures it.
+* **No way to reach it from a board.** The obvious next step is a "storm from
+  here" on the course tree (§24) or on the analysis board, both of which know a
+  FEN and a course. Nothing about the scope would change; it is a launcher.

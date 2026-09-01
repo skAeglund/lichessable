@@ -1929,6 +1929,26 @@
       // 30 of a position is below every floor above anyway.
       uncMovesLimit: 30,
 
+      // --- §28) STORM FROM A POSITION --------------------------------------
+      // A scope, exactly like §14.21's chapter: only the lines that pass
+      // through a FEN the user names. It is not a third SOURCE and not a mode —
+      // both sources, both modes and the gather pass all work inside it
+      // unchanged, because all it does is narrow the same oid set.
+      //
+      // THE PRESETS ARE PER COURSE and live in `storage.local`: a position is
+      // only meaningful against the repertoire it is a place in, and the whole
+      // point of saving one is that "the Najdorf" is where this course's own
+      // work is. Deliberately NOT carried by §16e's transport — that carrier is
+      // for what a device cannot regenerate (positions bought with requests,
+      // a performance record), and a FEN is a line of text the user can paste
+      // again. If they are ever wanted on the phone, `pinSyncApi.carrier` is
+      // there and this is a payload of a few hundred bytes.
+      fenPresetKey: 'cloStormFens',   // { [bid]: [{ fen, name, at }] }
+      // Per COURSE, oldest out. A dozen is more places than a repertoire has;
+      // the cap is here so a list nobody prunes cannot grow without limit.
+      fenPresetMax: 12,
+      fenNameMax: 60,
+
       // --- the producer (§8.3) --------------------------------------------
       // ITS UNIT IS A FRONTIER, NOT A POSITION: one frontier yields two game
       // walks and, at the measured rate, one to three survivors — which is the
@@ -35045,6 +35065,13 @@
       store: null,        // { ck: entry } for st.bid, loaded once per session
       storeDirty: false,  // …and written back at the points listed in `saveStore`
       storeQueue: null,   // this session's draw from it, hardest first
+      // §28) The saved positions of EVERY course, read once per session. Not a
+      // per-session scope like `fenKey`: this is the list the pre-roll box
+      // offers, and the window is reopened on other courses.
+      fenStore: null,     // { [bid]: [{ fen, name, at }] }
+      fenOpen: false,     // …and whether the box that offers them is up
+      fenMsg: '',         // one line: what the last press in it did, or refused
+      fenSig: '',         // what the list was last drawn from (see `syncSettings`)
       gathering: false,   // the fill-only pass is running
       gone: null,         // §14.12's tombstones for st.bid: { ck: whenDropped }
       syncing: false,
@@ -36000,6 +36027,55 @@
     const stormCoverKey = (fen) => String(fen || '').split(' ').slice(0, 3).join(' ');
 
     /**
+     * §28) THE SCOPE KEY of a FEN the user typed — the same coverage key as
+     * above, but reached through a parse so that what they pasted is compared
+     * on the same terms the walk's own keys are. '' when the FEN is unusable,
+     * which is the one answer the caller must treat as "no scope".
+     *
+     * IT NORMALISES THE CASTLING FIELD, and that is not tidiness. `fenFromPos`
+     * copies `pos.castling` VERBATIM — parseFen keeps `parts[2]` as written —
+     * so a FEN pasted as "kqKQ" would key as "kqKQ" and match nothing the walk
+     * ever produces, while a FEN pasted as "KQkq" would match everything. The
+     * failure is total and silent: the scope simply finds no line, which looks
+     * exactly like a position the course does not reach. Every key the walk
+     * builds descends from START_FEN's own "KQkq" through `makeMove`, which
+     * only ever REMOVES characters, so that order is the convention and this is
+     * where a hand-typed FEN is brought into it.
+     *
+     * The move counters are dropped by the key itself and the en passant field
+     * with them (§19b's rule — a transposition is exactly the case where the
+     * last move differs, and a user asking "from this position" means the
+     * BOARD). So a FEN copied out of one game matches the same board reached in
+     * another move order, which is the answer they want.
+     */
+    function stormFenKey(raw) {
+      const pos = CloSan.parseFen(String(raw || '').trim());
+      if (!pos) return '';
+      const castling = 'KQkq'.split('').filter((c) => pos.castling.includes(c)).join('');
+      const fen = CloSan.fenFromPos({ ...pos, castling }, 0);
+      return fen ? stormCoverKey(fen) : '';
+    }
+
+    /**
+     * §28) …and whether one of the course's own lines goes through it.
+     *
+     * THE END COUNTS, not only the plies: `plies[i].before` is every position a
+     * move is played FROM, which leaves out the one the line stops on — and a
+     * user pasting a line-END FEN is asking for exactly that line's frontier,
+     * which is the most obvious thing to paste.
+     *
+     * Pure, and it takes a walk rather than a variation so the caller can share
+     * the ONE walk `stormFrontiers` and `stormDecisions` already make of every
+     * line (§14.18's "one walk, two uses", now three).
+     */
+    function stormLineThrough(w, key) {
+      if (!w || !key) return false;
+      if (stormCoverKey(w.end) === key) return true;
+      for (const p of w.plies) if (stormCoverKey(p.before) === key) return true;
+      return false;
+    }
+
+    /**
      * STAGE 0 — the frontier set: every position one of this course's own
      * variations ENDS on, with whose repertoire it belongs to and how many
      * lines converge there.
@@ -36062,6 +36138,18 @@
       // Short lines are walked too — their positions are as real as anyone
       // else's, and the length rule is about being a frontier.
       const cont = { w: new Set(), b: new Set() };
+      // §28) …AND A THIRD USE OF THE SAME WALK: which lines go through the
+      // position the user asked to storm FROM. `C.fenKey` is absent on every
+      // ordinary session, and then this set is built and never read, which
+      // costs one string compare per ply.
+      //
+      // NOT SIDE-SCOPED, unlike `cont` beside it. That index answers "does THIS
+      // repertoire continue here", where the other colour meeting the same board
+      // is a different question; this one answers "does this line pass through
+      // the board I named", and a line's colour has nothing to do with it — the
+      // set is only ever intersected with the oids of pool entries, which carry
+      // their own side rule already.
+      const through = new Set();
       let covered = 0;
       for (const v of vars || []) {
         // Section 24's walk yields for the same reason: this is `walkVariation`
@@ -36078,6 +36166,7 @@
         // guess at one for exactly that reason.
         const w = side ? walkVariation(v) : null;
         if (w) for (const p of w.plies) cont[side].add(stormCoverKey(p.before));
+        if (w && C.fenKey && stormLineThrough(w, C.fenKey)) through.add(String(v.oid));
         if (v.sans.length < C.minVarPlies) continue;
         // PAUSED LINES ARE NOT STORMED. "Paused" and "skipped" are Chessable's
         // two words for one flag (see `reduceCourse`) and both mean the user
@@ -36147,6 +36236,8 @@
       // than changing the return type — every caller wants the pool, and two
       // want this.
       out.cont = cont;
+      // §28) …and the third index, for the same reason and by the same route.
+      out.through = through;
       return out;
     }
 
@@ -36186,6 +36277,18 @@
     async function stormDecisions(vars, C) {
       const byPos = new Map();
       const cont = { w: new Set(), b: new Set() };
+      // §28) …AND A THIRD USE OF THE SAME WALK: which lines go through the
+      // position the user asked to storm FROM. `C.fenKey` is absent on every
+      // ordinary session, and then this set is built and never read, which
+      // costs one string compare per ply.
+      //
+      // NOT SIDE-SCOPED, unlike `cont` beside it. That index answers "does THIS
+      // repertoire continue here", where the other colour meeting the same board
+      // is a different question; this one answers "does this line pass through
+      // the board I named", and a line's colour has nothing to do with it — the
+      // set is only ever intersected with the oids of pool entries, which carry
+      // their own side rule already.
+      const through = new Set();
       let paused = 0;
       let i = 0;
       for (const v of vars || []) {
@@ -36202,6 +36305,7 @@
         const w = side ? walkVariation(v) : null;
         if (!w) continue;
         for (const ply of w.plies) cont[side].add(stormCoverKey(ply.before));
+        if (C.fenKey && stormLineThrough(w, C.fenKey)) through.add(String(v.oid));
         const eligible = !v.paused &&
           !(v.fen && cacheKey(v.fen) !== cacheKey(START_FEN));
         if (v.paused) paused++;
@@ -36245,6 +36349,8 @@
       // being perfectly able to have a gap in the middle of it.
       out.covered = 0;
       out.cont = cont;
+      // §28) …and the third index, for the same reason and by the same route.
+      out.through = through;
       return out;
     }
 
@@ -38413,12 +38519,42 @@
     }
 
     /**
-     * §14.21) A pool narrowed to this session's chapter, or the pool as it is.
+     * §14.21) A pool narrowed to this session's chapter — or, since §28, to
+     * the lines that pass through a position the user named. Or the pool as it
+     * is.
      *
      * The impure half of `stormFilterPool`, kept to one line so the rule lives
      * in the pure function the checks execute.
+     *
+     * §28) A FEN SCOPE RESOLVES ITS OID SET HERE, from the pool's OWN walk, and
+     * that is the whole of what makes this feature small: a chapter scope knows
+     * its lines from the performance record before a single request is made, a
+     * FEN scope cannot know them until the course has been walked — and this is
+     * the one function BOTH producers reach the walk's answer through
+     * (`startSession` and `gather`). Resolving it anywhere else would leave the
+     * gather pass unscoped, silently walking the whole course while the window
+     * said it was storming one line.
+     *
+     * ONLY ONCE (`st.fenResolved`), and that latch is the test rather than
+     * "`st.oidFilter` is still null": a chapter scope has already filled that
+     * set before the course is read, so keying on it would leave the FEN
+     * scope silently unapplied on exactly the sessions that asked for both.
+     * `gather` reuses a session's pool and `cycleGoHome` puts a saved filter
+     * back; re-deriving over either would throw away a set that is right.
+     *
+     * THE TWO COMPOSE BY INTERSECTION. A chapter scope and a position scope are
+     * both "which of my lines", so asking for both means the lines that satisfy
+     * both — and an intersection cannot invent a line either of them excluded,
+     * which is the direction to be wrong in.
      */
     function stormScope(pool) {
+      if (st.fenKey && !st.fenResolved) {
+        st.fenResolved = true;
+        const through = new Set(pool.through || []);
+        st.oidFilter = st.oidFilter
+          ? new Set([...st.oidFilter].filter((oid) => through.has(oid)))
+          : through;
+      }
       return st.oidFilter ? stormFilterPool(pool, st.oidFilter) : pool;
     }
 
@@ -38430,26 +38566,131 @@
      * predate §15 and cannot be attributed at all.
      */
     function stormScopeNote(pool) {
-      if (!st.lid) return '';
-      const where = st.lidName || 'this chapter';
+      // §28) TWO SCOPES, ONE NOTE, and the wording is the only thing that
+      // differs: both narrow the same pool and the same store by the same oid
+      // set, so a second copy of this would be a second place for the three
+      // cases below to be told apart differently.
+      const where = scopeWhere();
+      if (!where) return '';
+      const fen = Boolean(st.fenKey);
       const cut = st.storeCut;
       const bits = ['Nothing to storm in ' + where + '.'];
       if (pool && pool.dropped) {
         bits.push(pool.dropped + ' line end(s) elsewhere in the course were left out ' +
-          'because you asked for one chapter.');
+          (fen ? 'because you asked for one position.'
+            : 'because you asked for one chapter.'));
       }
       if (cut && cut.dropped) {
-        bits.push(cut.dropped + ' stored position(s) belong to other chapters.');
+        bits.push(cut.dropped + ' stored position(s) belong to ' +
+          (fen ? 'lines that do not go through it.' : 'other chapters.'));
       }
       if (cut && cut.unattributed) {
         // §15's own gap, surfacing where it actually costs something: a
         // position stored before v0.140.0 whose name matched two variations or
         // none has no line, so it cannot be attributed to a chapter either.
         bits.push(cut.unattributed + ' stored position(s) predate the performance ' +
-          'record and cannot be placed in a chapter — storm the whole course to ' +
-          'see those.');
+          'record and cannot be placed in a ' + (fen ? 'line' : 'chapter') +
+          ' — storm the whole course to see those.');
       }
       return bits.join(' ');
+    }
+
+    /**
+     * §28) WHICH SCOPE IS ON, as the phrase every sentence about it uses. ''
+     * when the session is the whole course.
+     *
+     * THE FEN SCOPE IS NAMED FIRST because it is the narrower of the two and
+     * the two compose: storming a chapter and then a position inside it leaves
+     * one oid set that is the intersection, and the position is what the user
+     * chose last.
+     */
+    function scopeWhere() {
+      if (st.fenKey) return st.fenName || 'that position';
+      if (st.lid) return st.lidName || 'this chapter';
+      return '';
+    }
+
+    /**
+     * §28) THE SAVED POSITIONS OF THIS COURSE, and the three writes over them.
+     *
+     * `storage.local`, `{ [bid]: [{ fen, name, at }] }`, newest first — and the
+     * whole blob is held rather than one course's slice, because §16d's lesson
+     * one feature over applies here too: the window is opened per course, but
+     * the read is one call either way and holding the lot costs nothing at this
+     * size.
+     *
+     * IT RE-READS BEFORE IT WRITES, 24b's `flushDbCache` rule in its third home
+     * (`saveStore` is the second): one object lives under that key and a write
+     * replaces it whole, so only this course's slice is ours to replace. A
+     * second tab standing on another course would otherwise lose its presets to
+     * whichever tab saved last.
+     *
+     * EVERY FAILURE IS SOFT. An unreadable blob is an empty list and a rejected
+     * write is a preset that was not saved — the position is still typed into
+     * the field, which is the only thing that has to keep working.
+     */
+    async function loadFenPresets() {
+      try {
+        const got = await chrome.storage.local.get(C.fenPresetKey);
+        const raw = got && got[C.fenPresetKey];
+        st.fenStore = (raw && typeof raw === 'object') ? raw : {};
+      } catch (err) {
+        warn('storm: the saved positions are unreadable:', err);
+        st.fenStore = {};
+      }
+    }
+
+    /** This course's list, always an array. */
+    function fenPresets() {
+      const all = st.fenStore || {};
+      const list = all[String(st.bid)];
+      return Array.isArray(list) ? list : [];
+    }
+
+    async function writeFenPresets(list) {
+      st.fenStore = st.fenStore || {};
+      st.fenStore[String(st.bid)] = list;
+      try {
+        const got = await chrome.storage.local.get(C.fenPresetKey);
+        const all = (got && got[C.fenPresetKey] && typeof got[C.fenPresetKey] === 'object')
+          ? got[C.fenPresetKey] : {};
+        // An empty list LEAVES rather than being stored as `[]`, `saveStore`'s
+        // own rule: the honest record of a course with no saved positions is
+        // that it has none.
+        if (list.length) all[String(st.bid)] = list; else delete all[String(st.bid)];
+        await chrome.storage.local.set({ [C.fenPresetKey]: all });
+      } catch (err) {
+        warn('storm: could not save the position list:', err);
+      }
+    }
+
+    /**
+     * Adds one, newest first, and REPLACES an entry for the same position
+     * rather than growing a second — the key is the coverage key, so pasting
+     * the same board with different move counters renames the one that is
+     * there instead of leaving two rows that storm identically.
+     */
+    async function addFenPreset(fen, name) {
+      const key = stormFenKey(fen);
+      if (!key) return false;
+      const entry = { fen: String(fen).trim(), name: String(name || '').trim()
+        .slice(0, C.fenNameMax), at: Date.now() };
+      const list = [entry].concat(
+        fenPresets().filter((e) => stormFenKey(e && e.fen) !== key));
+      await writeFenPresets(list.slice(0, C.fenPresetMax));
+      return true;
+    }
+
+    /**
+     * BY INDEX, and deliberately not by coverage key: a stored entry whose FEN no
+     * longer parses keys as '' — as would the key handed in — so a key-based
+     * filter drops EVERY unparseable row at once and leaves none of them
+     * individually removable. The index is what the row was drawn from.
+     */
+    async function removeFenPreset(i) {
+      const list = fenPresets();
+      if (i < 0 || i >= list.length) return;
+      await writeFenPresets(list.filter((_, n) => n !== i));
     }
 
     /** Everything one frontier yields, or [] when it yields nothing. */
@@ -38681,8 +38922,17 @@
      * and the review are all shared and none of them asks which source it is
      * on.
      */
+    /**
+     * §28) …and the config both walks see, which is `C` with the FEN scope's
+     * own key folded in — the ply range's idiom (§14.9), for the ply range's
+     * reason: the walks stay pure and `dev/check-storm.js` keeps executing them
+     * against a config it declares itself.
+     */
+    const poolCfg = () => (st.fenKey ? { ...C, fenKey: st.fenKey } : C);
+
     async function poolFor(vars) {
-      return uncoveredOn() ? stormDecisions(vars, C) : stormFrontiers(vars, C);
+      const pc = poolCfg();
+      return uncoveredOn() ? stormDecisions(vars, pc) : stormFrontiers(vars, pc);
     }
 
     function harvestOne(f, storeOnly) {
@@ -39862,6 +40112,10 @@
       st.lid = home.lid;
       st.lidName = home.lidName;
       st.oidFilter = home.oidFilter;
+      st.fenScope = home.fenScope;
+      st.fenName = home.fenName;
+      st.fenKey = home.fenKey;
+      st.fenResolved = home.fenResolved;
       await cycleSwitch(home.bid);
       st.name = home.name || st.name;
       // The first leg emptied the queue (a gather owns the pool), so without
@@ -40011,11 +40265,21 @@
       // Everything that has to be put back, taken before the first leg moves
       // any of it. The SOURCE is in here because the round walks both.
       st.cycleHome = { bid: st.bid, name: st.name, source: st.source,
-        lid: st.lid, lidName: st.lidName, oidFilter: st.oidFilter };
+        lid: st.lid, lidName: st.lidName, oidFilter: st.oidFilter,
+        // §28) The position scope goes home too, and it needs `fenResolved` with
+        // it: that latch is what stops `stormScope` re-deriving the set, and a
+        // round that came home with the FEN back but the latch cleared would
+        // intersect the restored oid set with the NEXT course's walk.
+        fenScope: st.fenScope, fenName: st.fenName, fenKey: st.fenKey,
+        fenResolved: st.fenResolved };
       // A round is course-wide: see the block comment above.
       st.lid = '';
       st.lidName = '';
       st.oidFilter = null;
+      st.fenScope = '';
+      st.fenName = '';
+      st.fenKey = '';
+      st.fenResolved = false;
       const gen = st.gen;
       st.cycleBad = new Set();
       st.cycleRound = 0;
@@ -40491,8 +40755,35 @@
       // also the only state the button exists in.
       st.lid = spec.lid ? String(spec.lid) : '';
       st.lidName = spec.lidName || '';
+      // §28) …AND A POSITION SCOPE, or none: only the lines that pass through
+      // the FEN the user named. `fenScope` is what they typed (kept verbatim so
+      // "Storm again" and the preset list can carry it), `fenKey` is the
+      // coverage key every comparison actually runs on, and `fenResolved` is the
+      // latch `stormScope` fills the oid set behind.
+      //
+      // THE KEY IS RE-DERIVED HERE rather than carried on the spec: a FEN that
+      // will not parse must never become a scope, and the one place that can be
+      // decided is where the session is built. An unusable one is dropped with
+      // a sentence rather than refusing the session — the user asked to storm
+      // this course, and the whole course is the honest fallback.
+      st.fenScope = '';
+      st.fenName = '';
+      st.fenKey = '';
+      st.fenResolved = false;
       st.oidFilter = null;
       st.filterNote = '';
+      if (spec.fen) {
+        const key = stormFenKey(spec.fen);
+        if (key) {
+          st.fenScope = String(spec.fen).trim();
+          st.fenKey = key;
+          st.fenName = spec.fenName || '';
+        } else {
+          st.filterNote = 'That is not a position I can read, so this is the whole ' +
+            'course. A FEN looks like ' +
+            '"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".';
+        }
+      }
       // What `storeDraw` left out, for `stormScopeNote` — reset here with the
       // rest, or a scoped session would report the previous one's counts.
       st.storeCut = null;
@@ -40570,6 +40861,9 @@
       // storage.local read for the record and this device's own id.
       await loadStats();
       await ensureDeviceId();
+      // §28) …and this course's saved positions, which the pre-roll row offers.
+      // One storage read, and it has to land before the box can be opened.
+      await loadFenPresets();
       if (!st.running) return;
       // §14.12: a pull, if it has been a while and syncing is on. Deliberately
       // NOT awaited — the whole point of the store is that a session opens
@@ -40601,11 +40895,22 @@
             'storming the whole course instead.';
         }
       }
-      st.storeQueue = storeDraw();
-      if (st.storeQueue.length) {
-        setStatus('', '');
-        produceFromStore();
-        render();
+      // §28) A POSITION SCOPE CANNOT DRAW FROM THE STORE YET, and that is the
+      // one thing it costs. §14.11's whole point is that this draw happens
+      // before the course is read, so a session opens with no network at all —
+      // but which lines pass through a named position is exactly what only the
+      // walk can say, so the draw waits until the pool exists (below, beside
+      // `dropCoveredStored`, which is there for the same reason one bullet
+      // over). An UNSCOPED session is untouched, which is every session that
+      // has ever run.
+      st.storeQueue = [];
+      if (!st.fenKey) {
+        st.storeQueue = storeDraw();
+        if (st.storeQueue.length) {
+          setStatus('', '');
+          produceFromStore();
+          render();
+        }
       }
       if (st.filterNote) setNote(st.filterNote);
 
@@ -40639,6 +40944,13 @@
       // input to it would change what "the course answers this position" means.
       const frontiers = stormScope(await poolFor(course.vars));
       if (!st.running) return;
+      // §28) THE POSITION SCOPE'S STORE DRAW, deferred from above and made
+      // HERE rather than beside `dropCoveredStored` below, because `st.storeCut`
+      // is what the refusal a few lines down reports: a scope that found nothing
+      // has to be able to say whether the stored positions it left out belonged
+      // to other lines or could not be attributed at all. The queue is filled
+      // after the coverage sweep, exactly as an unscoped session's is.
+      if (st.fenKey) st.storeQueue = storeDraw();
       if (!frontiers.length) {
         // NAME THE PAUSE WHERE IT IS THE REASON. Every other cause here is a
         // property of the course and nothing the user can act on; a paused line
@@ -40653,6 +40965,27 @@
         // than left looking like a slow producer. It is checked FIRST because
         // it is the only cause here the user chose one press ago, and the
         // sentences below would otherwise tell them their course is unsuitable.
+        // §28) THE POSITION SCOPE IS CHECKED BEFORE THE CHAPTER, for the
+        // chapter's own reason one step further along: it is the narrowest
+        // thing the user chose and the most recent, so it is the likeliest
+        // explanation of an empty session. The two sentences it can need are
+        // different facts — no line of yours reaches that board at all, or some
+        // do and none of them has anything to storm past it.
+        if (st.fenKey) {
+          const through = st.oidFilter ? st.oidFilter.size : 0;
+          endSession('no frontiers past that position', stormScopeNote(frontiers) ||
+            (through
+              ? through + ' line(s) go through ' + scopeWhere() + ', but ' +
+                (uncoveredOn()
+                  ? 'none of them answers a reply from a standard starting position.'
+                  : 'none of them ends on a position a real game passes through.') +
+                ' Try a position earlier in the line, or the whole course.'
+              : 'No line in this course goes through ' + scopeWhere() + '. Check the ' +
+                'FEN — the position is matched on the pieces, whose move it is and ' +
+                'the castling rights, so a transposition into it counts but a ' +
+                'different board does not.'));
+          return;
+        }
         if (st.lid) {
           endSession('no frontiers in chapter', stormScopeNote(frontiers) ||
             (uncoveredOn()
@@ -40714,6 +41047,11 @@
       // existed. A repertoire grows, and the positions it has grown to cover
       // are exactly the ones this feature already showed the user.
       dropCoveredStored();
+      // §28) …and the queue, now that the sweep has run.
+      if (st.fenKey && st.storeQueue.length) {
+        setStatus('', '');
+        produceFromStore();
+      }
       log('storm:', frontiers.length,
         uncoveredOn() ? 'decision point(s) on' : 'eligible frontier(s) on', st.bid);
 
@@ -41510,6 +41848,11 @@
       st.queue = [];
       st.pool = [];
       st.viewStats = false;   // §15.4: the next session opens on the storm
+      // §28) …and on the whole course, with the box shut: the window is reopened
+      // on other courses and this list is per course.
+      st.fenOpen = false;
+      st.fenMsg = '';
+      st.fenSig = '';
       st.verdict = null;
       st.history = [];
       st.analysing = false;
@@ -41770,6 +42113,34 @@
       const bgBtn = el('button', 'clo-st-sync clo-st-bgbtn', 'Background: on');
       bgBtn.type = 'button';
       bgBtn.addEventListener('click', () => saveBackfill(!st.backfillOn));
+      // §28) THE POSITION SCOPE's door. NEUTRAL outline (`.clo-st-sync`'s
+      // vocabulary), and it sits with the two selectors rather than out at the
+      // far end with the store controls, because it belongs to the same
+      // sentence they do: those say which positions are offered, and so does
+      // this. Never green — green outline in this row is an ordinary ACTION
+      // (DESIGN-ui-inventory §3) and pressing this starts nothing; it opens the
+      // box that starts something.
+      //
+      // Its LABEL carries the state, `.clo-st-bgbtn`'s rule: a scope is a fact
+      // about the whole session, and a lit border says less about which one
+      // than three words do.
+      const fenBtn = el('button', 'clo-st-sync clo-st-fenbtn', 'From position…');
+      fenBtn.type = 'button';
+      fenBtn.addEventListener('click', () => {
+        st.fenOpen = !st.fenOpen;
+        // Opening it clears whatever the last press said, so a stale "saved" or
+        // "that is not a position I can read" is not the first thing read.
+        if (st.fenOpen) st.fenMsg = '';
+        // …and the field opens on the scope in force, so what is running is also
+        // what can be edited. Only when it is EMPTY: a FEN half-typed and then
+        // shut away must come back as it was.
+        if (st.fenOpen && st.ui && !st.ui.fenInput.value && st.fenScope) {
+          st.ui.fenInput.value = st.fenScope;
+          st.ui.fenNameInput.value = st.fenName || '';
+        }
+        render();
+        if (st.fenOpen && st.ui && st.ui.fenInput) st.ui.fenInput.focus();
+      });
       plyGroup.append(
         el('span', 'clo-st-set-label', 'Offer positions'), minSel,
         el('span', 'clo-st-set-label', 'to'), maxSel,
@@ -41778,9 +42149,71 @@
         el('span', 'clo-st-set-label', 'Ask about replies played in'), shareSel,
         el('span', 'clo-st-set-label', 'of the games there or more'));
       settings.append(
-        modeSel, sourceSel, plyGroup, uncGroup,
+        modeSel, sourceSel, plyGroup, uncGroup, fenBtn,
         el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, roundBtn,
         clearBtn, bgBtn, syncBtn, statsBtn);
+
+      // §28) THE BOX. An IN-FLOW BLOCK under the settings row, not a floating
+      // popover — section 6b's rule for the panel's own settings menu, and for
+      // the same reason: this window is `overflow: hidden` and its body is the
+      // scroll container, so a popover would be clipped by the thing it hangs
+      // off. It is also shown in exactly the two states the row itself is (no
+      // clock running), so there is nothing for it to cover.
+      const fenBox = el('div', 'clo-st-fenbox');
+      fenBox.hidden = true;
+      const fenRow = el('div', 'clo-st-fenrow');
+      const fenInput = el('input', 'clo-st-feninput');
+      fenInput.type = 'text';
+      fenInput.spellcheck = false;
+      fenInput.autocomplete = 'off';
+      fenInput.placeholder = 'Paste a FEN — r1bqkbnr/pp1ppppp/2n5/8/… b KQkq -';
+      fenInput.title = 'Only the lines of this course that go through this position ' +
+        'are used — for the storm AND for "Gather positions". The board is matched ' +
+        'on the pieces, whose move it is and the castling rights, so the same ' +
+        'position reached by a different move order counts.';
+      // A NAME, because a FEN is not readable and a saved list of them is
+      // worse. Optional: a position stormed once and never saved needs none.
+      const fenNameInput = el('input', 'clo-st-feninput clo-st-fenname');
+      fenNameInput.type = 'text';
+      fenNameInput.spellcheck = false;
+      fenNameInput.autocomplete = 'off';
+      fenNameInput.maxLength = C.fenNameMax;
+      fenNameInput.placeholder = 'Name (optional)';
+      // GREEN OUTLINE — an ordinary action, DESIGN-ui-inventory §3 — and never a
+      // fill: Start is this window's one primary and this is a way of choosing
+      // what Start will be about.
+      const fenGo = el('button', 'clo-st-gather clo-st-fengo', 'Storm from this');
+      fenGo.type = 'button';
+      fenGo.addEventListener('click', () => applyFenScope());
+      const fenSave = el('button', 'clo-st-sync', 'Save');
+      fenSave.type = 'button';
+      fenSave.title = 'Keep this position in a list for this course. Saved on this ' +
+        'device only — a FEN is a line of text you can paste again, so it is not ' +
+        'worth a round trip to your other devices.';
+      fenSave.addEventListener('click', () => saveFenFromBox());
+      const fenWhole = el('button', 'clo-st-sync', 'Whole course');
+      fenWhole.type = 'button';
+      fenWhole.title = 'Start again with every line of this course';
+      fenWhole.addEventListener('click', () => {
+        stormAgain({ bid: st.bid, name: st.name, lid: st.lid, lidName: st.lidName,
+          mode: st.mode, source: st.source });
+      });
+      // ENTER COMMITS, in both fields: this box is a place a FEN is pasted, and
+      // reaching for a button after a paste is the one step worth removing. The
+      // key reaches here because the document-capture handler stands down for a
+      // focused field (see `onKey`), so nothing swallows it first.
+      const onFenKey = (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        applyFenScope();
+      };
+      fenInput.addEventListener('keydown', onFenKey);
+      fenNameInput.addEventListener('keydown', onFenKey);
+      fenRow.append(fenInput, fenNameInput, fenGo, fenSave, fenWhole);
+      const fenMsg = el('div', 'clo-st-fenmsg');
+      fenMsg.hidden = true;
+      const fenList = el('div', 'clo-st-fenlist');
+      fenBox.append(fenRow, fenMsg, fenList);
       const stage = el('div', 'clo-st-stage');
       const boardSlot = el('div', 'clo-st-slot clo-st-slot--board');
       const panelSlot = el('div', 'clo-st-slot clo-st-slot--panel');
@@ -41898,13 +42331,14 @@
       revActions.append(revRetry, revBest, revAnalyse, revAgain, revDone);
       revSide.append(revHead, revLegend, revList, revActions);
       review.append(revBoard, revSide);
-      body.append(status, note, syncNote, settings, stage, review, summary, stats);
+      body.append(status, note, syncNote, settings, fenBox, stage, review, summary, stats);
 
       panel.append(head, body);
       document.body.appendChild(panel);
       st.panel = panel;
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
         settings, modeSel, sourceSel, plyGroup, uncGroup, shareSel,
+        fenBtn, fenBox, fenInput, fenNameInput, fenGo, fenSave, fenWhole, fenMsg, fenList,
         statsTabA, statsTabB,
         minSel, maxSel, startBtn, gatherBtn, roundBtn, clearBtn, bgBtn, ready,
         syncBtn, syncNote,
@@ -41965,6 +42399,9 @@
       } catch (err) { /* orphaned content script */ }
       if (st.running && !st.over && !st.started && !filling()) {
         stormAgain({ bid: st.bid, name: st.name, lid: st.lid, lidName: st.lidName,
+          // §28) …and the position scope, which is as much part of this session as
+          // the chapter is: changing the SOURCE must not silently widen it.
+          fen: st.fenScope, fenName: st.fenName,
           mode: st.mode, source: st.source });
         return;
       }
@@ -42151,7 +42588,10 @@
       st.ui.gatherBtn.title = st.gathering
         ? 'Stop after the line end being walked now. Everything found so far is ' +
           'already stored.'
-        : 'Walk this course’s ' +
+        : (st.fenKey ? 'Only the lines that go through ' + scopeWhere() + ' are ' +
+            'walked — this fills the store for that part of the course and nothing ' +
+            'else.\n' : '') +
+          'Walk this course’s ' +
           (uncoveredOn() ? 'positions for replies it never answers'
             : 'line ends') +
           ' and store every usable position, showing ' +
@@ -42181,9 +42621,157 @@
       // range it started on.
       st.ui.minSel.disabled = filling();
       st.ui.maxSel.disabled = filling();
+      // §28) THE POSITION SCOPE. The label carries the state, and the box is
+      // shown only while it is open AND the row itself is — a scope is chosen
+      // between sessions, never during one.
+      st.ui.fenBtn.textContent = st.fenKey
+        ? 'From: ' + (st.fenName || 'a position') : 'From position…';
+      st.ui.fenBtn.classList.toggle('clo-st-fenbtn--on', Boolean(st.fenKey));
+      st.ui.fenBtn.disabled = filling();
+      st.ui.fenBtn.title = st.fenKey
+        ? 'Only the ' + (st.oidFilter ? st.oidFilter.size + ' line(s)' : 'lines') +
+          ' of this course that go through this position are being used, for the ' +
+          'storm and for gathering alike. Press to change it or to go back to the ' +
+          'whole course.'
+        : 'Storm only the part of this course that comes after a position you name. ' +
+          '"Gather positions" narrows with it, so a burst fills the store for that ' +
+          'line and nothing else.';
+      st.ui.fenBox.hidden = !st.fenOpen;
+      st.ui.fenGo.disabled = filling();
+      st.ui.fenSave.disabled = filling();
       // Only while nothing is being timed: see the note where this is built.
       // A gather pass is never timed, so its own control cannot hide under it.
       st.ui.settings.hidden = timing() && !filling();
+      // The box goes with the row, and by the same test: it is the row's own
+      // second line, so it must not be left standing over a live card.
+      if (st.ui.settings.hidden) st.ui.fenBox.hidden = true;
+      // …and its CONTENTS are redrawn only when something in them has changed.
+      // `syncSettings` runs from `render`, which runs from the 500 ms tick, and
+      // this list is made of BUTTONS — rebuilding them twice a second would drop
+      // the focus and the hover off whichever row the user was reaching for
+      // (section 6c's `syncRepertoireLine` rule, for its reason). The field is
+      // never written here at all, so a half-typed FEN cannot be eaten.
+      const sig = [st.fenOpen, st.fenKey, st.fenMsg, st.lid,
+        fenPresets().length].join('|');
+      if (sig !== st.fenSig) {
+        st.fenSig = sig;
+        if (st.fenOpen) renderFenBox();
+      }
+    }
+
+    /**
+     * §28) START AGAIN, SCOPED TO A POSITION — `stormAgain`'s spec with a FEN
+     * on it, which is the whole of the mechanism: the chapter buttons in the
+     * stats view do exactly this with a `lid`.
+     *
+     * IT REFUSES BEFORE IT RESTARTS. `stormFenKey` is the same parse
+     * `startSession` will make, so a FEN that cannot be read is caught here
+     * with a sentence in the box the user is looking at, rather than by
+     * `st.filterNote` in a session that has already begun on the whole course.
+     *
+     * THE CHAPTER SCOPE IS KEPT, and `stormScope` intersects the two — see its
+     * own note. Leaving a chapter is what "Whole course" beside this is for.
+     */
+    function applyFenScope(raw, name) {
+      if (filling()) {
+        setStatus(st.cycling
+          ? 'The round is still walking your courses — stop it first.'
+          : 'The gather pass is still running — stop it first.', 'warn');
+        return;
+      }
+      const fen = String(raw !== undefined ? raw
+        : (st.ui && st.ui.fenInput ? st.ui.fenInput.value : '')).trim();
+      if (!fen) {
+        st.fenMsg = 'Paste a FEN first — the position you want to storm from.';
+        renderFenBox();
+        return;
+      }
+      if (!stormFenKey(fen)) {
+        st.fenMsg = 'That is not a position I can read. A FEN looks like ' +
+          '"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".';
+        renderFenBox();
+        return;
+      }
+      const label = name !== undefined ? name
+        : (st.ui && st.ui.fenNameInput ? st.ui.fenNameInput.value : '');
+      // The box stays open across the restart — `stormAgain` carries `st.fenOpen`
+      // over `closeStorm`, see its own note — so the list is still there to pick a
+      // different position from if this one turns out to be a dead end.
+      st.fenMsg = '';
+      stormAgain({ bid: st.bid, name: st.name, lid: st.lid, lidName: st.lidName,
+        mode: st.mode, source: st.source,
+        fen, fenName: String(label || '').trim().slice(0, C.fenNameMax) });
+    }
+
+    /** …and the save, which is the box's other button. */
+    async function saveFenFromBox() {
+      if (!st.ui) return;
+      const fen = st.ui.fenInput.value.trim();
+      if (!stormFenKey(fen)) {
+        st.fenMsg = fen
+          ? 'That is not a position I can read, so there is nothing to save.'
+          : 'Paste a FEN first.';
+        renderFenBox();
+        return;
+      }
+      const name = st.ui.fenNameInput.value.trim();
+      await addFenPreset(fen, name);
+      st.fenMsg = 'Saved' + (name ? ' as “' + name + '”' : '') + '.';
+      renderFenBox();
+    }
+
+    /**
+     * §28) The box's own contents, redrawn on demand rather than from the
+     * 500 ms poll: the field holds text the user is typing and the list holds
+     * their focus, which is `renderReport`'s rule in section 21 for the same
+     * two reasons.
+     */
+    function renderFenBox() {
+      if (!st.ui) return;
+      const u = st.ui;
+      u.fenMsg.textContent = st.fenMsg || '';
+      u.fenMsg.hidden = !st.fenMsg;
+      u.fenWhole.hidden = !st.fenKey && !st.lid;
+      const list = u.fenList;
+      while (list.firstChild) list.removeChild(list.firstChild);
+      const saved = fenPresets();
+      if (!saved.length) {
+        list.append(el('div', 'clo-st-fenempty',
+          'No saved positions for this course yet. Paste one and press Save to keep ' +
+          'it here.'));
+        return;
+      }
+      saved.forEach((e, i) => {
+        const key = stormFenKey(e && e.fen);
+        const row = el('div', 'clo-st-fenitem');
+        // The NAME is the label and the FEN is the fallback, cut to something a
+        // row can hold: a full FEN is 60-odd characters and a list of them
+        // reads as noise. The whole string is in the title either way.
+        const shown = (e.name || '').trim() ||
+          String((e && e.fen) || '').split(' ').slice(0, 2).join(' ');
+        const pick = el('button', 'clo-st-fenpick', shown);
+        pick.type = 'button';
+        pick.title = String((e && e.fen) || '') +
+          (key && key === st.fenKey ? '\n(this is what you are storming)' : '');
+        pick.classList.toggle('clo-st-fenpick--on', Boolean(key) && key === st.fenKey);
+        pick.addEventListener('click', () => {
+          // The field is filled as well as the session restarted, so the row
+          // that is running is also the text that can be edited.
+          u.fenInput.value = e.fen;
+          u.fenNameInput.value = e.name || '';
+          applyFenScope(e.fen, e.name || '');
+        });
+        const drop = el('button', 'clo-st-fendrop', '×');
+        drop.type = 'button';
+        drop.title = 'Forget this position';
+        drop.addEventListener('click', async () => {
+          await removeFenPreset(i);
+          st.fenMsg = '';
+          renderFenBox();
+        });
+        row.append(pick, drop);
+        list.append(row);
+      });
     }
 
     function setNote(text) {
@@ -42229,6 +42817,9 @@
       // overwrite.
       st.ui.sub.textContent = (st.name || '') +
         (st.lid && st.lidName ? ' › ' + st.lidName : '') +
+        // §28) …and the position scope, narrowest last, so the line reads from
+        // the course inwards.
+        (st.fenKey ? ' › from ' + (st.fenName || 'a position') : '') +
         // §19) …and WHICH GAP is being stormed, for the scope's own reason: it
         // is part of what this session IS, and every card on screen is about
         // to be described in its terms.
@@ -42667,9 +43258,23 @@
       // means again.
       // §19) …AND SO DOES THE SOURCE, for the mode's own reason: it is part
       // of what the session just finished WAS, and "again" means again.
+      // §28) …AND THE POSITION SCOPE, for the same reason again: it is part of
+      // what the session just finished WAS. `fenScope` is what the user typed,
+      // kept verbatim on purpose — the key is re-derived by `startSession`, so
+      // nothing here has to be right about the parse.
       const next = spec && spec.bid ? spec : { bid: st.bid, name: st.name,
-        lid: st.lid, lidName: st.lidName, mode: st.mode, source: st.source };
+        lid: st.lid, lidName: st.lidName, mode: st.mode, source: st.source,
+        fen: st.fenScope, fenName: st.fenName };
+      // §28) THE POSITION BOX SURVIVES, and this is the one place it can: every
+      // restart goes through `closeStorm`, which shuts it because the window is
+      // reopened on other courses and that list is per course. But a scope pressed
+      // FROM the box is exactly when it is wanted afterwards — a scope that finds
+      // nothing ends the session with a sentence, and the next thing to do is try
+      // another position. `mount()` reuses a connected panel, so the fields keep
+      // their text across this.
+      const boxWasOpen = st.fenOpen;
       closeStorm();
+      st.fenOpen = boxWasOpen;
       startSession(next);
     }
 
@@ -43141,6 +43746,27 @@
     function onKey(e) {
       if (!st.running) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // §28) A FOCUSED FIELD OR SELECTOR OWNS THE KEYBOARD, and this window had
+      // no such stand-down until the position box arrived. It matters: this
+      // listener is on `document` in CAPTURE phase and calls `preventDefault`,
+      // so every 's' typed into a name opened the stats table INSTEAD of
+      // inserting a letter, and 'b', 't' and the arrows walked the review
+      // underneath. Section 24c's rule, and 19d's for the `<select>` half —
+      // arrows and letters are how a selector is driven, and the mode, source
+      // and share selectors have been in this row since v0.150.0.
+      //
+      // ESCAPE BLURS rather than closing the window: the nearer thing to back
+      // out of is the field, which is the reading Escape already has in section
+      // 19's lead-in field and in the quick-edit popup.
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          e.target.blur();
+        }
+        return;
+      }
       // §15.4) THE RECORD, and this block sits ABOVE the review's arrows: with
       // the table up the review is hidden, and stepping a list nobody can see
       // is the one thing those keys must not do here. Escape closes the table
