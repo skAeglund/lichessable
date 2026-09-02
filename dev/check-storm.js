@@ -273,6 +273,8 @@ const src = [
   sliceDecl('stormPuzzleUserPlies'),
   sliceDecl('stormPuzzleRetain'),
   sliceDecl('stormPuzzleDraw'),
+  sliceDecl('stormPuzzleArchived'),
+  sliceDecl('stormPuzzleArchiveDraw'),
   sliceDecl('stormPuzzleDone'),
   sliceDecl('cardLineRef'),
   sliceDecl('stormPuzzleCardName'),
@@ -328,6 +330,7 @@ const src = [
   '         stormPuzzleBlank, stormPuzzleCand, stormPuzzleReady,' +
   '         stormPuzzlePlies, stormPuzzleUserPlies, stormPuzzleRetain,' +
   '         stormPuzzleDraw, stormPuzzleDone, cardLineRef,' +
+  '         stormPuzzleArchived, stormPuzzleArchiveDraw,' +
   '         stormPuzzleCardName, stormPuzzleWirePack,' +
   '         stormPuzzleWireUnpack, stormPuzzleWireMerge,' +
   '         sanToUci, fenAfterUci };',
@@ -389,6 +392,16 @@ const str = (name) => {
   if (!m) throw new Error('CONFIG.storm.' + name + ' not found');
   return m[1];
 };
+// §29.3) …and the first ARRAY setting. Same discipline as `str` above and for
+// the same recorded reason: a reader that quietly answers `undefined` turns
+// every assertion about the value into a vacuous pass, so this throws when the
+// field is not there rather than handing back nothing.
+const nums = (name) => {
+  const m = new RegExp('\\b' + name + ':\\s*\\[([^\\]]*)\\]').exec(cfgBody);
+  if (!m) throw new Error('CONFIG.storm.' + name + ' not found');
+  return m[1].split(',').map((x) => Number(x.trim())).filter((x) => Number.isFinite(x));
+};
+
 const numF = (name) => {
   const m = new RegExp('\\b' + name + ':\\s*(-?[0-9.]+)').exec(cfgBody);
   if (!m) throw new Error('CONFIG.storm.' + name + ' not found');
@@ -478,6 +491,7 @@ const C = {
     .split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean),
   puzzleAnchorMinPly: num('puzzleAnchorMinPly'),
   puzzleAnchorMaxPly: num('puzzleAnchorMaxPly'),
+  puzzleAnchorPlyChoices: nums('puzzleAnchorPlyChoices'),
   puzzlesPerAnchor: num('puzzlesPerAnchor'),
   puzzleReadyMax: num('puzzleReadyMax'),
   puzzleCandMax: num('puzzleCandMax'),
@@ -3982,6 +3996,23 @@ const leadsTo = (arrived, fen) => {
     const cut29 = S.stormFilterAnchors(anchors, new Set(['nope']));
     eq('...and one whose lines are all out of scope does not', cut29.size, 0);
     eq('no scope is a no-op', S.stormFilterAnchors(anchors, null), anchors);
+
+  // --- the band's own config shape (§29.3) ---------------------------------
+  // THE SELECTOR IS BUILT FROM `puzzleAnchorPlyChoices` AND SET TO
+  // `pz.minPly`/`pz.maxPly`. A default that is not among the choices therefore
+  // fails in the quietest possible way: `applyPuzzleBand`'s fallback still
+  // returns it, so the band is correct and every puzzle is found — but
+  // `sel.value = '12'` with no matching <option> leaves the value '', and the
+  // dropdown renders BLANK. Nothing errors and nothing in the store is wrong.
+  eq('the default floor is one of the offered choices',
+    C.puzzleAnchorPlyChoices.indexOf(C.puzzleAnchorMinPly) >= 0, true);
+  eq('...and so is the default ceiling',
+    C.puzzleAnchorPlyChoices.indexOf(C.puzzleAnchorMaxPly) >= 0, true);
+  eq('...and the band is not inverted',
+    C.puzzleAnchorMinPly <= C.puzzleAnchorMaxPly, true);
+  // §3's cliff sits between ply 8 and ply 10 (1322 puzzles against 33), so a
+  // floor at or below it stops meaning "the game played this line".
+  eq('the floor stays above §3 measured cliff', C.puzzleAnchorMinPly >= 10, true);
   }
 
 
@@ -4089,6 +4120,85 @@ const leadsTo = (arrived, fen) => {
     // gathered most recently is the one it is least likely to have.
     eq('...taking the newest first', Object.keys(cut.p)[0], 'p199');
   }
+
+
+// ---------------------------------------------------------------------------
+// 29d) THE ARCHIVE RECORD AND ITS DRAW ORDER (§29.2)
+//
+// The one-shot collect splits a puzzle in two: the BODY goes into the worker's
+// IndexedDB archive and `store.p` keeps a ~60-byte record of it, so the ready
+// working set can be trimmed and rehydrated for free. Two things here fail in
+// the way §14.15 is emphatic about — silently, with every puzzle still returned
+// in a plausible order:
+//
+//  * `stormPuzzleArchived` MUST SPEAK THE CANDIDATE'S FIELD NAMES, because
+//    `refillReady` hands the record straight back to `stormPuzzleReady` as its
+//    second argument. Rename `p` to `ap` there and every rehydrated puzzle comes
+//    back with no anchor depth and no line — §15's third stats map then fills up
+//    under one blank oid while looking implemented.
+//  * `stormPuzzleArchiveDraw` is `stormPuzzleDraw`'s rule over a different map,
+//    and it additionally EXCLUDES what is already loaded and what is retired.
+//    Dropping either exclusion still returns a plausible list — one that
+//    rehydrates puzzles already in hand, or resurrects a solved one.
+// ---------------------------------------------------------------------------
+console.log('\n-- 29d) the archive record and its draw (§29.2) --\n');
+{
+  const NOW29D = 1e12;
+  const readyEntry = {
+    i: 'aBcD1', f: 'r3k2r/1pp1nppp/p2pR3/7Q/8/B1q5/P1P2PPP/R5K1 w kq - 0 16',
+    m: 'a1e1 e8g8', r: 2147, o: 'oid-1', n: 'Scotch: 4...Qh4', ap: 14,
+    pf: '', pm: '', g: '', op: '', th: [], k: 3, t: 77,
+  };
+
+  const rec = S.stormPuzzleArchived(readyEntry);
+  eq('the light record keeps the anchor line', rec.o, 'oid-1');
+  eq('...and its name', rec.n, 'Scotch: 4...Qh4');
+  eq('...and the rating', rec.r, 2147);
+  eq('...and the miss count, which is the durable half', rec.k, 3);
+  // THE FIELD NAME IS THE CANDIDATE'S. stormPuzzleReady reads cand.p for the
+  // anchor depth, so a record calling it "ap" rebuilds every puzzle with none —
+  // and nothing errors.
+  eq('...and the anchor depth UNDER THE CANDIDATE NAME', rec.p, 14);
+  eq('a record round-trips back into a ready entry',
+    S.stormPuzzleReady({ id: 'aBcD1', fen: readyEntry.f,
+      moves: ['a1e1', 'e8g8'], rating: 2147, themes: [] }, rec).ap, 14);
+  eq('...carrying its line with it',
+    S.stormPuzzleReady({ id: 'aBcD1', fen: readyEntry.f,
+      moves: ['a1e1', 'e8g8'], rating: 2147, themes: [] }, rec).o, 'oid-1');
+
+  // --- the draw ---
+  const pstore = S.stormPuzzleBlank();
+  pstore.p = {
+    fresh: { r: 1500, o: 'o', n: 'n', p: 12, k: 0, t: 1 },
+    missed: { r: 1500, o: 'o', n: 'n', p: 12, k: 2, t: 1 },
+    loaded: { r: 1500, o: 'o', n: 'n', p: 12, k: 0, t: 1 },
+    retired: { r: 1500, o: 'o', n: 'n', p: 12, k: 0, t: 1 },
+  };
+  pstore.r = { loaded: readyEntry };
+  pstore.g = { retired: NOW29D - 1000 };
+
+  const drawn = S.stormPuzzleArchiveDraw(pstore, () => 0.5, C, NOW29D);
+
+  eq('the draw skips what is already loaded', drawn.indexOf('loaded'), -1);
+  eq('...and what is retired', drawn.indexOf('retired'), -1);
+  eq('...leaving exactly the rest', drawn.length, 2);
+  // §14.15's rule in its third home: unseen first, most-missed last. Reversed,
+  // every session would rehydrate the same failures and starve everything the
+  // collect paid for.
+  eq('unseen before missed', drawn[0], 'fresh');
+  eq('...and the missed one last', drawn[1], 'missed');
+
+  // A tombstone past the horizon is NOT a retirement any more.
+  const oldStore = S.stormPuzzleBlank();
+  oldStore.p = { back: { r: 1, o: 'o', n: 'n', p: 12, k: 0, t: 1 } };
+  oldStore.g = { back: NOW29D - (C.goneDays + 1) * 24 * 60 * 60 * 1000 };
+  eq('an aged-out tombstone lets a puzzle back into the draw',
+    S.stormPuzzleArchiveDraw(oldStore, () => 0.5, C, NOW29D).length, 1);
+
+  // An empty archive is not an error, it is a course nobody has collected.
+  eq('an empty archive draws nothing',
+    S.stormPuzzleArchiveDraw(S.stormPuzzleBlank(), () => 0.5, C, NOW29D).length, 0);
+}
 
   console.log('\n' + SRC_PATH);
   console.log(pass + ' passed, ' + fail + ' failed');

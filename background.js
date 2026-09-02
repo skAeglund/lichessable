@@ -1,3 +1,33 @@
+// §29) The puzzle dataset’s IndexedDB — the two shard caches and the durable
+// body archive. background.js is a CLASSIC service worker (no "type": "module"
+// in the manifest), so importScripts is the load path, and at the top of the
+// file it is guaranteed to have run before any handler below can be reached.
+//
+// IT LIVES IN THE WORKER AND NOT IN THE CONTENT SCRIPT because a content
+// script’s IndexedDB belongs to www.chessable.com — a third party’s origin,
+// cleared by their "clear site data", and no place for hundreds of megabytes
+// of ours. The worker’s IDB is the extension’s own.
+//
+// GUARDED, AND THAT IS NOT BELT-AND-BRACES. An importScripts that throws
+// aborts the WHOLE worker script: the explorer fetch, the engine hub, the
+// quick-edit driver and the overstudy opener all die with it, for want of a
+// CACHE. That is exactly what shipped to the phone in v0.172.0, where
+// pack-mobile.ps1 derived its file list from the manifest and from HTML
+// <script src> and so could not see a module reached by importScripts — the
+// zip had background.js and no puzzlecache.js. The packer is fixed; this is
+// the guard that makes the same class of mistake survivable.
+//
+// The cache is an ACCELERATOR (see puzzlecache.js’s own contract: every
+// operation degrades to a no-op and a null). Without it section 29 still
+// works, it just re-fetches; everything else is untouched.
+let cloPuzzleCacheOk = false;
+try {
+  importScripts('puzzlecache.js');
+  cloPuzzleCacheOk = typeof cloPzGetIndexShard === 'function';
+} catch (err) {
+  console.warn('[CLO] puzzlecache.js did not load — puzzle shards will not be cached, everything else is unaffected:', err);
+}
+
 /**
  * LiChessable — background service worker
  *
@@ -22,6 +52,20 @@
  *                                        |  { ok:false, status, error }
  *                                           (lichess.org/game/export/ ONLY;
  *                                            see handleGameFetch)
+ *   { type: 'clo-puzzle-index', shard, keys }
+ *                                        -> { ok:true, data:{ key: [tuple,…] }, cached }
+ *                                           (§29 stage A. The worker fetches or
+ *                                            reads the ~1 MB index shard from IDB,
+ *                                            parses it and returns ONLY the position
+ *                                            keys asked for — see handlePuzzleIndex)
+ *   { type: 'clo-puzzle-bodies', shard, ids }
+ *                                        -> { ok:true, data:[body,…], cached }
+ *                                           (§29 stage B, GROUPED: one body shard
+ *                                            answers every wanted id in it, and the
+ *                                            bodies are archived on the way past)
+ *   { type: 'clo-puzzle-archive', op, … } -> the durable body archive:
+ *                                           op 'get'|'have'|'count'|'del'|'stats'
+ *                                           |'build'|'clearShards'|'clearAll'
  *   { type: 'clo-open-options' }         -> opens the extension options page
  *   { type: 'clo-open-overstudy', url }  -> opens a chessable.com /learn/ URL
  *                                           in a BACKGROUND tab (review-mode
@@ -132,6 +176,12 @@ const PUZZLE_BASE = 'https://skaeglund.github.io/puzzle-explorer-data/';
 // a complete description of every file this feature will ever read.
 const PUZZLE_PATH_RE =
   /^(?:index[/][0-9a-f]{3}[.]json|puzzles[/][0-9a-f]{3}[.]ndjson|meta[.]json)$/;
+// …and the same fact stated for the two handlers that build their own path
+// from a shard NAME rather than taking one. A shard is a SHA-1 prefix, so this
+// is a complete description of every value either may ever be given, and it is
+// what keeps those handlers as unpointable as handlePuzzleFetch: nothing a
+// caller can pass reaches a url.
+const PUZZLE_SHARD_RE = /^[0-9a-f]{3}$/;
 const TOKEN_KEY = 'lichessToken'; // must match content/lichessable.js and options/options.js
 
 // A token this browser profile can start with, so a new profile (or a reinstall,
@@ -239,6 +289,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg && msg.type === 'clo-fetch-puzzles') {
     handlePuzzleFetch(msg.path, msg.as).then(sendResponse);
+    return true;
+  }
+  if (msg && msg.type === 'clo-puzzle-index') {
+    handlePuzzleIndex(msg.shard, msg.keys).then(sendResponse);
+    return true;
+  }
+  if (msg && msg.type === 'clo-puzzle-bodies') {
+    handlePuzzleBodies(msg.shard, msg.ids).then(sendResponse);
+    return true;
+  }
+  if (msg && msg.type === 'clo-puzzle-archive') {
+    handlePuzzleArchive(msg).then(sendResponse);
     return true;
   }
   if (msg && msg.type === 'clo-open-options') {
@@ -819,6 +881,164 @@ async function handlePuzzleFetch(path, as) {
     }
     const data = as === 'text' ? await response.text() : await response.json();
     return { ok: true, data };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err) };
+  }
+}
+/**
+ * One index shard, FILTERED to the position keys the caller asked about.
+ *
+ * THE FILTERING IS THE POINT, and it is why this exists beside
+ * handlePuzzleFetch rather than being folded into it. An index shard is ~6900
+ * position keys and ~0.97 MB parsed; a course scan wants ONE of them per shard.
+ * Returning the shard whole would structured-clone a megabyte across the
+ * worker/content-script boundary 180 times for one course, which at one-shot
+ * scale is the dominant cost of the entire scan. Parsing here and answering
+ * with a few hundred bytes removes it.
+ *
+ * IT NAMES NO URL EITHER. The caller passes a shard NAME, matched against
+ * PUZZLE_SHARD_RE, and the path is built here — so this handler is exactly as
+ * unpointable as handlePuzzleFetch, which is the guard section 29 chose for the
+ * fourth host permission and the reason that permission was cheap.
+ *
+ * A 404 IS "no puzzles here", not a failure (integration guide §4.1): it comes
+ * back ok with an empty answer and `missing`, so a scan marks those anchors
+ * scanned and moves on instead of retrying a shard that does not exist.
+ */
+async function handlePuzzleIndex(shard, keys) {
+  try {
+    if (typeof shard !== 'string' || !PUZZLE_SHARD_RE.test(shard)) {
+      return { ok: false, status: 0, error: 'blocked non-shard name' };
+    }
+    const want = Array.isArray(keys) ? keys : [];
+    let text = cloPuzzleCacheOk ? await cloPzGetIndexShard(shard) : null;
+    const cached = typeof text === 'string';
+    if (cached) {
+      // A HIT COUNTS AS USE. Without this the LRU is a FIFO on insertion order
+      // and evicts the very shards a repeated scan keeps asking for.
+      cloPzTouchIndexShard(shard);
+    } else {
+      const response = await fetch(PUZZLE_BASE + 'index/' + shard + '.json');
+      if (response.status === 404) return { ok: true, data: {}, missing: true };
+      if (!response.ok) {
+        return { ok: false, status: response.status, error: `HTTP ${response.status}` };
+      }
+      text = await response.text();
+      // Fire and forget: a cache write must never delay the answer it caches.
+      if (cloPuzzleCacheOk) cloPzPutIndexShard(shard, text);
+    }
+    let idx = null;
+    try { idx = JSON.parse(text); } catch (err) { idx = null; }
+    if (!idx) return { ok: true, data: {}, missing: true };
+    const out = {};
+    for (const key of want) {
+      const hit = idx[key];
+      if (hit) out[key] = hit;
+    }
+    return { ok: true, data: out, cached, bytes: text.length };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err) };
+  }
+}
+
+/**
+ * One BODY shard, filtered to the ids asked for — and archived on the way past.
+ *
+ * GROUPING IS THE WHOLE ECONOMY OF STAGE B. A body shard holds ~942 puzzles at
+ * ~85 KB gzipped (measured live 2026-09-02), and puzzle ids hash across all
+ * 4096 of them. Asking for one puzzle at a time therefore throws away 941
+ * bodies per fetch; asking for every wanted id in a shard at once costs the
+ * same fetch and keeps all of them. Upstream does exactly this
+ * (Offline.groupByShard in skAeglund/puzzle-explorer) and it is what turns
+ * "collect the lot" from an evening into a minute.
+ *
+ * THE ARCHIVE WRITE HAPPENS HERE, not back in the content script, so a body
+ * crosses the message boundary once instead of twice. The archive is keyed by
+ * puzzle id and knows nothing about courses — two courses that match the same
+ * puzzle share the one stored body.
+ */
+async function handlePuzzleBodies(shard, ids) {
+  try {
+    if (typeof shard !== 'string' || !PUZZLE_SHARD_RE.test(shard)) {
+      return { ok: false, status: 0, error: 'blocked non-shard name' };
+    }
+    const want = new Set((Array.isArray(ids) ? ids : []).map(String));
+    if (!want.size) return { ok: true, data: [], cached: false };
+    let text = cloPuzzleCacheOk ? await cloPzGetBodyShard(shard) : null;
+    const cached = typeof text === 'string';
+    if (cached) {
+      cloPzTouchBodyShard(shard);
+    } else {
+      const response = await fetch(PUZZLE_BASE + 'puzzles/' + shard + '.ndjson');
+      if (response.status === 404) return { ok: true, data: [], missing: true };
+      if (!response.ok) {
+        return { ok: false, status: response.status, error: `HTTP ${response.status}` };
+      }
+      text = await response.text();
+      if (cloPuzzleCacheOk) cloPzPutBodyShard(shard, text);
+    }
+    const out = [];
+    for (const line of text.split('\n')) {
+      if (!line) continue;
+      // THE CHEAP PROBE FIRST (upstream's trick): a body is JSON.stringify
+      // output, so `"id":"…"` is unambiguous, and pulling the id out of the raw
+      // line skips JSON.parse for the ~940 lines of every shard we do not want.
+      // A line WITHOUT the marker falls through to a full parse, so an
+      // unexpected shape can never silently drop a body.
+      const mk = line.indexOf('"id":"');
+      let obj = null;
+      if (mk !== -1) {
+        const s0 = mk + 6;
+        const s1 = line.indexOf('"', s0);
+        if (s1 === -1) continue;
+        if (!want.has(line.slice(s0, s1))) continue;
+      }
+      try { obj = JSON.parse(line); } catch (err) { continue; }
+      if (obj && obj.id && want.has(String(obj.id))) out.push(obj);
+    }
+    // The ARCHIVE is what makes collecting a one-off, so its absence is worth
+    // a line rather than silence: without it every session re-fetches.
+    if (out.length && cloPuzzleCacheOk) {
+      await cloPzPutBodies(out.map((b) => ({ id: b.id, b })));
+    }
+    return { ok: true, data: out, cached };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err) };
+  }
+}
+
+/**
+ * The durable body archive, and the maintenance answers beside it.
+ *
+ * IT NEVER FETCHES. Every op reads or empties local storage, so unlike the
+ * three handlers above there is no host reachable from it at all.
+ *
+ * 'clearAll' EMPTIES THE ARCHIVE TOO and is therefore only ever reached from an
+ * explicit press. 'clearShards' keeps it, and that is the one worth offering:
+ * the shard caches are the hundreds of megabytes and the archive is the few.
+ */
+async function handlePuzzleArchive(msg) {
+  try {
+    const op = msg && msg.op;
+    // EVERY OP ANSWERS EMPTY rather than failing when the cache module is not
+    // there. `get` answering {} is exactly "the archive holds none of these",
+    // which is what a caller must already cope with, so nothing downstream
+    // needs a second branch for it.
+    if (!cloPuzzleCacheOk) {
+      return { ok: true, data: (op === 'get') ? {} : (op === 'have' ? [] : null) };
+    }
+    if (op === 'get') return { ok: true, data: await cloPzGetBodies(msg.ids) };
+    if (op === 'have') return { ok: true, data: await cloPzHaveBodies(msg.ids) };
+    if (op === 'count' || op === 'stats') return { ok: true, data: await cloPzStats() };
+    if (op === 'del') { await cloPzDeleteBodies(msg.ids); return { ok: true }; }
+    if (op === 'build') return { ok: true, data: await cloPzCheckBuild(msg.builtAt) };
+    if (op === 'clearShards') { await cloPzClearShards(); return { ok: true }; }
+    if (op === 'clearAll') {
+      await cloPzClearShards();
+      await cloPzClear(CLO_PZ_BODIES);
+      return { ok: true };
+    }
+    return { ok: false, status: 0, error: 'unknown archive op' };
   } catch (err) {
     return { ok: false, status: 0, error: String(err) };
   }

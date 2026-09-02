@@ -14,10 +14,19 @@ THE FILE LIST IS DERIVED, NOT DECLARED. It is read out of manifest.json -
 background worker, every content script and stylesheet, the options page, the
 icons - and then the HTML files among those are scanned for their own local
 <script src> / <link href>, which is how engine/engine.js, engine/san.js and
-options/options.js get in. So a new content script, or a new stylesheet on the
-options page, is picked up with no edit here. The one thing the manifest cannot
-know is declared in $ExtraFiles below, with a guard that fails loudly if the
-reference it stands in for disappears.
+options/options.js get in, and the SERVICE WORKER is scanned for its own
+importScripts(), which is how puzzlecache.js gets in. So a new content script, a
+new stylesheet on the options page, or a new worker-side module is picked up
+with no edit here. The one thing the manifest cannot know is declared in
+$ExtraFiles below, with a guard that fails loudly if the reference it stands in
+for disappears.
+
+THE importScripts SCAN WAS ADDED IN v0.172.0, AFTER IT BIT. puzzlecache.js is
+loaded into the worker by importScripts and is named nowhere else, so it was
+absent from the mobile zip while every other build had it - and a worker whose
+importScripts throws does not evaluate AT ALL, taking the explorer fetch, the
+engine hub and the quick-edit driver down with it. That is the shape of failure
+this script exists to prevent, so a load path it cannot see is a bug in it.
 
 A MISSING FILE IS A FAILURE, never a smaller zip: everything resolved is checked
 to exist before anything is written. That is the whole point of the script - a
@@ -106,6 +115,27 @@ if (Test-Path $bgPath) {
         $ExtraFiles += 'engine/offscreen.html'
     } else {
         Write-Warning "[CLO] $bgRel no longer names engine/offscreen.html - check chrome.offscreen.createDocument and update the ExtraFiles list."
+    }
+
+    # --- the worker's own importScripts() ------------------------------------
+    # DERIVED, like everything else here. A module loaded this way is named in
+    # no manifest key and in no HTML page, so without this scan it is simply
+    # absent from the zip - and importScripts throwing means the worker never
+    # evaluates, which breaks far more than the module that went missing.
+    # Paths are relative to the worker, which lives at the extension root.
+    $imports = [regex]::Matches($bgSource, "importScripts\s*\(([^)]*)\)")
+    foreach ($call in $imports) {
+        # NOT $args: that is a PowerShell automatic variable and assigning to it
+        # is refused outright in some scopes.
+        $refs = [regex]::Matches($call.Groups[1].Value, "['""]([^'""]+)['""]")
+        foreach ($a in $refs) {
+            $ref = $a.Groups[1].Value
+            if ($ref -match '^(https?:|data:)') {
+                Write-Warning "[CLO] $bgRel importScripts a remote URL ('$ref') - CLAUDE.md forbids remote code; not packed."
+                continue
+            }
+            $ExtraFiles += ($ref -replace '^\./', '')
+        }
     }
 }
 

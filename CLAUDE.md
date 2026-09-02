@@ -103,7 +103,8 @@ Currently working (v0.18.x).
 
 ## Structure
 
-- `manifest.json` — MV3. Permissions: `storage` + `offscreen` + host
+- `manifest.json` — MV3. Permissions: `storage` + `unlimitedStorage` +
+  `offscreen` + host
   permissions for `explorer.lichess.org`, `www.chessdb.cn` (section 26, added
   v0.128.0 on explicit request), `lichess.org` (section 27, v0.130.0, same
   conversation — DESIGN-intuition-storm.md §10) and
@@ -117,6 +118,11 @@ Currently working (v0.18.x).
   and has the TIGHTEST guard anyway, because there it costs nothing: the content
   script names a PATH and never a url, so nothing on that side can name a host
   at all, and the manifest asks for the path prefix rather than the host.
+  `unlimitedStorage` (v0.172.0) belongs to section 29.2 and nothing else: it
+  lifts `storage.local`'s 10 MB cap, which `puzzleCandMax`/`puzzleArchiveMax`
+  (40000 each) need, and it marks the extension origin's storage PERSISTENT so
+  the puzzle body archive is not evicted under disk pressure. It is a
+  permission, not a host permission, and no other feature relies on it.
   The CSP (`wasm-unsafe-eval`) and COOP/COEP keys exist solely so the
   offscreen document can compile WASM and use SharedArrayBuffer (engine
   threads) — do not remove them.
@@ -127,6 +133,25 @@ Currently working (v0.18.x).
   `chrome.*`, no fetching — the fetch goes through the worker. IT IS A MIRROR OF
   A PUBLISHED DATASET'S OWN CODE, not code to improve; see CLAUDE.md's section 29
   entry for the three things in it that cannot be changed on this side alone.
+- `puzzlecache.js` — the Puzzle Explorer dataset's IndexedDB (section 29.2):
+  two LRU shard caches and the DURABLE, unbounded body archive that makes
+  collecting a course a one-off. Loaded into the SERVICE WORKER by
+  background.js's `importScripts` — background.js is a CLASSIC worker (no
+  `"type": "module"`), which is what makes that the load path. IT MUST STAY IN
+  THE WORKER: a content script's IndexedDB belongs to `www.chessable.com`, a
+  third party's origin, cleared by their "clear site data" and no place for
+  hundreds of megabytes of ours. Best-effort throughout — every operation
+  degrades to a no-op and a null, because a cache that can break the feature it
+  accelerates is worse than none.
+  TWO THINGS OUTSIDE IT KNOW IT EXISTS, and both were learned the hard way in
+  v0.172.1. `importScripts` in background.js is GUARDED, because an
+  importScripts that throws aborts the WHOLE worker script — the explorer
+  fetch, the engine hub, the quick-edit driver and the overstudy opener all die
+  for want of a CACHE. And `pack-mobile.ps1` now scans the worker for its own
+  `importScripts()` calls: that script derives its file list from the manifest
+  and from HTML `<script src>`, so a module reached this way was invisible to
+  it and the v0.172.0 mobile zip shipped background.js WITHOUT puzzlecache.js.
+  Anything else ever added to the worker by importScripts inherits both.
 - `content/lichessable.js` — the main content script (`engine/san.js` is
   loaded before it in every frame: pure, no `chrome.*`, and section 13 needs
   its move generator). The panel runs inside
@@ -4304,6 +4329,22 @@ Currently working (v0.18.x).
     never an index into the line, or a custom-FEN tactics line numbers its
     first position 0; and side comes from the LINE (24h's rule), `m[2]` being
     the colour that SOLVES a puzzle.
+  * THE BAND IS A USER SETTING WITH A SELECTOR (§29.3, v0.173.0), defaulting to
+    12-24, and only the FLOOR is a quality rule. §3.1 picked a ceiling of 16 as a
+    BUDGET decision — "ply 10-16 captures ~99% of the yield at half the shard
+    cost" — and v0.172.0 killed that premise: a full scan is seconds, so there is
+    nothing left to save by refusing to ask. 24 is deliberately ABOVE the current
+    publish threshold of 22, i.e. "everything the dataset will ever give", which
+    needs no edit when it gives more.
+    A DEFAULT MUST BE IN `puzzleAnchorPlyChoices` or the selector renders BLANK —
+    `applyPuzzleBand`'s fallback still returns it, so the band is correct and
+    every puzzle is found while the dropdown shows nothing. `dev/check-storm.js`
+    §29b asserts both defaults are among the choices, and that the floor stays
+    above §3's cliff.
+    CHANGING IT INVALIDATES NOTHING: the band gates COLLECTION, not dealing, so
+    narrowing leaves everything already collected in the store and still being
+    offered, and widening pays only for the anchors that are new (`store.a`
+    records every anchor ever scanned, by position key).
   * THE CEILING IS CLAMPED TO THE LIVE `maxEmissionPly`, never a hardcoded 22.
     Positions deeper than that are not indexed AT ALL — a hard cliff, not a
     taper — but it is a publish threshold a republish can raise, and a hardcoded
@@ -4316,11 +4357,12 @@ Currently working (v0.18.x).
     the line, which is `m[3]`. Every host says so in those words and never
     implies the tactic itself is in the opening.
   * TWO GATHER STAGES, SPLIT BECAUSE THE COSTS ARE DIFFERENT PROBLEMS. Stage A
-    (anchors → candidates) is index-shard bound at ~0.9 MB parsed each, 136-161
+    (anchors → candidates) is index-shard bound at 330 KB gzipped each, 136-182
     of them for a real course, and is a ONE-OFF recorded in `store.a`. Stage B
-    (candidates → ready) is one ~331 KB body fetch per puzzle, because ids hash
-    across all 4096 body shards and batching cannot help. Only stage B is small
-    enough for §14.24's background top-up; stage A must never run there.
+    (candidates → ready) is one 85 KB gzipped body fetch per SHARD GROUP —
+    §29.2 below replaces the "one per puzzle, batching cannot help" this used to
+    say, which was wrong twice over. Only stage B is small enough for §14.24's
+    background top-up; stage A must never run there.
   * …AND THEY RUN FIRST IN A GATHER PASS, before the frontier walk. Moving them
     back after it does not make the feature slower, it makes it UNREACHABLE, and
     silently: guarded there on `st.gathering` and the leg's clock, they are
@@ -4427,6 +4469,80 @@ Currently working (v0.18.x).
   * IT MUST NEVER WRITE TO THE COURSE (section 24's rule, and §11's), and this
     feature has the tempting button one line away: "add this puzzle to my
     course" from a card. 19d/19e already do that safely, from a BOARD.
+
+- COLLECTING A COURSE ONCE (section 29.2, v0.172.0): "Collect puzzles" runs both
+  gather stages to completion in one press instead of a slice per overnight leg.
+  Nothing about the anchor band, the grade, the store's semantics, the wire or
+  the review changed. **READ `DESIGN-storm-puzzles.md` §12 BEFORE CHANGING
+  ANYTHING HERE** — §12.1 is the measurement that reframed it and §12.6 is the
+  ordering defect it exposed. What follows is only what an edit ELSEWHERE can
+  break.
+  * §4'S PER-FETCH COSTS ARE THE **PARSED** SIZES AND §12.1 REPLACES THEM.
+    Measured live 2026-09-02: an index shard is 330 KB gzipped (not 0.9 MB) and
+    ~10 ms to parse, a body shard 85 KB gzipped (not 331 KB) holding 942 bodies.
+    So a 182-shard course scan at concurrency 8 is SECONDS, and the whole
+    4096-shard body corpus is ~85 s. Do not re-derive a budget from §4.
+  * THE SHARD NEVER ENTERS THE CONTENT SCRIPT. `clo-puzzle-index` takes a shard
+    NAME plus the position keys wanted and the worker answers with only those
+    entries; `clo-puzzle-bodies` does the same for ids AND archives what it
+    extracted on the way past, so a body crosses the boundary once. Returning a
+    shard whole would structured-clone a megabyte 182 times per course.
+    `clo-fetch-puzzles` survives for `meta.json` alone.
+  * THE PATH GUARD IS UNCHANGED AND IN FACT TIGHTER. Both new handlers take a
+    shard name matched against `PUZZLE_SHARD_RE` (`/^[0-9a-f]{3}$/`) and build
+    the path themselves, so §9's "no argument on this side can name a host"
+    still holds. `clo-puzzle-archive` never fetches at all.
+  * ONE FETCH PER BODY **SHARD**, NEVER PER PUZZLE — upstream's
+    `Offline.groupByShard`, and the economy the whole feature rests on. Ids hash
+    across all 4096 shards, so per-puzzle fetching discards the other 941 bodies
+    each time. Grouped, the cost is the DISTINCT shards the ids touch and can
+    never exceed 4096 however many are wanted. `puzzleBodiesPerPass` therefore
+    COUNTS SHARDS since v0.172.0, not puzzles.
+  * AN EXPLICIT 0 MEANS "ALL", ABSENT MEANS THE LEG'S DEFAULT, in both stages.
+    The distinction is load-bearing and silent if lost: a hand-pressed gather
+    passes no shard limit, so reading "falsy" as "all" would turn every ordinary
+    gather leg into a full course scan with nothing saying so.
+  * `store.p` IS THE LIGHT DURABLE RECORD and `r` IS NOW ONLY A WORKING SET.
+    `r` holds whole bodies in `storage.local`, which `savePuzzleStore` rewrites
+    WHOLE — ten thousand of them would put a multi-megabyte round trip on every
+    sync and every course switch. The bodies live in the worker's archive and
+    `refillReady()` tops `r` up from there with NO NETWORK. Three rules:
+    `stormPuzzleArchived` speaks the CANDIDATE's field names (`p`, not `ap`),
+    because `refillReady` hands the record straight back to `stormPuzzleReady`
+    — rename it and every rehydrated puzzle loses its anchor line and §15's
+    third stats map fills under one blank oid while looking implemented; `k` has
+    ONE writer, `notePuzzle`, which mirrors it into both; and an archive MISS is
+    not a corruption — the id goes back to being a CANDIDATE, which is exactly
+    what it is. `p` absent is every store written before v0.172.0 and reads as
+    "nothing archived", so nothing migrates.
+  * THE ARCHIVE SURVIVES A REPUBLISH AND THE SHARD CACHES DO NOT
+    (`cloPzCheckBuild`). Contents change at stable urls, so the caches are
+    stale; a position and a solution are not, and dropping thousands of bodies
+    on every republish is exactly what collecting once exists to avoid.
+  * THE PRUNE IS SHALLOWEST-FIRST, NOT OLDEST-FIRST, and reversing it is silent.
+    Both stages walk anchors DEEPEST first because depth is §3's quality signal,
+    so an age-ordered cut IS a depth-ordered cut running backwards — it discards
+    the strongest evidence and keeps the most generic. Same reason
+    `puzzleCollectPerAnchor` is 200 rather than 0: seven anchors of one line
+    match 3142 puzzles, so an unlimited collect meets `puzzleCandMax` and the
+    cap decides what survives.
+  * `fillPuzzleQueue` IS ASYNC NOW (for the archive read) and four of its five
+    callers await it. `nextPuzzleCard` STAYS SYNC and must: `nextCard` is sync,
+    reached from timers and from `produce`'s finally, and making that path async
+    would ripple through every one of them.
+  * IT IS NOT A GATHER AND MUST NOT SET `filling()` — it walks no frontier,
+    spends no ChessDB request, starts no engine and stores no position. Two
+    couplings it does need: it refuses WHILE a gather runs (both write the
+    puzzle store, which is replaced whole), and `startStorm` refuses while it
+    runs — not for a resource reason but because `syncSettings` hides the whole
+    settings row once `st.started`, which would take its own Stop button off
+    screen while it went on fetching.
+  * `puzzleGapMs` IS 0 DELIBERATELY. It was a trickle rate for a host we were
+    being careful with; this one is a GitHub Pages site serving static CC0 JSON
+    with no account, no compute and no writable endpoint, against 100 GB/month
+    of allowance. Unlike ChessDB (a volunteer network, §9) and Lichess there is
+    nothing here a pause protects.
+  * IT OWNS NO BRIDGE and is called by nothing.
 
 - THE FOURTH HOST PERMISSION (section 29): `skaeglund.github.io/puzzle-explorer-data/*`,
   a GitHub Pages site serving static CC0 JSON — no account, no auth, no endpoint
@@ -4586,6 +4702,34 @@ in that file's header. Two are worth repeating: the zero-tombstone assertion
 had to be asked NEAR THE EPOCH (at the far clock it passed for the wrong reason
 and covered nothing), and one control was a NO-OP until it was strengthened —
 a mutation that does not change behaviour proves nothing.
+
+After touching section 29.2's collect — `gatherPuzzleCandidates`,
+`gatherPuzzleBodies`, `takeCandidatesAt`, `stormPuzzleArchived`,
+`stormPuzzleArchiveDraw`, `refillReady`, `collectPuzzles`, `prunePuzzleStore`'s
+`byDepth`, or the worker's `handlePuzzleIndex`/`handlePuzzleBodies`/
+`handlePuzzleArchive` and `puzzlecache.js`:
+
+```
+node dev/check-storm.js            # §29d
+node dev/probe-puzzle-collect.js   # both stages, live, no Chessable session
+```
+
+`dev/check-storm.js` §29d executes the archive record and its draw. Both fail in
+§14.15's way — silently, with every puzzle still returned in a plausible order —
+and one of them fails in a second way that is worse: a record whose field names
+drift from the candidate's rebuilds every puzzle with no anchor line at all,
+which shows up only as §15's third stats map filling under one blank oid. Four
+controls run 2026-09-02, each failing on exactly its own assertions and no
+others: `stormPuzzleArchived` renaming the anchor depth `ap` → 2; the draw
+dropping its already-loaded exclusion → 3; dropping its retirement exclusion
+→ 3; the comparator reversed → 2.
+
+`dev/probe-puzzle-collect.js` runs BOTH stages against the live dataset from a
+LINE rather than a course, so it needs no Chessable session, and it replays every
+body it extracts — which is what `stormPuzzlePlies` asks before one is ever
+stored. It is how §12.1's per-fetch costs and §12.2's grouping saving are
+re-measured; both are the kind of number that is quoted for years after the thing
+it described has changed.
 
 `dev/probe-puzzles.js` is the measurement §3 rests on and the cheapest question
 to ask of a new course: it slices the shipped `stormAnchorAdd`, runs it against

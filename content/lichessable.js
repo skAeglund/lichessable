@@ -258,6 +258,12 @@
     // Only activate in these mt1 iframe documents.
     framePathPrefixes: ['/mt1/explore/', '/mt1/analysis/'],
     debounceMs:      300,             // settle time after any detected change before refreshing
+    // How long a first read of storage.session waits for the worker to have
+    // run once (see sessionStorageReady). A CEILING, not a delay: the ping
+    // normally answers in single-digit milliseconds, and this only ever fires
+    // when the worker cannot start at all — where the honest answer is "no
+    // session cache" rather than a page that never finishes reading.
+    sessionReadyTimeoutMs: 2000,
     settingsNoteMs:  2500,            // lifetime of the settings menu's transient warning line
     fenPollMs:       500,             // safety-net poll: the FEN value can change with no event or mutation
     bootPollMs:      250,             // fallback poll while waiting for the async app to render
@@ -2375,14 +2381,18 @@
       // against the live dataset and the account's three courses.
       //
       // THE STAGES ARE SPLIT BECAUSE THE TWO COSTS ARE DIFFERENT PROBLEMS.
-      // Stage A turns anchors into CANDIDATES and is index-shard bound: ~0.9 MB
-      // parsed per shard, roughly one shard per anchor, 161-182 of them for a
-      // real course — and it is a ONE-OFF, since a course's anchors do not
-      // move. Stage B turns candidates into PLAYABLE cards and is body-shard
-      // bound: ~331 KB each, one per puzzle, because puzzle ids hash across all
-      // 4096 body shards and no batching helps. Splitting them is what lets
-      // stage B run in the background top-up (§14.24), which stage A must never
-      // do — one 331 KB fetch is a trickle, a 0.9 MB parse is not.
+      // Stage A turns anchors into CANDIDATES and is index-shard bound: 330 KB
+      // GZIPPED per shard (0.97 MB parsed, ~10 ms), roughly one shard per
+      // anchor, 161-182 of them for a real course — and it is a ONE-OFF, since
+      // a course's anchors do not move. Stage B turns candidates into PLAYABLE
+      // cards and is body-shard bound: 85 KB gzipped each (345 KB raw), holding
+      // ~942 bodies, and since v0.172.0 it GROUPS its ids by shard so one fetch
+      // answers every candidate in it. Splitting the two is what lets stage B
+      // run in the background top-up (§14.24), which stage A must never do — a
+      // body shard is a trickle, a whole index shard is not. Measured live
+      // 2026-09-02 (dev/probe-puzzle-collect.js); the pre-v0.172.0 comment here
+      // quoted the PARSED sizes as if they were download sizes, which is what
+      // made collecting a course look like an overnight job.
       puzzleStoreKey: 'cloStormPuzzles', // storage.local: { [bid]: { c: {}, r: {} } }
       puzzleBuildKey: 'cloPuzzleBuild',  // storage.local: the dataset's meta.builtAt
       // OFF BY DEFAULT and a per-cent, not a boolean: this is a third party
@@ -2390,15 +2400,32 @@
       // section 26's reason. 0 means nothing is ever fetched.
       puzzlePctKey: 'cloStormPuzzlePct', // storage.local: 0..100, absent = 0
       puzzlePctChoices: [0, 10, 25, 50, 75, 100],
-      // THE ANCHOR BAND (§3). The floor is the feature; the ceiling saves
-      // requests. Both are user settings, and the ceiling is additionally
-      // clamped to the live meta.filterStats.maxEmissionPly — NEVER to a
-      // hardcoded 22, which is a publish threshold and not a law.
-      puzzleAnchorMinPly: 10,
-      puzzleAnchorMaxPly: 16,
+      // THE ANCHOR BAND (§3). The floor is the feature; the ceiling used to save
+      // requests. Both are user settings — with a SELECTOR since v0.173.0 —
+      // and the ceiling is additionally clamped to the live
+      // meta.filterStats.maxEmissionPly, NEVER to a hardcoded number: that is a
+      // publish threshold and not a law, so a republish that raises it must
+      // widen this band by itself.
+      //
+      // THE FLOOR IS 12 AND IT IS THE ONLY PART OF THIS THAT IS A QUALITY RULE.
+      // §3 measured the cliff between ply 8 and ply 10 — 1322 puzzles at ply 8
+      // against 33 at ply 10 — so below it a "match" means the game merely
+      // shared an opening. 12 sits a step inside that, which is the safe side of
+      // a threshold whose exact position is course-dependent.
+      //
+      // THE CEILING IS 24 AND IT IS NOT A QUALITY RULE AT ALL. §3.1 chose 16 as
+      // a BUDGET decision ("ply 10-16 captures ~99% of the yield at half the
+      // shard cost") and that premise died with v0.172.0: a full scan is seconds
+      // now, so there is nothing left to save by refusing to ask. Deep anchors
+      // return little, but what they return is the strongest evidence the band
+      // can produce. 24 is deliberately ABOVE the current publish threshold of
+      // 22, so this asks for everything the dataset will ever give and needs no
+      // edit when it gives more.
+      puzzleAnchorMinPly: 12,
+      puzzleAnchorMaxPly: 24,
       puzzleAnchorMinPlyKey: 'cloStormPuzzleMinPly',
       puzzleAnchorMaxPlyKey: 'cloStormPuzzleMaxPly',
-      puzzleAnchorPlyChoices: [6, 8, 10, 12, 14, 16, 18, 20, 22],
+      puzzleAnchorPlyChoices: [6, 8, 10, 12, 14, 16, 18, 20, 22, 24],
       // The rating band a candidate must fall in. Wide on purpose: §10.2's
       // build cap keeps the top 2000 BY RATING at popular positions, so a
       // narrow band at a shallow anchor returns nothing and reads as a broken
@@ -2406,22 +2433,94 @@
       puzzleRatingMin: 1200,
       puzzleRatingMax: 2600,
       puzzleRatingKey: 'cloStormPuzzleRating', // storage.local: [min, max]
-      // Per gather leg. Stage A's number is the one that matters: 8 shards is
-      // ~7 MB parsed, and 161 anchors is therefore ~20 legs to cover a course
-      // once — which is what an overnight round is for.
+      // Per gather leg — the INCREMENTAL path, which still exists because an
+      // overnight round wants a bounded slice of work per course. The one-shot
+      // collect (§29.2) ignores both and runs to completion.
+      //
+      // `puzzleBodiesPerPass` COUNTS SHARDS, NOT PUZZLES, since v0.172.0: stage
+      // B groups its ids by body shard, so one fetch answers every candidate in
+      // it and "12 bodies" stopped being a unit of work.
       puzzleShardsPerPass: 8,
       puzzleBodiesPerPass: 12,
+      // §29.2) HOW WIDE THE ONE-SHOT COLLECT FETCHES. Both stages are pure
+      // network against a static host with no account and no compute behind it,
+      // so there is nothing here to be polite to and the only real limit is the
+      // user's own connection. Measured 2026-09-02 at concurrency 8: 16 index
+      // shards in 568 ms (so a whole 182-shard course scan is ~6 s) and 24 body
+      // shards in 467 ms (so the entire 4096-shard corpus is ~80 s).
+      //
+      // EIGHT rather than more because that is where a browser's own per-host
+      // connection limit sits (Chrome: 6 for HTTP/1.1, and this host is HTTP/2
+      // where the ceiling is the round trip rather than the socket). Asking for
+      // 64 at once buys nothing and makes a stall harder to read.
+      puzzleIndexBatch: 8,
+      puzzleBodyBatch: 8,
+      // What a shard costs ON THE WIRE, for the sentence the collect reports in.
+      // Measured live 2026-09-02 over five shards spread across the space:
+      // index 320-368 KB gzipped (0.94-1.08 MB parsed), bodies 83-88 KB
+      // gzipped (335-360 KB raw). Medians, and used for nothing but arithmetic
+      // in a status line — no decision anywhere reads them.
+      puzzleIndexGzKb: 330,
+      puzzleBodyGzKb: 85,
+      // …and what one anchor may contribute to a COLLECT. This is the number
+      // that separates the one-shot from the leg: `puzzlesPerAnchor` (8) exists
+      // so an incremental pass cannot let one popular position fill the store,
+      // and a collect has close to the opposite job.
+      //
+      // 200 AND NOT 0, though 0 ("take everything") is what the code supports
+      // and what the feature is nominally for. Measured 2026-09-02
+      // (dev/probe-puzzle-collect.js): SEVEN anchors of one Najdorf line match
+      // 3142 puzzles, so a 163-anchor course would run to tens of thousands and
+      // hit `puzzleCandMax` — and the cap is enforced by `prunePuzzleStore`,
+      // which drops the OLDEST first. Stage A walks anchors DEEPEST FIRST
+      // because depth is the quality order, so "oldest first" is "deepest
+      // first": an unlimited collect would spend its whole budget on the
+      // shallow, generic anchors and prune away exactly the evidence the ply
+      // band exists to find. 200 x 163 anchors sits under the cap, and after
+      // dedup across overlapping anchors it is not meaningfully short of
+      // everything.
+      puzzleCollectPerAnchor: 200,
       // …and what one anchor may contribute, so a single popular position
       // cannot fill the store on its own. Measured: on 291847 the ply 10-16
       // band found 10923 puzzles at 117 positions, heavily concentrated.
       puzzlesPerAnchor: 8,
-      puzzleCandMax: 3000,  // candidate index entries kept per course
-      puzzleReadyMax: 150,  // playable puzzles (with bodies) kept per course
-      // A shard is ~0.9 MB parsed. MEMORY ONLY, never storage.local — the
-      // quota there is 10 MB shared with every other feature here, and
-      // storeMax: 900 positions is already ~0.6 MB of it.
-      puzzleShardCacheMax: 2,
-      puzzleGapMs: 200,     // between shard fetches, so a pass is a trickle
+      // Candidate index entries kept per course. Raised from 3000 in v0.172.0
+      // because a collect really does find them all: the ply 10-16 band on
+      // course 291847 matches 10923 puzzles, and a cap under that would make
+      // "collect the lot" quietly mean "collect a third of it". ~120 bytes each,
+      // so 40000 is 4.8 MB — affordable only since `unlimitedStorage`.
+      puzzleCandMax: 40000,
+      // THE WORKING SET, and since v0.172.0 that is all it is. A ready entry
+      // holds a whole body (~420 bytes) and lives in storage.local, which
+      // `savePuzzleStore` rewrites WHOLE — so holding ten thousand of them here
+      // would put a multi-megabyte round trip on every sync and every course
+      // switch. The bodies live in the worker's IndexedDB archive instead and
+      // `refillReady` tops this up from there for free, so trimming it costs
+      // nothing but a local read.
+      puzzleReadyMax: 500,
+      // …below which that top-up happens. Not 0: refilling exactly when the
+      // last card is dealt would put an await between two cards.
+      puzzleRefillFloor: 60,
+      // The LIGHT durable record — `store.p`, one per puzzle whose body is in
+      // the archive: the anchor's line, the rating, and how often it has been
+      // missed. ~60 bytes, so 40000 is 2.4 MB and a fully collected course is
+      // comfortably inside it. It is what makes a trimmed working set
+      // recoverable, and what stops a collect having to be repeated.
+      puzzleArchiveMax: 40000,
+      // SHARDS ARE CACHED IN THE WORKER'S IndexedDB SINCE v0.172.0
+      // (puzzlecache.js), not here: a content script's IDB belongs to
+      // www.chessable.com, and this cache runs to hundreds of megabytes. Both
+      // caps live there beside the stores they bound.
+      //
+      // `puzzleGapMs` IS 0 AND THAT IS DELIBERATE. It was a trickle rate for a
+      // pass meant to run all night against a host we were being careful with.
+      // This host is a GitHub Pages site serving static CC0 JSON — no account,
+      // no compute, no writable endpoint, and 100 GB/month of allowance against
+      // a course scan's 60 MB — so unlike ChessDB (a volunteer network, §9) and
+      // Lichess there is nothing here that a pause protects. Kept as a setting
+      // rather than deleted so a rate can be put back without finding the loops
+      // again.
+      puzzleGapMs: 0,
       // The wire: a card of its own, §15.3's rule — the position payload is CUT
       // to fit its budget, and a puzzle dropped because a position list ran long
       // would be a puzzle lost silently, after the fetches were paid for.
@@ -2690,7 +2789,26 @@
   function sessionStorageReady() {
     if (!sessionReadyPromise) {
       try {
-        sessionReadyPromise = chrome.runtime.sendMessage({ type: 'clo-ping' }).catch(() => {});
+        const ping = chrome.runtime.sendMessage({ type: 'clo-ping' }).catch(() => {});
+        // IT MUST NOT BE ABLE TO HANG, and the `.catch` alone does not promise
+        // that — it handles a REJECTION, which is what a browser gives you when
+        // the worker is simply asleep. A worker that cannot EVALUATE is the other
+        // case: the browser keeps trying to start it, and the message can sit
+        // there resolving neither way.
+        //
+        // That matters far out of proportion to this function, because it is
+        // awaited on the FIRST line of `readCourseCache`, which is the first
+        // thing `fetchCourse` does — so a worker stuck in a boot loop does not
+        // degrade the course read, it stops it dead, and the course tree sits on
+        // "Reading the course…" for ever with nothing in the console. That is
+        // the shape of the v0.172.0 mobile failure (a zip missing
+        // puzzlecache.js, whose importScripts then threw), and this race is what
+        // makes the same class of worker failure cost a cache rather than the
+        // page. Losing the race only means the session cache is skipped.
+        sessionReadyPromise = Promise.race([
+          ping,
+          new Promise((r) => setTimeout(r, CONFIG.sessionReadyTimeoutMs)),
+        ]);
       } catch (err) {
         sessionReadyPromise = Promise.resolve();
       }
@@ -35409,6 +35527,12 @@
       // neither complete nor see they owe is section 9's own rule.
       clearArmed: false,
       clearTimer: 0,
+      // §29.2) …and the puzzle collect's OWN arm, deliberately not the same one.
+      // Section 19d's rule: a single arm shared between two actions lets a press
+      // meant for the sentence on screen fire the other, and these two are
+      // opposites — one fills the store and one empties it.
+      collectArmed: false,
+      collectTimer: 0,
       // §22.6) WHEN THIS COURSE'S STORE WAS LAST CLEARED, per course and carried
       // on the wire. A cleared position is ABSENT, and absent is what a union
       // merge fills in from the other device — the exact hole §14.12's
@@ -35521,8 +35645,17 @@
       // the first card, exactly as the position store is loaded.
       store: null,
       dirty: false,
-      // Index shards, IN MEMORY ONLY (~0.9 MB parsed each) and capped at two.
-      shards: new Map(),
+      // §29.2) The one-shot collect: whether it is running, what it is doing,
+      // and the abort flag its own button sets. Separate from `st.gathering`
+      // because it is not a gather — it walks no frontier, spends no ChessDB
+      // request and touches no engine, so nothing that stands down for a pass
+      // needs to stand down for this one.
+      collecting: false,
+      collectStop: false,
+      collectNote: '',
+      // What the worker's archive holds, refreshed when it is asked. Display
+      // only — nothing branches on it.
+      archived: 0,
       // meta.json, once per document, and the promise so two callers share
       // one fetch.
       meta: null,
@@ -35630,6 +35763,29 @@
       pz.maxPly = (Number.isFinite(b) && C.puzzleAnchorPlyChoices.indexOf(b) >= 0)
         ? b : C.puzzleAnchorMaxPly;
       if (pz.maxPly < pz.minPly) pz.maxPly = pz.minPly;
+    }
+
+    /**
+     * §29.3) …and back to storage, on the same best-effort terms as every other
+     * setting in this row: the band is in force either way, it just may not
+     * survive the tab.
+     *
+     * IT INVALIDATES NOTHING. The band gates COLLECTION, not dealing, so
+     * narrowing it leaves everything already collected in the store and still
+     * being offered — and widening it costs only the anchors that are new,
+     * because `store.a` records every anchor ever scanned by position key. So
+     * this is a cheap setting to change in either direction, which is most of
+     * the argument for giving it a control at all.
+     */
+    function savePuzzleBand(lo, hi) {
+      applyPuzzleBand(lo, hi);
+      syncSettings();
+      try {
+        chrome.storage.local.set({
+          [C.puzzleAnchorMinPlyKey]: pz.minPly,
+          [C.puzzleAnchorMaxPlyKey]: pz.maxPly,
+        }).catch(() => {});
+      } catch (err) { /* orphaned content script */ }
     }
 
     /** §29) …and the rating band. Either end may be null, which disables it. */
@@ -36092,9 +36248,9 @@
     //
     // TWO LISTS PER COURSE, and the split is the whole cost model (§4):
     //   `c` CANDIDATES — index tuples, ~40 bytes, thousands of them. Bought by
-    //       stage A at ~0.9 MB of parsed index shard each, once per course.
+    //       stage A at 330 KB gzipped of index shard each, once per course.
     //   `r` READY — full bodies, ~230 bytes, a hundred or so. Bought by stage B
-    //       at one ~331 KB body shard each, because puzzle ids hash across all
+    //       at one 85 KB gzipped body shard per GROUP, because puzzle ids hash across all
     //       4096 body shards and batching cannot help.
     // Only `r` can be dealt, and only `r` rides the wire.
     // ----------------------------------------------------------------------
@@ -36102,11 +36258,11 @@
     /**
      * An empty per-course slice — never null, so no caller has to branch.
      * `a` is the anchor keys stage A has already scanned (so a second pass does
-     * not re-buy the same 0.9 MB shard) and `g` is the tombstone list, §14.16's
+     * not re-buy the same shard) and `g` is the tombstone list, §14.16's
      * rule in its second home: a puzzle solved is retired, not merely absent,
      * or the next gather re-buys it and offers it again.
      */
-    const stormPuzzleBlank = () => ({ c: {}, r: {}, a: {}, g: {} });
+    const stormPuzzleBlank = () => ({ c: {}, r: {}, a: {}, g: {}, p: {} });
 
     /**
      * One index tuple as a stored CANDIDATE. Short keys, and deliberately not
@@ -36365,11 +36521,21 @@
           r: (mine.r && typeof mine.r === 'object') ? mine.r : {},
           a: (mine.a && typeof mine.a === 'object') ? mine.a : {},
           g: (mine.g && typeof mine.g === 'object') ? mine.g : {},
+          // §29.2) ABSENT ON EVERY STORE WRITTEN BEFORE v0.172.0, and read as
+          // "nothing archived" — which is exactly true of them, since there was
+          // no archive. Nothing migrates: those courses simply have a working
+          // set and no light record behind it, and the first collect fills one.
+          p: (mine.p && typeof mine.p === 'object') ? mine.p : {},
         }
         : stormPuzzleBlank();
       pz.dirty = false;
-      log('storm: puzzle store holds', Object.keys(pz.store.r).length, 'ready and',
+      log('storm: puzzle store holds', Object.keys(pz.store.r).length, 'ready,',
+        Object.keys(pz.store.p).length, 'archived and',
         Object.keys(pz.store.c).length, 'candidate(s) for', bid);
+      // Display only, and deliberately not awaited by anything that decides
+      // something: it is the whole-profile body count, so it answers "is there
+      // an archive" and never "does this course have puzzles".
+      refreshArchiveCount();
     }
 
     /**
@@ -36388,7 +36554,8 @@
         const empty = !Object.keys(pz.store.c).length &&
           !Object.keys(pz.store.r).length &&
           !Object.keys(pz.store.a).length &&
-          !Object.keys(pz.store.g).length;
+          !Object.keys(pz.store.g).length &&
+          !Object.keys(pz.store.p).length;
         if (empty) delete all[st.bid];
         else all[st.bid] = pz.store;
         await chrome.storage.local.set({ [C.puzzleStoreKey]: all });
@@ -36399,29 +36566,69 @@
     }
 
     /**
-     * One index shard, memory-cached.
+     * §29.2) One index shard, ASKED ABOUT ONLY THE KEYS WE WANT.
      *
-     * NEVER `storage.local`. A shard is ~0.9 MB once parsed, against a 10 MB
-     * quota shared with every other feature here — the position store alone is
-     * ~0.6 MB per course at its cap. The cache is two entries and dies with the
-     * pass, which is the right size because stage A groups its anchors BY SHARD
-     * and so never asks for the same one twice in a run.
+     * The shard itself never crosses into this document. A shard is ~6900
+     * position keys and ~0.97 MB parsed, of which a scan wants one — so the
+     * worker fetches it (or reads it out of its own IndexedDB), parses it, and
+     * answers with just the entries for `keys`. At the one-shot collect's scale
+     * that is 182 megabyte structured clones removed from a six-second job.
+     *
+     * A MISSING SHARD IS AN EMPTY ANSWER, not a failure: the worker maps 404 to
+     * `{}`, so the anchors in it are marked scanned and never asked again.
      */
-    async function puzzleShard(shard) {
-      const hit = pz.shards.get(shard);
-      if (hit !== undefined) return hit;
-      const data = await puzzleFetch('index/' + shard + '.json');
-      pz.shards.set(shard, data);
-      while (pz.shards.size > C.puzzleShardCacheMax) {
-        pz.shards.delete(pz.shards.keys().next().value);
-      }
-      return data;
+    async function puzzleIndexAt(shard, keys) {
+      const res = await chrome.runtime.sendMessage({
+        type: 'clo-puzzle-index', shard, keys,
+      });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'puzzle index fetch failed');
+      return res.data || {};
     }
 
-    /** One body shard as raw ndjson text. Not cached: ids hash across all 4096
-     *  of them, so a second hit is a coincidence rather than a pattern. */
-    function puzzleBodyShard(shard) {
-      return puzzleFetch('puzzles/' + shard + '.ndjson', 'text');
+    /**
+     * §29.2) One BODY shard, asked about every id of ours that lives in it.
+     *
+     * GROUPING IS THE WHOLE ECONOMY OF STAGE B (upstream's Offline.groupByShard).
+     * A body shard holds ~942 puzzles at ~85 KB gzipped and ids hash across all
+     * 4096 of them, so one-fetch-per-puzzle discards 941 bodies every time.
+     * Grouped, a course's whole haul costs the number of DISTINCT shards its ids
+     * touch — 1626 for 2071 puzzles, and never more than 4096 however many are
+     * wanted.
+     *
+     * THE WORKER ARCHIVES WHAT IT EXTRACTS on the way past, so a body crosses
+     * this boundary once. Nothing here has to ask it to.
+     */
+    async function puzzleBodiesAt(shard, ids) {
+      const res = await chrome.runtime.sendMessage({
+        type: 'clo-puzzle-bodies', shard, ids,
+      });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'puzzle body fetch failed');
+      return Array.isArray(res.data) ? res.data : [];
+    }
+
+    /**
+     * §29.2) The worker's durable body archive.
+     *
+     * EVERY FAILURE IS A NULL, never a throw: the archive is an accelerator, and
+     * every caller's fallback is the thing it would have done anyway — fetch, or
+     * simply have fewer puzzles ready this session. It must not be able to break
+     * a session on a profile whose IndexedDB is unavailable.
+     */
+    async function puzzleArchive(op, extra) {
+      try {
+        const res = await chrome.runtime.sendMessage(
+          Object.assign({ type: 'clo-puzzle-archive', op }, extra || {}));
+        return (res && res.ok) ? res.data : null;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    /** How many bodies the archive holds, kept on `pz` for the panel. */
+    async function refreshArchiveCount() {
+      const got = await puzzleArchive('stats');
+      pz.archived = (got && got.bodies) || 0;
+      return pz.archived;
     }
 
     /**
@@ -36429,9 +36636,18 @@
      *
      * The index-shard-bound half, and a ONE-OFF: a course's anchors do not move,
      * so an anchor scanned once is recorded in `store.a` and never re-bought.
-     * Bounded at `puzzleShardsPerPass` because one shard is ~0.9 MB parsed and a
-     * real course has 161-182 of them — roughly twenty legs of an overnight
-     * round to cover one course, which is what that round is for.
+     *
+     * BOUNDED ONLY WHEN A CALLER ASKS FOR IT (v0.172.0). It was bounded at
+     * `puzzleShardsPerPass` = 8 always, on the reading that a shard is "~0.9 MB"
+     * — which is its PARSED size. Measured live 2026-09-02 it is 330 KB gzipped
+     * on the wire and ~10 ms to parse, so the whole 182-shard scan of the
+     * largest course here is about six seconds at concurrency 8, not the twenty
+     * overnight legs that number was chosen for. The leg still passes its small
+     * number; `collectPuzzles` passes 0 and gets the lot.
+     *
+     * THE SHARD ITSELF NEVER ARRIVES HERE. `puzzleIndexAt` asks the worker for
+     * the entries at named position keys and the worker does the parse, so what
+     * crosses the boundary is a few hundred bytes rather than a megabyte.
      *
      * ANCHORS ARE TAKEN DEEPEST FIRST. That is a QUALITY order and not a yield
      * order: within the band, deeper is a stronger claim that the game really
@@ -36444,9 +36660,12 @@
      * 10-16 band on course 291847 found 10923 puzzles at 117 positions, heavily
      * concentrated — without the cap one popular position fills the store.
      */
-    async function gatherPuzzleCandidates(limitShards) {
+    async function gatherPuzzleCandidates(limitShards, opts) {
       const anchors = st.pool && st.pool.anchors;
       if (!anchors || !anchors.size || !pz.store) return 0;
+      const perAnchor = (opts && typeof opts.perAnchor === 'number')
+        ? opts.perAnchor : C.puzzlesPerAnchor;
+      const onStep = opts && opts.onStep;
       const band = puzzleBand();
       // Deepest first, and only the ones this profile has not already scanned.
       const todo = [];
@@ -36466,41 +36685,85 @@
         if (!byShard.has(shard)) byShard.set(shard, []);
         byShard.get(shard).push(a);
       }
+      const shards = [...byShard.keys()];
+      // AN EXPLICIT 0 MEANS ALL OF THEM — the one-shot collect — and ABSENT
+      // still means the leg's own default. The distinction is load-bearing and
+      // silent if it is lost: a hand-pressed gather calls this with an `opts`
+      // object that carries no shard limit, so reading "falsy" as "all" would
+      // turn every ordinary gather leg into a full course scan without one word
+      // saying so. Measured 2026-09-02: 182 shards at concurrency 8 is ~6 s, so
+      // "all of them" is a reasonable thing to ask for on purpose and a
+      // surprising thing to be given by accident.
+      const cap = limitShards === 0
+        ? shards.length
+        : Math.max(1, limitShards || C.puzzleShardsPerPass);
+      const work = shards.slice(0, cap);
 
       let fetched = 0;
       let added = 0;
-      const cap = Math.max(1, limitShards || C.puzzleShardsPerPass);
-      for (const [shard, group] of byShard) {
-        if (fetched >= cap) break;
+      let failed = 0;
+      for (let i = 0; i < work.length; i += C.puzzleIndexBatch) {
         // §27.6's TRAP, avoided by construction: this tests `st.running` and
         // NOT `st.over`. A gather calls `endSession` before it starts, which
         // sets `st.over` while leaving `st.running` true — so a loop that
         // stopped on `st.over` would break on its first iteration while the
         // pass went on reporting that it had found nothing. That is exactly
         // what `harvestFrontier` did, silently, from v0.130.0 to v0.165.0.
-        if (!st.running) break;
-        let idx = null;
-        try {
-          idx = await puzzleShard(shard);
-        } catch (err) {
-          warn('storm: puzzle index shard', shard, 'failed:', err);
-          break;   // a failing host is not something to hammer
+        if (!st.running || pz.collectStop) break;
+        const batch = work.slice(i, i + C.puzzleIndexBatch);
+        const answers = await Promise.all(batch.map(async (shard) => {
+          const group = byShard.get(shard) || [];
+          try {
+            return { group, data: await puzzleIndexAt(shard, group.map((a) => a.key)) };
+          } catch (err) {
+            warn('storm: puzzle index shard', shard, 'failed:', err);
+            return { group, err };
+          }
+        }));
+        let batchFailed = 0;
+        for (const ans of answers) {
+          if (ans.err) {
+            // NOT MARKED SCANNED. A failed fetch says nothing about whether
+            // those anchors have puzzles, and marking them would retire the
+            // question for ever on one flaky minute.
+            batchFailed++;
+            failed++;
+            continue;
+          }
+          fetched++;
+          pz.shardsFetched++;
+          for (const a of ans.group) {
+            // MARKED SCANNED EVEN WHEN THE SHARD HELD NOTHING. "This anchor has
+            // no puzzles" is an answer worth remembering, and re-buying the
+            // shard to learn it again is the whole cost this feature is bounded
+            // by.
+            pz.store.a[a.key] = Date.now();
+            pz.dirty = true;
+            const raw = (ans.data && ans.data[a.key]) || [];
+            if (!raw.length) continue;
+            added += takeCandidatesAt(a, raw, band, perAnchor);
+          }
         }
-        fetched++;
-        pz.shardsFetched++;
-        for (const a of group) {
-          // MARKED SCANNED EVEN WHEN THE SHARD HELD NOTHING. "This anchor has
-          // no puzzles" is an answer worth remembering, and re-buying 0.9 MB to
-          // learn it again is the whole cost this feature is bounded by.
-          pz.store.a[a.key] = Date.now();
-          pz.dirty = true;
-          const raw = (idx && idx[a.key]) || [];
-          if (!raw.length) continue;
-          added += takeCandidatesAt(a, raw, band);
+        // §29.2) PRUNED ONCE PER BATCH, not once per anchor. `takeCandidatesAt`
+        // used to call it itself, which was free while the cap was 3000 and is
+        // not now that it is 40000: the cut takes `Object.keys` of three maps
+        // and sorts the one that is over, and a 163-anchor collect would do
+        // that 163 times. Once per eight shards enforces exactly the same cap.
+        prunePuzzleStore();
+        // A WHOLE BATCH FAILING IS A HOST PROBLEM, not a shard problem, and
+        // hammering it is neither polite nor useful. One bad shard among eight
+        // is shrugged off; eight out of eight stops the pass.
+        if (batchFailed === batch.length) break;
+        if (onStep) {
+          onStep({ stage: 'a', done: Math.min(i + batch.length, work.length),
+            total: work.length, added });
         }
-        await sleepMs(C.puzzleGapMs);
+        if (C.puzzleGapMs) await sleepMs(C.puzzleGapMs);
       }
-      if (added) log('storm:', added, 'puzzle candidate(s) from', fetched, 'shard(s)');
+      if (added || fetched) {
+        log('storm:', added, 'puzzle candidate(s) from', fetched, 'shard(s)' +
+          (failed ? ', ' + failed + ' failed' : ''));
+      }
       return added;
     }
 
@@ -36529,7 +36792,7 @@
      * signal — taking the top would serve a diet of 2900s at every popular
      * anchor.
      */
-    function takeCandidatesAt(anchor, raw, band) {
+    function takeCandidatesAt(anchor, raw, band, perAnchor) {
       let added = 0;
       for (const side of ['w', 'b']) {
         if (!anchor.sides[side]) continue;
@@ -36549,7 +36812,12 @@
         // intended reading of "up to eight from one anchor" — the alternative,
         // looping until eight are added, walks the whole list at a popular
         // anchor to find what a later pass would have found anyway.
-        const want = Math.min(C.puzzlesPerAnchor, pool.length);
+        // §29.2) 0 MEANS ALL OF THEM — the one-shot collect, whose whole job is
+        // the opposite of this cap's. The cap exists so an incremental leg
+        // cannot let one popular position fill the store; a collect is asking
+        // for the popular positions too.
+        const cap = (typeof perAnchor === 'number') ? perAnchor : C.puzzlesPerAnchor;
+        const want = cap > 0 ? Math.min(cap, pool.length) : pool.length;
         for (let i = 0; i < want; i++) {
           const j = i + Math.floor(Math.random() * (pool.length - i));
           const pick = pool[Math.min(j, pool.length - 1)];
@@ -36566,91 +36834,398 @@
           added++;
         }
       }
-      prunePuzzleStore();
       return added;
     }
 
     /**
      * §29 STAGE B — candidates into PLAYABLE puzzles.
      *
-     * The body-bound half: one ~331 KB fetch per puzzle, because ids hash
-     * across all 4096 body shards and no batching helps. Small enough to run in
-     * the background top-up, which stage A must never do.
+     * The body-bound half. It used to read "one ~331 KB fetch per puzzle,
+     * because ids hash across all 4096 body shards and NO BATCHING HELPS", and
+     * both halves of that were wrong. A body shard is 85 KB gzipped, not 331 KB
+     * (that is its decompressed size), and batching helps enormously — it is
+     * just not batching by REQUEST, it is grouping by SHARD. One shard holds
+     * ~942 bodies, so asking per puzzle discards 941 of them every time.
+     *
+     * Grouped, the cost is the number of DISTINCT shards the wanted ids touch:
+     * 2200 for 3142 puzzles (measured 2026-09-02), and never more than 4096
+     * however many are wanted — i.e. a complete collect is bounded by the whole
+     * corpus at ~85 s rather than growing without limit. Upstream had this all
+     * along (`Offline.groupByShard` in skAeglund/puzzle-explorer).
+     *
+     * Still small enough per BATCH to run in the background top-up, which stage
+     * A must never do.
      *
      * A body that will not become a card is DROPPED WITH ITS CANDIDATE, not
-     * retried: `getPuzzle` answering nothing means the id is dead (a republish
-     * with different thresholds), which the guide is explicit is not a
-     * transient error (§10.4).
+     * retried: an id its own shard does not contain is dead (a republish with
+     * different thresholds), which the guide is explicit is not a transient
+     * error (§10.4). A shard that FAILED proves nothing and its candidates
+     * survive.
      */
-    async function gatherPuzzleBodies(limitBodies) {
+    async function gatherPuzzleBodies(limitShards, opts) {
       if (!pz.store) return 0;
-      const ready = Object.keys(pz.store.r).length;
-      if (ready >= C.puzzleReadyMax) return 0;
       const ids = Object.keys(pz.store.c);
       if (!ids.length) return 0;
-      const cap = Math.min(
-        Math.max(1, limitBodies || C.puzzleBodiesPerPass),
-        C.puzzleReadyMax - ready);
-      let added = 0;
-      let tried = 0;
+      const onStep = opts && opts.onStep;
+
+      // GROUPED BY BODY SHARD — the change that makes a complete collect
+      // affordable at all. Ids hash across all 4096 shards, so one fetch per
+      // puzzle throws away the other ~941 bodies in the shard it just paid for;
+      // grouped, the cost is the number of DISTINCT shards the wanted ids touch
+      // and never more than 4096 however many are wanted.
+      const byShard = new Map();
       for (const id of ids) {
-        if (added >= cap || !st.running) break;
-        tried++;
-        const cand = pz.store.c[id];
-        delete pz.store.c[id];
-        pz.dirty = true;
-        if (!cand) continue;
-        let body = null;
-        try {
-          const shard = await CloPuzzles.shardIdFor(id);
-          const text = await puzzleBodyShard(shard);
-          body = text ? findPuzzleBody(text, id) : null;
-          pz.bodiesFetched++;
-        } catch (err) {
-          warn('storm: puzzle body', id, 'failed:', err);
-          break;
+        const shard = await CloPuzzles.shardIdFor(id);
+        if (!byShard.has(shard)) byShard.set(shard, []);
+        byShard.get(shard).push(id);
+      }
+      const shards = [...byShard.keys()];
+      // An explicit 0 means all of them (the one-shot collect); absent means the
+      // leg's own default, which counts SHARDS since v0.172.0 rather than
+      // puzzles. Stage A's note is the reason the two cases are told apart.
+      const cap = limitShards === 0
+        ? shards.length
+        : Math.max(1, limitShards || C.puzzleBodiesPerPass);
+      const work = shards.slice(0, cap);
+
+      let added = 0;
+      let archived = 0;
+      let dead = 0;
+      for (let i = 0; i < work.length; i += C.puzzleBodyBatch) {
+        if (!st.running || pz.collectStop) break;
+        const batch = work.slice(i, i + C.puzzleBodyBatch);
+        const answers = await Promise.all(batch.map(async (shard) => {
+          const group = byShard.get(shard) || [];
+          try {
+            return { group, bodies: await puzzleBodiesAt(shard, group) };
+          } catch (err) {
+            warn('storm: puzzle body shard', shard, 'failed:', err);
+            return { group, err };
+          }
+        }));
+        let batchFailed = 0;
+        for (const ans of answers) {
+          if (ans.err) {
+            // THE CANDIDATES SURVIVE A FAILED SHARD. Only a shard that actually
+            // ANSWERED can prove an id dead; dropping them on a network error
+            // would silently shrink the collection and never say so.
+            batchFailed++;
+            continue;
+          }
+          const found = new Map();
+          for (const b of ans.bodies) found.set(String(b.id), b);
+          for (const id of ans.group) {
+            const cand = pz.store.c[id];
+            // SPENT WHETHER OR NOT A BODY CAME BACK, because the shard did
+            // answer: an id its own shard does not contain is dead (a republish
+            // with different thresholds), which the guide is explicit is not a
+            // transient error (§10.4).
+            delete pz.store.c[id];
+            pz.dirty = true;
+            if (!cand) continue;
+            const body = found.get(id);
+            if (!body) { dead++; continue; }
+            const entry = stormPuzzleReady(body, cand);
+            // BUILT ONCE, HERE, rather than at the moment it is dealt. A puzzle
+            // whose moves will not replay is a card that cannot be shown, and
+            // finding that out with a board open and a clock running is the one
+            // failure this feature can produce that the user would see.
+            if (!entry || !stormPuzzlePlies(entry)) {
+              log('storm: puzzle', id, 'will not replay — dropped');
+              continue;
+            }
+            // THE LIGHT RECORD ALWAYS; the working set only while it has room.
+            // The body itself is already in the worker's archive — the fetch
+            // above put it there — so an entry left out of `r` here is not lost,
+            // it is one `refillReady` will hydrate for free when there is space.
+            pz.store.p[id] = stormPuzzleArchived(entry);
+            archived++;
+            if (Object.keys(pz.store.r).length < C.puzzleReadyMax) {
+              pz.store.r[id] = entry;
+              added++;
+            }
+          }
         }
-        const entry = stormPuzzleReady(body, cand);
-        // BUILT ONCE, HERE, rather than at the moment it is dealt. A puzzle
-        // whose moves will not replay is a card that cannot be shown, and
-        // finding that out with a board open and a clock running is the one
-        // failure this feature can produce that the user would see.
+        if (batchFailed === batch.length) break;
+        if (onStep) {
+          onStep({ stage: 'b', done: Math.min(i + batch.length, work.length),
+            total: work.length, added: archived });
+        }
+        pz.bodiesFetched += batch.length - batchFailed;
+        if (C.puzzleGapMs) await sleepMs(C.puzzleGapMs);
+      }
+      prunePuzzleStore();
+      if (archived) {
+        log('storm: archived', archived, 'puzzle body(ies),', added, 'into the working set' +
+          (dead ? ', ' + dead + ' no longer published' : ''));
+      }
+      return archived;
+    }
+
+    /**
+     * §29.2) A ready entry as the LIGHT durable record kept in `store.p`.
+     *
+     * ~60 bytes against the entry's ~420, and it is what makes the working set
+     * trimmable: the body lives in the worker's IndexedDB archive, so all this
+     * has to carry is what `stormPuzzleReady` cannot recompute from a body —
+     * the anchor's line (§15's join), how deep into it the game went, and how
+     * often the user has missed it.
+     *
+     * THE FIELD NAMES ARE THE CANDIDATE'S, deliberately: `stormPuzzleReady`
+     * takes a candidate as its second argument and reads `r`/`o`/`n`/`p` off it,
+     * so this record can be handed straight back to it on the way out of the
+     * archive with no second shape to keep in step.
+     */
+    function stormPuzzleArchived(entry) {
+      return {
+        r: (entry && entry.r) || null,
+        o: (entry && entry.o) || '',
+        n: (entry && entry.n) || '',
+        p: (entry && entry.ap) || null,
+        k: (entry && entry.k) || 0,
+        t: (entry && entry.t) || Date.now(),
+      };
+    }
+
+    /**
+     * §29.2) Which archived puzzles to hydrate next. Pure and rnd-injected,
+     * `stormPuzzleDraw`'s shape and for its reason — §14.15 is emphatic that a
+     * comparator here is SILENT when it is wrong: every puzzle is still
+     * returned, in a plausible order, and nothing anywhere says which one was
+     * meant to come first.
+     *
+     * `k` ASCENDING, unseen first, exactly as the ready store draws, so a
+     * working set refilled from the archive is filled in the same order it
+     * would have been dealt in. Anything already in the working set, and
+     * anything retired, is excluded rather than sorted to the back: this
+     * answers "what should be brought in", not "what should be shown".
+     */
+    function stormPuzzleArchiveDraw(store, rnd, C, now) {
+      const out = [];
+      const have = (store && store.r) || {};
+      const gone = (store && store.g) || {};
+      for (const id of Object.keys((store && store.p) || {})) {
+        if (have[id]) continue;
+        if (stormPuzzleDone(gone, id, C, now)) continue;
+        const e = store.p[id];
+        if (!e) continue;
+        out.push({ id, k: e.k || 0, r: rnd() });
+      }
+      out.sort((a, b) => (a.k - b.k) || (a.r - b.r));
+      return out.map((x) => x.id);
+    }
+
+    /**
+     * §29.2) Top the working set up out of the archive. NO NETWORK AT ALL —
+     * this is the whole point of collecting once: a course whose puzzles have
+     * been gathered never asks the dataset for anything again, however many
+     * sessions are played on it.
+     *
+     * IT REFUSES TO GUESS, exactly as stage B does: a body that will not rebuild
+     * into a playable card is dropped from the light record too, so the next
+     * refill does not meet it again. That catches an archive entry corrupted in
+     * storage or written by a build this one does not understand.
+     */
+    async function refillReady() {
+      if (!pz.store) return 0;
+      const room = C.puzzleReadyMax - Object.keys(pz.store.r).length;
+      if (room <= 0) return 0;
+      const want = stormPuzzleArchiveDraw(pz.store, Math.random, C, Date.now())
+        .slice(0, room);
+      if (!want.length) return 0;
+      const bodies = await puzzleArchive('get', { ids: want });
+      if (!bodies) return 0;
+      let added = 0;
+      const missing = [];
+      for (const id of want) {
+        const body = bodies[id];
+        if (!body) { missing.push(id); continue; }
+        const rec = pz.store.p[id];
+        const entry = stormPuzzleReady(body, rec);
         if (!entry || !stormPuzzlePlies(entry)) {
-          if (body) log('storm: puzzle', id, 'will not replay — dropped');
+          delete pz.store.p[id];
+          pz.dirty = true;
           continue;
         }
+        entry.k = (rec && rec.k) || 0;
         pz.store.r[id] = entry;
+        pz.dirty = true;
         added++;
-        await sleepMs(C.puzzleGapMs);
       }
-      if (tried) prunePuzzleStore();
-      if (added) log('storm: fetched', added, 'puzzle body(ies)');
+      // AN ARCHIVE MISS IS NOT A CORRUPTION. The light record can outlive the
+      // body — another profile's storage cleared, an IDB the browser evicted —
+      // so the id goes back to being a CANDIDATE, which is exactly what it is:
+      // known to match, body not held. One collect buys it back.
+      for (const id of missing) {
+        const rec = pz.store.p[id];
+        delete pz.store.p[id];
+        if (rec && !pz.store.c[id]) {
+          pz.store.c[id] = { i: id, r: rec.r, c: 'w', p: rec.p, s: null,
+            k: '', o: rec.o, n: rec.n, t: Date.now() };
+        }
+        pz.dirty = true;
+      }
+      if (added) log('storm: hydrated', added, 'puzzle(s) from the archive');
       return added;
     }
 
-    /** One line of an ndjson body shard. */
-    function findPuzzleBody(text, id) {
-      for (const line of String(text).split('\n')) {
-        if (!line || line.indexOf(id) === -1) continue;
-        let obj = null;
-        try { obj = JSON.parse(line); } catch (err) { continue; }
-        if (obj && obj.id === id) return obj;
+    /** Both stages' wire cost, roughly, for a sentence. */
+    const collectMb = (idxShards, bodyShards) =>
+      Math.round((idxShards * C.puzzleIndexGzKb + bodyShards * C.puzzleBodyGzKb) / 1024);
+
+    /**
+     * §29.2) COLLECT THE LOT — both stages, to completion, in one press.
+     *
+     * This is the answer to "why is gathering puzzles an overnight job", and the
+     * answer turned out to be that it never needed to be one. The bounded
+     * per-leg path (`puzzleShardsPerPass` = 8) was sized against a cost model
+     * that read the ~0.9 MB PARSED size of an index shard as its download size;
+     * measured 2026-09-02 it is 330 KB gzipped and ~10 ms to parse, so a whole
+     * 182-shard course scan at concurrency 8 is about SIX SECONDS. Stage B is
+     * bounded by the number of DISTINCT body shards its ids touch — 1626 for
+     * 2071 puzzles, and never more than 4096 — which at ~85 KB each is a minute
+     * or two for the largest course on this account.
+     *
+     * IT IS A ONE-OFF AND IT STAYS ONE. Stage A records every anchor it scanned
+     * in `store.a`, and stage B's bodies go into the worker's IndexedDB archive
+     * (puzzlecache.js), which is not bounded, not course-scoped and not dropped
+     * by a republish. So a second press on a collected course fetches nothing,
+     * and every later session hydrates its working set from local storage.
+     *
+     * TWO PRESSES, 19c's rule and for 19c's reason: this is the one control here
+     * that can spend a few hundred megabytes of somebody's connection, and the
+     * arming press is what puts the size on screen before it is spent. The arm
+     * is dropped by anything that takes the button off screen.
+     *
+     * IT IS NOT A GATHER, and `filling()` is deliberately not what it sets: it
+     * walks no frontier, spends no ChessDB request, starts no engine and stores
+     * no position. Nothing that stands down for a gather has any reason to stand
+     * down for this. It does refuse WHILE a gather runs, because both write the
+     * puzzle store and `savePuzzleStore` replaces this course's slice whole.
+     */
+    async function collectPuzzles() {
+      if (pz.collecting) {
+        // The same button stops it, the gather button's own rule. Everything
+        // already fetched is already stored — both stages save as they go.
+        pz.collectStop = true;
+        setNote('Stopping the collection…');
+        render();
+        return true;
       }
-      return null;
+      if (!pz.on) {
+        setStatus('Puzzles are switched off. Set a percentage first — nothing is ' +
+          'fetched from the puzzle dataset until you do.', 'warn');
+        return false;
+      }
+      if (filling()) {
+        setStatus('A gather is running. Stop it first — both write the same store.', 'warn');
+        return false;
+      }
+      if (!st.bid) return false;
+      const anchors = st.pool && st.pool.anchors;
+      if (!anchors || !anchors.size) {
+        setStatus('No position of this course sits in the puzzle ply band, so there ' +
+          'is nothing to look up. Widen the band, or this course’s lines are ' +
+          'shorter than its floor.', 'warn');
+        return false;
+      }
+      pz.collecting = true;
+      pz.collectStop = false;
+      const t0 = Date.now();
+      const idxWas = pz.shardsFetched;
+      const bodyWas = pz.bodiesFetched;
+      try {
+        if (!pz.store) await loadPuzzleStore(st.bid);
+        await ensurePuzzleMeta();
+        setNote('Collecting puzzles… reading the position index');
+        render();
+        const onStep = (step) => {
+          setNote('Collecting puzzles… ' +
+            (step.stage === 'a' ? 'position index ' : 'puzzles ') +
+            step.done + ' of ' + step.total + ' shard(s), ' +
+            step.added + (step.stage === 'a' ? ' found' : ' collected'));
+          render();
+        };
+        // STAGE A FIRST AND WHOLE. Its answer is what stage B's grouping is
+        // computed from, so there is nothing to interleave: a candidate that
+        // arrives after the body shards have been grouped would be missed by
+        // this run and picked up by the next.
+        const found = await gatherPuzzleCandidates(0, {
+          perAnchor: C.puzzleCollectPerAnchor, onStep,
+        });
+        // Saved BETWEEN the stages, not only at the end: stage B is the long
+        // half, and a tab closed inside it must not throw away the scan.
+        await savePuzzleStore();
+        const got = pz.collectStop ? 0 : await gatherPuzzleBodies(0, { onStep });
+        await savePuzzleStore();
+        await refreshArchiveCount();
+        await fillPuzzleQueue();
+        const idx = pz.shardsFetched - idxWas;
+        const bodies = pz.bodiesFetched - bodyWas;
+        const secs = Math.max(1, Math.round((Date.now() - t0) / 1000));
+        setNote('');
+        setStatus(
+          (pz.collectStop ? 'Collection stopped — ' : 'Collected — ') +
+          found + ' found, ' + got + ' ready to play (' +
+          puzzleReadyCount() + ' loaded, ' + Object.keys(pz.store.p).length +
+          ' archived) in ' + secs + 's, ' + (idx + bodies) + ' shard(s), about ' +
+          collectMb(idx, bodies) + ' MB' +
+          (pz.collectStop ? '. Press again to carry on.' : '. This course will not need fetching again.'),
+          '');
+        log('storm: collect —', found, 'candidate(s),', got, 'archived,',
+          idx, 'index shard(s),', bodies, 'body shard(s),', secs + 's');
+        return true;
+      } catch (err) {
+        warn('storm: the puzzle collection failed:', err);
+        setNote('');
+        setStatus('The puzzle collection stopped on an error — everything found ' +
+          'so far is stored, so pressing again carries on from there.', 'warn');
+        return false;
+      } finally {
+        pz.collecting = false;
+        pz.collectStop = false;
+        render();
+      }
     }
 
     /** Caps, oldest first out, and the tombstone list aged with them. */
     function prunePuzzleStore() {
       if (!pz.store) return;
-      const cut = (map, max) => {
+      const cut = (map, max, rank) => {
         const keys = Object.keys(map);
         if (keys.length <= max) return;
-        keys.sort((a, b) => (map[a].t || 0) - (map[b].t || 0));
+        keys.sort(rank || ((a, b) => (map[a].t || 0) - (map[b].t || 0)));
         for (const k of keys.slice(0, keys.length - max)) delete map[k];
         pz.dirty = true;
       };
-      cut(pz.store.c, C.puzzleCandMax);
+      // §29.2) THE LIGHT RECORD IS TRIMMED SHALLOWEST FIRST, not oldest first,
+      // and that is the whole difference between the two orders here. Depth is
+      // the QUALITY signal this feature rests on (§3: below the floor a "match"
+      // means the game merely shared an opening), and both stages walk anchors
+      // deepest first — so an age-ordered cut is a DEPTH-ordered cut running
+      // backwards, discarding the strongest evidence and keeping the most
+      // generic. A puzzle already missed (`k`) is kept ahead of an unseen one at
+      // the same depth: it is the only thing here the user has a history with.
+      // `k` MEANS TWO DIFFERENT THINGS ON THE TWO MAPS THIS SORTS. On `p` it is
+      // the miss count, a number; on a CANDIDATE it is the anchor key, a
+      // string — so a bare subtraction yields NaN there, which makes the
+      // comparator inconsistent and the order arbitrary rather than merely
+      // different. `num` is what keeps one comparator honest over both: a
+      // string coerces to NaN and then to 0, i.e. "no history", which is
+      // exactly what a candidate has.
+      const num = (v) => (Number(v) || 0);
+      const byDepth = (m) => (a, b) =>
+        (num(m[a].p) - num(m[b].p)) ||
+        (num(m[a].k) - num(m[b].k)) ||
+        (num(m[a].t) - num(m[b].t));
       cut(pz.store.r, C.puzzleReadyMax);
+      // §29.2) …and the light record, on its own much larger cap. Trimming
+      // `r` costs nothing now — the body is in the archive and `refillReady`
+      // brings it back — but trimming THIS is a real loss: it is the only thing
+      // that remembers a collected puzzle belongs to this course and to which
+      // line. Hence a cap set where a fully collected course fits under it.
+      cut(pz.store.p, C.puzzleArchiveMax, byDepth(pz.store.p));
+      cut(pz.store.c, C.puzzleCandMax, byDepth(pz.store.c));
       const now = Date.now();
       for (const id of Object.keys(pz.store.g)) {
         if (!stormPuzzleDone(pz.store.g, id, C, now)) {
@@ -36695,6 +37270,12 @@
           if (was !== pz.meta.builtAt) {
             await chrome.storage.local.set({ [C.puzzleBuildKey]: pz.meta.builtAt });
           }
+          // §29.2) …and the worker's shard caches, which DO go stale: a
+          // republish rewrites shard contents at stable urls. It drops both
+          // caches and deliberately keeps the body archive, since a position
+          // and a solution do not go stale and re-buying thousands of them on
+          // every republish is exactly what collecting once exists to avoid.
+          await puzzleArchive('build', { builtAt: pz.meta.builtAt });
         } catch (err) {
           // An orphaned content script, or no storage: the pass still works.
         }
@@ -36711,10 +37292,21 @@
       if (!entry) return;
       if (stormPuzzleRetain(pz.store, id, verdict, C)) {
         entry.k = (entry.k || 0) + 1;
+        // §29.2) MIRRORED INTO THE LIGHT RECORD, which is the durable one: a
+        // working-set entry can be trimmed and rehydrated any number of times,
+        // and a miss count that lived only there would reset every time that
+        // happened. ONE WRITER — this function — so the two cannot drift.
+        if (pz.store.p[id]) pz.store.p[id].k = entry.k;
         pz.dirty = true;
         return;
       }
       delete pz.store.r[id];
+      // …and out of the archive's record with it. The BODY is deliberately left
+      // in the worker's archive: it is keyed by puzzle id and shared across
+      // courses, so another course that matches the same puzzle still gets it
+      // for free — and the tombstone below is what stops THIS course offering
+      // it again.
+      delete pz.store.p[id];
       pz.store.g[id] = Date.now();
       pz.dirty = true;
     }
@@ -36809,6 +37401,7 @@
           // Unplayable in storage: drop it rather than meeting it again every
           // session. `gatherPuzzleBodies` proved it once, so this is corruption.
           delete pz.store.r[id];
+          delete pz.store.p[id];
           pz.dirty = true;
           warn('storm: stored puzzle', id, 'will not replay — dropped');
           continue;
@@ -36819,9 +37412,22 @@
       return null;
     }
 
-    /** Fills this session's puzzle queue from the store — free, no network. */
-    function fillPuzzleQueue() {
+    /**
+     * Fills this session's puzzle queue from the store — FREE, NO NETWORK, and
+     * since v0.172.0 that is true of a course with ten thousand puzzles as well
+     * as one with ten: the working set is topped up out of the worker's
+     * IndexedDB archive first, which is a local read.
+     *
+     * ASYNC SINCE v0.172.0, for that read. Four of its five callers already sit
+     * in async bodies and simply await it; `savePuzzlePct` is the fifth and
+     * fires it off, because its own `syncSettings()` runs on the tick anyway.
+     * `nextPuzzleCard` stays SYNC and must: `nextCard` is sync, called from
+     * timers and from `produce`'s finally, and making that path async would
+     * ripple through every one of them.
+     */
+    async function fillPuzzleQueue() {
       if (!pz.store || !pz.on) return 0;
+      if (Object.keys(pz.store.r).length < C.puzzleRefillFloor) await refillReady();
       pz.queue = stormPuzzleDraw(pz.store, Math.random, C)
         .filter((id) => !pz.seen.has(id));
       return pz.queue.length;
@@ -37335,7 +37941,7 @@
      * `anchorMaxPly` a course position is so specific that almost no game
      * reaches it: band 10-16 returned 10923 of the 11124 puzzles that band
      * 10-22 did, from HALF the index shards (182 against 322). A shard is
-     * ~0.9 MB parsed, so that halving is the difference between an overnight
+     * 330 KB gzipped, so that halving is the difference between an overnight
      * pass and two of them.
      *
      * …AND IT IS CLAMPED BY THE LIVE `maxEmissionPly`, never by a
@@ -40267,7 +40873,7 @@
     // `dev/check-storm.js` keeps executing them against a config it declares
     // itself. The ceiling is the CLAMPED one — a band wider than the
     // dataset's own `maxEmissionPly` would collect anchors that can never
-    // match anything and spend a 0.9 MB shard finding that out.
+    // match anything and spend a whole index shard finding that out.
     const poolCfg = () => {
       const band = puzzleBand();
       const out = {
@@ -40715,7 +41321,7 @@
     // ONLY THE READY LIST TRAVELS. Candidates are index tuples any machine with
     // the dataset can regenerate, and a course's worth of them would eat the
     // budget on its own; a ready puzzle is the thing a phone genuinely cannot
-    // produce, being a ~331 KB body fetch each. So the desktop does both stages
+    // produce, being a body-shard fetch each. So the desktop does both stages
     // and the phone consumes — which is the whole reason this feature is
     // affordable on a phone at all.
     //
@@ -40881,7 +41487,7 @@
         // the queue has already been drawn. Re-drawing the whole list is safe,
         // since `pz.seen` is what `nextPuzzleCard` filters on.
         if (merged.added && st.running && !st.over && !filling()) {
-          fillPuzzleQueue();
+          await fillPuzzleQueue();
           render();
         }
       } catch (err) {
@@ -41216,6 +41822,13 @@
      */
     function startStorm() {
       if (!st.running || st.over || st.started || filling()) return;
+      // §29.2) …and not while a COLLECT is running. It is deliberately not part
+      // of `filling()` (it walks no frontier and spends no ChessDB request, so
+      // nothing that stands down for a gather has any reason to stand down for
+      // it), but starting has one consequence a collect cannot survive:
+      // `syncSettings` hides this whole row once `st.started`, which takes the
+      // collect's own Stop button off screen while it goes on fetching.
+      if (pz.collecting) return;
       if (!haveAnyCard()) return;
       st.started = true;
       // §17) A set has no deadline, so its clock counts UP — and it is armed
@@ -41420,7 +42033,7 @@
         // having nothing for the course.
         //
         // BOTH ARE BOUNDED PER PASS and stage A is the one that matters:
-        // ~0.9 MB parsed per index shard against 161-182 anchors on a real
+        // 330 KB gzipped per index shard against 161-182 anchors on a real
         // course, so a course is covered over roughly twenty legs of an
         // overnight round rather than in one sitting. That bound is what makes
         // going first cheap: a pass stopped in its opening seconds has spent
@@ -41568,7 +42181,7 @@
             // behind it — so without this a gather could buy a dozen puzzles
             // and the session that asked for them would still deal none, which
             // is indistinguishable from the gather having found nothing.
-            fillPuzzleQueue();
+            await fillPuzzleQueue();
           }
           // A gather is the one moment there is definitely something worth
           // carrying — it is also the pass a user leaves running and walks away
@@ -41745,7 +42358,7 @@
         produceFromStore();
         // §29) …and the puzzle queue with it, for the same reason and on the
         // same course: `cycleSwitch` above has just loaded this course's slice.
-        fillPuzzleQueue();
+        await fillPuzzleQueue();
       }
     }
 
@@ -42183,6 +42796,27 @@
       st.clearArmed = false;
       clearTimeout(st.clearTimer);
       st.clearTimer = 0;
+      if (st.ui) syncSettings();
+    }
+
+    /**
+     * §29.2) …and the collect's own, which is a SEPARATE arm from the clear's
+     * (section 19d's rule: one arm between two actions lets a press meant for
+     * the sentence on screen fire the other, and these two are opposites — one
+     * fills the store and one empties it).
+     */
+    function armCollect() {
+      st.collectArmed = true;
+      clearTimeout(st.collectTimer);
+      st.collectTimer = setTimeout(() => { st.collectTimer = 0; disarmCollect(); }, C.clearArmMs);
+      syncSettings();
+    }
+
+    function disarmCollect() {
+      if (!st.collectArmed && !st.collectTimer) return;
+      st.collectArmed = false;
+      clearTimeout(st.collectTimer);
+      st.collectTimer = 0;
       if (st.ui) syncSettings();
     }
 
@@ -42641,7 +43275,7 @@
       // be run — and a wire exchange can land — on a session that is not
       // dealing any.
       await loadPuzzleStore(st.bid);
-      fillPuzzleQueue();
+      await fillPuzzleQueue();
       // §15. Before the first answer can be graded, and cheap — one
       // storage.local read for the record and this device's own id.
       await loadStats();
@@ -43829,6 +44463,21 @@
       const roundBtn = el('button', 'clo-st-gather clo-st-roundbtn', 'Gather all courses');
       roundBtn.type = 'button';
       roundBtn.addEventListener('click', () => gatherRound());
+      // §29.2) COLLECT THE PUZZLES, and it is a GATHER in the row's vocabulary
+      // (green outline, DESIGN-ui-inventory §3) because that is exactly what it
+      // is: the pass that fills the store, for the other kind of card. Not a
+      // fill — this window allows one primary and Start is it.
+      //
+      // `() => collectPuzzles()`, NEVER bare: 24g's trap, and here argument 0
+      // would be the MouseEvent.
+      const collectBtn = el('button', 'clo-st-gather clo-st-collectbtn', 'Collect puzzles');
+      collectBtn.type = 'button';
+      collectBtn.addEventListener('click', () => {
+        if (pz.collecting) { collectPuzzles(); return; }
+        if (!st.collectArmed) { armCollect(); return; }
+        disarmCollect();
+        collectPuzzles();
+      });
       // §22) …and its inverse, beside it. NEUTRAL outline (`.clo-st-sync`'s
       // vocabulary), never green and never a fill: the green in this window is
       // spent on "storm" and "gather", which are the two things it is FOR, and
@@ -43958,6 +44607,30 @@
         puzzleSel.appendChild(o);
       }
       puzzleSel.addEventListener('change', () => savePuzzlePct(puzzleSel.value));
+      // §29.3) …AND HOW DEEP A POSITION MUST BE to be looked up from. It sits
+      // in its own group beside the percentage rather than as a third selector
+      // in the row, because two numbers with a word between them is a SENTENCE
+      // and `plyGroup` right next to it already reads that way — the two say
+      // the same kind of thing about two different exercises.
+      //
+      // HIDDEN WHILE PUZZLES ARE OFF, which is `collectBtn`'s own gate: at 0%
+      // nothing is ever fetched from the fourth host, so a control describing
+      // what would be fetched is describing nothing.
+      const pzBandGroup = el('span', 'clo-st-set-group');
+      const mkBandSel = (pick) => {
+        const sel = document.createElement('select');
+        sel.className = 'clo-st-sel';
+        for (const v of C.puzzleAnchorPlyChoices) {
+          const o = document.createElement('option');
+          o.value = String(v);
+          o.textContent = String(v);
+          sel.appendChild(o);
+        }
+        sel.addEventListener('change', pick);
+        return sel;
+      };
+      const pzMinSel = mkBandSel(() => savePuzzleBand(pzMinSel.value, pzMaxSel.value));
+      const pzMaxSel = mkBandSel(() => savePuzzleBand(pzMinSel.value, pzMaxSel.value));
       // §14.24) THE BACKGROUND PASS's switch. NEUTRAL (`.clo-st-sync`), beside
       // Gather and deliberately not sharing its green: green outline in this
       // row is an ordinary ACTION (DESIGN-ui-inventory §3) and this one starts
@@ -44003,10 +44676,14 @@
       uncGroup.append(
         el('span', 'clo-st-set-label', 'Ask about replies played in'), shareSel,
         el('span', 'clo-st-set-label', 'of the games there or more'));
+      pzBandGroup.append(
+        el('span', 'clo-st-set-label', 'from positions'), pzMinSel,
+        el('span', 'clo-st-set-label', 'to'), pzMaxSel,
+        el('span', 'clo-st-set-label', 'plies into the game'));
       settings.append(
-        modeSel, sourceSel, puzzleSel, plyGroup, uncGroup, fenBtn,
+        modeSel, sourceSel, puzzleSel, pzBandGroup, plyGroup, uncGroup, fenBtn,
         el('span', 'clo-st-set-spacer'), ready, startBtn, gatherBtn, roundBtn,
-        clearBtn, bgBtn, syncBtn, statsBtn);
+        collectBtn, clearBtn, bgBtn, syncBtn, statsBtn);
 
       // §28) THE BOX. An IN-FLOW BLOCK under the settings row, not a floating
       // popover — section 6b's rule for the panel's own settings menu, and for
@@ -44192,10 +44869,11 @@
       document.body.appendChild(panel);
       st.panel = panel;
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
-        settings, modeSel, sourceSel, puzzleSel, plyGroup, uncGroup, shareSel,
+        settings, modeSel, sourceSel, puzzleSel, pzBandGroup, pzMinSel, pzMaxSel,
+        plyGroup, uncGroup, shareSel,
         fenBtn, fenBox, fenInput, fenNameInput, fenGo, fenSave, fenWhole, fenMsg, fenList,
         statsTabA, statsTabB,
-        minSel, maxSel, startBtn, gatherBtn, roundBtn, clearBtn, bgBtn, ready,
+        minSel, maxSel, startBtn, gatherBtn, roundBtn, collectBtn, clearBtn, bgBtn, ready,
         syncBtn, syncNote,
         review, revBoard, revGrid, revLayer, revShapes, revHead, revLegend, revList,
         revActions, revRetry, revBest, revAnalyse, dbSlot,
@@ -44208,6 +44886,34 @@
       st.ui.status.textContent = text || '';
       st.ui.status.hidden = !text;
       st.ui.status.classList.toggle('clo-st-status--warn', kind === 'warn');
+    }
+
+    /**
+     * §29.3) What the band selector says about itself — and the one thing it
+     * has to say that the two numbers cannot: the EFFECTIVE ceiling.
+     *
+     * `puzzleBand()` clamps the chosen maximum to the dataset's own
+     * `maxEmissionPly` (22 as published), because positions deeper than that
+     * are not indexed AT ALL — a hard cliff, not a taper. So a selector reading
+     * 24 over an effective 22 is not a bug, and saying so here is what stops it
+     * being read as one.
+     */
+    function puzzleBandTitle() {
+      const band = puzzleBand();
+      let t = 'Which of this course’s positions a puzzle may be looked up from, ' +
+        'measured in plies from the start of the GAME rather than from the start ' +
+        'of the line.\nThe floor is what makes a match mean something: below about ' +
+        'ply 10 a "match" only means the game shared an opening. The ceiling costs ' +
+        'index shards and returns little, but what it returns is the strongest ' +
+        'evidence — a game that really did play this far into your line.';
+      if (band.hi < pz.maxPly) {
+        t += '\nThe dataset only indexes to ply ' + band.hi + ', so ' + pz.maxPly +
+          ' currently means ' + band.hi + '. A republish that goes deeper widens ' +
+          'this by itself.';
+      }
+      t += '\nIt applies to positions collected from now on — anything already ' +
+        'collected stays, and widening later only pays for the anchors that are new.';
+      return t;
     }
 
     /**
@@ -44315,7 +45021,7 @@
       applyPuzzlePct(v);
       // Turning it on mid-window with a store already loaded should not need a
       // restart to have anything to deal.
-      if (!was && pz.on) fillPuzzleQueue();
+      if (!was && pz.on) fillPuzzleQueue().then(syncSettings);
       syncSettings();
       try {
         chrome.storage.local.set({ [C.puzzlePctKey]: pz.on }).catch(() => {});
@@ -44420,6 +45126,16 @@
       st.ui.puzzleSel.value = String(pz.on);
       st.ui.puzzleSel.disabled = filling();
       st.ui.puzzleSel.title = puzzleSelTitle();
+      // §29.3) The anchor band. Hidden at 0% for `collectBtn`'s reason, and
+      // disabled while EITHER pass runs — a gather leg and a collect both scan
+      // anchors, and a band changed under a scan describes something other than
+      // what is being scanned.
+      st.ui.pzBandGroup.hidden = !pz.on;
+      st.ui.pzMinSel.value = String(pz.minPly);
+      st.ui.pzMaxSel.value = String(pz.maxPly);
+      st.ui.pzMinSel.disabled = filling() || pz.collecting;
+      st.ui.pzMaxSel.disabled = filling() || pz.collecting;
+      st.ui.pzBandGroup.title = puzzleBandTitle();
       st.ui.plyGroup.hidden = uncoveredOn();
       st.ui.uncGroup.hidden = !uncoveredOn();
       // The button IS the stop button while it runs — one control, because
@@ -44495,6 +45211,34 @@
             'is not free. Your performance record and everything you have answered ' +
             'well are untouched.'
           : 'Nothing is stored for this course yet.');
+      // §29.2) COLLECT. Shown only while puzzles are switched on — with the
+      // percentage at 0 nothing may be fetched from the fourth host at all
+      // (section 26's gate), so a control that could only refuse would be worse
+      // than one that is not there.
+      const canCollect = pz.on > 0 && !st.started && !st.over;
+      if (!canCollect && st.collectArmed) disarmCollect();
+      st.ui.collectBtn.hidden = !canCollect;
+      st.ui.collectBtn.disabled = filling() && !pz.collecting;
+      st.ui.collectBtn.textContent = pz.collecting
+        ? 'Stop collecting'
+        : (st.collectArmed ? 'Collect puzzles?' : 'Collect puzzles');
+      st.ui.collectBtn.classList.toggle('clo-st-gather--on', pz.collecting);
+      st.ui.collectBtn.classList.toggle('clo-st-collectbtn--armed', st.collectArmed);
+      st.ui.collectBtn.title = pz.collecting
+        ? 'Stop after the shards being read now. Everything collected so far is ' +
+          'already stored.'
+        : (st.collectArmed
+          ? 'Press again to read the puzzle index for every position of this ' +
+            'course inside the ply band, then fetch every matching puzzle. On a ' +
+            'real course that is tens of megabytes for the index and up to a few ' +
+            'hundred for the puzzles, over a minute or two. It is a ONE-OFF: what ' +
+            'it reads is kept, so this course never needs fetching again.'
+          : 'Collect every puzzle from games that played this course’s lines, in ' +
+            'one pass instead of a little each night. ' +
+            (puzzleReadyCount() || pz.archived
+              ? puzzleReadyCount() + ' loaded, ' + pz.archived + ' in the archive. '
+              : '') +
+            'Anything already collected is skipped, so pressing it again is cheap.');
       // §27) …and it is not the control while a ROUND owns the pass: the round's
       // own button is the one that stops it, and "Stop gathering" here would end
       // one leg and watch the next begin.

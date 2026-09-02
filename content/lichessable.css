@@ -6432,6 +6432,17 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
   border-color: var(--clo-attention-line);
 }
 
+/* §29.2) The puzzle collect, armed. AMBER like the clear above and for the same
+   reason — "you have something outstanding" is what a confirm waiting for its
+   second press is — and NOT the green it wears idle, which in this window means
+   "this is a thing that fills the store". It is doubled so it outranks
+   .clo-st-gather, whose green it has to beat while armed. */
+.clo-st-collectbtn.clo-st-collectbtn--armed,
+.clo-st-collectbtn.clo-st-collectbtn--armed:hover:not(:disabled) {
+  color: var(--clo-attention);
+  border-color: var(--clo-attention-line);
+}
+
 /* The count of what is waiting. Quiet: it is a fact, not a control, and it sits
    beside the button that changes it. */
 .clo-st-ready {

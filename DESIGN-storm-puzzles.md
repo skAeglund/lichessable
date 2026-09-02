@@ -1,4 +1,4 @@
-# DESIGN — puzzles from the games that played your lines (section 29, v0.171.0)
+# DESIGN — puzzles from the games that played your lines (section 29, v0.172.0)
 
 **Read this before changing anything in section 29.** CLAUDE.md carries only
 what an edit elsewhere can break; the loop, the measurements and the reasoning
@@ -107,7 +107,16 @@ Two things the first draft assumed and the data refuted:
 * **One anchor per line is far too thin.** The deepest ply-≤22 anchor on that
   line yields exactly **1** puzzle. The ply 10–16 band yields ~80.
 
-### 3.1 Why the ceiling is 16
+### 3.1 Why the ceiling was 16 — and why it is 24 now
+
+> **SUPERSEDED IN v0.173.0.** Everything below is still the right measurement and
+> the wrong conclusion. The ceiling was a BUDGET decision, and §12.1 removed the
+> budget: a full course scan is seconds, so "these anchors cost a shard and
+> return nothing" stopped being a reason to refuse to ask. The default band is
+> now **12-24** with a selector beside the percentage, and 24 sits deliberately
+> above the current publish threshold of 22 so the band widens by itself when the
+> dataset does. The FLOOR is untouched in kind — it is the one part of this that
+> is a quality rule — and moved 10 → 12, a step inside the measured cliff.
 
 Band sizing across all three courses on the account (colour-filtered):
 
@@ -158,6 +167,11 @@ implies the tactic is in the opening.
 ---
 
 ## 4. Two stages, because the two costs are different problems
+
+> **§12 REVISES EVERY NUMBER BELOW.** The per-fetch costs quoted here are the
+> PARSED sizes, not the wire sizes — measured, a stage-A shard is 330 KB gzipped
+> and 10 ms to parse, so "roughly twenty legs of an overnight round" describes a
+> six-second job. Read §12 before quoting anything in this section as a cost.
 
 | | fetches | per course, band 10–16 | how often |
 |---|---|---|---|
@@ -411,3 +425,210 @@ Two lessons worth repeating:
 * **Unbounded in one place**: a course with no anchors in band gets no puzzles
   and says so only in the selector's tooltip. A course of six short lines is
   near the floor of what works (455941: 32 shards, 116 puzzles).
+
+---
+
+## 12. Collecting once — §29.2 (v0.172.0)
+
+The bounded, overnight shape of §4 was right about the mechanism and wrong about
+the price. Everything below is measured; nothing about the anchor band, the
+grade, the store's semantics, the wire or the review changed.
+
+### 12.1 The measurement that reframed it
+
+`dev/probe-puzzle-collect.js`, live against the published set, 2026-09-02:
+
+| | value |
+|---|---|
+| index shard | **330 KB gzipped** / 0.97 MB parsed / ~6900 positions / ~10 ms to parse |
+| body shard | **85 KB gzipped** / 345 KB raw / **942 bodies** |
+| index scan, 182 shards, concurrency 8 | **~6–17 s** |
+| whole 4096-shard body corpus | **~85 s** |
+
+§4 priced a stage-A shard at "~0.9 MB" and a stage-B fetch at "~331 KB". Both
+are the **parsed / decompressed** figures. On the wire they are 330 KB and
+85 KB, and the parse — the thing that sounded expensive — is ten milliseconds.
+
+So `puzzleShardsPerPass: 8` was sized against a cost roughly 3× the real one,
+and "roughly twenty legs of an overnight round to cover one course" described a
+job that takes about six seconds.
+
+### 12.2 One fetch per body shard, not per puzzle
+
+The second finding is upstream's, and it was sitting in
+`skAeglund/puzzle-explorer` the whole time (`Offline.groupByShard`,
+`downloadRepertoireOffline`). Puzzle ids hash across all 4096 body shards, so
+asking for one puzzle at a time **throws away the other 941 bodies in the shard
+it just paid for**. Grouped, the cost is the number of *distinct* shards the
+wanted ids touch:
+
+```
+3142 puzzles  ->  2200 distinct shards   (30% fewer fetches)
+```
+
+and it follows `4096 · (1 − e^(−N/4096))`, so the saving grows with the haul:
+65% at 10 923 puzzles, and it can never exceed 4096 fetches however many are
+wanted. Grouping is done in the **worker**, which also means a body crosses the
+message boundary once.
+
+### 12.3 Where everything now lives
+
+`puzzlecache.js`, loaded into the service worker by `importScripts`. **Not** the
+content script: a content script's IndexedDB belongs to `www.chessable.com` —
+a third party's origin, cleared by their "clear site data", and no place for
+hundreds of megabytes of ours.
+
+| store | bound | why |
+|---|---|---|
+| `indexShards` | LRU 300 (~290 MB) | a working set; a course scan is 182 |
+| `bodyShards` | LRU 64 (~22 MB) | only ever pays *inside* one run |
+| `bodies` | **unbounded** | **the artifact** — ~420 B each, keyed by puzzle id |
+| `meta` | one row | the build stamp |
+
+`bodies` is the feature. A course's entire haul is a few megabytes and never has
+to be bought again, which is what makes collection a one-off. It is deliberately
+**not** dropped by `cloPzCheckBuild`: a republish rewrites shard *contents* at
+stable urls, so the two caches are stale, but a position and a solution are not.
+Throwing away thousands of bodies because the publisher re-ran a filter would
+cost the whole collection on every republish. An id the new build no longer
+emits simply stops being asked for.
+
+Shards are stored as **text**, not parsed JSON: structured-cloning a 6900-key
+object in and out of IDB costs more than the 10 ms parse it saves, and text is
+far smaller on disk.
+
+### 12.4 The three worker messages
+
+`clo-fetch-puzzles` survives for `meta.json`. Beside it:
+
+* `clo-puzzle-index { shard, keys }` → **only the entries for those keys**. The
+  shard never enters the content script. At collect scale this removes 182
+  megabyte structured clones from a six-second job.
+* `clo-puzzle-bodies { shard, ids }` → only those bodies, **archived on the way
+  past**.
+* `clo-puzzle-archive { op, … }` → `get` / `have` / `count` / `del` / `build` /
+  `clearShards` / `clearAll`. It never fetches.
+
+Both shard handlers take a shard **name** matched against `PUZZLE_SHARD_RE`
+(`/^[0-9a-f]{3}$/`) and build the path themselves, so §9's "the caller cannot
+name a host" guard is preserved exactly — it is in fact tighter, since a name is
+narrower than a path.
+
+### 12.5 The store gained one map
+
+`cloStormPuzzles[bid]` is now `{ c, r, a, g, p }`.
+
+`p` is the **light durable record**, ~60 bytes: the anchor's line, the anchor
+depth, the rating, and `k`. It exists because `r` holds whole bodies and lives in
+`storage.local`, which `savePuzzleStore` rewrites *whole* — ten thousand ready
+entries would put a multi-megabyte round trip on every sync and every course
+switch. So `r` is now explicitly **a working set** (`puzzleReadyMax: 500`), the
+bodies live in the archive, and `refillReady()` tops it up from IDB with no
+network at all.
+
+Three rules:
+
+* **`stormPuzzleArchived` speaks the CANDIDATE's field names.** `refillReady`
+  hands the record straight back to `stormPuzzleReady` as its second argument,
+  which reads `cand.r`/`o`/`n`/`p`. Rename `p` to `ap` there and every rehydrated
+  puzzle comes back with no anchor depth and no line — §7's third stats map then
+  fills up under one blank oid while looking implemented.
+* **`k` has one writer**, `notePuzzle`, which mirrors it into both. A miss count
+  living only in `r` would reset every time the working set was trimmed.
+* **An archive miss is not a corruption.** The light record can outlive the body
+  (storage cleared, IDB evicted), so `refillReady` puts that id back to being a
+  *candidate* — which is exactly what it then is: known to match, body not held.
+
+`p` absent is every store written before v0.172.0, read as "nothing archived",
+which is true of them. Nothing migrates.
+
+### 12.6 The prune order, which the probe exposed
+
+`prunePuzzleStore` cut by age. Both stages walk anchors **deepest first**,
+because depth is the quality signal the whole feature rests on (§3: below the
+floor a "match" means the game merely shared an opening) — so under an
+age-ordered cut, "oldest first" *is* "deepest first". An unlimited collect would
+have spent its budget on the shallow generic anchors and then pruned away
+exactly the evidence the band exists to find.
+
+So `c` and `p` are now cut **shallowest first** (`byDepth`), and
+`puzzleCollectPerAnchor` is **200 rather than 0** for the same reason: seven
+anchors of one Najdorf line match 3142 puzzles, so a 163-anchor course runs to
+tens of thousands and meets `puzzleCandMax`. 200 × 163 sits under the cap, and
+after dedup across overlapping anchors it is not meaningfully short of
+everything. 0 ("take the lot") is still supported by the code.
+
+### 12.7 The control, and what it is not
+
+"Collect puzzles", beside Gather, green outline — it *is* the pass that fills the
+store, for the other kind of card. **Two presses** (19c's rule): this is the one
+control here that can spend a few hundred megabytes of somebody's connection, and
+the arming press is what puts that on screen first.
+
+**It is not a gather and does not set `filling()`.** It walks no frontier, spends
+no ChessDB request, starts no engine and stores no position, so nothing that
+stands down for a gather has any reason to stand down for it. Two couplings it
+does need: it refuses *while* a gather runs (both write the puzzle store, and
+`savePuzzleStore` replaces this course's slice whole), and `startStorm` refuses
+while it runs — not for a resource reason but because `syncSettings` hides the
+whole settings row once `st.started`, which would take the collect's own Stop
+button off screen while it went on fetching.
+
+It saves **between** the stages, not only at the end: stage B is the long half
+and a tab closed inside it must not throw away the scan.
+
+### 12.8 What did not change
+
+The anchor band and its floor (§3), the two-stage split (§4), the retention rule
+and tombstones (§5), the wire (§6), scoring and the record (§7), the set (§7.1),
+every prohibition in §8, and the host permission's guard (§9). The incremental
+per-leg path still exists and still runs inside an overnight round; the collect
+is a second caller of the same two functions with a different limit.
+
+One parameter changed meaning: **`puzzleBodiesPerPass` counts SHARDS, not
+puzzles**, since stage B groups. And `puzzleGapMs` is **0** — it was a trickle
+rate for a host we were being careful with, and this one is a GitHub Pages site
+serving static CC0 JSON with no account, no compute and no writable endpoint,
+against 100 GB/month of allowance. Unlike ChessDB (a volunteer network) and
+Lichess there is nothing here a pause protects. Kept as a setting rather than
+deleted.
+
+### 12.9 Verification
+
+```
+node dev/check-storm.js            # §29d: the archive record and its draw
+node dev/probe-puzzle-collect.js   # both stages, live, no auth needed
+```
+
+`dev/check-storm.js` §29d, four controls run 2026-09-02, each failing on exactly
+its own assertions and no others: `stormPuzzleArchived` renaming the anchor depth
+`ap` → 2; the draw dropping its already-loaded exclusion → 3; dropping its
+retirement exclusion → 3; the comparator reversed (§14.15's rule in its third
+home) → 2.
+
+`dev/probe-puzzle-collect.js` takes a **line**, not a course, so it needs no
+Chessable session: it walks the line, filters to the band, fetches the index
+shards, groups the matched ids by body shard and reports the grouping saving —
+and it replays every body it extracts, which is what `stormPuzzlePlies` asks
+before one is ever stored. 78 of 78 replayed cleanly on the first run.
+
+### 12.10 Still open
+
+* **`unlimitedStorage` is now requested.** It lifts `storage.local`'s 10 MB cap
+  (which `puzzleCandMax: 40000` and `puzzleArchiveMax: 40000` need) and marks the
+  extension origin's storage persistent, so the archive is not evicted under
+  disk pressure. It is a permission, not a host permission, and nothing outside
+  section 29 relies on it.
+* **The archive has no UI.** `clearShards` and `clearAll` exist in the worker and
+  nothing presses them; `pz.archived` is reported in the collect button's
+  tooltip only. A profile that has collected several courses will hold a few
+  hundred megabytes of shard cache with no way to see or reclaim it short of
+  removing the extension.
+* **A wire-received puzzle is not archived.** `stormPuzzleWireMerge` adds ready
+  entries whose bodies were never fetched here, so if the working set trims them
+  they are gone rather than rehydratable. Harmless at `puzzleReadyMax: 500`
+  against a ~250-entry payload, and the fix is a reverse body mapping nobody
+  needs yet.
+* **Not measured**: a full collect on a real course, end to end, in the browser.
+  The probe measures both stages against the live dataset but drives them from a
+  line rather than from a course walk, and it does not exercise IndexedDB at all.
