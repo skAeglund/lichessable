@@ -1959,9 +1959,22 @@
       // ITS UNIT IS A FRONTIER, NOT A POSITION: one frontier yields two game
       // walks and, at the measured rate, one to three survivors — which is the
       // only reason ~11 ChessDB requests per usable position is affordable.
-      // Harvest all of a frontier's survivors onto the queue at once.
       chunkVars: 20,     // yield to the event loop every N variations of the stage-0 walk
       queueTarget: 3,    // keep this many ready; refill below it while the user thinks
+      // §30) HOW MANY OF ONE FRONTIER'S SURVIVORS MAY GO ON THE QUEUE AT ONCE.
+      // A walk regularly yields three to eight of them and they all come from
+      // ONE line end, so pushing them all — which is what this did until
+      // v0.175.0 — filled the queue with one variation and a whole set of six
+      // was answered on positions from the same line. The rest are not thrown
+      // away: they are STORED (the requests were spent either way) and held in
+      // `st.spare` for this session, which is what stops the stricter rule
+      // starving a fast storm on a cold store.
+      //
+      // 1, not 2: the point is that six cards should be six variations, and at
+      // 2 a set of six is three. It costs one frontier walk per card on a cold
+      // store, ~11 ChessDB requests — which is what `cdbMaxPerSession` (600)
+      // and `maxPositions` (40) were already sized for.
+      queueSpread: 1,
       // Nothing about the storm may BLOCK on the producer: an empty queue ends
       // the session cleanly rather than stalling on a spinner.
       maxPositions: 40,  // a session cannot ask for more than this
@@ -23828,6 +23841,18 @@
       const retry = cr.stormRetry;
       // §17) A HELD card, i.e. a mistake the set will not move past.
       const hold = cr.stormHold;
+      // §29.4) THE DISGUISE. While puzzles are being dealt, an unanswered card
+      // must not say which kind it is — knowing a tactic is there is most of
+      // finding it. The cost falls HERE, on the graded card: a puzzle cannot
+      // truthfully print "N moves past the line" (see `puzzlesInPlay`), so the
+      // only way for the two to read alike is for neither to. Withheld, not
+      // lost: the verdict line replaces it a second later, and the review row
+      // afterwards says all of it.
+      //
+      // NOT IN A RETRY. That board is opened from the review, where the card
+      // has already been answered and described in full — there is nothing left
+      // to give away.
+      const hush = Boolean(cr.line.disguise) && !retry;
       cr.ui.title.textContent = v ? (words[v.verdict] || 'Answered')
         : (retry ? 'Try this one again' : 'Find a good move');
       // TWO TREATMENTS FOR FIVE BANDS, and that is deliberate: this line is
@@ -23853,12 +23878,17 @@
         // one ply after a reply the course never answers, and naming that
         // reply is the whole of what the user needs in order to know what is
         // being asked of them.
-        const how = s.unc ? stormGapNote(s)
+        const how = hush ? '' : (s.unc ? stormGapNote(s)
           : s.plyPast + (s.cand.invented ? ' plausible moves past the line'
-            : (s.plyPast === 1 ? ' move past the line' : ' moves past the line'));
-        cr.ui.progress.textContent =
-          (s.from ? shortDrillTitle(s.from) + ' · ' : '') + how +
-          (retry ? ' · nothing is scored' : '');
+            : (s.plyPast === 1 ? ' move past the line' : ' moves past the line')));
+        // Built from the parts rather than concatenated, because under the
+        // hush the middle one is gone and a fixed " · " between the other two
+        // would leave a separator with nothing on one side of it.
+        const bits = [];
+        if (s.from) bits.push(shortDrillTitle(s.from));
+        if (how) bits.push(how);
+        if (retry) bits.push('nothing is scored');
+        cr.ui.progress.textContent = bits.join(' · ');
         cr.ui.progress.classList.remove('clo-cdb--est');
         cr.ui.progress.removeAttribute('title');
       } else {
@@ -24002,9 +24032,20 @@
         if (path[i].color === cr.userColor) asked++;
       }
       const total = p.asks || 1;
+      // §29.4) THE DISGUISE, and this is the half of it that matters: every
+      // word below — "Find the win", "move 1 of 3", the rating, the game it
+      // came from — says a tactic is here, which is most of finding one. So
+      // until a move is played this panel says exactly what a graded card's
+      // says, and not one thing more.
+      //
+      // IT CLOSES ON THE FIRST MOVE, and it has to: a wrong move ends the card
+      // with a verdict, and a right one is answered by the OPPONENT rather than
+      // by a verdict, which is itself the reveal. Pretending past that would
+      // cost the user "move 2 of 3" for nothing.
+      const hush = Boolean(cr.line.disguise) && !v && !hold && !cr.stormRetry && asked === 0;
 
-      cr.ui.title.textContent = v
-        ? (v.solved ? 'Solved' : 'Not this time')
+      cr.ui.title.textContent = hush ? 'Find a good move'
+        : v ? (v.solved ? 'Solved' : 'Not this time')
         : (total > 1 ? 'Find the win — move ' + Math.min(asked + 1, total) +
             ' of ' + total
           : 'Find the win');
@@ -24016,9 +24057,13 @@
         : '');
 
       if (!v) {
+        // The SAME suffix a graded card shows, §29.4: two different words for
+        // "wait a moment" is a tell that costs nothing to remove, and this card
+        // is being checked against its solution exactly as that one is being
+        // checked against the book.
         cr.ui.prompt.textContent =
           (cr.userColor === 'w' ? 'White' : 'Black') + ' to play' +
-          (cr.busy ? ' — …' : '');
+          (cr.busy ? ' — checking…' : '');
       } else if (v.solved) {
         cr.ui.prompt.textContent = 'Solved' +
           (total > 1 ? ' in ' + total + ' moves' : '') + '.';
@@ -24040,21 +24085,37 @@
           : 'Not it.') + (answer ? ' The move is ' + answer + '.' : '');
       }
 
-      // The provenance line. It is the one thing here that is NOT about the
-      // move, so it stays put whether or not a verdict is up.
+      // The provenance line — where this puzzle came from and how deep into the
+      // line the game went, which is the sentence that makes it a repertoire
+      // exercise rather than a random tactic.
+      //
+      // §29.4) IT WAITS FOR THE ANSWER. Until then only the LINE NAME is shown,
+      // which is exactly what a graded card shows under the same hush; the game
+      // depth and the rating are what would give the card away, and the rating
+      // does worse than that — it says how hard the win is before the user has
+      // decided there is one. The themes are the same argument at its
+      // strongest: "Mate in 3" IS the answer.
       const bits = [];
       if (p.from) bits.push(shortDrillTitle(p.from));
-      if (typeof p.anchorPly === 'number' && p.anchorPly > 0) {
-        bits.push('a game ' + p.anchorPly + ' plies in');
+      if (!hush) {
+        if (typeof p.anchorPly === 'number' && p.anchorPly > 0) {
+          bits.push('a game ' + p.anchorPly + ' plies in');
+        }
+        if (typeof p.rating === 'number') bits.push(p.rating + ' rated');
       }
-      if (typeof p.rating === 'number') bits.push(p.rating + ' rated');
       cr.ui.progress.textContent = bits.join(' · ');
       // NOT `.clo-cdb--est`. That class means "ChessDB computed this for us just
       // now" (DESIGN-chessdb.md §3.3) and there is no ChessDB anywhere near a
       // puzzle — the rating is Lichess's own, published, and not an estimate of
       // anything.
       cr.ui.progress.classList.remove('clo-cdb--est');
-      cr.ui.progress.title = p.themes && p.themes.length
+      // THE THEMES WAIT LONGER THAN THE REST OF THE LINE, and the split is
+      // deliberate: the provenance says where the card came from and comes back
+      // the moment the disguise closes, but a theme names the SOLUTION's motif
+      // — "Mate in 3" — and on a multi-move puzzle the remaining moves are
+      // still the exercise. So they need the card to be OVER, not merely
+      // started.
+      cr.ui.progress.title = (v && p.themes && p.themes.length)
         ? p.themes.map((t) => CloPuzzles.themeLabel(t)).join(', ')
         : '';
 
@@ -24092,8 +24153,11 @@
       cr.ui.skip.textContent = cr.stormRetry ? 'Try another move' : 'No idea';
       cr.ui.skip.title = cr.stormRetry
         ? 'Put the position back and play something else — still nothing is scored'
+        // §29.4) The graded card's own words, verbatim: "the solution" says a
+        // solution exists, which is the one thing this panel is not telling
+        // yet — and "the move" is true of a tactic too.
         : (stormApi && stormApi.isSet()
-            ? 'Show me the solution — nothing is scored either way, and it comes ' +
+            ? 'Show me the move — nothing is scored either way, and it comes ' +
               'back in the second pass'
             : 'Move on without answering — it counts as a miss, so the streak goes ' +
               'back to zero and it costs points');
@@ -35442,6 +35506,17 @@
       poolSize: 0,       // …and how many there were, for the summary line
       // --- the producer (§8.3) --------------------------------------------
       queue: [],         // ready cards
+      // §30) …and the ones a walk produced beyond `queueSpread`, held back so
+      // consecutive cards are not all from one line end. They are ALREADY IN
+      // THE STORE, so this list is not where they live — it is what makes them
+      // reachable without a second walk when the queue runs dry.
+      spare: [],
+      // §30) …and the line ends already dealt from, which is what decides
+      // whether a spare may be used. Lines, not positions: `st.seen` answers
+      // "has this BOARD been shown", and two positions from one variation are
+      // exactly what this is about. Keyed by `stormLineKey`, so it holds an
+      // oid where there is one and a NAME where there is not.
+      dealtLines: new Set(),
       producing: false,
       exhausted: false,  // the pool ran out, or the request cap was reached
       note: '',          // one line: what the producer is doing, or why it stopped
@@ -36067,6 +36142,21 @@
           // `wireVersion` bump — a payload written before v0.153.0 has a
           // two-element `a`, which `stormUnpack` already reads as "not known".
           f: e.f, p: e.p, c: e.c, n: e.n, i: e.i, a: e.a, t: e.t, k: e.k,
+          // §30) THE LINE THIS POSITION IS A FRONTIER OF, and it rides for the
+          // same reason `g` and `d` do: it is not re-derivable on the far
+          // device at any useful price. `n` — the line's NAME — has always
+          // travelled, and `backfillStoreOids` can usually turn one back into
+          // an oid; "usually" is the problem. It refuses a name two variations
+          // share, it needs the course listing (so it cannot answer before the
+          // course has been read), and everything it does not name reads as
+          // "line not recorded" — which the line SPREAD treats as "no line at
+          // all", so an unattributed position never blocks another from the
+          // same variation and a synced store dealt six cards off one line end.
+          // Sixteen characters an entry, against `a[2]`'s sixty. Optional and
+          // absent on every payload written before v0.176.0, which is exactly
+          // what those payloads mean by it — so NO `wireVersion` bump, `g`'s
+          // and `d`'s precedent, and valid in both directions.
+          o: e.o || undefined,
           // §14.19: it RIDES, as an optional field and with NO `wireVersion`
           // bump — absence is already handled as "not known" everywhere that
           // reads it, so an old payload and a new one are both valid. It is not
@@ -36126,6 +36216,10 @@
         }
         if (!m.length) continue;
         store[ck] = { f: e.f, p: e.p || 1, c: e.c, n: e.n || '', i: e.i || 0,
+          // §30, and '' is what every payload written before v0.176.0 carries
+          // — the same "not recorded" the local store has always used, which
+          // `backfillStoreOids` still gets a go at naming.
+          o: e.o ? String(e.o) : '',
           a: e.a || null, t: e.t || blob.at || Date.now(), k: e.k || 0,
           // §14.19, and `undefined` on a payload written before v0.146.0 —
           // which every reader treats as "not known", never as zero.
@@ -36212,6 +36306,16 @@
         if (typeof mine.g !== 'number' && typeof remote[ck].g === 'number') {
           mine.g = remote[ck].g;
         }
+        // §30) …and the LINE, on exactly the same argument one field over. It
+        // is a property of the position's frontier and not of the device, so
+        // the two can only disagree by one of them not knowing — and the device
+        // that gathered a position is the only one that ever knew it for
+        // certain, `backfillStoreOids` being able to name only what one
+        // variation of the course is called. Without this an entry that landed
+        // here before v0.176.0 stays unattributed for ever, however many times
+        // the device that has its oid pushes: the merge only ever ADDED the
+        // entries this store was missing.
+        if (!mine.o && remote[ck].o) mine.o = remote[ck].o;
         // §23) TAKE THE DEEPER LIST, and this is the one field here worth
         // crossing devices for at all: the search costs tens of seconds of CPU
         // and a phone cannot run it, so a desktop that has deepened a position
@@ -37388,6 +37492,55 @@
       return (Math.random() * 100) < pz.on;
     }
 
+    /**
+     * §29.4) Whether a card must be DISGUISED — i.e. whether a puzzle could
+     * have been dealt instead of the card about to go on the board.
+     *
+     * KNOWING A TACTIC IS THERE IS MOST OF FINDING IT. A storm position has no
+     * right answer and is judged by how much of the game the move gave up; a
+     * puzzle has a win sitting in it. So a panel that says which kind of card
+     * this is has answered the harder half of the question before the user has
+     * looked at the board, and the two must be indistinguishable until a move
+     * is played. Section 18 is what applies it (`syncStormUi` /
+     * `syncPuzzleUi`); this only says when it is in force.
+     *
+     * IT COSTS THE GRADED CARD ITS "N moves past the line" SENTENCE, and that
+     * is the whole price: a puzzle cannot truthfully print one — its position is
+     * a game's middlegame, thirty or forty plies past the book, not a walk of
+     * `maxPly` from a line end — so the only way for the two to read alike is
+     * for neither to say it. It is therefore ASKED rather than assumed: with
+     * puzzles switched off, or with none available on this course, the sentence
+     * is exactly as it always was.
+     *
+     * `seen` as well as `queue`, because a set's second pass re-asks puzzles out
+     * of `st.set` rather than out of the queue, which by then can be empty.
+     */
+    const puzzlesInPlay = () => Boolean(pz.on) && (pz.queue.length > 0 || pz.seen.size > 0);
+
+    /**
+     * §30) The next queued puzzle id, SPREAD BY ANCHOR LINE.
+     *
+     * `stormPuzzleDraw`'s order is untouched — §14.15's rule, the same one
+     * `takeStoreItem` obeys one queue over. A course regularly has a hundred
+     * puzzles hanging off one line's anchors, so a plain random draw repeats a
+     * variation inside six cards often enough to notice; and a puzzle and a
+     * graded position from the SAME line are the repetition the user reported,
+     * which is why both read `st.dealtLines` rather than each keeping its own.
+     *
+     * The head when nothing qualifies: this defers a puzzle, never withholds
+     * one. An entry with neither an oid nor a name never blocks —
+     * `takeStoreItem`'s rule, for its reason.
+     */
+    function takeQueuedPuzzle() {
+      for (let i = 0; i < pz.queue.length; i++) {
+        const e = pz.store && pz.store.r[pz.queue[i]];
+        const key = e ? stormLineKey(e.o, e.n) : '';
+        if (key && st.dealtLines.has(key)) continue;
+        return pz.queue.splice(i, 1)[0];
+      }
+      return pz.queue.shift();
+    }
+
     /** The next ready puzzle as a card, skipping anything already shown or no
      *  longer in the store (another tab's pass can have retired it). */
     function nextPuzzleCard() {
@@ -37443,9 +37596,13 @@
      * beside it said a puzzle was ready. Both guards read this, or they can
      * disagree: a disabled button and a press that silently does nothing are
      * the same bug wearing two faces.
+     *
+     * §30) THREE queues, since the spares are dealt by `takeQueued` exactly as
+     * the queue is. A press that finds only spares is a perfectly good press.
      */
     function haveAnyCard() {
-      return Boolean((st.queue && st.queue.length) || (pz.on && pz.queue.length));
+      return Boolean((st.queue && st.queue.length) || (st.spare && st.spare.length) ||
+        (pz.on && pz.queue.length));
     }
 
 
@@ -37537,6 +37694,36 @@
         return { oid: String(card.storm.oid || ''), from: card.storm.from || '' };
       }
       return null;
+    }
+
+    /**
+     * §30) THE LINE SPREAD'S KEY, which is NOT the same thing as §15's oid, and
+     * the difference is the whole reason this function exists.
+     *
+     * The record above asks "which line do I FILE this answer under", where a
+     * guess is a lie — so it uses the oid, refuses a name two variations share,
+     * and files what it cannot name under one honest "line not recorded" row.
+     * The spread asks a much weaker question, "are these two cards from the
+     * same line end", and there a NAME is a perfectly good answer: positions
+     * carrying one name almost always came out of one walk, and being wrong
+     * merely DEFERS a card, which the fallback at the end of every take*
+     * already covers.
+     *
+     * Without the fallback the spread is switched off for exactly the positions
+     * that need it most. Measured live 2026-09-03 on course 453453: of 45
+     * stored positions, 11 could not be named — and 8 of those were one
+     * cluster, whose name 13 variations of that course share. They are one line
+     * end; the record cannot say which, and the spread does not need to.
+     *
+     * '' for a position that has neither, which every reader treats as "no
+     * line" and therefore as something that never blocks.
+     */
+    const stormLineKey = (oid, name) => String(oid || name || '');
+
+    /** …asked of a card, whichever kind it is. */
+    function cardLineKey(card) {
+      const ref = cardLineRef(card);
+      return ref ? stormLineKey(ref.oid, ref.from) : '';
     }
 
     /**
@@ -41032,8 +41219,10 @@
       // `st.seen` is deliberately left alone — those keys should stay unaskable
       // for the rest of the session, which is exactly what it is for.
       st.storeQueue = (st.storeQueue || []).filter((it) => !dropped.has(it.ck));
-      st.queue = (st.queue || []).filter((c) =>
-        !(c && c.startFen && dropped.has(cacheKey(c.startFen))));
+      const live = (c) => !(c && c.startFen && dropped.has(cacheKey(c.startFen)));
+      st.queue = (st.queue || []).filter(live);
+      // §30) …and the spares, which are the same cards one step further back.
+      st.spare = (st.spare || []).filter(live);
       log('storm:', dropped.size, 'stored position(s) dropped — the repertoire ' +
         'now answers them');
       return dropped.size;
@@ -41044,13 +41233,56 @@
      * cost. This is the whole point of the store: the ~11 ChessDB requests a
      * position costs were paid at some earlier, unhurried moment.
      */
+    /**
+     * §30) The next store item to queue, SPREAD BY LINE.
+     *
+     * `stormStoreDraw`'s order is untouched — §14.15's rule, and the reason the
+     * spread is here and not a term in that comparator: this is a filter over
+     * what is taken NEXT, exactly as §14.21's scope is a filter over the input.
+     * The first item from a line neither ON THE QUEUE nor ALREADY DEALT wins;
+     * if every one of them fails that (a one-line scope, a long session, a
+     * store with a single variation left in it), the head is taken unchanged —
+     * so this can defer a position and never withhold one.
+     *
+     * BOTH TESTS, not just the queue. Checking only what is queued lets a line
+     * come back two cards later, which on a repertoire of 150 variations reads
+     * as the same accident the spread was added to remove.
+     *
+     * AN EMPTY KEY NEVER BLOCKS. A position with neither an oid nor a name is
+     * one nothing can attribute, and treating two unknowns as the same line
+     * would make every unattributed store look like one variation.
+     */
+    /** §30) Whether a card's line is one the queue already carries or the
+     *  session has already dealt — the producer's own half of the spread. */
+    function queuedOrDealt(card) {
+      const key = cardLineKey(card);
+      if (!key) return false;
+      if (st.dealtLines.has(key)) return true;
+      return st.queue.some((c) => cardLineKey(c) === key);
+    }
+
+    function takeStoreItem() {
+      const q = st.storeQueue;
+      const on = new Set(st.dealtLines);
+      for (const card of st.queue) {
+        const key = cardLineKey(card);
+        if (key) on.add(key);
+      }
+      for (let i = 0; i < q.length; i++) {
+        const key = stormLineKey(q[i].oid, q[i].name);
+        if (key && on.has(key)) continue;
+        return q.splice(i, 1)[0];
+      }
+      return q.shift();
+    }
+
     function produceFromStore() {
       if (!st.store) return 0;
       let added = 0;
       while (st.storeQueue && st.storeQueue.length &&
              st.queue.length < C.queueTarget &&
              st.shown + st.queue.length < C.maxPositions) {
-        const item = st.storeQueue.shift();
+        const item = takeStoreItem();
         if (st.seen.has(item.ck)) continue;
         // §14.16, defensively: a store written before v0.142.0 — or merged in
         // from a device that had not yet heard about the answer — can still
@@ -41084,6 +41316,7 @@
       if (produceFromStore()) render();
       if (st.queue.length >= C.queueTarget) return;
       st.producing = true;
+      let diverted = 0;
       try {
         while (st.running && !st.over &&
                st.queue.length < C.queueTarget &&
@@ -41097,7 +41330,33 @@
           setNote('Looking for positions… (' + st.pool.length + ' lines left)');
           const cards = await harvestOne(f);
           if (!st.running) return;
-          for (const card of cards) st.queue.push(card);
+          // §30) AT MOST `queueSpread` OF THEM ONTO THE QUEUE. Every card of
+          // this walk is from the SAME line end, so pushing them all is what
+          // made a set of six six positions from one variation. The rest are
+          // spares: already stored, and reachable this session without a
+          // second walk if the queue runs dry.
+          //
+          // …AND ONE MORE WALK WHEN EVEN THAT ONE IS A REPEAT. The deal point
+          // can only choose among what it is handed, so a walk landing on a
+          // line already dealt puts a repeat in front of the user however
+          // carefully `takeQueued` scans (seen live 2026-09-03: five distinct
+          // lines in six cards, the sixth a walk of a line dealt first). Such a
+          // card goes to the spares instead and the loop draws another
+          // frontier. Two clauses bound it, and both matter:
+          //   * ONLY WITH SOMETHING ALREADY ON THE QUEUE. Variety is never
+          //     worth an empty board, which is the rule the whole of this
+          //     section is written under.
+          //   * ONCE PER CALL. A diversion is a whole extra frontier walk —
+          //     ~11 ChessDB requests (§6.1) — and `produce` runs after every
+          //     card, so an unbounded version could spend a session's budget
+          //     (`cdbMaxPerSession`, 600) on nothing but a preference.
+          for (let i = 0; i < cards.length; i++) {
+            const repeat = i < C.queueSpread && st.queue.length && !diverted &&
+              queuedOrDealt(cards[i]);
+            if (repeat) diverted++;
+            if (i < C.queueSpread && !repeat) st.queue.push(cards[i]);
+            else st.spare.push(cards[i]);
+          }
           if (cards.length) render();
         }
       } catch (err) {
@@ -41673,6 +41932,44 @@
         st.storeDirty = true;
         log('storm: named the line of', filled, 'stored position(s)');
       }
+      // §30) …AND WHAT HAS ALREADY BEEN DRAWN OFF THE STORE MUST BE RELABELLED.
+      // This runs AFTER the course has been read, and §14.11's whole point is
+      // that the store draw happens BEFORE it — so by now `st.storeQueue` holds
+      // items built from the un-named entries, and `produceFromStore` has
+      // already turned the first few into cards carrying `oid: ''`. Those are
+      // the items and the cards the whole session is dealt from, so an oid
+      // written only into `st.store` reaches nothing that matters: the spread
+      // stays blind for the sitting and `showCard` records no line at all.
+      //
+      // Patched in place rather than re-drawn. A fresh `storeDraw()` would be
+      // safe (§14.13 — `st.seen` filters it) but would re-roll the random term
+      // and throw away the order the session already opened on, for an answer
+      // this gives exactly.
+      let named = 0, blank = 0;
+      const oidOfCk = (ck) => {
+        const e = ck && st.store[ck];
+        return (e && e.o) ? String(e.o) : '';
+      };
+      for (const item of st.storeQueue || []) {
+        if (!item || item.oid) continue;
+        const oid = oidOfCk(item.ck);
+        if (oid) { item.oid = oid; named++; } else blank++;
+      }
+      for (const card of (st.queue || []).concat(st.spare || [])) {
+        if (!card || !card.storm || card.storm.oid || !card.startFen) continue;
+        const oid = oidOfCk(cacheKey(card.startFen));
+        if (oid) { card.storm.oid = oid; named++; } else blank++;
+      }
+      if (named) log('storm: named the line of', named, 'position(s) already drawn');
+      // SAID EVERY TIME, not only when something was filled: a store whose
+      // positions cannot be attributed is a store the line spread cannot work
+      // on, and that is invisible from the outside — the session simply deals
+      // several cards off one variation and looks like bad luck.
+      const unattributed = Object.keys(st.store).filter((ck) => !st.store[ck].o).length;
+      if (unattributed) {
+        log('storm:', unattributed, 'stored position(s) still have no line —',
+          'they cannot be spread apart by variation');
+      }
     }
 
     /**
@@ -41953,6 +42250,8 @@
         endSession('gathering instead');
       } else {
         st.queue = [];
+        st.spare = [];
+        st.dealtLines = new Set();
         st.card = null;
         st.verdict = null;
         clearTimeout(st.nextTimer);
@@ -42303,6 +42602,11 @@
       st.lastPull = 0;
       st.storeQueue = null;
       st.seen = new Set();
+      // §30) …and with them the spread's two, for `seen`'s own reason: a card
+      // held back and a line already dealt are both statements about the course
+      // this leg is leaving.
+      st.spare = [];
+      st.dealtLines = new Set();
       st.pgn = new Map();
       // §29) THE PUZZLE STORE IS PER COURSE AND MUST SWITCH WITH IT. It is
       // written back under `st.bid`, so a leg that changed courses without this
@@ -43197,6 +43501,8 @@
       st.started = false;
       st.pool = [];
       st.queue = [];
+      st.spare = [];
+      st.dealtLines = new Set();
       st.seen = new Set();
       st.card = null;
       st.verdict = null;
@@ -43519,7 +43825,7 @@
       // and §17's hold already means "you did not find it — play it again, or
       // be shown it", which is exactly what a failed tactic wants.
       const card = (setModeOn() ? setPuzzlePick() : puzzlePick()) ||
-        (setModeOn() ? setPick() : st.queue.shift());
+        (setModeOn() ? setPick() : takeQueued());
       if (!card) {
         // Nothing ready. If more can still be produced this is a pause; if not,
         // the session is over — an empty queue ENDS it cleanly rather than
@@ -43535,6 +43841,66 @@
         return;
       }
       showCard(card);
+    }
+
+    /**
+     * §30) The next ready card, SPREAD BY LINE across both lists.
+     *
+     * A spare is a card `queueSpread` held back because the queue already
+     * carried one from its line end. The order is: a fresh line on the queue, a
+     * fresh line among the spares, then the queue's head, then — for a storm —
+     * a spare's.
+     *
+     * THE QUEUE IS SCANNED, NOT SHIFTED, and that is v0.176.0's correction to
+     * this function. Capping what ONE walk contributes (`queueSpread`) only
+     * keeps one walk from filling the queue; it says nothing about a queue
+     * filled from several sources. Two of them regularly agree: `produceFromStore`
+     * pushes store cards while `produce`'s own walk loop pushes fresh ones with
+     * no idea what is already there, and on the UNCOVERED source two decision
+     * points on one long variation are two different frontiers carrying the same
+     * oid. Both put same-line cards on the queue, and the old head-first deal
+     * then handed them out in a row — the very thing this section exists to
+     * stop, one step past where it was being stopped.
+     *
+     * A SET WAITS RATHER THAN REPEAT A LINE, but only when the queue is EMPTY.
+     * With a clock running a repeated variation beats an empty board; a set has
+     * no clock and can afford to insist. What it cannot afford is to refuse a
+     * full queue: `produce` returns immediately while the queue is at
+     * `queueTarget`, so nothing would then be produced, `nextCard` would never
+     * be called again, and the set would stall with three cards in hand.
+     *
+     * …AND NEITHER WAITS ONCE THE POOL IS SPENT. With `exhausted` true there is
+     * no fresh line coming, so a set that went on waiting would end its first
+     * round short with perfectly good cards in hand — a small course's every
+     * session cut to three positions in the name of a variety that is no longer
+     * available.
+     *
+     * AN EMPTY OID NEVER BLOCKS, `takeStoreItem`'s rule for its reason: a
+     * position the store cannot attribute is not "the same line" as every other
+     * one it cannot attribute.
+     *
+     * Nothing is lost by the wait: `produce`'s own `finally` calls `nextCard`
+     * again the moment a walk lands, and every spare is in the STORE regardless
+     * of whether this session gets to it.
+     */
+    function takeQueued() {
+      // The first card of a list whose line this session has not dealt, taken
+      // out of it. `undefined` when every one of them is spoken for.
+      const fresh = (list) => {
+        for (let i = 0; i < list.length; i++) {
+          const key = cardLineKey(list[i]);
+          if (!key || !st.dealtLines.has(key)) return list.splice(i, 1)[0];
+        }
+        return undefined;
+      };
+      return fresh(st.queue) || fresh(st.spare) ||
+        // THE QUEUE STILL YIELDS WHATEVER IT HAS, and this clause is above the
+        // set's wait deliberately: `produce` returns at once while the queue is
+        // at `queueTarget`, so a set refusing a full queue would never call it
+        // and nothing would ever arrive to change the answer — a stall with
+        // three perfectly good cards in hand and no way to reach them.
+        (st.queue.length ? st.queue.shift()
+          : (setModeOn() && !st.exhausted) ? undefined : st.spare.shift());
     }
 
     /**
@@ -43570,6 +43936,16 @@
       st.card = card;
       st.lastPlayed = null;
       st.shown++;
+      // §29.4) Whether this card's panel may say what KIND of card it is. Set
+      // here, at the one point every card passes through on its way to a board,
+      // and read by section 18 off the card itself — a session-wide flag would
+      // have to be re-asked at render time, which is where a card already dealt
+      // would pick up a later answer than the one it was dealt under.
+      card.disguise = puzzlesInPlay();
+      // §30) …and which line end it came from, for the spread. Here for the
+      // same reason: one point, every card.
+      const key = cardLineKey(card);
+      if (key) st.dealtLines.add(key);
       // A SET ARMS NO DEADLINE. Its clock counts up and is started by the press
       // of Start, since it measures the sitting rather than a budget the
       // producer's opening round trip must not eat into.
@@ -43608,7 +43984,7 @@
     function setPick() {
       if (st.round === 1) {
         if (st.set.length < C.setSize) {
-          const card = st.queue.shift();
+          const card = takeQueued();
           if (card) {
             const entry = { card, first: null, second: null, attempts: 0,
               outcome: null, secondOutcome: null };
@@ -45148,7 +45524,8 @@
       // ordinary pick, so a ready puzzle alone is enough to begin — and the
       // count sentence has to say which of the two is ready, or a
       // puzzles-only start reads "0 position(s) are ready".
-      const nPos = (st.queue && st.queue.length) || 0;
+      const nPos = ((st.queue && st.queue.length) || 0) +
+        ((st.spare && st.spare.length) || 0);
       const nPz = (pz.on && pz.queue.length) || 0;
       const readyPhrase = nPos
         ? nPos + ' position(s)' + (nPz ? ' and ' + nPz + ' puzzle(s)' : '') +
@@ -46096,8 +46473,16 @@
         // §16: the win-probability loss, which is what the verdict is made of.
         // The centipawn figure moves to the row's tooltip — still the raw fact,
         // no longer the headline.
+        //
+        // §29) A PUZZLE HAS NO LOSS AND NEVER HAD ONE. '?' in this column means
+        // "the position could not be scored" — that is the whole of §14.10a's
+        // argument for '…' in the column beside it — and saying it about a card
+        // that is ANSWERED rather than graded reports a grading failure that
+        // never happened. '—' is the move column's own convention for "there is
+        // no such thing here".
         row.append(el('span', 'clo-st-revrow-loss',
-          typeof v.wp === 'number' ? (v.wp < 0.05 ? '0' : '−' + stormWp(v.wp)) : '?'));
+          item.card.puzzle ? '—'
+            : typeof v.wp === 'number' ? (v.wp < 0.05 ? '0' : '−' + stormWp(v.wp)) : '?'));
         // §29) A PUZZLE ROW SAYS SOMETHING ELSE ENTIRELY — where it came
         // from, how deep the game went, its rating and its themes — so it gets
         // its own sentence rather than a graded row's with holes in it. Split
@@ -48077,7 +48462,16 @@
     // Which BUILD is running. The content script is the one thing Chrome keeps
     // cached across page reloads, so this line is how you tell an extension
     // reload actually took effect (see README, "Reloading the extension").
-    log('v' + chrome.runtime.getManifest().version, IS_FRAME_APP ? '(frame)' : '(top)');
+    const VERSION = chrome.runtime.getManifest().version;
+    log('v' + VERSION, IS_FRAME_APP ? '(frame)' : '(top)');
+    // …AND WHERE AUTOMATION CAN SEE IT. That log line is the documented way to
+    // tell whether a reload took, and it is written from the ISOLATED world,
+    // whose console a driven browser cannot read — so from a session the one
+    // check CLAUDE.md offers is unusable, and "is the build I am testing the
+    // build that is loaded?" has to be guessed at. Stamped on `<html>`, beside
+    // the `clo-touch` class that is already written there, and never read back
+    // by anything of ours.
+    try { document.documentElement.dataset.cloVersion = VERSION; } catch (err) { /* nothing */ }
     if (IS_FRAME_APP) {
       // Recognise a quick-edit post-submit landing before anything else.
       if (await maybeReportQuickEditLanding()) return;

@@ -632,3 +632,128 @@ before one is ever stored. 78 of 78 replayed cleanly on the first run.
 * **Not measured**: a full collect on a real course, end to end, in the browser.
   The probe measures both stages against the live dataset but drives them from a
   line rather than from a course walk, and it does not exercise IndexedDB at all.
+
+---
+
+## 13. The disguise — §29.4 (v0.174.0)
+
+**A card must not say which kind of card it is until a move has been played.**
+
+### 13.1 Why
+
+Knowing a tactic is there is most of finding it. The two card kinds ask
+genuinely different questions — a graded position has no right answer and is
+judged by how much of the game the move gave up (§16 of
+`DESIGN-intuition-storm.md`), while a puzzle has a win sitting in it — and the
+whole value of mixing them is that the user does not know which question they
+are being asked. A panel reading "Find the win — move 1 of 3 · a game 14 plies
+in · 1834 rated" has answered the harder half before the board has been looked
+at: there is something here, it is worth 1834 points of rating, and it takes
+three moves.
+
+That was the shape it shipped in (v0.171.0). Reported by the author 2026-09-03.
+
+### 13.2 What was leaking
+
+Six things, all in `syncPuzzleUi`:
+
+| Leak | Was | Now |
+| --- | --- | --- |
+| Title | `Find the win`, or `Find the win — move 1 of 3` | `Find a good move` |
+| Busy suffix | ` — …` | ` — checking…`, the graded card's own |
+| Game depth | `a game 14 plies in` | withheld until the verdict |
+| Rating | `1834 rated` | withheld until the verdict |
+| Themes | tooltip, always | withheld until the verdict |
+| Set's "No idea" | `Show me the solution` | `Show me the move` |
+
+The themes are the worst of the six and the easiest to miss: `Mate in 3` *is*
+the answer, and it was one hover away on every live card.
+
+### 13.3 What it costs the graded card
+
+A puzzle cannot truthfully print the one sentence a graded card shows before an
+answer — `N moves past the line`. Its position is a real game's middlegame,
+thirty or forty plies past the book, not a walk of `maxPly` from a line end; a
+card claiming "43 moves past the line" is a tell in its own right and a lie
+besides. So the only way for the two to read alike is for **neither** to say it,
+and the graded card gives the sentence up while puzzles are in play. It is
+withheld rather than lost: the verdict line replaces it about a second later,
+and the review row afterwards prints all of it.
+
+Both kinds therefore show, before an answer, **exactly the line name and
+nothing else**.
+
+On the UNCOVERED source (§19 of `DESIGN-intuition-storm.md`) the sentence given
+up is the more painful of the two — `after 3…Nf6 (7%), which your course does
+not answer` is most of what that exercise is asking. It goes for the same
+reason and there is no way round it: a puzzle has no gap note, so keeping it
+would make "no gap note" mean "this is a puzzle" on every card of such a
+session. The reply is still on the board, tinted as the arriving move, and the
+review row's tooltip names it.
+
+### 13.4 When it is in force
+
+`puzzlesInPlay()`, asked ONCE per card in `showCard` and written onto the card
+as `disguise`:
+
+```js
+Boolean(pz.on) && (pz.queue.length > 0 || pz.seen.size > 0)
+```
+
+* **Asked, not assumed.** With puzzles off, or with none available on this
+  course, the graded card keeps its sentence exactly as it always had it. The
+  cost is paid only where there is something to hide.
+* **`seen` as well as `queue`**, because a set's second pass re-asks puzzles out
+  of `st.set` rather than out of the queue, which by then is regularly empty —
+  i.e. the cards that have already beaten the user once are exactly the ones
+  that would have come back wearing their rating.
+* **On the card, not on the session.** A session-wide flag would be re-asked at
+  render time, which is where a card already dealt picks up a later answer than
+  the one it was dealt under.
+
+### 13.5 When it closes
+
+On the first move, and it has to: a wrong move ends the card with a verdict, and
+a *right* one is answered by the opponent rather than by a verdict — which is
+itself the reveal. Pretending past that point would cost the user "move 2 of 3"
+for nothing. `hush` in `syncPuzzleUi` is therefore
+`disguise && !v && !hold && !cr.stormRetry && asked === 0`.
+
+A RETRY board (§14.10b) is never disguised on either side: it is opened from the
+review, where the card has already been answered and described in full.
+
+### 13.6 What is NOT disguised, and cannot be
+
+**The board.** A puzzle is a middlegame or an endgame; a graded card is an
+opening position a few plies past the book. Anyone who has played two of each
+can tell them apart at a glance, and no wording fixes that. What the disguise
+buys is that the *position* is the only evidence — which is the same evidence a
+real game gives, and the reason it is worth buying at all.
+
+Also visible after the fact: a puzzle answers instantly while a graded card
+takes a grading round trip. That is after the move, where the disguise has
+already closed.
+
+### 13.7 What the review says instead
+
+Nothing is withheld once the session is over — the review row prints the line,
+the game depth, the rating and the themes, and §14.10a's `item.shown` gate is
+what holds the SOLUTION back until it is asked for, exactly as it holds a graded
+card's best move back.
+
+One thing changed there with this pass: a puzzle row's LOSS column used to read
+`?`. That glyph means "the position could not be scored" — it is the whole of
+§14.10a's argument for using `…` rather than `?` in the column beside it — and
+saying it about a card that is *answered* rather than graded reports a grading
+failure that never happened. A puzzle row now reads `—`, the move column's own
+convention for "there is no such thing here".
+
+### 13.8 Verification
+
+`dev/check-storm.js` §29e executes `puzzlesInPlay` (impure — `__setPz` supplies
+`pz`, the funnel's own idiom). Both ways of being wrong are quiet:
+under-disguising leaks only on the cards that *are* tactics, which at 10% is one
+card in ten; over-disguising silently costs every graded card the sentence that
+says where it is. Controls run 2026-09-03, each failing on exactly its own
+assertion and no others: reduced to `Boolean(pz.on)` → 1; the `seen` clause
+dropped → 1.

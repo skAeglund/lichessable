@@ -4289,6 +4289,76 @@ Currently working (v0.18.x).
     window (section 24c's rule; 19d's for the `<select>` half, arrows and letters
     being how a selector is driven). The selector half was already live: the mode,
     source and share selectors have been in this row since v0.150.0.
+  * ONE CARD, ONE LINE (§30, v0.175.0, repaired v0.176.0; DESIGN-intuition-storm.md
+    §30 AND §30a, read both before touching any of this). Reported live: after a CLEAR, a set of
+    six was answered on six positions from the SAME line end. `harvestFrontier`
+    yields three to eight survivors and every one of them is from that one
+    frontier, and the producer pushed them all — so `queueTarget` was met by a
+    single variation. The store hid it: `stormStoreDraw`'s random term mixes
+    lines, so it only shows on a COLD store, i.e. exactly after §22's clear.
+    - `queueSpread` (1) IS HOW MANY OF A WALK'S SURVIVORS REACH THE QUEUE. The
+      rest are SPARES — already in the store, held in `st.spare` so they are
+      reachable this session without a second walk. It costs one walk per card
+      on a cold store, ~11 ChessDB requests, which `cdbMaxPerSession` (600) and
+      `maxPositions` (40) were already sized for.
+    - THREE DEAL POINTS SHARE ONE `st.dealtLines` (line ends dealt this session):
+      `takeStoreItem`, `takeQueued` and `takeQueuedPuzzle`. A puzzle and a graded
+      position from the same line are the same repetition, which is why they read
+      one set and not one each.
+    - THE COMPARATORS ARE UNTOUCHED. `stormStoreDraw` and `stormPuzzleDraw` still
+      order as they did — §14.15's rule — and this is a filter over what is taken
+      NEXT, exactly as §14.21's scope is a filter over the input.
+    - NONE OF THEM MAY WITHHOLD: when nothing qualifies the head is taken, so a
+      one-line scope still deals. AN EMPTY KEY NEVER BLOCKS, or a store nothing
+      can attribute would read as one variation.
+    - THE SET/STORM SPLIT IS IN `takeQueued` ALONE. A spare from a line already
+      dealt is taken in a STORM (a clock is running and a repeat beats an empty
+      board) and never in a SET — which waits for the producer instead — UNLESS
+      `st.exhausted`, without which a small course's set ends its first round
+      short with usable cards in hand. …AND THE QUEUE ALWAYS YIELDS, above that
+      wait: `produce` returns at once while the queue is at `queueTarget`, so a
+      set refusing a full queue would never call it and would stall with three
+      good cards in hand.
+    - v0.176.0: THE RULE WAS RIGHT AND THE FIELD IT READ WAS ALMOST NEVER THERE
+      (§30a, ground-truthed 2026-09-03 on the author's own account: of 41 synced
+      positions for course 453453, ZERO carried an oid). Four repairs, and each
+      is a way this switches itself off in silence:
+      * `stormWirePack` NOW CARRIES `o`. It never did — the NAME rode and the
+        oid did not — so every position from another device was unattributed and
+        all three take-functions read "no line" as "never blocks". Optional,
+        absence read as "not recorded", NO `wireVersion` bump (`g`/`d`/`cl`'s
+        precedent). The puzzle wire has carried its `o` since v0.171.0, which is
+        what makes this an oversight rather than a decision. `stormWireMerge`
+        TAKES ONE THE OTHER DEVICE HAS, exactly as it takes a `g` — a line is a
+        property of the POSITION's frontier, not of the device, so the two can
+        only disagree by one of them not knowing. Without that clause the merge
+        only ever ADDS entries this store was missing, and everything already
+        here from before v0.176.0 stays unattributed for ever.
+      * `backfillStoreOids` NOW RELABELS WHAT HAS ALREADY BEEN DRAWN
+        (`st.storeQueue`, `st.queue`, `st.spare`). §14.11's early draw happens
+        BEFORE the course is read and this needs the course listing, so writing
+        the oid into `st.store` alone reaches the one copy nothing is dealt
+        from. Patched in place, never re-drawn — a fresh `storeDraw()` would be
+        safe (§14.13) but would re-roll the random term and throw away the order
+        the session opened on. It also SAYS how many positions still have no
+        line, every time: a store the spread cannot work on is otherwise
+        invisible from the outside.
+      * THE SPREAD'S KEY IS `oid || name` (`stormLineKey` / `cardLineKey`), AND
+        §15'S RECORD MUST NEVER USE IT. The two ask different questions: the
+        record asks which line to FILE an answer under, where a guess is a lie
+        and a name two variations share is refused; the spread asks whether two
+        cards are from the same line end, where a name is a good answer and
+        being wrong merely DEFERS a card. Without the fallback the spread is off
+        for exactly the positions that need it most — 8 of the 11 unnamed above
+        were one cluster, under a name 13 variations of that course carry.
+      * `queuedOrDealt` IS THE PRODUCER'S OWN HALF. The deal point can only
+        choose among what it is handed, so a walk landing on a line already
+        dealt puts a repeat in front of the user however carefully `takeQueued`
+        scans; such a card goes to the spares and the loop draws another
+        frontier. Bounded TWICE and both clauses matter — only with something
+        already on the queue (variety is never worth an empty board), and ONCE
+        per `produce` call (a diversion is a whole extra ~11-request walk and
+        `produce` runs after every card).
 
 
 - Puzzles from the games that played your lines (section 29, v0.171.0): a
@@ -4459,6 +4529,47 @@ Currently working (v0.18.x).
     does nothing. A live card, a blind hold and a storm's failed card are all
     still masked, the last of those because §14.10a's review gate answers there
     instead.
+  * A CARD MUST NOT SAY WHICH KIND IT IS UNTIL A MOVE HAS BEEN PLAYED (29.4,
+    v0.174.0; DESIGN-storm-puzzles.md §13, and read it before touching either
+    `sync*Ui`). Knowing a tactic is THERE is most of finding it, and the panel
+    was answering that before the board had been looked at: "Find the win —
+    move 1 of 3 · a game 14 plies in · 1834 rated", with the THEMES a hover
+    away — "Mate in 3" IS the answer. So until the first move both panels print
+    the LINE NAME and nothing else.
+    - THE COST FALLS ON THE GRADED CARD, and that is what makes the rule
+      symmetrical rather than a puzzle-only tidy-up: a puzzle cannot truthfully
+      print "N moves past the line" (its position is a real game's middlegame,
+      thirty or forty plies past the book), so the only way for the two to read
+      alike is for NEITHER to say it. Withheld, not lost — the verdict line
+      replaces it a second later and the review row prints all of it.
+    - `puzzlesInPlay()` IS THE GATE and it is ASKED, not assumed:
+      `pz.on && (pz.queue.length || pz.seen.size)`. With puzzles off, or none
+      available on this course, the graded card keeps its sentence exactly as it
+      always had it. `seen` as well as `queue` because a SET's second pass
+      re-asks puzzles out of `st.set`, by which time the queue is regularly
+      empty — i.e. exactly the cards that already beat the user once would come
+      back wearing their rating.
+    - IT IS WRITTEN ONTO THE CARD (`card.disguise`) in `showCard`, the one point
+      every card passes through on its way to a board. A session-wide flag would
+      be re-asked at render time, which is where a card already dealt picks up a
+      later answer than the one it was dealt under.
+    - IT CLOSES ON THE FIRST MOVE and must: a wrong move ends the card with a
+      verdict, a right one is answered by the OPPONENT rather than by a verdict,
+      and that is itself the reveal. A RETRY board is never disguised on either
+      side — it is opened from the review, where everything has been said.
+    - THE BOARD IS NOT DISGUISED AND CANNOT BE. A middlegame is not an opening;
+      what this buys is that the POSITION is the only evidence, which is the
+      same evidence a real game gives.
+    - ON THE UNCOVERED SOURCE IT COSTS `stormGapNote` TOO, which is the more
+      painful of the two — that sentence is most of what §19's exercise asks.
+      Same reason and no way round it: a puzzle has no gap note, so keeping it
+      would make its ABSENCE mean "this is a puzzle" on every card of such a
+      session. The reply is still on the board as the tinted arrival.
+  * A PUZZLE ROW'S LOSS COLUMN IS `—`, NEVER `?` (`renderReview`, v0.174.0).
+    `?` there means "the position could not be scored", which is the whole of
+    §14.10a's argument for `…` in the column beside it — and about a card that is
+    ANSWERED rather than graded it reports a grading failure that never
+    happened.
   * IT OWNS NO BRIDGE. `stormApi` grew two members (`puzzleSolved`,
     `puzzleFailed`), called from section 18's quiz path.
   * NOTHING MAY BE FETCHED ON A PROFILE THAT HAS NOT SWITCHED IT ON. It is a
@@ -4702,6 +4813,41 @@ in that file's header. Two are worth repeating: the zero-tombstone assertion
 had to be asked NEAR THE EPOCH (at the far clock it passed for the wrong reason
 and covered nothing), and one control was a NO-OP until it was strengthened —
 a mutation that does not change behaviour proves nothing.
+
+After touching the LINE SPREAD (§30/§30a) — `takeStoreItem`, `takeQueued`,
+`takeQueuedPuzzle`, `queuedOrDealt`, `stormLineKey`, `cardLineKey`,
+`backfillStoreOids`, the wire's `o`, `st.dealtLines`, `st.spare` or
+`CONFIG.storm.queueSpread`.
+`dev/check-storm.js` §30 executes all three (impure; `__setEnv` and `__setPz`).
+Every failure here is §14.15's shape: a spread that never fires still deals
+every position, in a plausible order, and looks exactly like the bug it was
+added to remove — six cards from one variation. Controls run 2026-09-03, each
+failing on exactly its own assertions and no others: `takeStoreItem` reduced to
+`q.shift()` → 2; its `dealtLines` seed dropped so only the queue is checked → 1;
+`takeQueued` reduced to `queue.shift() || spare.shift()` → 3; its `exhausted`
+clause dropped → 1; `takeQueuedPuzzle` reduced to `pz.queue.shift()` → 1. The
+v0.176.0 adds four groups and their own controls, run the same day:
+`takeQueued` reverted to a head-first shift of the QUEUE, 4; the oid dropped
+from the wire pack, 2; `backfillStoreOids`'s relabel of the already-drawn items
+removed, 2; `stormLineKey`'s name fallback removed, 3; `queuedOrDealt` reduced
+to the dealt set alone, 1. The producer's own loop is async and unreachable
+there, so what is pinned instead is the number it reads and the predicate it
+asks. Note the shape those controls forced on the assertions:
+they read the answer through `oidOf`/`ckOf`, because a reverted rule that
+returns `undefined` must FAIL an assertion rather than throw — a thrown control
+ends the run and proves nothing about the rest of it.
+
+After touching the DISGUISE (29.4) — `puzzlesInPlay`, `card.disguise` in
+`showCard`, or the `hush` arms of `syncStormUi` / `syncPuzzleUi`.
+`dev/check-storm.js` §29e executes the gate (impure; `__setPz` supplies `pz`).
+BOTH ways of being wrong are quiet: under-disguising leaks only on the cards
+that ARE tactics, which at 10% is one card in ten, and over-disguising silently
+costs every graded card the sentence that says where it is. Controls run
+2026-09-03, each failing on exactly its own assertion: reduced to
+`Boolean(pz.on)` → 1; the `seen` clause dropped → 1. The `hush` arms themselves
+are render code and are not asserted — `dev/harness.html` is where they are
+looked at, and a live session is the only place the two kinds can be seen side
+by side.
 
 After touching section 29.2's collect — `gatherPuzzleCandidates`,
 `gatherPuzzleBodies`, `takeCandidatesAt`, `stormPuzzleArchived`,
@@ -5276,6 +5422,14 @@ README, "Reloading the extension".
   on startup and the options page shows the loaded version; both read the
   loaded manifest, so an unchanged version means the reload did NOT happen.
   Bump `manifest.json` first and that check is unambiguous.
+- **From automation, read `document.documentElement.dataset.cloVersion`.** That
+  log line is written from the ISOLATED world, whose console a driven browser
+  cannot read — `read_console_messages` returns only page-world messages, so the
+  check above is unusable from a session and two of v0.176.0's runs were
+  inconclusive for exactly that reason. The same string is stamped on `<html>`
+  at startup (beside the `clo-touch` class), and nothing of ours reads it back.
+  A `chrome-extension://` URL is not an alternative: `navigate` prefixes
+  `https://` to it.
 - **`chrome://extensions` is NOT scriptable** and an options-page reload hook
   never fires (background tabs are never loaded). Both verified 2026-07-26 —
   do not retry them.

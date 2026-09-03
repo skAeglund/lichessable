@@ -6475,3 +6475,207 @@ the whole of the answer.
 * **No way to reach it from a board.** The obvious next step is a "storm from
   here" on the course tree (§24) or on the analysis board, both of which know a
   FEN and a course. Nothing about the scope would change; it is a launcher.
+
+---
+
+## 30. One card, one line — the spread (v0.175.0)
+
+**Reported live 2026-09-03.** After clearing the store, a set of six was
+answered on six positions from the *same* line end (`5. Nb3 g6! 6. Nc3 #4`, six
+answers, one row in §15's table). The point of this feature is varied
+middlegame positions across the whole repertoire; six cards should generally be
+six variations, and on a 150-line repertoire even two from one line should be a
+coincidence.
+
+### 30.1 Why it happened
+
+`harvestFrontier` walks two games from ONE frontier and yields three to eight
+survivors, all of them positions from that one line end. The producer pushed
+**all** of them onto `st.queue`:
+
+```js
+for (const card of cards) st.queue.push(card);
+```
+
+`queueTarget` is 3, so a single walk overshot it and the producer stopped. The
+queue was then one variation deep and the set drew six cards out of it. The
+config comment said so in as many words — *"Harvest all of a frontier's
+survivors onto the queue at once"* — and the reason given was cost: ~11 ChessDB
+requests buy a frontier, and taking one card from it makes that ~11 per card.
+
+The store hid this most of the time. `stormStoreDraw`'s random term mixes lines,
+so a warm store deals varied cards and the fault only shows on a **cold** one —
+i.e. exactly after §22's clear, or on a course nobody has gathered.
+
+### 30.2 The rule
+
+**At most `queueSpread` (1) of a walk's survivors goes on the queue.** The rest
+become **spares**: they are already in the STORE (the requests were spent either
+way), and `st.spare` is what keeps them reachable *this session* without a
+second walk.
+
+Three deal points then share one `st.dealtLines` — the line ends this session has
+already dealt from:
+
+| | rule | fallback |
+| --- | --- | --- |
+| `takeStoreItem` | first item from a line neither queued nor dealt | the head |
+| `takeQueued` | queue first, then a spare from an undealt line | see below |
+| `takeQueuedPuzzle` | first id whose anchor line is undealt | the head |
+
+None of them may withhold: when nothing qualifies, the head is taken. **An empty
+`oid` never blocks** — a position stored before §15, or a wire payload from an
+older build, carries none, and treating two unknowns as one line would make a
+whole unattributed store look like a single variation.
+
+`stormStoreDraw`'s and `stormPuzzleDraw`'s **comparators are untouched**. §14.15
+is emphatic that a re-weighted comparator there is invisible from the outside;
+this is a filter over what is taken NEXT, exactly as §14.21's chapter scope is a
+filter over the input.
+
+### 30.3 The set/storm split
+
+`takeQueued`'s last step is the one place the two exercises part company. A
+spare from a line **already dealt** is taken:
+
+* **in a STORM** — a clock is running and a repeated variation beats an empty
+  board;
+* **never in a SET** — no clock, so it waits for the producer instead. The
+  request that started this was that six cards be six variations, and in the
+  one mode that can afford to insist on it, it does. `produce`'s own `finally`
+  calls `nextCard` again the moment a walk lands, so nothing is lost by waiting;
+* **…unless the pool is spent.** Once `st.exhausted` is true no fresh line is
+  coming, and a set that went on waiting would end its first round short with
+  perfectly good cards in hand — a small course's every session cut to three
+  positions in the name of a variety that is no longer available.
+
+### 30.4 What it costs
+
+One frontier walk per card on a cold store, ~11 ChessDB requests — which is what
+`cdbMaxPerSession` (600) and `maxPositions` (40) were **already sized for**; the
+producer's own comment has said "~11 ChessDB requests per usable position" since
+v0.130.0. Nothing extra is fetched: the same walk happens, and its extra
+survivors are stored exactly as before.
+
+No latency regression at the start, because nothing is dealt until Start and
+`haveAnyCard()` goes true after the first walk — the pre-roll producer fills the
+rest while the user is reading the row. Mid-session it is one walk per card in
+the background, with the spares covering a user who outpaces it.
+
+`queueSpread` is **1, not 2**: at 2 a set of six is three variations, which is
+the same complaint one halving later.
+
+## 30a. …and why it did not work (v0.176.0)
+
+v0.175.0 shipped §30 and the report came back unchanged: a set of six still
+dealt three cards from one variation. The rule was right and it was reading a
+field that was almost never there.
+
+### 30a.1 What was actually wrong
+
+Ground-truthed live 2026-09-03 against the author's own account, by decoding the
+sync card out of course 465386 and comparing it with `getList` for 453453:
+
+| | |
+|---|---|
+| positions in the synced store for 453453 | 41 |
+| …carrying an `o` (the line they are a frontier of) | **0** |
+| …whose `n` (the line NAME) resolves to exactly one variation | 30 |
+| …whose name is shared by two or more variations | 11 |
+| the largest single cluster | 8 positions, under a name **13 variations** share |
+
+Three defects, each of which alone switches the spread off:
+
+1. **`stormWirePack` never carried `o`.** The name rode, the oid did not — so
+   every position that arrived from another device was unattributed, and
+   `takeStoreItem`, `takeQueued` and `showCard` all read "no line" as "never
+   blocks". The puzzle wire (§29) had carried its `o` since v0.171.0, which is
+   what makes this an oversight rather than a decision.
+2. **`backfillStoreOids` runs too late to matter.** §14.11's whole point is that
+   the store is drawn BEFORE the course is read, and the backfill needs the
+   course listing — so by the time it names anything, `st.storeQueue` holds
+   items built from the un-named entries and `produceFromStore` has already
+   turned the first few into cards carrying `oid: ''`. Those items and those
+   cards are what the session is actually dealt from. It wrote the oid into the
+   one copy nothing reads.
+3. **A name is not always a line.** Even run at the right moment, the backfill
+   refuses a name two variations share — correctly, for §15, where filing an
+   answer under a guess is a lie. But that refusal took out the biggest cluster
+   in the store: 8 positions under a name 13 variations of that course carry.
+
+### 30a.2 The three repairs, and the one that is not obvious
+
+* `o` **rides the wire**, optional and with no `wireVersion` bump (`g`/`d`/`cl`'s
+  precedent — absence is already read as "not recorded"). Sixteen characters an
+  entry against `a[2]`'s sixty. And `stormWireMerge` **takes one the other
+  device has**, exactly as it takes a `g`: a line is a property of the
+  position's frontier and not of the device, so the two can only disagree by one
+  of them not knowing. Without that clause the merge only ever ADDS the entries
+  a store was missing, and everything already here from before v0.176.0 would
+  stay unattributed for ever however many times the device that knows pushes.
+* `backfillStoreOids` **relabels what has already been drawn** — `st.storeQueue`,
+  `st.queue` and `st.spare` — patched in place rather than re-drawn, since a
+  fresh `storeDraw()` would be safe (§14.13) but would re-roll the random term
+  and throw away the order the session opened on. It also SAYS, every time, how
+  many positions still have no line: a store the spread cannot work on is
+  otherwise invisible from the outside.
+* **The spread's key is `oid || name`** (`stormLineKey`), which §15's record must
+  never use. The two ask different questions. The record asks *which line do I
+  file this answer under*, where a guess is a lie. The spread asks *are these two
+  cards from the same line end*, where a name is a perfectly good answer:
+  positions sharing one name almost always came out of one walk, and being wrong
+  merely DEFERS a card, which the fallback at the end of every take\* already
+  covers. Without it the spread is off for exactly the positions that need it
+  most — the 8-position cluster above.
+
+### 30a.3 The producer's own half
+
+The deal point can only choose among what it is handed. With all three repairs
+in, a live set went from three distinct lines in six cards to **five**, and the
+sixth was a fresh WALK of a line dealt first — `produce` pushes its one card
+(`queueSpread`) with no idea what has already been dealt.
+
+So a walk whose card repeats a line already dealt or already queued
+(`queuedOrDealt`) goes to the SPARES instead and the loop draws another
+frontier. Two clauses bound it and both matter:
+
+* **only with something already on the queue** — variety is never worth an empty
+  board, which is the rule this whole section is written under;
+* **once per `produce` call** — a diversion is a whole extra frontier walk, ~11
+  ChessDB requests (§6.1), and `produce` runs after every card, so an unbounded
+  version could spend a session's budget (`cdbMaxPerSession`, 600) on nothing but
+  a preference.
+
+### 30a.4 The measurement lever this needed
+
+The documented way to tell whether an extension reload took is the
+`[CLO] v<version>` line, which is written from the ISOLATED world — whose console
+a driven browser cannot read. So from a session the one check CLAUDE.md offers is
+unusable, and "is the build I am testing the build that is loaded?" has to be
+guessed at; two of this session's runs were inconclusive for exactly that reason.
+The version is now stamped on `<html>` as `data-clo-version`, beside the
+`clo-touch` class already written there, and is never read back by anything of
+ours.
+
+### 30.5 Verification
+
+`dev/check-storm.js` §30 executes all three (impure; `__setEnv` and `__setPz`
+supply `st` and `pz`). Every failure mode here is §14.15's shape — a spread that
+never fires still deals every position, in a plausible order, and looks exactly
+like the bug it was added to remove. Controls run 2026-09-03, each failing on
+exactly its own assertions and no others: `takeStoreItem` reduced to `q.shift()`
+→ 2; its `dealtLines` seed dropped, so only the queue is checked → 1;
+`takeQueued` reduced to `queue.shift() || spare.shift()` → 3; its `exhausted`
+clause dropped → 1; `takeQueuedPuzzle` reduced to `pz.queue.shift()` → 1.
+
+v0.176.0 adds four groups, and their controls (2026-09-03, each failing on
+exactly its own assertions and no others): `takeQueued` reverted to a head-first
+shift of the queue → 4; `o` dropped from the wire pack → 2;
+`backfillStoreOids`'s relabel of the already-drawn items removed → 2;
+`stormLineKey`'s name fallback removed → 3; `queuedOrDealt` reduced to the dealt
+set alone → 1.
+
+The producer's own half is async and unreachable from there, so what is pinned
+instead is the number it reads (`queueSpread` at 0 would put nothing on the
+queue from a walk at all, and a session on a cold store would deal one position
+and stop) and the predicate it asks (`queuedOrDealt`, which is pure).

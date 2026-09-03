@@ -128,6 +128,7 @@ const SQ_FILES = 'abcdefgh';
 const squareName = (i) => SQ_FILES[i & 7] + ((i >> 3) + 1);
 const cacheKey = (fen) => fen.split(' ').slice(0, 4).join(' ');
 const warn = () => {};
+const log = () => {};
 // The stage-0 walk yields every `chunkVars` variations (a 500-line course is
 // ~8 s of CloSan). Here that is a microtask.
 const sleepMs = () => Promise.resolve();
@@ -198,8 +199,9 @@ const src = [
   // reason: what it removes is what the user would otherwise be asked, and a
   // sweep that removes nothing is indistinguishable from one that works.
   sliceDecl('dropCoveredStored'),
-  'let st = null; let C = null;',
+  'let st = null; let C = null; let pz = null;',
   'function __setEnv(a, b) { st = a; C = b; }',
+  'function __setPz(a) { pz = a; }',
   // §14.23's engine tier. IMPURE, like the funnel above and for the same
   // reason: the property worth asserting — that a search which runs out of
   // budget is TAKEN at the depth it reached rather than thrown away — lives in
@@ -281,6 +283,30 @@ const src = [
   sliceDecl('stormPuzzleWirePack'),
   sliceDecl('stormPuzzleWireUnpack'),
   sliceDecl('stormPuzzleWireMerge'),
+  // §29.4) The disguise's own gate. IMPURE — it closes over `pz` — and here
+  // for the funnel's reason: what it decides is whether an unanswered puzzle is
+  // distinguishable from a graded card, and BOTH ways of being wrong are quiet.
+  // Under-disguising leaks a tactic's existence only on the cards that are
+  // tactics, which at 10% is one card in ten; over-disguising silently costs
+  // every graded card the sentence that says where it is.
+  sliceDecl('puzzlesInPlay'),
+  // §30) The three deal-side spreads. IMPURE (`st`, `pz`) and here for
+  // §14.15's reason in its fourth home: a spread that never fires still deals
+  // every position, in a plausible order, and looks exactly like the bug it was
+  // added to remove — six cards from one variation.
+  sliceDecl('stormLineKey'),
+  sliceDecl('queuedOrDealt'),
+  sliceDecl('cardLineKey'),
+  sliceDecl('setModeOn'),
+  // §30) …and the backfill, IMPURE for the same reason: what it decides is
+  // whether the store's own line names ever reach the items and cards ALREADY
+  // DRAWN off it, and §14.11's early draw guarantees there are some. Nothing
+  // throws when it does not — the session simply deals with the spread switched
+  // off.
+  sliceDecl('backfillStoreOids'),
+  sliceDecl('takeStoreItem'),
+  sliceDecl('takeQueued'),
+  sliceDecl('takeQueuedPuzzle'),
   sliceDecl('stormCandidate'),
   sliceDecl('stormAdvance'),
   sliceDecl('stormReentered'),
@@ -312,6 +338,9 @@ const src = [
   '         stormFunnelBlank, stormFunnelBump, stormFunnelWhy,' +
   '         stormFunnelNote, stormFunnelLines,' +
   '         storeAdd, harvestCandidates, dropCoveredStored, __setEnv,' +
+  '         puzzlesInPlay, __setPz,' +
+  '         takeStoreItem, takeQueued, takeQueuedPuzzle, backfillStoreOids,' +
+  '         stormLineKey, cardLineKey, queuedOrDealt,' +
   '         stormEngineLoss, onStormEngineUpdate, endEngineJob,' +
   '         deepestCompleteList, deepenPickDepth,' +
   '         stormWirePack, stormWireUnpack, stormWireMerge,' +
@@ -462,7 +491,7 @@ const C = {
   // is what keeps "background" meaning quieter than the burst you ask for.
   backfillMaxCdb: num('backfillMaxCdb'), backfillStore: num('backfillStore'),
   backfillGapMs: num('backfillGapMs'), gatherMaxCdb: num('gatherMaxCdb'),
-  queueTarget: num('queueTarget'),
+  queueTarget: num('queueTarget'), queueSpread: num('queueSpread'),
   setCleanOn: (cfgBody.match(/setCleanOn:\s*\[([^\]]*)\]/) || [, ''])[1]
     .split(',').map((x) => x.trim().replace(/'/g, '')).filter(Boolean),
   // §14.19's reachability bucket. UNKNOWN answers this value, so a wrong one
@@ -2026,7 +2055,7 @@ const leadsTo = (arrived, fen) => {
   //    losing it in a merge is invisible.
   const wireStore = () => ({
     a1: { f: fFen, p: 3, c: 'w', n: 'Ruy', i: 0, a: ['f1b5', 'Bb5', preFen], t: 1000, k: 2,
-      g: 145,
+      g: 145, o: 'L1',
       m: [['a7a6', 'a6', 30, 54], ['g8f6', 'Nf6', 12], ['b8e5', '??', -5]] },
     // …and one with NO reachability figure, which is what every entry written
     // before v0.146.0 looks like (§14.19).
@@ -2073,6 +2102,33 @@ const leadsTo = (arrived, fen) => {
   eq('…and comes back', un.store.a1.g, 145);
   eq('…while an entry that never had one still has none, not a zero',
     un.store.a2.g, undefined);
+  {
+    // §30) …and the LINE is taken the same way. Without this an entry that
+    // landed here before v0.176.0 stays unattributed for ever however many
+    // times the device that HAS its oid pushes — the merge only ever added the
+    // entries this store was missing.
+    const bare = wireStore(); delete bare.a1.o;
+    S.stormWireMerge(bare, wireStore(), {}, {});
+    eq('a line the other device knows is taken', bare.a1.o, 'L1');
+    const own = wireStore(); own.a1.o = 'MINE';
+    S.stormWireMerge(own, wireStore(), {}, {});
+    eq('…and one this device already has is NOT overwritten', own.a1.o, 'MINE');
+  }
+  // §30) THE LINE RIDES TOO, and it is the field whose absence is silent in a
+  // way none of the others are: the receiving device's store then has positions
+  // it cannot attribute, `takeStoreItem` and `takeQueued` read "no line" as
+  // "never blocks", and a synced store deals six cards off one variation while
+  // every position in it is perfectly good. `backfillStoreOids` is not the
+  // answer on its own — it refuses a name two variations share, and it cannot
+  // run until the course has been read, which is AFTER the first cards have
+  // been drawn.
+  eq('the line rides on the wire', packedWire.p.a1.o, 'L1');
+  eq('…and comes back', un.store.a1.o, 'L1');
+  eq('…while an entry with no line still has none, not a stray truthy value',
+    un.store.a2.o, '');
+  eq('a payload written before it existed is still valid',
+    S.stormWireUnpack({ v: C.wireVersion, at: 1, g: {},
+      p: { z: { f: fFen, p: 2, c: 'w', m: [['a7a6', 12]] } } }, C).store.z.o, '');
   eq('a payload written before it existed is still valid',
     Boolean(S.stormWireUnpack({ v: C.wireVersion, at: 1, g: {},
       p: { z: { f: fFen, p: 2, c: 'w', m: [['a7a6', 12]] } } }, C).store.z), true);
@@ -4199,6 +4255,350 @@ console.log('\n-- 29d) the archive record and its draw (§29.2) --\n');
   eq('an empty archive draws nothing',
     S.stormPuzzleArchiveDraw(S.stormPuzzleBlank(), () => 0.5, C, NOW29D).length, 0);
 }
+
+
+// ---------------------------------------------------------------------------
+// 29e) THE DISGUISE'S GATE (§29.4)
+//
+// Knowing a tactic is there is most of finding it, so an unanswered puzzle must
+// read exactly as a graded card does. `puzzlesInPlay` is what says when that is
+// in force, and it is asked ONCE per card, in `showCard`.
+//
+// It is a three-way condition and each way of getting it wrong is quiet:
+//
+//  * dropped to `Boolean(pz.on)` alone — every graded card on a course with no
+//    puzzles loses its "N moves past the line" sentence for ever, and nothing
+//    says why;
+//  * dropped to `pz.queue.length` alone — a SET's second pass re-asks puzzles
+//    out of `st.set` rather than out of the queue, so exactly the cards that
+//    have already beaten the user once come back wearing their rating;
+//  * inverted to `pz.on === 0` — the disguise is then on precisely when there
+//    is nothing to disguise, which looks like it working.
+// ---------------------------------------------------------------------------
+console.log('\n-- 29e) the disguise gate (§29.4) --\n');
+{
+  const pzOf = (on, queue, seen) => ({ on, queue, seen: new Set(seen || []) });
+
+  eq('off is never disguised',
+    (S.__setPz(pzOf(0, ['p1'], [])), S.puzzlesInPlay()), false);
+  eq('on with a ready puzzle is disguised',
+    (S.__setPz(pzOf(10, ['p1'], [])), S.puzzlesInPlay()), true);
+  // The clause a "simplification" removes first.
+  eq('on with an empty queue but a puzzle already dealt is still disguised',
+    (S.__setPz(pzOf(10, [], ['p1'])), S.puzzlesInPlay()), true);
+  // …and the clause that keeps the cost off everybody else.
+  eq('on with nothing available at all is not disguised',
+    (S.__setPz(pzOf(10, [], [])), S.puzzlesInPlay()), false);
+  // 100% is a percentage, not a flag: it must not read as "off" anywhere.
+  eq('100% is disguised',
+    (S.__setPz(pzOf(100, ['p1'], [])), S.puzzlesInPlay()), true);
+}
+
+// ---------------------------------------------------------------------------
+// 30) THE LINE SPREAD (§30)
+//
+// Reported live 2026-09-03: a set of six answered six positions from ONE line
+// end. One frontier walk yields three to eight survivors, all of them from the
+// same variation, and every one went onto the queue — so `queueTarget` was met
+// by a single line and the whole set came out of it.
+//
+// Everything here fails the way §14.15 is emphatic about: a spread that never
+// fires still deals every position, in a plausible order, and looks exactly
+// like the bug it was added to remove. Three deal points share one
+// `st.dealtLines`, and each has its own way of being quietly wrong:
+//
+//  * `takeStoreItem` — skipping only what is ON THE QUEUE lets a line come back
+//    two cards later; skipping nothing is the original bug on a warm store.
+//  * `takeQueued` — the SET/STORM split. A set waits for a fresh line rather
+//    than repeat one, a storm never stalls, and an EXHAUSTED pool drops the
+//    distinction entirely, or a small course's set ends its first round short
+//    with usable cards in hand.
+//  * `takeQueuedPuzzle` — a hundred puzzles hang off one line's anchors, so a
+//    plain shift repeats a variation inside six cards.
+//
+// None of them may WITHHOLD: when nothing qualifies the head is taken.
+// ---------------------------------------------------------------------------
+console.log('\n-- 30) the line spread (§30) --\n');
+{
+  const card = (oid) => ({ startFen: 'x', storm: { oid, from: oid } });
+  // A control that reverts one of these rules must FAIL an assertion, never
+  // throw: a thrown control ends the run and proves nothing about the rest.
+  const oidOf = (c) => (c && c.storm ? c.storm.oid : '(nothing)');
+  const ckOf = (it) => (it ? it.ck : '(nothing)');
+  const item = (ck, oid) => ({ ck, oid, name: oid });
+  const envOf = (over) => Object.assign({
+    mode: 'storm', exhausted: false, queue: [], spare: [],
+    storeQueue: [], dealtLines: new Set(),
+  }, over || {});
+
+  // The producer's own half of the spread is async and is not reachable from
+  // here, so what CAN be pinned is the number it reads. A 0 would put nothing
+  // on the queue from a walk at all — every card would have to come from a
+  // spare, and a session on a cold store would deal one position and stop.
+  eq('queueSpread is at least 1', C.queueSpread >= 1, true);
+  eq('...and small enough to mean something', C.queueSpread <= 2, true);
+
+  // --- takeStoreItem ------------------------------------------------------
+  {
+    const env = envOf({
+      queue: [card('L1')],
+      storeQueue: [item('a', 'L1'), item('b', 'L1'), item('c', 'L2')],
+    });
+    S.__setEnv(env, C);
+    eq('a store item from a line already on the queue is passed over',
+      ckOf(S.takeStoreItem()), 'c');
+    eq('...and the ones it passed over are still there', env.storeQueue.length, 2);
+  }
+  {
+    // BOTH tests, not just the queue: a line dealt two cards ago must not come
+    // straight back while another line is sitting behind it.
+    const env = envOf({
+      dealtLines: new Set(['L2']),
+      storeQueue: [item('a', 'L2'), item('b', 'L3')],
+    });
+    S.__setEnv(env, C);
+    eq('a store item from a line already dealt is passed over',
+      ckOf(S.takeStoreItem()), 'b');
+  }
+  {
+    // It defers, never withholds.
+    const env = envOf({
+      dealtLines: new Set(['L1']),
+      queue: [card('L1')],
+      storeQueue: [item('a', 'L1'), item('b', 'L1')],
+    });
+    S.__setEnv(env, C);
+    eq('with every line spoken for the head is taken anyway',
+      ckOf(S.takeStoreItem()), 'a');
+  }
+  {
+    // An unattributed position (stored before §15) is not "the same line" as
+    // every other unattributed position.
+    const env = envOf({
+      dealtLines: new Set(['']),
+      storeQueue: [item('a', ''), item('b', 'L9')],
+    });
+    S.__setEnv(env, C);
+    eq('an empty oid never blocks', ckOf(S.takeStoreItem()), 'a');
+  }
+
+  // --- takeQueued ---------------------------------------------------------
+  {
+    const env = envOf({ queue: [card('L1')], spare: [card('L2')] });
+    S.__setEnv(env, C);
+    eq('the queue comes before the spares', oidOf(S.takeQueued()), 'L1');
+    eq('...and the spare is untouched', env.spare.length, 1);
+  }
+  {
+    // v0.176.0: THE QUEUE IS SCANNED, NOT SHIFTED. Capping what one WALK
+    // contributes says nothing about a queue filled from several sources —
+    // `produceFromStore` and `produce`'s own loop both push, and on the
+    // uncovered source two decision points on one variation are two frontiers
+    // carrying one oid. A head-first deal hands those out in a row.
+    const env = envOf({
+      dealtLines: new Set(['L1']),
+      queue: [card('L1'), card('L1'), card('L5')],
+    });
+    S.__setEnv(env, C);
+    eq('a queued card from a line already dealt is passed over',
+      oidOf(S.takeQueued()), 'L5');
+    eq('...and the ones it passed over are still queued', env.queue.length, 2);
+  }
+  {
+    // Two cards of one line reaching the queue together: the second is
+    // deferred behind anything else, not dealt straight after the first.
+    // `showCard` is what records a dealt line, so the deal loop stands in for
+    // it — which is also the shape of the bug, since a card carrying no oid
+    // records nothing and the next deal is made in the dark.
+    const env = envOf({ queue: [card('L1'), card('L1'), card('L2')] });
+    S.__setEnv(env, C);
+    const seq = [];
+    for (let i = 0; i < 3; i++) {
+      const c = S.takeQueued();
+      seq.push(oidOf(c));
+      if (c && c.storm && c.storm.oid) env.dealtLines.add(c.storm.oid);
+    }
+    eq('...a repeat is deferred behind the other line', seq.join(), 'L1,L2,L1');
+  }
+  {
+    // A fresh line among the SPARES beats a repeat sitting on the queue: the
+    // spares are cards of other variations, which is the whole point of them.
+    const env = envOf({
+      dealtLines: new Set(['L1']),
+      queue: [card('L1')], spare: [card('L8')],
+    });
+    S.__setEnv(env, C);
+    eq('a fresh spare beats a repeat on the queue', oidOf(S.takeQueued()), 'L8');
+    eq('...and the queued repeat is still there', env.queue.length, 1);
+  }
+  {
+    // THE DEADLOCK GUARD. `produce` returns at once while the queue is at
+    // `queueTarget`, so a set refusing a full queue would never call it and
+    // nothing would arrive to change the answer. The queue always yields.
+    const env = envOf({
+      mode: 'set', dealtLines: new Set(['L1']),
+      queue: [card('L1'), card('L1'), card('L1')],
+    });
+    S.__setEnv(env, C);
+    eq('a SET never stalls on a full queue of one line',
+      oidOf(S.takeQueued()), 'L1');
+  }
+  {
+    // The spare that is NOT first is the one worth having.
+    const env = envOf({
+      dealtLines: new Set(['L1']),
+      spare: [card('L1'), card('L1'), card('L7')],
+    });
+    S.__setEnv(env, C);
+    eq('a spare from an undealt line is taken over the head',
+      oidOf(S.takeQueued()), 'L7');
+  }
+  {
+    const env = envOf({
+      mode: 'set', dealtLines: new Set(['L1']), spare: [card('L1'), card('L1')],
+    });
+    S.__setEnv(env, C);
+    eq('a SET waits rather than repeat a line', S.takeQueued(), undefined);
+    eq('...and nothing was consumed by the refusal', env.spare.length, 2);
+  }
+  {
+    const env = envOf({
+      mode: 'storm', dealtLines: new Set(['L1']), spare: [card('L1')],
+    });
+    S.__setEnv(env, C);
+    eq('a STORM takes it rather than show an empty board',
+      oidOf(S.takeQueued()), 'L1');
+  }
+  {
+    // The clause that stops a small course's set ending short.
+    const env = envOf({
+      mode: 'set', exhausted: true, dealtLines: new Set(['L1']),
+      spare: [card('L1')],
+    });
+    S.__setEnv(env, C);
+    eq('...and so does a set once the pool is spent',
+      oidOf(S.takeQueued()), 'L1');
+  }
+  {
+    S.__setEnv(envOf({}), C);
+    eq('an empty everything is undefined, not a throw', S.takeQueued(), undefined);
+  }
+
+  // --- the key itself -----------------------------------------------------
+  //
+  // The SPREAD's question is weaker than §15's and takes a weaker answer. It is
+  // what covers the positions the record has to give up on: measured live
+  // 2026-09-03 on course 453453, 11 of 45 stored positions could not be named,
+  // 8 of them one cluster whose name 13 variations share. Those 8 are one line
+  // end, and without the name fallback they are eight cards the spread cannot
+  // tell apart — which is exactly what dealt three of six from one line.
+  eq('the key is the oid where there is one', S.stormLineKey('L1', 'Ruy'), 'L1');
+  eq('...the NAME where there is not', S.stormLineKey('', 'Ruy'), 'Ruy');
+  eq('...and empty where there is neither', S.stormLineKey('', ''), '');
+  eq('...never the two mixed up', S.stormLineKey(0, 0), '');
+  eq('a card answers through the same rule',
+    [S.cardLineKey({ storm: { oid: 'L1', from: 'Ruy' } }),
+     S.cardLineKey({ storm: { oid: '', from: 'Ruy' } }),
+     S.cardLineKey({ puzzle: { oid: '', from: 'Ruy' } }),
+     S.cardLineKey(null)],
+    ['L1', 'Ruy', 'Ruy', '']);
+  {
+    // The live shape: two unattributable positions of one line end, told apart
+    // from a third by nothing but the name they were stored under.
+    const env = envOf({
+      storeQueue: [{ ck: 'a', oid: '', name: 'shared' },
+                   { ck: 'b', oid: '', name: 'shared' },
+                   { ck: 'c', oid: '', name: 'other' }],
+    });
+    S.__setEnv(env, C);
+    const first = S.takeStoreItem();
+    env.dealtLines.add(S.stormLineKey(first.oid, first.name));
+    eq('an unnamed position is spread by the name it was stored under',
+      ckOf(S.takeStoreItem()), 'c');
+  }
+
+  // --- queuedOrDealt (the producer's half) ---------------------------------
+  //
+  // The deal point can only choose among what it is handed, so a walk landing
+  // on a line already dealt puts a repeat in front of the user however
+  // carefully `takeQueued` scans. Seen live 2026-09-03: five distinct lines in
+  // six cards, the sixth a fresh walk of the line dealt first.
+  {
+    const env = envOf({
+      dealtLines: new Set(['L1']),
+      queue: [card('L2')],
+    });
+    S.__setEnv(env, C);
+    eq('a walk landing on a line already dealt is a repeat',
+      S.queuedOrDealt(card('L1')), true);
+    eq('...so is one already on the queue', S.queuedOrDealt(card('L2')), true);
+    eq('...a fresh line is not', S.queuedOrDealt(card('L9')), false);
+    eq('...and a card with no line NEVER counts as one',
+      S.queuedOrDealt(card('')), false);
+  }
+
+  // --- backfillStoreOids --------------------------------------------------
+  //
+  // §14.11 draws the store BEFORE the course is read, and this runs after it —
+  // so an oid written only into `st.store` reaches nothing the session is
+  // actually dealt from. That is silent twice over: `takeStoreItem` reads a
+  // missing oid as "never blocks" and `showCard` records no line at all, so the
+  // whole spread is switched off for the sitting while every position in the
+  // store is perfectly good. It is what a synced store looks like — the wire
+  // carried no `o` at all before v0.176.0.
+  {
+    const fen = 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 5 4';
+    const env = envOf({
+      store: {
+        // Named in the course listing, so the backfill can name it…
+        [cacheKey(fen)]: { f: fen, n: 'Italian', o: '' },
+        // …and one whose name matches two variations, which it must refuse.
+        z: { f: fen, n: 'Twice', o: '' },
+      },
+      storeQueue: [{ ck: cacheKey(fen), oid: '', name: 'Italian' },
+                   { ck: 'z', oid: '', name: 'Twice' }],
+      queue: [{ startFen: fen, storm: { oid: '', from: 'Italian' } }],
+      spare: [],
+      storeDirty: false,
+    });
+    S.__setEnv(env, C);
+    S.backfillStoreOids({ vars: [
+      { oid: 'L4', name: 'Italian' },
+      { oid: 'L5', name: 'Twice' },
+      { oid: 'L6', name: 'Twice' },
+    ] });
+    eq('the store entry is named', env.store[cacheKey(fen)].o, 'L4');
+    eq('...and so is the item ALREADY DRAWN from it', env.storeQueue[0].oid, 'L4');
+    eq('...and the card already built from that item',
+      env.queue[0].storm.oid, 'L4');
+    eq('a name two variations share is still refused',
+      [env.store.z.o, env.storeQueue[1].oid], ['', '']);
+  }
+
+  // --- takeQueuedPuzzle ---------------------------------------------------
+  {
+    S.__setEnv(envOf({ dealtLines: new Set(['L1']) }), C);
+    S.__setPz({ queue: ['p1', 'p2', 'p3'],
+      store: { r: { p1: { o: 'L1' }, p2: { o: 'L1' }, p3: { o: 'L4' } } } });
+    eq('a puzzle whose anchor line has been dealt is passed over',
+      S.takeQueuedPuzzle(), 'p3');
+  }
+  {
+    S.__setEnv(envOf({ dealtLines: new Set(['L1']) }), C);
+    const pzq = { queue: ['p1', 'p2'],
+      store: { r: { p1: { o: 'L1' }, p2: { o: 'L1' } } } };
+    S.__setPz(pzq);
+    eq('...and the head is taken when every one of them has',
+      S.takeQueuedPuzzle(), 'p1');
+    eq('...consuming exactly one', pzq.queue.length, 1);
+  }
+  {
+    S.__setEnv(envOf({ dealtLines: new Set(['L1']) }), C);
+    S.__setPz({ queue: ['p1'], store: { r: {} } });
+    eq('a puzzle with no stored entry never blocks', S.takeQueuedPuzzle(), 'p1');
+  }
+}
+
 
   console.log('\n' + SRC_PATH);
   console.log(pass + ' passed, ' + fail + ' failed');
