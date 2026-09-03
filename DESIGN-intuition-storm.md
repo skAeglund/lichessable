@@ -3105,6 +3105,90 @@ move rather than a measurement to re-run. The change with the best ratio is
   make a ceiling reached once in twelve look reachable.
 
 
+### 14.25 …and every session pushes the store (v0.178.0)
+
+§15.7 did this for the performance record and left the same hole in the store
+it was modelled on. The position card's pushes were:
+
+* `startSession`, behind `pullMs` — *arriving*;
+* `gather`, at the end of a pass — *a burst the user asked for by name*;
+* `roundSync`, once per course in a round (§27b) — *an overnight pass*.
+
+Every one of them is about work this device is **about to do**, and none about
+work it has **just done**. So a session that answered its way through a dozen
+positions — retiring the ones it learned (§14.16's tombstones), leaving the ones
+it missed, deepening a few (§23) — left every one of those verdicts here until
+something else happened to push. On a phone that plays and never gathers, that
+is *never*.
+
+`endSession` now calls `pushStoreAfterSession(why)` beside the record's push,
+and one exchange carries both stores: `syncStore` awaits `syncPuzzles` on the
+same trip (§29).
+
+**The debt is a COUNTER, and it counts saves.** `noteStoreChanged()` bumps
+`st.storeSeq`, and its two callers are `saveStore` and `savePuzzleStore` — the
+one funnel every writer already passes through. That is the whole reason it is
+not a flag set at each of the two dozen places that mark a store dirty: a writer
+added later cannot forget to call this, because it cannot avoid being saved.
+
+**`syncStore` captures the counter BEFORE it reads the card**, and claims only
+that value on success. Three things land between the capture and the write — the
+merge's own write-back, a background walk storing a position (§14.24), a second
+tab — and none of them is in the payload. Capturing early leaves each as a debt;
+capturing after the pack would mark them carried. The direction is deliberate:
+
+> The worst an early capture costs is one extra exchange. The worst a late one
+> costs is a position that no device but this one will ever have, while every
+> sync goes on reporting success.
+
+**Four silences**, one more than §15.7's:
+
+* **Nothing written** — `storeChanged()`. A window opened and closed pushes
+  nothing.
+* **No sync course** — the user's own switch, and it must not even reach
+  `setSyncNote`, or every close would end with a line about a decision they made
+  deliberately.
+* **Handing over to a gather.** `gather` sets `st.handingToGather` around its
+  `endSession('gathering instead')`. That pass is about to rewrite the store and
+  pushes when it is done; an exchange started on the way out would still be in
+  flight when that one fires — and `syncStore` answers a second caller by
+  returning, so the gather's own push would be the one dropped. A named flag
+  rather than a test on `why`, which is a log string.
+* **Already in flight** — and unlike §15.7's stats push this is deliberately
+  **not queued**. `roundSync` AWAITS `syncStore`, so a call that returned at once
+  and re-fired later would let the round switch course underneath an exchange
+  that reads `st.bid` across its own awaits. The debt simply stands; the only
+  exposure is closing and reopening the window inside one exchange, which costs
+  the new session its opening PULL and no data at all.
+
+**A debt belongs to the course it was written for.** `resetStoreDebt()` is
+called at both places `st.bid` moves — `startSession` on a change, and
+`cycleSwitch` — because an exchange for course B that claimed A's writes would
+mark A's card up to date when nothing had been sent to it. Nothing is lost: A's
+own next session pulls and pushes on `pullMs` whatever the counter says, and in
+a round `roundSync` has already pushed the leg being left.
+
+#### 14.25.1 The hazard it made reachable, and the guard for it
+
+Pushing as a session ENDS is pushing at exactly the moment the next one is
+opened, and §27b's own warning — *`syncStore` reads `st.bid` across awaits of its
+own* — is no longer theoretical: close the window on course A and reopen it on
+course B inside one exchange, and the card is named from A while the payload is
+packed from B's store and stamped `b: B`. `stormWireForeign` would then refuse
+that card **for ever**, which §27b.5a records as the one dead end this feature
+cannot dig itself out of.
+
+So both exchanges now capture `const bid = st.bid` at the top, name the card from
+it, stamp the payload with it, and **abandon quietly** if `st.bid` has moved by
+the time the payload is built. Quietly, because by then the window is showing
+another course and has nothing to say about this one; and the debt stands, so
+the next push takes it.
+
+`dev/check-storm.js` §32 executes the counter, both `syncStore` semantics and all
+four silences against a stubbed carrier; the controls are in that file's header.
+Not covered there: the two `noteStoreChanged` calls (the funnel) and the call in
+`endSession`, none of whose functions is sliced.
+
 ## 15. The performance record (v0.140.0)
 
 A storm ends with a score, and a score is forgotten by the next one. The
@@ -3266,6 +3350,78 @@ and `html.clo-touch`: no overflow in any of the four, rows 23px and 31px.
   rows subtly different claims. Not versioned, because the bands have not moved
   since v0.130.0 and a re-grade is impossible anyway — the scored list is not
   kept per answer.
+
+### 15.7 …and every session pushes it (v0.177.0)
+
+§15.3 left the exchange with two triggers: the stats view's own button, and the
+auto-pull behind `startSession` (`syncStore(...).then(() => syncStats(...))`).
+Both are about **arriving** — neither is about **finishing** — so the record
+left a device one session late, and only if a further session was ever opened
+on it:
+
+> Play a set of six on the phone. Close the window. Open the storm on the
+> desktop. The desktop pulls what the phone last pushed, which is the state
+> before that set.
+
+A device that is only ever *read* on — the phone in a pocket during a commute,
+answering sets and never opening a second one — carried nothing at all. Nothing
+was lost (the local record is written by `saveStats` on every answer), and every
+number on screen stayed plausible, which is why this went unnoticed: the wrong
+answer and the right one differ only by one session's worth of rows.
+
+So `endSession` pushes, through `pushStatsAfterSession(why)`.
+
+**Why `endSession` and not the set's own end.** Every way out of a session comes
+through that function — the clock, a set cleared, "End storm", the board being
+closed, a gather taking over — and §14.10c's push of the unanswered card is
+there for exactly the same reason. A hook on the set's completion would cover
+one of six routes and would look like it covered all of them.
+
+**Three silences, and each is a round trip nobody asked for.**
+
+* **Nothing counted.** The gate is `st.statsPending`, set by `statNote` when an
+  answer is actually applied. It is deliberately **not** `st.statsDirty` — that
+  one is about the LOCAL write and is cleared by `saveStats` a statement after
+  it is set — and deliberately not `st.answered`, which is reset per session and
+  which a review retry leaves untouched. The debt is *what has not left this
+  device*, so it survives a session that failed to push it and is cleared by the
+  push rather than by the sitting ending.
+* **No sync course.** Section 16e's carrier is the user's own switch. With it
+  off this must be as quiet as it was before it existed — `syncStats` would
+  otherwise write "Choose a course for syncing…" into the stats note after every
+  single session, which is a reproach for a decision the user made deliberately.
+* **Already in flight is NOT one of them.** See below.
+
+**A push asked for while one is in flight is QUEUED, never dropped**
+(`st.statsResync`). This is the case the feature is most likely to lose, and it
+is not exotic: the auto-pull fires when the session opens and can still be going
+when a fast set ends, and it packed its payload *before* any of this session's
+answers were counted. Refused there, those answers would sit on the device until
+the next session was opened on it — i.e. exactly the behaviour this section
+exists to remove, arriving through a race instead of by design. One extra pass
+at most: the flag can only be set by a call made while a push is in flight, and
+the re-fire runs after the guard has been released.
+
+**The payload is what clears the debt, not the write landing.** `statsPending`
+is cleared where `stormStatsWirePack` runs, because an answer counted while the
+POST is in the air is not in that snapshot and must stay pending; a write that
+then FAILS puts it back, and an answer counted meanwhile has already set it
+again, which the restore must not undo. That is the difference between "the
+record is on the other device" and "we said it was".
+
+**What it is NOT.** The POSITION store is untouched by this and still pushes on
+`startSession`, after a gather pass, and per course in a round (§27b). That is a
+larger card written per course, with tombstones and a clear high-water mark in
+it, and it has three existing triggers rather than two; whether it wants an
+end-of-session push as well is a separate question, and the argument for it is
+not the same one.
+
+`dev/check-storm.js` §31 executes both functions against a stubbed carrier — the
+three silences, the ordinary push, the failed write, and the queued re-fire.
+Every one of them is silent when wrong, and the controls are in that file's
+header. What no assertion there can cover is the CALL in `endSession`: that
+function is not sliced, and a push removed from it looks exactly like the
+behaviour before this existed.
 
 ## 16. Win probability, not centipawns (v0.141.0)
 

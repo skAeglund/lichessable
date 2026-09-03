@@ -110,6 +110,32 @@
  *   * the wire pack ignoring its budget                    → 2 fail
  *   * …carrying candidates as well as ready puzzles        → 1 fail
  *   * the payload no longer naming its course (§27b)       → 1 fail
+ *
+ * §31's end-of-session push (§15.7). Controls run 2026-09-03, each failing on
+ * exactly its own assertions and no others:
+ *   * `pushStatsAfterSession`'s debt gate removed        → 2 fail (the second
+ *     of them is the no-course case writing a status line after every session)
+ *   * a failed write no longer putting the debt back    → 1 fail
+ *   * the queued re-fire dropped, i.e. a push refused
+ *     outright while another is in flight               → 3 fail
+ * What NO assertion here can cover is the CALL in `endSession`: that function
+ * is not sliced, and a push removed from it looks exactly like the behaviour
+ * before v0.177.0 — the record leaving one session late.
+ *
+ * §32's position-store push (§14.25). Controls run 2026-09-03, each failing on
+ * exactly its own assertions and no others:
+ *   * `syncStore` capturing the write counter LATE, after the pack
+ *     rather than before the read                          → 1 fail (and it is
+ *     the one that loses a position: every sync still reports success)
+ *   * its mid-flight course guard removed                  → 2 fail (the state
+ *     it writes is course B's positions onto course A's card, which §27b's
+ *     `stormWireForeign` then refuses for ever)
+ *   * `pushStoreAfterSession`'s debt gate removed          → 1 fail
+ *   * …its gather hand-off gate removed                    → 2 fail
+ *   * `resetStoreDebt` made a no-op                        → 1 fail
+ * Not covered, for §31's reason: the two `noteStoreChanged` calls inside
+ * `saveStore` and `savePuzzleStore` (the funnel itself), and the call in
+ * `endSession`.
  */
 'use strict';
 const fs = require('fs');
@@ -252,6 +278,55 @@ const src = [
   // §21's sentence. Pure, and it is the entire point of the `s` counter: a
   // figure made of two conditions has to say so, and this is where it says it.
   sliceDecl('statUnhurriedNote'),
+  // §15.7) The end-of-session push and the debt it clears. IMPURE, like the
+  // funnel and the engine tier above, and here for the same reason: what is
+  // worth asserting lives in these two functions' control flow and nowhere
+  // else, and EVERY way of getting it wrong is silent — a push that never
+  // fires looks exactly like the behaviour before it existed (the record
+  // leaves on the NEXT session opened here), and a debt cleared by a write
+  // that failed looks exactly like one that succeeded.
+  //
+  // The carrier is section 16e's and comes in through `__setSync`, so nothing
+  // here touches a network; the five bindings below it are the shipped file's
+  // own and are stubbed to be observable rather than transcribed.
+  'let pinSyncApi = null;',
+  'function __setSync(a) { pinSyncApi = a; }',
+  'let __note = "";',
+  'function __statsNote() { return __note; }',
+  'function setStatsNote(t) { __note = t || ""; }',
+  'function render() {}',
+  'async function loadStats() { st.stats = st.stats || {}; }',
+  'async function saveStats() { st.statsSaves = (st.statsSaves || 0) + 1; }',
+  sliceDecl('syncStats'),
+  sliceDecl('pushStatsAfterSession'),
+  // §14.25) The POSITION store's own end-of-session push, on the same argument
+  // and with two rules of its own that fail silently: the write counter is
+  // captured BEFORE the card is read, so a change landing mid-exchange stays a
+  // debt (capturing late loses it, and nothing says so), and a course changed
+  // under an exchange in flight must ABANDON it — writing there puts course B's
+  // positions on course A's card under `b: B`, which `stormWireForeign` then
+  // refuses for ever.
+  //
+  // `syncStore`'s own collaborators are stubbed. `saveStore`/`savePuzzleStore`
+  // are the two real callers of `noteStoreChanged` and are NOT executed here,
+  // so the funnel itself is asserted only through the counter it moves.
+  'function setSyncNote(t) { __note = t || ""; }',
+  'async function loadStore() {}',
+  'async function loadSyncMeta() {}',
+  'async function saveStore() {}',
+  'async function saveSyncMeta() {}',
+  'async function syncPuzzles() {}',
+  'function storeTotal() { return Object.keys(st.store || {}).length; }',
+  'function storeDraw() { return []; }',
+  'function produceFromStore() { return false; }',
+  'function nextCard() {}',
+  'function filling() { return false; }',
+  'function __clearNote() { __note = ""; }',
+  sliceDecl('noteStoreChanged'),
+  sliceDecl('storeChanged'),
+  sliceDecl('resetStoreDebt'),
+  sliceDecl('syncStore'),
+  sliceDecl('pushStoreAfterSession'),
   // §17's SET rules. Pure, and every one of them fails silently: a hold rule
   // that never fires is a mode that quietly behaves like a storm with no
   // clock, and an outcome rule that mis-files an attempt still produces a
@@ -350,6 +425,9 @@ const src = [
   '         stormStatRoll, stormStatRate, stormStatLoss,' +
   '         stormStatsMerge, stormStatsPrune,' +
   '         stormStatsWirePack, stormStatsWireUnpack, statUnhurriedNote,' +
+  '         syncStats, pushStatsAfterSession, __setSync, __statsNote,' +
+  '         syncStore, pushStoreAfterSession, noteStoreChanged,' +
+  '         storeChanged, resetStoreDebt, __clearNote,' +
   '         stormCp, stormWp, stormMoverCp,' +
   '         stormWinPct, stormWpLoss,' +
   '         stormSetClean, stormSetHeld, stormSetOutcome, stormSetTally,' +
@@ -4598,6 +4676,330 @@ console.log('\n-- 30) the line spread (§30) --\n');
     eq('a puzzle with no stored entry never blocks', S.takeQueuedPuzzle(), 'p1');
   }
 }
+
+// ---------------------------------------------------------------------------
+// 31) THE END-OF-SESSION PUSH (§15.7)
+//
+// §15's record is about EVERY device by construction, and until v0.177.0 the
+// only two pushes were "opening a session" and the button in the stats view.
+// So a set played through on the phone reached the desktop only if a further
+// session was later opened on the phone, and a device that is only ever read
+// on carried nothing at all — while every number on screen stayed plausible,
+// which is why this needs asserting rather than looking at.
+//
+// Everything here is silent when it is wrong, in three different ways:
+//   * a push that never fires is exactly the behaviour that was there before
+//     it existed — the record simply leaves one session late,
+//   * a debt cleared by a write that FAILED is a session's answers dropped on
+//     the floor behind a status line nobody is looking at, and
+//   * a push refused because another was in flight loses precisely the answers
+//     that came after the one in flight had packed its payload.
+//
+// IMPURE, with section 16e's carrier stubbed: `st` and `C` come in through
+// `__setEnv` and the carrier through `__setSync`, so no network is touched.
+// ---------------------------------------------------------------------------
+console.log('\n-- 31) the end-of-session push (§15.7) --\n');
+{
+  // The fields `syncStats` reads on top of the config every other section
+  // uses. Read out of the shipped file, like everything else here.
+  const SC = Object.assign({}, C, {
+    statsCardName: str('statsCardName'),
+    statsMaxWireBytes: num('statsMaxWireBytes'),
+    cardChapter: str('cardChapter'),
+    statsTtlMs: 1e12,
+  });
+
+  // A record with one answer in it, so the payload is not empty.
+  const statsOf = () => ({ B1: { name: 'A course',
+    lines: { L1: { nm: 'A line', dv: { D1: { n: 1, a: 1, g: 0, o: 0, b: 0, x: 0, u: 0,
+      ls: 0, lc: 1, t: 1000, s: 0 } } } } } });
+
+  const envOf = (over) => Object.assign({
+    bid: 'B1', stats: statsOf(), devId: 'D1',
+    statsPending: true, statsSyncing: false, statsResync: false,
+    statsDirty: false, statsNote: '', ui: null, panel: null,
+  }, over || {});
+
+  // Enough of section 16e's carrier to be driven. base32 is not what is under
+  // test here, so the codecs are any faithful round trip.
+  const carrierOf = (over) => Object.assign({
+    course: () => 'B1',
+    read: async () => '',
+    write: async () => 'oid1',
+    encode: (bytes) => Buffer.from(bytes).toString('base64'),
+    decode: (text) => Buffer.from(text, 'base64'),
+    maxBytes: 120000,
+  }, over || {});
+
+  // The push is fired and forgotten, so every assertion has to let its
+  // microtasks run first.
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  // --- the two silences ---------------------------------------------------
+  {
+    const env = envOf({ statsPending: false });
+    let writes = 0;
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({ write: async () => { writes++; return 'x'; } }) });
+    S.pushStatsAfterSession('closed by hand');
+    await settle();
+    eq('a session that counted nothing pushes nothing', writes, 0);
+  }
+  {
+    // The user's own switch is off: this has to be as quiet as it was before
+    // this existed, or every session would end with a line about it.
+    const env = envOf({});
+    let writes = 0;
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({ course: () => '',
+      write: async () => { writes++; return 'x'; } }) });
+    S.pushStatsAfterSession('time');
+    await settle();
+    eq('no sync course pushes nothing', writes, 0);
+    eq('...and the debt is kept', env.statsPending, true);
+    eq('...and nothing is said about it', S.__statsNote(), '');
+  }
+
+  // --- the ordinary push --------------------------------------------------
+  {
+    const env = envOf({});
+    const wrote = [];
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({
+      write: async (name, text) => { wrote.push({ name, text }); return 'x'; } }) });
+    S.pushStatsAfterSession('set cleared');
+    await settle();
+    eq('a set that answered something is pushed', wrote.length, 1);
+    eq('...to the stats card', wrote[0].name, SC.statsCardName);
+    eq('...and the debt is cleared', env.statsPending, false);
+    eq('...and nothing is left marked as syncing', env.statsSyncing, false);
+  }
+
+  // --- a write that fails leaves the debt ---------------------------------
+  {
+    const env = envOf({});
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({
+      write: async () => { throw new Error('offline'); } }) });
+    S.pushStatsAfterSession('time');
+    await settle();
+    eq('a failed write puts the debt back', env.statsPending, true);
+    eq('...and says so', /Could not sync/.test(S.__statsNote()), true);
+  }
+
+  // --- a push asked for while one is in flight ----------------------------
+  {
+    // THE CASE THE QUEUE EXISTS FOR: the exchange fired when the session
+    // OPENED packed its payload before any of this session's answers were
+    // counted, so a second push merely refused there is those answers
+    // stranded on the device until the next session is opened on it.
+    const env = envOf({});
+    let writes = 0;
+    let release = null;
+    const held = new Promise((r) => { release = r; });
+    let first = true;
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({ write: async () => {
+      writes++;
+      if (first) { first = false; await held; }
+      return 'x';
+    } }) });
+    S.pushStatsAfterSession('opening');
+    await settle();
+    eq('the first push is in flight', [writes, env.statsSyncing], [1, true]);
+    // …and now the session ends underneath it.
+    env.statsPending = true;
+    S.pushStatsAfterSession('set cleared');
+    await settle();
+    eq('the second is queued rather than dropped', env.statsResync, true);
+    release();
+    await settle();
+    eq('...and re-fires once the first is done', writes, 2);
+    eq('...clearing the debt', env.statsPending, false);
+    eq('...and not looping', env.statsResync, false);
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// 32) THE POSITION STORE'S END-OF-SESSION PUSH (§14.25)
+//
+// §15.7's argument, one store over: the pushes were "opening a session",
+// "after gathering" and the round's per-course one — all about work this
+// device is ABOUT to do — so a session that answered its way through a dozen
+// positions left every retirement and every miss on the device.
+//
+// Three things here are silent when wrong:
+//   * THE CAPTURE. `syncStore` claims the write counter it read BEFORE the
+//     card, so a change landing mid-exchange is still a debt. Capturing after
+//     the pack instead loses exactly those positions, and every sync still
+//     reports success.
+//   * THE COURSE GUARD. An exchange whose course moves under it must abandon
+//     the write: the card is named from the OLD bid and the payload stamped
+//     with the NEW one, so §27b's `stormWireForeign` would then refuse that
+//     card for ever — the one dead end this feature cannot dig itself out of.
+//   * THE SILENCES. A push that fires when it should not is an exchange per
+//     window close; one that never fires is the behaviour that was there
+//     before, i.e. indistinguishable from working.
+//
+// IMPURE, with the carrier and `syncStore`'s collaborators stubbed. NOT
+// covered here: the two calls to `noteStoreChanged` inside `saveStore` and
+// `savePuzzleStore`, and the call to `pushStoreAfterSession` in `endSession`
+// — none of those three functions is sliced.
+// ---------------------------------------------------------------------------
+console.log('\n-- 32) the position store push (§14.25) --\n');
+{
+  const SC = Object.assign({}, C, {
+    cardPrefix: str('cardPrefix'),
+    cardName: str('cardName'),
+    cardChapter: str('cardChapter'),
+    maxWireBytes: num('maxWireBytes'),
+    storeTtlMs: 1e12,
+  });
+
+  const fen = 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 5 4';
+  const storeOf = () => ({ [cacheKey(fen)]: {
+    f: fen, n: 'A line', o: 'L1', t: 1000, k: 0,
+    a: ['e2e4', 'e4'], m: [['g1f3', 20], ['b1c3', 10]] } });
+
+  const envOf = (over) => Object.assign({
+    bid: 'B1', store: storeOf(), gone: {}, clearedAt: 0,
+    storeSeq: 0, storeSynced: 0, handingToGather: false, syncing: false,
+    storeDirty: false, goneDirty: false, lastPull: 0,
+    running: false, over: true, ui: null, panel: null,
+  }, over || {});
+
+  const carrierOf = (over) => Object.assign({
+    course: () => 'B1',
+    read: async () => '',
+    write: async () => 'oid1',
+    encode: (bytes) => Buffer.from(bytes).toString('base64'),
+    decode: (text) => Buffer.from(text, 'base64'),
+    maxBytes: 120000,
+  }, over || {});
+
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  // --- the counter --------------------------------------------------------
+  {
+    const env = envOf({});
+    S.__setEnv(env, SC);
+    eq('a store nothing has written to owes nothing', S.storeChanged(), false);
+    S.noteStoreChanged();
+    eq('...and one write is a debt', S.storeChanged(), true);
+    S.resetStoreDebt();
+    eq('changing course drops it', S.storeChanged(), false);
+  }
+
+  // --- an exchange claims it ----------------------------------------------
+  {
+    const env = envOf({});
+    const wrote = [];
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({
+      write: async (name) => { wrote.push(name); return 'x'; } }) });
+    S.noteStoreChanged();
+    await S.syncStore('by hand');
+    eq('an exchange writes the card', wrote.length, 1);
+    eq('...and clears the debt', S.storeChanged(), false);
+  }
+
+  // --- …but only as much of it as it carried ------------------------------
+  {
+    // THE CASE THE EARLY CAPTURE EXISTS FOR: a background walk stores a
+    // position while the exchange is reading the card. That position is not in
+    // the payload, so it must still be owed afterwards.
+    const env = envOf({});
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({
+      read: async () => { S.noteStoreChanged(); return ''; } }) });
+    S.noteStoreChanged();
+    await S.syncStore('by hand');
+    eq('a write landing mid-exchange is still owed', S.storeChanged(), true);
+  }
+
+  // --- the course moving under it -----------------------------------------
+  {
+    const env = envOf({});
+    const wrote = [];
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({
+      read: async () => { env.bid = 'B2'; return ''; },
+      write: async (name) => { wrote.push(name); return 'x'; } }) });
+    S.noteStoreChanged();
+    await S.syncStore('opening a session');
+    eq('a course change mid-exchange writes nothing', wrote.length, 0);
+    eq('...and leaves the debt', S.storeChanged(), true);
+  }
+
+  // --- the four silences ---------------------------------------------------
+  {
+    const env = envOf({});
+    let writes = 0;
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({ write: async () => { writes++; return 'x'; } }) });
+    S.pushStoreAfterSession('closed by hand');
+    await settle();
+    eq('a session that wrote nothing pushes nothing', writes, 0);
+  }
+  {
+    const env = envOf({ handingToGather: true });
+    let writes = 0;
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({ write: async () => { writes++; return 'x'; } }) });
+    S.noteStoreChanged();
+    S.pushStoreAfterSession('gathering instead');
+    await settle();
+    eq('handing over to a gather pushes nothing', writes, 0);
+    eq('...and the debt stands for the gather to push', S.storeChanged(), true);
+  }
+  {
+    const env = envOf({ syncing: true });
+    let writes = 0;
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({ write: async () => { writes++; return 'x'; } }) });
+    S.noteStoreChanged();
+    S.pushStoreAfterSession('time');
+    await settle();
+    eq('an exchange already in flight is not doubled', writes, 0);
+    eq('...and the debt stands', S.storeChanged(), true);
+  }
+  {
+    const env = envOf({});
+    let writes = 0;
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({ course: () => '',
+      write: async () => { writes++; return 'x'; } }) });
+    S.noteStoreChanged();
+    S.__clearNote();
+    S.pushStoreAfterSession('time');
+    await settle();
+    eq('no sync course pushes nothing', writes, 0);
+    // It must not even reach `setSyncNote`: with the carrier switched off,
+    // every session close would otherwise end with a line about it.
+    eq('...and says nothing about it', S.__statsNote(), '');
+  }
+
+  // --- and the ordinary one ------------------------------------------------
+  {
+    const env = envOf({});
+    const wrote = [];
+    S.__setEnv(env, SC);
+    S.__setSync({ carrier: carrierOf({
+      write: async (name) => { wrote.push(name); return 'x'; } }) });
+    S.noteStoreChanged();
+    S.pushStoreAfterSession('set cleared');
+    await settle();
+    eq('a session that stored or retired something is pushed', wrote.length, 1);
+    eq('...to this course’s own card', wrote[0], S.stormCardName('B1'));
+    eq('...and the debt is cleared', S.storeChanged(), false);
+  }
+}
+
 
 
   console.log('\n' + SRC_PATH);

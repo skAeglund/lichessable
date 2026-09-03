@@ -3526,6 +3526,42 @@ Currently working (v0.18.x).
       filters on, so nothing incremental has to be got right. Without it a phone
       that syncs nine positions still spends a minute walking frontiers past
       them (reported live 2026-08-28).
+    - EVERY SESSION PUSHES THE STORE TOO (§14.25, v0.178.0), which is §15.7's
+      change one store over and carries the PUZZLE store with it (`syncStore`
+      awaits `syncPuzzles` on the same trip). `endSession` →
+      `pushStoreAfterSession`. The debt is a COUNTER (`st.storeSeq` vs
+      `storeSynced`) bumped by `noteStoreChanged`, whose TWO callers are
+      `saveStore` and `savePuzzleStore` — the one funnel every writer already
+      passes through, so a writer added later cannot forget it. FIVE rules an
+      edit elsewhere can break:
+      * `syncStore` CAPTURES THE COUNTER BEFORE IT READS THE CARD and claims
+        only that. The merge's own write-back, §14.24's background walk and a
+        second tab all land after it and are not in the payload; capturing late
+        marks them carried, which loses a position while every sync still
+        reports success. An early capture costs one extra exchange, which is
+        the direction to err in.
+      * IT ABANDONS ON A COURSE CHANGE. `const bid = st.bid` at the top, the
+        card named from it, the payload stamped with it, and a quiet return if
+        `st.bid` moved before the pack — otherwise course B's positions go onto
+        course A's card under `b: B`, which `stormWireForeign` then refuses FOR
+        EVER (§27b.5a's dead end). Pushing as a session ENDS is what made that
+        reachable: it is the moment the next session is opened. `syncPuzzles`
+        took the same guard.
+      * IT MUST NOT PUSH WHEN HANDING OVER TO A GATHER. `gather` sets
+        `st.handingToGather` around its `endSession('gathering instead')`; that
+        pass rewrites the store and pushes at the end, and an exchange started
+        here would still be in flight when that one fires — which `syncStore`
+        answers by RETURNING, so the gather's push would be the one dropped. A
+        named flag, never a test on `why`, which is a log string.
+      * IT IS DELIBERATELY NOT QUEUED, unlike §15.7's stats push: `roundSync`
+        AWAITS `syncStore`, and a re-fire would let the round switch course
+        underneath an exchange. The debt stands instead.
+      * A DEBT BELONGS TO ITS COURSE. `resetStoreDebt()` at both places
+        `st.bid` moves (`startSession` on a change, `cycleSwitch`), or an
+        exchange for B claims A's writes and marks A's card up to date with
+        nothing sent to it.
+      `dev/check-storm.js` §32 covers all of it except the funnel's two call
+      sites and the call in `endSession`.
     - THE GATHER PASS IS THE SAME `harvestFrontier`, deliberately: a second walk
       written for gathering is a second set of pick rules that will one day
       disagree about what a usable position is. It has its own request ceiling
@@ -3816,6 +3852,27 @@ Currently working (v0.18.x).
       oversight — a line leaves this record only by `stormStatsPrune`, a
       function of its own timestamp that every device applies to the same
       numbers, so the union converges by itself.
+    - EVERY SESSION PUSHES IT (§15.7, v0.177.0). `endSession` calls
+      `pushStatsAfterSession`, because until then the only two pushes were
+      "opening a session" and the button — so a set played on the phone reached
+      the desktop one session late, and a device only ever READ on carried
+      nothing at all. In `endSession` and NOT at the set's own end: every way
+      out of a session comes through that function (the clock, a set cleared,
+      "End storm", the board closing, a gather taking over), which is §14.10c's
+      reason for being there too. THREE rules an edit elsewhere can break, and
+      each fails silently — a push that never happens is exactly the behaviour
+      that was there before it existed. The gate is `st.statsPending`, set by
+      `statNote`, and it is NEITHER `statsDirty` (about the LOCAL write, cleared
+      by `saveStats` a statement after it is set) NOR `st.answered` (reset per
+      session, and untouched by a review retry): the debt is what has not left
+      the DEVICE. A push asked for while one is IN FLIGHT is QUEUED
+      (`st.statsResync`), never dropped — the exchange the session opened with
+      packed before this session's answers existed, which is the case most
+      likely to be "tidied" into a plain refusal. And the PAYLOAD clears the
+      debt, not the write landing: an answer counted mid-POST is not in that
+      snapshot, so a failed write puts it back. `dev/check-storm.js` §31
+      executes both functions against a stubbed carrier; the CALL in
+      `endSession` is the one part no assertion can cover.
   * THE SET — no clock, and no mistake left behind (§17, v0.150.0): a second
     exercise on the same material, chosen from a selector in the pre-roll row.
     Up to `setSize` positions, each of which must be RESOLVED before the next is
@@ -4900,7 +4957,17 @@ or the PERFORMANCE RECORD (§15:
 `stormStatApply`, `stormStatPlus`, `stormStatSum`, `stormStatRoll`,
 `stormStatRate`, `stormStatLoss`, `stormStatsMerge`, `stormStatsPrune`,
 `stormStatsWirePack`, `stormStatsWireUnpack`, and §21's `s` counter and
-`statUnhurriedNote`), every one of whose failure modes is a plausible percentage — or the CHAPTER SCOPE's two filters (`stormFilterPool`,
+`statUnhurriedNote`), every one of whose failure modes is a plausible percentage
+— or ITS END-OF-SESSION PUSH (§15.7: `pushStatsAfterSession`, `syncStats`'s
+queue and its debt clearing, `st.statsPending`/`statsResync`, and `statNote`'s
+one write of the first), whose every failure mode is the behaviour that was
+there before it existed: the record simply leaves one session late, which from
+the outside is indistinguishable from it leaving on time — or THE STORE'S OWN
+(§14.25: `pushStoreAfterSession`, `noteStoreChanged`/`storeChanged`/
+`resetStoreDebt`, and `syncStore`'s early capture and its mid-flight course
+guard), where the same is true and one failure is worse than late — a payload
+written after the course moved puts B's positions on A's card, which
+`stormWireForeign` then refuses for ever — or the CHAPTER SCOPE's two filters (`stormFilterPool`,
 `stormFilterStore`, §14.21, whose pool filter written as a plain `.filter()`
 silently switches §14.18.4's walk stop off) — or the STORE'S DRAW ORDER
 (`stormStoreDraw`, §14.15: a

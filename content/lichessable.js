@@ -35578,6 +35578,18 @@
       // --- the store (§14.11) -----------------------------------------------
       store: null,        // { ck: entry } for st.bid, loaded once per session
       storeDirty: false,  // …and written back at the points listed in `saveStore`
+      // §14.25) The end-of-session push. A COUNTER rather than a flag, and it
+      // counts LOCAL WRITES of either store — `noteStoreChanged`, whose two
+      // callers are the two save functions, i.e. the one funnel every writer
+      // already passes through. `storeSynced` is the value the last successful
+      // exchange captured BEFORE it read the card, so anything written since is
+      // still a debt. Erring that way is deliberate: the worst it costs is one
+      // extra exchange, where a late capture costs a position.
+      storeSeq: 0,
+      storeSynced: 0,
+      // …and the one state that must NOT push on its way out: a gather is about
+      // to fill the store and has a push of its own at the end of it.
+      handingToGather: false,
       storeQueue: null,   // this session's draw from it, hardest first
       // §28) The saved positions of EVERY course, read once per session. Not a
       // per-session scope like `fenKey`: this is the list the pre-roll box
@@ -35673,6 +35685,15 @@
       statsOpen: null,      // Set of chapter ids the user has expanded
       statsTab: 'lines',    // §19) which of the two records is on screen
       statsSyncing: false,
+      // §15.7) An answer has been counted that no exchange has carried yet.
+      // NOT `statsDirty`, which is about the LOCAL write and is cleared by
+      // `saveStats` a statement after it is set — this one lives until the
+      // record has actually left the device.
+      statsPending: false,
+      // …and one push asked for while another was in flight. The one in flight
+      // may have packed its payload before this session's last answer landed,
+      // so it is re-fired rather than skipped.
+      statsResync: false,
       chapters: null,       // { ch: { [oid]: lid }, cn: { [lid]: name }, at }
       // --- caches and budget (§9) -------------------------------------------
       cdb: new Map(),    // cacheKey → scored[] | null ("null" = asked, unknown)
@@ -36653,6 +36674,7 @@
      */
     async function savePuzzleStore() {
       if (!pz.dirty || !st.bid || !pz.store) return;
+      noteStoreChanged();   // §14.25, and for `saveStore`'s reason
       try {
         const all = await loadPuzzleStoreAll();
         const empty = !Object.keys(pz.store.c).length &&
@@ -39416,6 +39438,32 @@
     }
 
     /**
+     * §14.25) "Something has been written that the card has not got."
+     *
+     * ONE FUNNEL FOR EACH STORE, and it is the SAVE rather than the dozens of
+     * places that set a dirty flag: a writer added later cannot forget to call
+     * this, because it cannot avoid being saved. A counter rather than a
+     * boolean so that an exchange can capture a value and claim only THAT much
+     * — see `syncStore`, which captures before it reads the card.
+     */
+    function noteStoreChanged() { st.storeSeq++; }
+
+    /** …and the question `pushStoreAfterSession` asks. */
+    function storeChanged() { return st.storeSeq !== st.storeSynced; }
+
+    /**
+     * §14.25) A DEBT BELONGS TO THE COURSE IT WAS WRITTEN FOR, so changing
+     * course drops it rather than carrying it — an exchange for course B that
+     * claimed A's writes would mark A's card up to date when nothing had been
+     * sent to it. Nothing is lost: A's own next session pulls and pushes on
+     * `pullMs` whatever this counter says, and in a round `roundSync` has
+     * already pushed the leg being left.
+     *
+     * Called at both places `st.bid` moves, and nowhere else.
+     */
+    function resetStoreDebt() { st.storeSeq = 0; st.storeSynced = 0; }
+
+    /**
      * Writes this course's slice back.
      *
      * IT RE-READS FIRST, and that is 24b's `flushDbCache` lesson in another
@@ -39427,6 +39475,10 @@
     async function saveStore() {
       if (!st.storeDirty || !st.store || !st.bid) return;
       st.storeDirty = false;
+      // §14.25) …and the card is now behind this store. Marked BEFORE the
+      // write rather than after it: a failed local write leaves the change in
+      // memory, so it is still something the other device has not got.
+      noteStoreChanged();
       try {
         const all = await loadStoreAll();
         // Oldest first out, but a position MISSED before outranks one never
@@ -41446,11 +41498,28 @@
       st.syncing = true;
       setSyncNote('Syncing…');
       render();
+      // §14.25) WHAT THIS EXCHANGE WILL HAVE CARRIED, captured before the read
+      // and not after the pack — the merge's own write-back bumps the counter
+      // again, and a store change landing mid-exchange (a background walk, a
+      // second tab) is not in the payload either. Claiming the early value
+      // leaves both as a debt: one extra exchange at worst, where the late
+      // capture silently drops a position.
+      const seq = st.storeSeq;
+      // §27b) …and WHICH COURSE this exchange is about. Everything below reads
+      // `st.store`/`st.gone`/`st.clearedAt` across awaits, and the window can be
+      // reopened on another course inside one — which v0.178.0 made reachable by
+      // pushing as a session ENDS, i.e. exactly when the next one is opened.
+      // The card is named from this value and the payload is stamped with it,
+      // so a switch mid-flight would write course B's positions into course A's
+      // card under `b: B` — and `stormWireForeign` would then refuse that card
+      // for ever, which is the one dead end this feature cannot dig itself out
+      // of. Checked again below, where the payload is built.
+      const bid = st.bid;
       try {
         let merged = { added: 0, dropped: 0, bumped: 0, wiped: 0 };
         // §27b) ONE CARD PER COURSE. Named from the bid, so two courses can
         // never overwrite one another's snapshot.
-        const cardName = stormCardName(st.bid);
+        const cardName = stormCardName(bid);
         const text = await carrier.read(cardName);
         if (text) {
           let blob = null;
@@ -41471,7 +41540,7 @@
           // sixty days — into this course. It cannot fire on a correctly named
           // card; it is here because the failure it guards against was silent
           // for a whole release and looked like a feature.
-          if (stormWireForeign(got, st.bid)) {
+          if (stormWireForeign(got, bid)) {
             // §27b.5a) IT SAYS WHAT TO DO, because this is a DEAD END the
             // feature cannot dig itself out of: the read comes before the write,
             // so every later sync refuses the same way and the card is never
@@ -41489,8 +41558,16 @@
           st.clearedAt = merged.clearedAt;
           st.storeDirty = true;
         }
+        // §27b) The course has moved under us: this exchange is about a store
+        // that is no longer loaded. QUIETLY — the window is showing another
+        // course by now and has nothing to say about this one — and the debt
+        // stands, so the next push takes it.
+        if (st.bid !== bid) {
+          log('storm: sync abandoned (' + reason + ') — the course changed to', st.bid);
+          return;
+        }
         const packed = stormWirePack(st.store, st.gone, C, C.maxWireBytes,
-          st.clearedAt, st.bid);
+          st.clearedAt, bid);
         const wire = carrier.encode(new TextEncoder().encode(JSON.stringify(packed)));
         // §27b.8) IT ALWAYS WRITES, and a skip-if-unchanged was tried and
         // WITHDRAWN — recorded here because it is an obvious optimisation that
@@ -41526,6 +41603,7 @@
         // (§27b's hazard). Firing this and forgetting it is how one course's
         // puzzles get merged into another course's card.
         await syncPuzzles(reason);
+        st.storeSynced = seq;   // §14.25: both cards are now up to date
         setSyncNote('Synced — ' + packed.n + ' of ' + storeTotal() + ' carried' +
           (merged.added ? ', ' + merged.added + ' taken from another device' : '') +
           (merged.dropped ? ', ' + merged.dropped + ' already learned elsewhere' : '') +
@@ -41714,7 +41792,11 @@
       if (!pinSyncApi || !pinSyncApi.carrier) return;
       const carrier = pinSyncApi.carrier;
       if (!carrier.course()) return;
-      const cardName = stormPuzzleCardName(st.bid);
+      // §27b) The course this exchange is about, for `syncStore`'s reason and
+      // with its hazard: `pz.store` is read across the awaits below and the
+      // window can be reopened on another course inside one.
+      const bid = st.bid;
+      const cardName = stormPuzzleCardName(bid);
       try {
         let merged = { added: 0, dropped: 0, bumped: 0 };
         const blob = await carrier.read(cardName);
@@ -41726,7 +41808,7 @@
             // puzzle for `goneDays`, so no half of it is worth taking. One that
             // does not SAY is not foreign — that is every payload an upgrading
             // device wrote.
-            if (stormWireForeign(got, st.bid)) {
+            if (stormWireForeign(got, bid)) {
               warn('storm: the puzzle card names another course — refused');
             } else {
               merged = stormPuzzleWireMerge(pz.store, got.store, got.gone);
@@ -41734,7 +41816,11 @@
             }
           }
         }
-        const packed = stormPuzzleWirePack(pz.store, C, C.puzzleMaxWireBytes, st.bid);
+        if (st.bid !== bid) {
+          log('storm: puzzle sync abandoned (' + reason + ') — the course changed');
+          return;
+        }
+        const packed = stormPuzzleWirePack(pz.store, C, C.puzzleMaxWireBytes, bid);
         const wire = carrier.encode(
           new TextEncoder().encode(JSON.stringify(packed)));
         await carrier.write(cardName, wire, C.puzzleMaxWireBytes, C.cardChapter);
@@ -41899,6 +41985,8 @@
       if (!rec) rec = line.dv[st.devId] = stormStatBlank();
       if (!stormStatApply(rec, v, Date.now(), unhurried)) return;
       st.statsDirty = true;
+      // §15.7) …and the record now has something no exchange has carried.
+      st.statsPending = true;
       saveStats();
     }
 
@@ -42043,7 +42131,11 @@
      * converges by itself.
      */
     async function syncStats(reason) {
-      if (st.statsSyncing) return false;
+      // §15.7) A push asked for while one is in flight is QUEUED, never
+      // dropped: the exchange in flight packed its payload before this call
+      // was made, so an answer counted since would otherwise sit on the device
+      // until the next session opened there.
+      if (st.statsSyncing) { st.statsResync = true; return false; }
       if (!pinSyncApi || !pinSyncApi.carrier) return false;
       const carrier = pinSyncApi.carrier;
       if (!carrier.course()) {
@@ -42054,6 +42146,8 @@
       st.statsSyncing = true;
       setStatsNote('Syncing the record…');
       render();
+      // Declared out here so the catch can put the debt back (§15.7).
+      let carried = false;
       try {
         let added = 0, bumped = 0;
         const text = await carrier.read(C.statsCardName);
@@ -42074,6 +42168,11 @@
           st.statsDirty = true;
         }
         stormStatsPrune(st.stats, C, Date.now());
+        // §15.7) THE PAYLOAD IS WHAT CLEARS THE DEBT, not the write landing:
+        // an answer counted while the POST is in flight is not in this
+        // snapshot, so it must stay pending. Put back below if the write fails.
+        carried = st.statsPending;
+        st.statsPending = false;
         const packed = stormStatsWirePack(st.stats, C, C.statsMaxWireBytes, Date.now());
         const wire = carrier.encode(new TextEncoder().encode(JSON.stringify(packed)));
         // §27b) …the same chapter, and deliberately still ONE card: §15's record
@@ -42090,10 +42189,20 @@
       } catch (err) {
         warn('storm: the stats sync failed:', err);
         setStatsNote('Could not sync the record: ' + String((err && err.message) || err));
+        // Nothing left the device, so the debt stands — and an answer counted
+        // meanwhile has already set it again, which this must not undo.
+        if (carried) st.statsPending = true;
         return false;
       } finally {
         st.statsSyncing = false;
         render();
+        // One extra pass at most: the flag can only be set by a call made
+        // while this one was in flight, and this re-fire runs after the guard
+        // above has been released, so it cannot set it again itself.
+        if (st.statsResync) {
+          st.statsResync = false;
+          setTimeout(() => { syncStats(reason + ', queued behind another push'); }, 0);
+        }
       }
     }
 
@@ -42247,7 +42356,12 @@
       // they would rather fill the store than play — the half-built session is
       // simply dropped, since there is nothing yet to show them.
       if (st.endsAt && !st.over) {
-        endSession('gathering instead');
+        // §14.25) NOT A PUSH POINT. This pass is about to rewrite the store and
+        // has `syncStore('after gathering')` of its own at the end of it; an
+        // exchange started on the way out would be in flight when that one
+        // fires, and `syncStore` answers a second caller by returning.
+        st.handingToGather = true;
+        try { endSession('gathering instead'); } finally { st.handingToGather = false; }
       } else {
         st.queue = [];
         st.spare = [];
@@ -42595,6 +42709,7 @@
       await savePuzzleStore();
       if (st.goneDirty) await saveSyncMeta();
       st.bid = String(bid);
+      resetStoreDebt();   // §14.25
       st.name = '';
       st.store = null;
       st.gone = null;
@@ -43451,6 +43566,7 @@
 
     async function startSession(spec) {
       st.gen++;   // §27
+      if (String(spec.bid) !== st.bid) resetStoreDebt();   // §14.25
       st.bid = String(spec.bid);
       st.name = spec.name || '';
       // §14.21) A CHAPTER SCOPE, or none. `lid` is Chessable's own chapter id
@@ -44577,6 +44693,67 @@
     }
 
     /**
+     * §15.7) The end-of-session push of the performance record.
+     *
+     * Fire and forget — `syncStats` catches its own failures into the stats
+     * note and nothing after this reads it back, exactly as `saveStore` above
+     * is fired and forgotten.
+     *
+     * THREE SILENCES, and each is a round trip nobody asked for:
+     * * NOTHING COUNTED. `statsPending` is what an answer sets, so a session
+     *   that was opened and closed, a gather pass, and a review of somebody
+     *   else's answers all push nothing. It is NOT `st.answered`, which a
+     *   review retry leaves untouched and which is reset per session — the
+     *   debt is what has not left the DEVICE, and it survives a session that
+     *   failed to push it.
+     * * NO SYNC COURSE. Section 16e's carrier is the user's own switch; with
+     *   it off this must be as quiet as it was before this existed, and
+     *   `syncStats` would otherwise write a status line about it after every
+     *   single session.
+     * * ALREADY IN FLIGHT is NOT one of them: `syncStats` queues that case
+     *   itself, since the exchange in flight packed before this session ended.
+     */
+    function pushStatsAfterSession(why) {
+      if (!st.statsPending) return;
+      const carrier = pinSyncApi && pinSyncApi.carrier;
+      if (!carrier || !carrier.course()) return;
+      syncStats('after a session (' + why + ')');
+    }
+
+    /**
+     * §14.25) …and the POSITION store beside it, which carries the PUZZLE store
+     * with it (`syncStore` awaits `syncPuzzles` on the same trip).
+     *
+     * Same argument as §15.7's, one store over: the pushes were "opening a
+     * session", "after gathering" and the round's own per-course one, all of
+     * which are about work this device is ABOUT to do rather than work it has
+     * just done. So a session that answered its way through a dozen positions —
+     * retiring the ones it learned, missing the ones it did not — left every one
+     * of those verdicts on the device until something else happened to push.
+     *
+     * FOUR SILENCES, one more than §15.7 has:
+     * * NOTHING WRITTEN. `storeChanged()` compares the write counter against
+     *   what the last exchange claimed, so a window opened and closed pushes
+     *   nothing.
+     * * NO SYNC COURSE, for §15.7's reason.
+     * * HANDING OVER TO A GATHER. That pass is about to rewrite the store and
+     *   pushes when it is done; an exchange started here would also still be in
+     *   flight when that one fires, which `syncStore` answers by returning.
+     * * ALREADY IN FLIGHT, which unlike §15.7's stats push is NOT queued —
+     *   `roundSync` AWAITS `syncStore` and a queued re-fire would let the round
+     *   switch course underneath an exchange that reads `st.bid` across its own
+     *   awaits (§27b's hazard). The debt simply stands, and the next push takes
+     *   it; the only exposure is a close-and-reopen inside one exchange, which
+     *   costs the new session its opening PULL and no data.
+     */
+    function pushStoreAfterSession(why) {
+      if (!storeChanged() || st.handingToGather || st.syncing) return;
+      const carrier = pinSyncApi && pinSyncApi.carrier;
+      if (!carrier || !carrier.course()) return;
+      syncStore('after a session (' + why + ')');
+    }
+
+    /**
      * Ends the session and puts the summary up. `why` is logged; `msg` is the
      * sentence the user reads, and an empty one leaves the ordinary summary.
      *
@@ -44654,6 +44831,20 @@
       // good answers were supposed to have settled.
       if (st.goneDirty) saveSyncMeta();
       saveStats();   // §15, and for the same reason
+      // §15.7) …AND PUSH IT, which the local write above is not. The record's
+      // whole point is that it is about every device, and the only pushes were
+      // "opening a session" and the button — so a set played on the phone
+      // reached the desktop only if another session was later opened there,
+      // and a device that is only ever read on never carried anything at all.
+      // Fired here rather than at the set's own end because EVERY way out of a
+      // session comes through this function: the clock, a set cleared, "End
+      // storm", the board closing, a gather taking over.
+      pushStatsAfterSession(why);
+      // §14.25) …and the positions and puzzles, which are the other half of
+      // what a session leaves behind: what it learned, what it missed, what it
+      // retired. `saveStore` above is the LOCAL write; this is the one that
+      // reaches the other device.
+      pushStoreAfterSession(why);
       // Section 18's board first: the summary belongs on the window, and a
       // board still pinned over its slot would cover half of it.
       if (continuationStormApi) continuationStormApi.close();
