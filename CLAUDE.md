@@ -4417,6 +4417,44 @@ Currently working (v0.18.x).
         per `produce` call (a diversion is a whole extra ~11-request walk and
         `produce` runs after every card).
 
+  * A WINDOW THAT OUTLIVES THE SESSION (§30b, v0.179.0). §30 spreads one SET;
+    this stops the set AFTER it being made of the same lines. `st.dealtLines` is
+    reset by `startSession`, so "Storm again" had no memory at all — and both
+    draws see the same store in the same comparator order, which is why the
+    repeat is likeliest on exactly the course that has just been stormed.
+    `CONFIG.storm.recentLines` (24, four sets' worth) line ends per course, in
+    `storage.local` under `recentKey`. **READ `DESIGN-intuition-storm.md` §30b
+    BEFORE CHANGING IT.** What an edit ELSEWHERE can break:
+    - THREE TIERS, NOT ONE SET, and every deal point scans in that order: a line
+      neither dealt this session nor in the window, then §30's rule UNCHANGED,
+      then the head. Unioning the window into `st.dealtLines` breaks two things
+      quietly — a SET would WAIT on it (nothing the producer finds can change an
+      answer about sittings already over, so it stalls and is rescued by the
+      deadlock clause, i.e. is correct by accident), and a line dealt last night
+      would rank EQUAL with one dealt two cards ago, which is the ordering the
+      feature is.
+    - IT IS A PREFERENCE AND MAY NEVER WITHHOLD. A course with fewer lines than
+      the window behaves exactly as it did before this existed — which is also
+      the right answer there.
+    - READ ONCE PER DOCUMENT, in-memory map AUTHORITATIVE, written from
+      `endSession`. The write is fire-and-forget, so a re-read at the next
+      `startSession` could land before it and hand "Storm again" the picture
+      from before the session it follows. Re-read-before-write on the way out
+      (24b's `flushDbCache` rule, fourth home).
+    - AN ENTRY IS MOVED, NOT DUPLICATED: the window is the last N LINE ENDS, not
+      the last N cards, or one line dealt a dozen times fills it and evicts
+      every other line the user has seen. `''` is never recorded and never
+      blocks (`stormLineKey`'s rule, fourth home).
+    - THE COMPARATORS ARE UNTOUCHED (§14.15) and so is `queuedOrDealt`: a
+      diversion is a whole extra ~11-request walk, and spending that to avoid a
+      line from last night is a worse trade than dealing it.
+    - …AND `takeQueuedPuzzle` HAD NEVER RUN. `nextPuzzleCard` shifted `pz.queue`
+      itself from v0.175.0 to v0.178.0, so the puzzle third of §30 executed
+      never — invisibly to `dev/check-storm.js` §30, which executes that
+      function directly and so kept passing over a function nothing called. A
+      CHECK THAT EXECUTES A RULE PROVES THE RULE, NOT THE PATH; two source-text
+      assertions now cover the call.
+
 
 - Puzzles from the games that played your lines (section 29, v0.171.0): a
   tactic from a real game that went through one of the course's own positions,
@@ -4874,7 +4912,13 @@ a mutation that does not change behaviour proves nothing.
 After touching the LINE SPREAD (§30/§30a) — `takeStoreItem`, `takeQueued`,
 `takeQueuedPuzzle`, `queuedOrDealt`, `stormLineKey`, `cardLineKey`,
 `backfillStoreOids`, the wire's `o`, `st.dealtLines`, `st.spare` or
-`CONFIG.storm.queueSpread`.
+`CONFIG.storm.queueSpread` — or §30b's WINDOW (`recentList`, `lineRecent`,
+`noteRecentLine`, `loadRecentLines`/`saveRecentLines` and
+`CONFIG.storm.recentLines`/`recentKey`), which is quiet in BOTH directions: a
+window that never matches leaves the feature switched off and looks exactly
+like a course with more lines than it has room for, while one applied as a HARD
+rule behaves correctly until the store is small and then deals the head anyway
+with the preferred order silently thrown away.
 `dev/check-storm.js` §30 executes all three (impure; `__setEnv` and `__setPz`).
 Every failure here is §14.15's shape: a spread that never fires still deals
 every position, in a plausible order, and looks exactly like the bug it was

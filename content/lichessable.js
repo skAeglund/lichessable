@@ -1975,6 +1975,24 @@
       // store, ~11 ChessDB requests — which is what `cdbMaxPerSession` (600)
       // and `maxPositions` (40) were already sized for.
       queueSpread: 1,
+      // §30b) …AND HOW MANY LINE ENDS ARE REMEMBERED BETWEEN SESSIONS, so a
+      // set is not spread across six variations only to be followed by a
+      // second set drawn from the same six. `st.dealtLines` is reset by
+      // `startSession`, so within one sitting "Storm again" had no memory at
+      // all — and on a course whose store holds a couple of dozen positions
+      // that is where a repeat is most likely, the comparator's own order
+      // being the same on both draws.
+      //
+      // FOUR SETS' WORTH. It cannot starve anything: every deal point falls
+      // back to the session rule and then to the head, so a window wider than
+      // the store simply makes this a no-op — which is also the right answer
+      // there, since on such a course there is no variety left to find.
+      recentLines: 24,
+      // Per COURSE, oldest first, in `storage.local`. Local for
+      // `fenPresetKey`'s reason one field over: §16e's carrier is for what a
+      // device cannot regenerate, and which lines this device dealt last night
+      // is neither expensive nor interesting to another one.
+      recentKey: 'cloStormRecent',    // { [bid]: [lineKey, …] }
       // Nothing about the storm may BLOCK on the producer: an empty queue ends
       // the session cleanly rather than stalling on a spinner.
       maxPositions: 40,  // a session cannot ask for more than this
@@ -35517,6 +35535,13 @@
       // exactly what this is about. Keyed by `stormLineKey`, so it holds an
       // oid where there is one and a NAME where there is not.
       dealtLines: new Set(),
+      // §30b) …and the line ends dealt in RECENT SITTINGS, oldest first, per
+      // course: `{ [bid]: [lineKey, …] }`. Loaded once per document and
+      // AUTHORITATIVE from then on — the write is fire-and-forget from
+      // `endSession`, so a re-read at the next `startSession` could race it and
+      // hand "Storm again" the picture from before the session it follows.
+      recentStore: null,
+      recentDirty: false,
       producing: false,
       exhausted: false,  // the pool ran out, or the request cap was reached
       note: '',          // one line: what the producer is doing, or why it stopped
@@ -37554,20 +37579,41 @@
      * `takeStoreItem`'s rule, for its reason.
      */
     function takeQueuedPuzzle() {
-      for (let i = 0; i < pz.queue.length; i++) {
-        const e = pz.store && pz.store.r[pz.queue[i]];
-        const key = e ? stormLineKey(e.o, e.n) : '';
-        if (key && st.dealtLines.has(key)) continue;
-        return pz.queue.splice(i, 1)[0];
-      }
-      return pz.queue.shift();
+      // §30b) The recency preference first, then the session rule alone, then
+      // the head — `takeStoreItem`'s two passes, for its reason.
+      const take = (recent) => {
+        for (let i = 0; i < pz.queue.length; i++) {
+          const e = pz.store && pz.store.r[pz.queue[i]];
+          const key = e ? stormLineKey(e.o, e.n) : '';
+          if (key && st.dealtLines.has(key)) continue;
+          if (key && recent && lineRecent(key)) continue;
+          return pz.queue.splice(i, 1)[0];
+        }
+        return undefined;
+      };
+      // Explicitly against `undefined` rather than `||`: an id is a STRING and
+      // a stored empty one would otherwise read as a miss, so the second pass
+      // would run over a queue the first had already spliced.
+      let id = take(true);
+      if (id === undefined) id = take(false);
+      if (id === undefined) id = pz.queue.shift();
+      return id;
     }
 
-    /** The next ready puzzle as a card, skipping anything already shown or no
-     *  longer in the store (another tab's pass can have retired it). */
+    /**
+     * The next ready puzzle as a card, skipping anything already shown or no
+     * longer in the store (another tab's pass can have retired it).
+     *
+     * §30) THROUGH `takeQueuedPuzzle`, which is the whole of the puzzle half of
+     * the line spread. It shifted the queue itself from v0.175.0 to v0.178.0,
+     * so that half never ran — silently, and invisibly to
+     * `dev/check-storm.js` §30, which executes `takeQueuedPuzzle` directly and
+     * so kept passing over a function nothing called. A course with a hundred
+     * puzzles hanging off one line's anchors went on dealing them in a row.
+     */
     function nextPuzzleCard() {
       while (pz.queue.length) {
-        const id = pz.queue.shift();
+        const id = takeQueuedPuzzle();
         if (!id || pz.seen.has(id)) continue;
         const entry = pz.store && pz.store.r[id];
         if (!entry) continue;
@@ -37746,6 +37792,87 @@
     function cardLineKey(card) {
       const ref = cardLineRef(card);
       return ref ? stormLineKey(ref.oid, ref.from) : '';
+    }
+
+    /**
+     * §30b) THE RECENCY HALF OF THE SPREAD — the same question as
+     * `st.dealtLines` asked over a longer window than one session.
+     *
+     * The session rule is HARD and this one is a PREFERENCE, which is why they
+     * are two tiers rather than one union: every deal point scans first for a
+     * line that is neither, then for one this session has not dealt, and only
+     * then takes the head. So a course with more lines than the window gets
+     * variety across sittings, and a course with fewer behaves exactly as it
+     * did before this existed — no withholding, no waiting, and nothing about
+     * `stormStoreDraw`'s or `stormPuzzleDraw`'s order changed (§14.15).
+     *
+     * IT IS ONE LIST PER COURSE, oldest first, and an entry is MOVED rather
+     * than duplicated when its line comes round again — the window is "the
+     * last N line ends dealt", not "the last N cards".
+     */
+    function recentList() {
+      const all = st.recentStore || {};
+      const list = all[String(st.bid)];
+      return Array.isArray(list) ? list : [];
+    }
+
+    /** Whether this line was dealt recently enough to prefer another. '' — a
+     *  position nothing can attribute — never blocks, `stormLineKey`'s rule. */
+    function lineRecent(key) {
+      return Boolean(key) && recentList().indexOf(key) !== -1;
+    }
+
+    function noteRecentLine(key) {
+      if (!key || !st.bid) return;
+      const list = recentList().filter((k) => k !== key);
+      list.push(key);
+      while (list.length > C.recentLines) list.shift();
+      st.recentStore = st.recentStore || {};
+      st.recentStore[String(st.bid)] = list;
+      st.recentDirty = true;
+    }
+
+    /**
+     * Reads the whole map, ONCE per document. Every failure is soft: an
+     * unreadable blob is an empty map, i.e. the pre-v0.179.0 behaviour.
+     */
+    async function loadRecentLines() {
+      if (st.recentStore) return;
+      try {
+        const got = await chrome.storage.local.get(C.recentKey);
+        const raw = got && got[C.recentKey];
+        st.recentStore = (raw && typeof raw === 'object') ? raw : {};
+      } catch (err) {
+        warn('storm: the recent-line list is unreadable:', err);
+        st.recentStore = {};
+      }
+    }
+
+    /**
+     * IT RE-READS BEFORE IT WRITES, 24b's `flushDbCache` rule in its fourth
+     * home (`saveStore` and `writeFenPresets` are the other two): one object
+     * lives under that key and a write replaces it whole, so only the courses
+     * this document has actually dealt from are ours to replace.
+     */
+    async function saveRecentLines() {
+      if (!st.recentDirty || !st.recentStore) return;
+      const mine = st.recentStore;
+      st.recentDirty = false;
+      try {
+        const got = await chrome.storage.local.get(C.recentKey);
+        const all = (got && got[C.recentKey] && typeof got[C.recentKey] === 'object')
+          ? got[C.recentKey] : {};
+        for (const bid of Object.keys(mine)) {
+          const list = mine[bid];
+          // An empty list LEAVES rather than being stored as `[]`,
+          // `writeFenPresets`'s own rule.
+          if (Array.isArray(list) && list.length) all[bid] = list;
+          else delete all[bid];
+        }
+        await chrome.storage.local.set({ [C.recentKey]: all });
+      } catch (err) {
+        warn('storm: could not save the recent-line list:', err);
+      }
     }
 
     /**
@@ -41320,12 +41447,18 @@
         const key = cardLineKey(card);
         if (key) on.add(key);
       }
-      for (let i = 0; i < q.length; i++) {
-        const key = stormLineKey(q[i].oid, q[i].name);
-        if (key && on.has(key)) continue;
-        return q.splice(i, 1)[0];
-      }
-      return q.shift();
+      // §30b) TWO PASSES, the recency preference first. The second is the rule
+      // exactly as it stood, so a window that cannot be satisfied costs
+      // nothing but this scan.
+      const take = (recent) => {
+        for (let i = 0; i < q.length; i++) {
+          const key = stormLineKey(q[i].oid, q[i].name);
+          if (key && (on.has(key) || (recent && lineRecent(key)))) continue;
+          return q.splice(i, 1)[0];
+        }
+        return undefined;
+      };
+      return take(true) || take(false) || q.shift();
     }
 
     function produceFromStore() {
@@ -43705,6 +43838,11 @@
       // §28) …and this course's saved positions, which the pre-roll row offers.
       // One storage read, and it has to land before the box can be opened.
       await loadFenPresets();
+      // §30b) …and the line ends recent sittings dealt from, which
+      // `takeStoreItem` reads. It has to land BEFORE the store draw below, and
+      // it is read once per document: from then on the in-memory map is
+      // authoritative, so "Storm again" cannot race `endSession`'s write.
+      await loadRecentLines();
       if (!st.running) return;
       // §14.12: a pull, if it has been a while and syncing is on. Deliberately
       // NOT awaited — the whole point of the store is that a session opens
@@ -44002,14 +44140,22 @@
     function takeQueued() {
       // The first card of a list whose line this session has not dealt, taken
       // out of it. `undefined` when every one of them is spoken for.
-      const fresh = (list) => {
+      // §30b) `recent` asks additionally that the line has not been dealt in a
+      // recent SITTING. Tried over both lists before either is tried without
+      // it, so the preference never costs a card: the strict pass below is the
+      // rule exactly as it stood.
+      const fresh = (list, recent) => {
         for (let i = 0; i < list.length; i++) {
           const key = cardLineKey(list[i]);
-          if (!key || !st.dealtLines.has(key)) return list.splice(i, 1)[0];
+          if (!key) return list.splice(i, 1)[0];
+          if (st.dealtLines.has(key)) continue;
+          if (recent && lineRecent(key)) continue;
+          return list.splice(i, 1)[0];
         }
         return undefined;
       };
-      return fresh(st.queue) || fresh(st.spare) ||
+      return fresh(st.queue, true) || fresh(st.spare, true) ||
+        fresh(st.queue, false) || fresh(st.spare, false) ||
         // THE QUEUE STILL YIELDS WHATEVER IT HAS, and this clause is above the
         // set's wait deliberately: `produce` returns at once while the queue is
         // at `queueTarget`, so a set refusing a full queue would never call it
@@ -44062,6 +44208,10 @@
       // same reason: one point, every card.
       const key = cardLineKey(card);
       if (key) st.dealtLines.add(key);
+      // §30b) …and into the window that outlives the session. In memory only:
+      // the write is one call from `endSession`, since a storage round trip per
+      // card buys nothing a tab that dies mid-session would keep anyway.
+      noteRecentLine(key);
       // A SET ARMS NO DEADLINE. Its clock counts up and is started by the press
       // of Start, since it measures the sitting rather than a budget the
       // producer's opening round trip must not eat into.
@@ -44825,6 +44975,11 @@
       // moment. It carries this session's retirements AND the anchors a
       // gather scanned, both of which are expensive to learn twice.
       savePuzzleStore();
+      // §30b) …and the line ends this session dealt from, on the same
+      // argument: a window that does not survive the tab is a variety rule
+      // that only ever works inside one sitting, which is where
+      // `st.dealtLines` already covered it.
+      saveRecentLines();
       // §14.16: and the RETIREMENTS beside it, on the same argument and at the
       // same moment — a tombstone that does not survive the tab is a position
       // that comes back next session, which is the whole of what this session's

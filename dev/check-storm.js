@@ -372,6 +372,14 @@ const src = [
   sliceDecl('stormLineKey'),
   sliceDecl('queuedOrDealt'),
   sliceDecl('cardLineKey'),
+  // §30b) …and the recency half, IMPURE (`st.recentStore`) and quiet in BOTH
+  // directions: a window that never matches leaves the feature switched off
+  // and looking exactly like a course with more lines than the window, while
+  // one that blocks too much would defer every card and be invisible behind
+  // the fallback each deal point ends with.
+  sliceDecl('recentList'),
+  sliceDecl('lineRecent'),
+  sliceDecl('noteRecentLine'),
   sliceDecl('setModeOn'),
   // §30) …and the backfill, IMPURE for the same reason: what it decides is
   // whether the store's own line names ever reach the items and cards ALREADY
@@ -416,6 +424,7 @@ const src = [
   '         puzzlesInPlay, __setPz,' +
   '         takeStoreItem, takeQueued, takeQueuedPuzzle, backfillStoreOids,' +
   '         stormLineKey, cardLineKey, queuedOrDealt,' +
+  '         recentList, lineRecent, noteRecentLine,' +
   '         stormEngineLoss, onStormEngineUpdate, endEngineJob,' +
   '         deepestCompleteList, deepenPickDepth,' +
   '         stormWirePack, stormWireUnpack, stormWireMerge,' +
@@ -570,6 +579,11 @@ const C = {
   backfillMaxCdb: num('backfillMaxCdb'), backfillStore: num('backfillStore'),
   backfillGapMs: num('backfillGapMs'), gatherMaxCdb: num('gatherMaxCdb'),
   queueTarget: num('queueTarget'), queueSpread: num('queueSpread'),
+  // §30b) The recency window. `str()` for the key rather than `num()`:
+  // a string field read as a number is `undefined`, which every
+  // truthiness assertion about it would fail — and one read the other
+  // way round is §18's own lesson about `stormCardName`.
+  recentLines: num('recentLines'), recentKey: str('recentKey'),
   setCleanOn: (cfgBody.match(/setCleanOn:\s*\[([^\]]*)\]/) || [, ''])[1]
     .split(',').map((x) => x.trim().replace(/'/g, '')).filter(Boolean),
   // §14.19's reachability bucket. UNKNOWN answers this value, so a wrong one
@@ -4407,6 +4421,10 @@ console.log('\n-- 30) the line spread (§30) --\n');
   const envOf = (over) => Object.assign({
     mode: 'storm', exhausted: false, queue: [], spare: [],
     storeQueue: [], dealtLines: new Set(),
+    // §30b) The recency window, EMPTY unless a case says otherwise — so every
+    // assertion written before it existed still describes the rule it was
+    // written for.
+    bid: 'B1', recentStore: {}, recentDirty: false,
   }, over || {});
 
   // The producer's own half of the spread is async and is not reachable from
@@ -4674,6 +4692,147 @@ console.log('\n-- 30) the line spread (§30) --\n');
     S.__setEnv(envOf({ dealtLines: new Set(['L1']) }), C);
     S.__setPz({ queue: ['p1'], store: { r: {} } });
     eq('a puzzle with no stored entry never blocks', S.takeQueuedPuzzle(), 'p1');
+  }
+  {
+    // …AND SOMETHING MUST ACTUALLY CALL IT. From v0.175.0 to v0.178.0
+    // `nextPuzzleCard` shifted the queue itself, so the puzzle half of the
+    // spread never ran once — and every assertion above passed the whole time,
+    // because they execute the function rather than the path. That is the one
+    // defect in this section a behavioural check cannot see, so it is asserted
+    // against the source text, §0's discipline.
+    const lines = SRC.split('\n').slice(findDecl('nextPuzzleCard'));
+    let n = 1;
+    while (n < lines.length && lines[n] !== '    }') n++;
+    const fn = lines.slice(0, n).join(' ');
+    eq('nextPuzzleCard draws THROUGH takeQueuedPuzzle',
+      /takeQueuedPuzzle\(\)/.test(fn), true);
+    eq('...and never shifts the queue behind its back',
+      /pz\.queue\.shift\(\)/.test(fn), false);
+  }
+
+  // --- 30b) the recency window --------------------------------------------
+  //
+  // `st.dealtLines` is reset by `startSession`, so until v0.179.0 "Storm
+  // again" had no memory at all: a set spread carefully across six variations
+  // was followed by a second set drawn from the same six, both draws seeing
+  // the same store in the same comparator order. The window is the last
+  // `recentLines` line ends dealt, per course, in `storage.local`.
+  //
+  // BOTH ways of being wrong are quiet. A window that never matches leaves the
+  // feature switched off and looks exactly like a course with more lines than
+  // the window has room for; a window applied as a HARD rule would defer cards
+  // behind the fallback every deal point ends with, i.e. behave correctly
+  // until the moment the store is small, and then deal the head anyway with
+  // the preferred order silently thrown away.
+  eq('the window is at least a set wide', C.recentLines >= C.setSize, true);
+  eq('...and the key it lives under is named', Boolean(C.recentKey), true);
+  {
+    // THE TIERS ARE ORDERED, and this is the assertion that a single union
+    // would fail: L2 is recent but NOT dealt this session, L1 is dealt — so
+    // the recent line must be preferred over the dealt one rather than lumped
+    // in with it.
+    const env = envOf({
+      dealtLines: new Set(['L1']),
+      recentStore: { B1: ['L2'] },
+      storeQueue: [item('a', 'L1'), item('b', 'L2'), item('c', 'L3')],
+    });
+    S.__setEnv(env, C);
+    eq('a store item from a line dealt in a recent sitting is passed over',
+      ckOf(S.takeStoreItem()), 'c');
+    S.__setEnv(env, C);
+    eq('...but preferred over one dealt in THIS session',
+      ckOf(S.takeStoreItem()), 'b');
+  }
+  {
+    // It defers, never withholds — the whole store recent is the ordinary case
+    // on a course with fewer lines than the window.
+    const env = envOf({
+      recentStore: { B1: ['L1', 'L2'] },
+      storeQueue: [item('a', 'L1'), item('b', 'L2')],
+    });
+    S.__setEnv(env, C);
+    eq('with every line recent the store deals its head anyway',
+      ckOf(S.takeStoreItem()), 'a');
+  }
+  {
+    // PER COURSE. The window is another course's, so it must not apply.
+    const env = envOf({
+      recentStore: { B9: ['L1'] },
+      storeQueue: [item('a', 'L1'), item('b', 'L2')],
+    });
+    S.__setEnv(env, C);
+    eq("another course's window does not apply", ckOf(S.takeStoreItem()), 'a');
+  }
+  {
+    const env = envOf({
+      recentStore: { B1: ['L1'] },
+      queue: [card('L1'), card('L4')],
+    });
+    S.__setEnv(env, C);
+    eq('a queued card from a recent line is passed over',
+      oidOf(S.takeQueued()), 'L4');
+  }
+  {
+    // …and the strict pass still yields it, which is what keeps the preference
+    // from ever costing a card. A SET may WAIT on the session rule (above) and
+    // must never wait on this one: nothing the producer can find will change
+    // the answer, since the window is about sittings already over.
+    const env = envOf({
+      mode: 'set', recentStore: { B1: ['L1'] }, spare: [card('L1')],
+    });
+    S.__setEnv(env, C);
+    eq('a SET does not wait on the recency window alone',
+      oidOf(S.takeQueued()), 'L1');
+  }
+  {
+    const env = envOf({
+      recentStore: { B1: ['L1'] }, queue: [card('L1')], spare: [card('L7')],
+    });
+    S.__setEnv(env, C);
+    eq('a fresh spare beats a recent line on the queue',
+      oidOf(S.takeQueued()), 'L7');
+  }
+  {
+    S.__setEnv(envOf({ recentStore: { B1: ['L1'] } }), C);
+    S.__setPz({ queue: ['p1', 'p2'],
+      store: { r: { p1: { o: 'L1' }, p2: { o: 'L4' } } } });
+    eq('a puzzle whose anchor line is recent is passed over',
+      S.takeQueuedPuzzle(), 'p2');
+  }
+  {
+    S.__setEnv(envOf({ recentStore: { B1: ['L1'] } }), C);
+    S.__setPz({ queue: ['p1'], store: { r: { p1: { o: 'L1' } } } });
+    eq('...and taken anyway when it is the only one', S.takeQueuedPuzzle(), 'p1');
+  }
+  {
+    // AN ENTRY IS MOVED, NOT DUPLICATED: the window is the last N LINE ENDS,
+    // not the last N cards, or one line dealt a dozen times would fill it and
+    // evict every other line the user had seen.
+    const env = envOf({ recentStore: { B1: ['L1', 'L2'] } });
+    S.__setEnv(env, C);
+    S.noteRecentLine('L1');
+    eq('a line dealt again moves to the back of the window',
+      env.recentStore.B1.join(), 'L2,L1');
+    eq('...and the write is marked', env.recentDirty, true);
+  }
+  {
+    const env = envOf({ recentStore: {} });
+    S.__setEnv(env, C);
+    for (let i = 0; i < C.recentLines + 5; i++) S.noteRecentLine('L' + i);
+    eq('the window is capped', env.recentStore.B1.length, C.recentLines);
+    eq('...oldest out', env.recentStore.B1[0], 'L5');
+    eq('...newest last',
+      env.recentStore.B1[C.recentLines - 1], 'L' + (C.recentLines + 4));
+  }
+  {
+    // '' is a position nothing can attribute — `stormLineKey`'s rule, in its
+    // fourth home. Recording one would make every unattributed position in the
+    // store look like the same recently-dealt line.
+    const env = envOf({ recentStore: {} });
+    S.__setEnv(env, C);
+    S.noteRecentLine('');
+    eq('an empty key is not recorded', env.recentStore.B1, undefined);
+    eq('...and never blocks', S.lineRecent(''), false);
   }
 }
 

@@ -6835,3 +6835,108 @@ The producer's own half is async and unreachable from there, so what is pinned
 instead is the number it reads (`queueSpread` at 0 would put nothing on the
 queue from a walk at all, and a session on a cold store would deal one position
 and stop) and the predicate it asks (`queuedOrDealt`, which is pure).
+
+## 30b. The window that outlives the session (v0.179.0)
+
+**Asked for 2026-09-04.** §30 spreads a *set* across six variations. It says
+nothing about the set after it: `st.dealtLines` is built in `showCard` and reset
+by `startSession`, so "Storm again" begins with no memory at all — and both
+draws see the same store in the same comparator order, so on a course whose
+store holds a couple of dozen positions the second set is very likely to be
+made of the first set's lines.
+
+That is the same complaint §30 answered, one level up. The fix is the same
+mechanism with a longer memory.
+
+### 30b.1 The rule
+
+**The last `recentLines` (24) line ends dealt, per course, are preferred
+against.** Not forbidden — *preferred against*, which is the whole of the
+design:
+
+| tier | rule | may it withhold a card? |
+| --- | --- | --- |
+| 1 | a line neither dealt this session nor in the window | no — falls to 2 |
+| 2 | a line not dealt this session (§30, unchanged) | a SET may WAIT here |
+| 3 | the head (§30, unchanged) | no |
+
+So every deal point scans three times, and tier 2 is byte-for-byte the rule as
+it stood. A course with fewer lines than the window behaves exactly as it did
+before this existed — which is also the right answer there, since on such a
+course there is no variety left to find.
+
+**Twenty-four is four sets' worth.** Nothing is derived from it and nothing
+breaks at any value: a window wider than the store makes this a no-op, and a
+window of 0 restores v0.178.0. It is a count and not an age, deliberately —
+"recently" here means "in the sittings just gone", and a user who storms once a
+week wants variety across those weeks as much as one who storms twice an hour.
+The count window gives both; an age bound would give the second only, and would
+need a second knob to say how long.
+
+### 30b.2 Why the tiers are not one set
+
+The tempting implementation is to union the window into `st.dealtLines` and
+leave the three deal points alone. Two things break, and both quietly:
+
+* **A SET WOULD WAIT ON IT.** `takeQueued`'s set arm refuses a repeat rather
+  than deal one, because the producer may yet find a fresh line. Nothing the
+  producer can find changes *this* answer — the window is about sittings already
+  over — so a set on a small course would stall on the wait, then be rescued by
+  the deadlock clause, i.e. behave correctly by accident.
+* **A RECENT LINE WOULD RANK EQUAL WITH A REPEAT.** Under one set, a card from a
+  line dealt half an hour ago and a card from a line dealt *in this set* are
+  interchangeable, and the head-first fallback picks whichever is in front. The
+  ordering is the feature: a line seen last night is a much better card than a
+  line seen two cards ago.
+
+`dev/check-storm.js` §30b asserts the ordering directly, and the union control
+fails on exactly those two assertions.
+
+### 30b.3 Where it lives
+
+`storage.local`, one key, `{ [bid]: [lineKey, …] }`, oldest first. Local rather
+than on §16e's carrier for `fenPresetKey`'s reason: that transport is for what a
+device cannot regenerate, and which lines this device dealt last night is
+neither expensive nor interesting to another one.
+
+* **READ ONCE PER DOCUMENT**, and the in-memory map is authoritative from then
+  on. The write is fire-and-forget from `endSession`, so a re-read at the next
+  `startSession` could land before it and hand "Storm again" — the case this
+  exists for — the picture from *before* the session it follows.
+* **WRITTEN FROM `endSession`**, which is the funnel every route out comes
+  through (§14.10c's reason, §15.7's and §14.25's). A storage round trip per
+  card would buy only what a tab dying mid-session would lose anyway, and
+  `st.dealtLines` already covers a live session.
+* **RE-READ BEFORE WRITE**, 24b's `flushDbCache` rule in its fourth home: one
+  object lives under that key and a write replaces it whole, so only the courses
+  this document has dealt from are ours to replace.
+* **AN ENTRY IS MOVED, NOT DUPLICATED.** The window is the last N *line ends*,
+  not the last N cards — otherwise one line dealt a dozen times in a long storm
+  fills it and evicts every other line the user has seen.
+* `''` — a position nothing can attribute — is never recorded and never blocks,
+  `stormLineKey`'s rule in its fourth home.
+
+### 30b.4 What it does not touch
+
+`stormStoreDraw` and `stormPuzzleDraw` keep their comparators (§14.15: a
+re-weighted comparator there is silent from the outside). This is a filter over
+what is taken *next*, exactly as §14.21's scope is a filter over the input.
+
+`queuedOrDealt` — the producer's own half, which diverts a walk that lands on a
+line already spoken for — is deliberately **not** given the window. A diversion
+costs a whole extra frontier walk (~11 ChessDB requests), and spending that to
+avoid a line from last night is a worse trade than dealing it; the deal points
+defer it for free if there is anything else in hand.
+
+### 30b.5 …and the half of §30 that had never run
+
+Found while wiring this up: **`takeQueuedPuzzle` was dead code.**
+`nextPuzzleCard` shifted `pz.queue` itself, from v0.175.0 to v0.178.0, so the
+puzzle third of §30's table never executed once — a course with a hundred
+puzzles hanging off one line's anchors went on dealing them in a row, which is
+the exact repetition §30 was reported for.
+
+It was invisible to `dev/check-storm.js` §30, which executes `takeQueuedPuzzle`
+directly and so kept passing over a function nothing called. The lesson is
+narrow and worth keeping: **a check that executes a rule proves the rule, not
+the path.** Two source-text assertions now cover the call, §0's discipline.
