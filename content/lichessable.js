@@ -45110,8 +45110,17 @@
       const p = st.ui.panelSlot.getBoundingClientRect();
       if (!b.width || !b.height || !p.width) return null;
       const size = Math.max(160, Math.floor(Math.min(b.width, b.height)));
+      // CENTRED ACROSS ITS SLOT, never level with its left edge — and only
+      // across: the top stays the slot's, so side by side the board and the
+      // panel still start on the same line, which is the whole reason that
+      // shape's spare pixels were put UNDER the board rather than around it.
+      // Upright the box is the full width of the stage and the square is only
+      // as wide as what was left of the height, so without this the board hangs
+      // off the left of a short portrait window with the difference empty
+      // beside it.
+      const bx = Math.round(b.left + Math.max(0, (b.width - size) / 2));
       return {
-        board: { left: Math.round(b.left), top: Math.round(b.top), size },
+        board: { left: bx, top: Math.round(b.top), size },
         panel: {
           left: Math.round(p.left), top: Math.round(p.top),
           width: Math.round(p.width), height: Math.round(p.height),

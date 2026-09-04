@@ -6940,3 +6940,133 @@ It was invisible to `dev/check-storm.js` §30, which executes `takeQueuedPuzzle`
 directly and so kept passing over a function nothing called. The lesson is
 narrow and worth keeping: **a check that executes a rule proves the rule, not
 the path.** Two source-text assertions now cover the call, §0's discipline.
+
+## 31. Upright: the board above the panel (v0.180.0)
+
+Reported: in portrait the window's right-hand panel should sit **below** the
+board, and the board should be as large as it can be while staying square.
+
+Half of that was already true and only for phones. §3.1's stacked shape has
+existed since the window did, behind `@container (max-width: 700px)` — so a
+360px phone got it and a tablet did not, and a tablet is the device most likely
+to be held upright.
+
+### 31.1 What the width question got wrong
+
+A 900x1400 window is not narrow. Under the width rule it kept the side-by-side
+shape, which fixes the panel at `flex: 0 1 420px` and leaves the board what is
+left of the width:
+
+| window | side by side | stacked |
+| --- | --- | --- |
+| 900x1400 | 470 | **878** |
+| 820x1180 (iPad, touch) | 358 | **798** |
+| 1000x1000 | 538 | **758** |
+| 1400x900 | **680** | 843, capped |
+
+Measured in `dev/harness.html`, which is where a `@container` rule can be
+measured at all. The last row is the control: landscape is unchanged, and its
+board is still held at `--clo-st-max` for the reason that cap was added — an
+unclamped 1080p board is 991px of travel in a timed exercise.
+
+So the trigger is **which way round the window is**, not how wide it is:
+
+```css
+@container (max-width: 700px) or (orientation: portrait) { … }
+```
+
+The width arm stays. A short wide phone in landscape is not portrait and still
+wants the columns stacked, because 700px minus a 420px panel is not a board.
+
+`orientation: portrait` is true of a square window too, deliberately — the table
+above says the stacked shape is the bigger board there by 220px.
+
+### 31.2 The container had to grow a block axis
+
+`orientation` is an answer about the block axis, so an `inline-size` container
+never matches it. The clause would have been **silently dead**: no error, no
+warning, the stacked shape simply going on firing at 700px and nowhere else.
+
+`container-type: size` is safe here for the reason the tree's is safe: this
+window is `position: fixed` with `inset: 16px`, so both of its dimensions come
+from the insets and neither has ever depended on its contents. It adds less than
+it looks — `inline-size` already implied `contain: layout style`, which is the
+half that makes a containing block for `position: fixed` descendants, and this
+window has none in any case (section 18's overlays are body-mounted).
+
+The harness keeps working because every `.clo-st` replica there carries an
+explicit inline height. One that did not would collapse under size containment,
+which is worth knowing before adding a card.
+
+### 31.3 The square, and where the spare pixels go
+
+The old column rule gave up on the square: the slot took the full width, the
+panel took a fixed 150px, and `slots()`' own `min(w, h)` was left to find the
+board. That works, but it puts every spare pixel between the board and the panel
+— and the note there explained that `aspect-ratio: 1/1` in a column flow had
+been tried and left the panel 2px tall.
+
+It did, because the board also carried `flex: 1 1 auto`: its square base size was
+free to **grow** and the panel had no floor to stop it being crushed. Both halves
+are what make it work now:
+
+* the board may only **shrink** from its square (`flex: 0 1 auto`), and
+* the panel's 150px is a `min-height`, which the flex algorithm freezes at — so
+  the whole shortfall lands on the board.
+
+The result is the largest square that fits, the stage's width or what is left of
+its height, whichever binds; and the spare height ends up under the panel's text
+rather than in a gap between the board and the panel meant to sit against it.
+
+**The ceiling is dropped here** (`max-height: none`), unlike side by side. There
+the cap is what stops a 991px board; here the width is already the cap, and a
+680px limit would leave a phone's board 20px short of its screen and a tablet's a
+third short of it, for a reason that does not apply when nothing is standing
+beside the board.
+
+### 31.4 The square is centred by `slots()`, not by CSS
+
+When the height binds, the slot is wider than the board that will be pinned onto
+it — 498x158 in the 520x400 case — and CSS cannot centre something it is not
+drawing. So `slots()` centres it:
+
+```js
+const bx = Math.round(b.left + Math.max(0, (b.width - size) / 2));
+```
+
+**Across only.** The top stays the slot's, which is what keeps the
+side-by-side shape starting the board and the panel on the same line — the whole
+reason that shape's spare pixels were put *under* the board rather than around
+it. Centring vertically as well would drop the board below the panel's first
+line and look like a bug in the other layout.
+
+### 31.5 What the measurement changed
+
+The floor was going to stay at 150px until section 18's panel was measured at
+360px wide in the states this slot actually holds:
+
+| state | desktop | `html.clo-touch` |
+| --- | --- | --- |
+| Find a good move | 134 | 162 |
+| a verdict | 134-166 | 162-230 |
+| Analysis (§18.4) | 189-355 | 230-415 |
+
+So **150 was already clipping the panel on the device the stacked shape is for**,
+and only ever looked right because the phone case is also the one where the board
+leaves plenty of height over. `html.clo-touch` gets a 200px floor. A floor, not a
+height: it binds only when the square has taken everything else.
+
+The third slot (the Lichess panel, up only while the review's analysis board is)
+needed restating for the column too — its `flex: 0 1 400px` is a *width* side by
+side and would have been read as a height, and its 300px floor is wider than a
+small phone's stage. It is a fixed 220px window in the column and scrolls, which
+at 420x720 gives board 250 / panel 150 / database 220 with nothing overflowing.
+
+### 31.6 Not done
+
+The stacked stage is `justify-content: flex-start`, so on a very tall portrait
+window (1080x1920: board 1058, panel 770) the panel is a large box holding four
+lines. Capping its growth and centring the pair was considered and left alone: a
+ceiling that clips the Analysis panel is a worse failure than an over-tall box,
+and every number that would justify one is a measurement nobody has asked for
+yet.

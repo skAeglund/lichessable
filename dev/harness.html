@@ -3902,6 +3902,79 @@ body {
         </div>
       </div>
     </div>
+    <div class="hx-card" id="hx-storm-portrait" style="flex:1 1 100%">
+      <h3>Upright &mdash; the board above the panel</h3>
+      <p>The stacked shape fires on <strong>either</strong> a stage under 700px
+        wide <strong>or</strong> a portrait window, and the second is the one a
+        tablet meets: 900&times;1400 is not narrow, so the board used to stand
+        beside a 420px panel and come out 470px wide with six hundred pixels of
+        empty height under it. Upright the board gets the WIDTH, which is the
+        larger of the two dimensions it could have had.</p>
+      <p>The slot is square again (<code>aspect-ratio: 1/1</code>) and may only
+        SHRINK; the panel&rsquo;s 150px is a <code>min-height</code> the flex
+        algorithm freezes at, so the whole shortfall lands on the board and the
+        spare height ends up under the panel&rsquo;s text rather than in a gap
+        between the board and the panel meant to sit against it. The ceiling
+        (<code>--clo-st-max</code>) is dropped here: the width is already the
+        cap, and there is nothing standing beside the board for it to crowd.</p>
+      <p><strong>The square is centred by <code>slots()</code>, not by CSS</strong>
+        &mdash; when the height binds, this dashed box is wider than the board
+        that will be pinned onto it, and CSS cannot centre something it is not
+        drawing. Across only: the top stays the slot&rsquo;s, so the side-by-side
+        shape still starts board and panel on the same line.</p>
+      <div class="hx-row">
+        <div class="hx-stage">
+          <div class="clo-st hx-pos" style="width:360px;height:640px">
+            <div class="clo-st-head">
+              <span class="clo-st-title">Intuition storm</span>
+              <span class="clo-st-sub">Intermediate Starter Kit</span>
+              <span class="clo-st-clock">3:07</span>
+              <span class="clo-st-stat">14 pts</span>
+              <span class="clo-st-stat clo-st-stat--hot">streak 5 &times;2</span>
+              <button type="button" class="clo-st-x">&times;</button>
+            </div>
+            <div class="clo-st-body">
+              <div class="clo-st-stage hx-slots">
+                <div class="clo-st-slot clo-st-slot--board" data-hx-slot="section 18's board"></div>
+                <div class="clo-st-slot clo-st-slot--panel" data-hx-slot="section 18's panel"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="hx-stage">
+          <div class="clo-st hx-pos" style="width:520px;height:400px">
+            <div class="clo-st-head">
+              <span class="clo-st-title">Intuition storm</span>
+              <span class="clo-st-sub">&hellip; and where the HEIGHT binds</span>
+              <span class="clo-st-clock">3:07</span>
+              <button type="button" class="clo-st-x">&times;</button>
+            </div>
+            <div class="clo-st-body">
+              <div class="clo-st-stage hx-slots">
+                <div class="clo-st-slot clo-st-slot--board" data-hx-slot="board, centred"></div>
+                <div class="clo-st-slot clo-st-slot--panel" data-hx-slot="panel at its 150px floor"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="hx-stage">
+          <div class="clo-st hx-pos" style="width:420px;height:720px">
+            <div class="clo-st-head">
+              <span class="clo-st-title">Intuition storm</span>
+              <span class="clo-st-sub">&hellip; and with the database up (&sect;14.10)</span>
+              <button type="button" class="clo-st-x">&times;</button>
+            </div>
+            <div class="clo-st-body">
+              <div class="clo-st-stage hx-slots">
+                <div class="clo-st-slot clo-st-slot--board" data-hx-slot="board"></div>
+                <div class="clo-st-slot clo-st-slot--panel" data-hx-slot="section 18's panel"></div>
+                <div class="clo-st-slot clo-st-slot--db" data-hx-slot="the Lichess panel"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div class="hx-card">
       <h3>The panel in the slot &mdash; asking</h3>

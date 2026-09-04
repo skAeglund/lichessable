@@ -6216,8 +6216,19 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
   /* The narrow shape below is a CONTAINER query for section 24's reason: the
      harness sizes a CARD, never the viewport, so a media query could only ever
-     be eyeballed on a phone. */
-  container-type: inline-size;
+     be eyeballed on a phone.
+     `size` RATHER THAN `inline-size`, and that is what the PORTRAIT arm of that
+     query needs: `orientation` is an answer about the block axis, so against an
+     inline-size container it never matches and the whole clause is silently
+     dead — the stacked shape would simply go on firing at 700px and nowhere
+     else. It is safe here for the reason the tree's is: this window is
+     `position: fixed` with `inset: 16px`, so BOTH of its dimensions come from
+     the insets and neither has ever depended on its contents. (Size
+     containment adds nothing else new: `inline-size` already implied
+     `contain: layout style`, which is the half that makes a containing block
+     for fixed descendants — and this window has none, section 18's overlays
+     being body-mounted.) */
+  container-type: size;
   /* ONE number for the board's ceiling and the panel's, because they are the
      same fact: the two slots stand side by side and must end level. Two
      literals here would drift, and the way that shows is a panel running 300px
@@ -7114,8 +7125,22 @@ button.clo-st-strow:hover { background: var(--clo-bg-raised); }
 .clo-st-bar-x { background: var(--clo-danger); }
 
 /* §3.1's shape for a phone: the board above the panel, the same interaction
-   rather than a different mode. The header's numbers wrap under the title. */
-@container (max-width: 700px) {
+   rather than a different mode. The header's numbers wrap under the title.
+
+   TWO TRIGGERS, and the second is the one that matters on a tablet. Width alone
+   asked the wrong question: a 900x1400 window is not narrow, so the board went
+   on standing beside a 420px panel and came out 470px wide with six hundred
+   pixels of empty height under it. What decides this layout is which way round
+   the window is — upright, the board and the panel are stacked and the board
+   gets the WIDTH, which is the larger of the two dimensions it could have had.
+   `orientation: portrait` is true of a square window too, deliberately: there
+   the stacked shape is still the bigger board (measured in the harness at
+   1000x1000, 758px against 538px).
+
+   The width arm stays as it is rather than being folded into the orientation
+   one: a short, wide phone in landscape is not portrait and still wants the
+   columns stacked, because 700px minus a 420px panel is not a board. */
+@container (max-width: 700px) or (orientation: portrait) {
   .clo-st-stage,
   .clo-st-review { flex-direction: column; }
   /* The review's board keeps its own shape here: it is `.clo-cr-mini`, which is
@@ -7140,22 +7165,63 @@ button.clo-st-strow:hover { background: var(--clo-bg-raised); }
     align-self: center;
   }
   .clo-st-revside { flex: 1 1 auto; min-width: 0; min-height: 0; max-height: none; }
-  /* THE SLOT STOPS BEING SQUARE HERE, deliberately: `slots()` takes min(w, h)
-     of whatever it measures, so the board is square however the box is shaped —
-     and keeping `aspect-ratio: 1/1` in a COLUMN flow made the board take the
-     full width and the panel under it 2px (measured in the harness at 360px).
-     The panel's height is fixed instead and the board takes the rest, which is
-     the one order that cannot squeeze either to nothing. */
+  /* THE SLOT IS SQUARE AGAIN AND THE PANEL IS WHAT GIVES. The earlier note here
+     said `aspect-ratio: 1/1` in a COLUMN flow took the full width and left the
+     panel 2px, and it did — with the board also carrying `flex: 1 1 auto`, so
+     its square base size was free to grow and the panel had no floor to stop it
+     being crushed. Both halves are what make it safe now: the board may only
+     SHRINK from its square (`flex: 0 1 auto`), and the panel's floor is a
+     `min-height` the flex algorithm freezes at, so the whole shortfall lands on
+     the board. The result is the largest square that fits — the stage's width,
+     or what is left of its height, whichever binds — with no cap above it.
+     THE CEILING IS DROPPED HERE (`max-height: none`), unlike the side-by-side
+     shape. There the cap is what stops an 991px board on a 1080p monitor; here
+     the WIDTH is already the cap, and a 680px limit would leave a phone's board
+     20px short of the screen and a tablet's a third short of it for a reason
+     that does not apply when nothing is standing beside the board.
+     The square is centred in the slot by `slots()`, not here: when the height
+     binds, this box is wider than the board and CSS cannot centre something it
+     is not drawing. */
   .clo-st-slot--board {
-    aspect-ratio: auto;
-    flex: 1 1 auto;
+    aspect-ratio: 1 / 1;
+    flex: 0 1 auto;
     width: 100%;
     height: auto;
     max-width: 100%;
+    max-height: none;
     min-height: 0;
   }
-  /* A title, a prompt, a progress line and two buttons. */
-  .clo-st-slot--panel { flex: 0 0 auto; min-width: 0; height: 150px; }
+  /* A title, a prompt, a progress line and two buttons — 150px is the FLOOR,
+     not the height. It grows into whatever the square could not use, so the
+     spare pixels of a tall narrow window end up under the text rather than in a
+     gap between the board and the panel that is meant to sit against it. */
+  .clo-st-slot--panel {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: auto;
+    min-height: 150px;
+    max-height: none;
+  }
+  /* AND THE FLOOR IS BIGGER UNDER TOUCH, which the old fixed 150 could not be.
+     Measured in the harness at 360px: the storm arm of section 18's panel is
+     134px asking and up to 166px on a verdict on a desktop, and 162-230px with
+     the touch type and tap targets on — so 150 was already clipping the panel
+     on the device this shape is for, and only ever looked right because the
+     phone case is also the one where the board leaves plenty of height over.
+     A floor, not a height: it binds only when the square has taken everything
+     else, and the panel grows past it whenever there is room. */
+  html.clo-touch .clo-st-slot--panel { min-height: 200px; }
+  /* The third slot, up only while the review's analysis board is (§14.10). Its
+     side-by-side `flex: 0 1 400px` is a WIDTH there and would be read as a
+     height here, and its 300px floor is wider than a small phone's stage — so
+     both are restated for the column, and the board gives way to it exactly as
+     it gives way to the panel. */
+  .clo-st-slot--db {
+    flex: 0 0 auto;
+    min-width: 0;
+    height: 220px;
+    max-height: none;
+  }
   .clo-st-head { flex-wrap: wrap; }
   .clo-st-sub { order: 1; flex: 1 0 100%; }
   /* §15.4: the STRIP is what goes, not a number. It is the redundant column —

@@ -4455,6 +4455,32 @@ Currently working (v0.18.x).
       CHECK THAT EXECUTES A RULE PROVES THE RULE, NOT THE PATH; two source-text
       assertions now cover the call.
 
+  * UPRIGHT, THE BOARD IS ABOVE THE PANEL (§31, v0.180.0). The stacked stage now
+    fires on `(max-width: 700px) or (orientation: portrait)`, so a tablet held
+    upright gets it too — 820x1180 goes from a 358px board to a 798px one.
+    THREE things an edit elsewhere can break, and two of them are silent:
+    - `.clo-st` IS A `size` CONTAINER, NOT AN `inline-size` ONE, and that is the
+      orientation arm's whole life support: `orientation` is an answer about the
+      block axis, so against an inline-size container the clause never matches
+      and the stacked shape simply goes on firing at 700px and nowhere else,
+      with nothing in the console. Safe here for the tree's reason — this window
+      is `position: fixed` with `inset: 16px`, so neither dimension has ever come
+      from its contents. A harness replica added without an explicit inline
+      HEIGHT will collapse under it.
+    - THE SQUARE IS CENTRED BY `slots()`, ACROSS ONLY. When the height binds, the
+      slot is wider than the board pinned onto it and CSS cannot centre something
+      it is not drawing. The TOP stays the slot's: side by side the board and the
+      panel start on the same line, which is why that shape's spare pixels were
+      put UNDER the board, and centring vertically too would drop the board below
+      the panel's first line.
+    - THE BOARD MAY ONLY SHRINK AND THE PANEL'S 150px IS A FLOOR. Both halves are
+      what make `aspect-ratio: 1/1` safe in a column — the old note here was
+      right that it left the panel 2px, and that was with the board ALSO carrying
+      `flex: 1 1 auto`, free to grow against a panel with no `min-height` to
+      freeze at. Under `html.clo-touch` that floor is 200px: measured at 360px
+      wide, section 18's panel is 162-230px there, so the old fixed 150 was
+      clipping it on the very device this shape is for.
+
 
 - Puzzles from the games that played your lines (section 29, v0.171.0): a
   tactic from a real game that went through one of the course's own positions,
