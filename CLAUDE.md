@@ -837,6 +837,46 @@ Currently working (v0.18.x).
     navigating itself to move 1, which does not happen when `returnToVariation`
     comes home by the pager (route 2, no hash) — and route 2 is what EVERY tab gets
     once `history.length` saturates at 50.
+- THE CORNER DOCK (v0.183.0) is the ONE home for every floating launcher in the
+  bottom-right of a chessable.com page: `cornerDock()` (top level, beside
+  `blurButton`) body-mounts `.clo-dock`, a flex column, and five modules append
+  to it — 25's "Key moves", 24's "Course tree", 21's "Repertoire coverage",
+  27's "Intuition storm" and 16d's pin dock. It replaced four hardcoded
+  `position: fixed` offsets (92 / 54 / 16, and the pin dock ALSO at 16 on every
+  page, so on a course page it sat ON TOP of the coverage launcher — the bug
+  this fixes, reported live). Section 27 had no corner launcher at all for the
+  same reason and was reachable only from inside the course tree.
+  * THE SEQUENCE IS A BLOCK OF `order` DECLARATIONS in the stylesheet, the
+    TRAINER ROW's discipline and for its reason: a module may keep appending
+    whenever it boots and still land in its own slot. NEVER add an offset here
+    again — a hidden launcher takes its own space with it (a `display: none`
+    child is not a flex item), so no module has to know what the others do.
+  * ONE SIZE, SET ONCE: `.clo-dock .clo-dock-btn`, DOUBLED so it beats every
+    launcher's own single-class base rule without any of them knowing it exists
+    (`.clo-review .clo-rowprimary`'s trick). Every launcher carries the
+    `clo-dock-btn` class in addition to its own. Measured: 42px rows desktop,
+    56px under `html.clo-touch` (`html.clo-touch .clo-dock .clo-dock-btn`,
+    trebled, which is what outranks both). The per-launcher touch rules were
+    removed — they each said something slightly different.
+  * TWO TIERS, AND THIS REVERSES 21's OLD RULING that its launcher is "the one
+    filled green thing in this corner". Filled green (`--primary`) = the two
+    controls that PRACTISE, the pinned drill and the storm, and they sit LOWEST
+    — nearest the thumb. Neutral outline = the three that open a REPORT about
+    the course. Both greens are one claim about two halves of one activity, so
+    this is not two primaries competing (DESIGN-ui-inventory §3).
+  * z-index 99990, BELOW our own board (100000) and below every panel these
+    launchers open (99999) — so an open report covers its own launcher whatever
+    that module's `render()` forgets. `pointer-events: none` on the column with
+    `auto` on its children, or the gaps between buttons swallow clicks meant for
+    the page underneath.
+  * 16c's "Pin this mistake?" is DELIBERATELY NOT in it: that panel is
+    trainer-only, where every dock item hides, so it keeps its own fixed
+    positioning and the corner to itself.
+  * Self-healing with no new watcher: each module's own `mount()` already tests
+    `launcher.isConnected`, and a rebuild comes back through `cornerDock()`.
+  * `dev/harness.html` renders the whole column ("THE CORNER DOCK, all five
+    occupants") — the replica does NOT update itself, so a launcher added here
+    is a launcher added there.
 - The TRAINER ROW is shared, and since v0.58.0 it has rules of its own that no
   module may decide locally (DESIGN-ui-inventory.md is the whole argument;
   `dev/harness.html` renders every state). Ground-truthed live 2026-08-03 on
@@ -2695,11 +2735,9 @@ Currently working (v0.18.x).
     AMBER, never red: a split is not an error — a repertoire covering three first
     moves is one — so the verdict wears the row palette's "you have something
     outstanding", with the word always printed beside the colour.
-  * THE BOTTOM-RIGHT CORNER OF A COURSE PAGE NOW HAS THREE OCCUPANTS: this
-    launcher (stacked at `bottom: 54px`), section 21's (16px) and section 16d's
-    pin dock, which shows on every page and takes 16px too. 21 and 16d already
-    overlapped before this existed; the stack is why this one did not make it a
-    three-way. Anything else put in that corner has to solve the whole cluster.
+  * ITS LAUNCHER IS A DOCK ITEM (see THE CORNER DOCK in Key mechanics). It used
+    to be `position: fixed` at `bottom: 54px`, one of four hardcoded offsets in
+    that corner; it now appends to `cornerDock()` and picks an `order`.
   * ITS NARROW SHAPE IS A `@container` QUERY, NOT `@media`, and that is what
     makes it checkable: `dev/harness.html` sizes a CARD, never the viewport, so
     a media query could never fire there. The panel's width is 880px clamped by
@@ -2859,9 +2897,8 @@ Currently working (v0.18.x).
     with a local watchdog per variation (section 19's rule: the worker's job timer
     does not survive an idle restart) and a `maxWrites` cap. Section 19c's arming
     press, for section 19c's reason.
-  * THE CORNER OF A COURSE PAGE NOW HOLDS FOUR THINGS: this launcher (92px),
-    section 24's tree (54px), section 21's coverage (16px) and 16d's pin dock
-    (16px, every page). A fifth has to solve the cluster rather than add an offset.
+  * ITS LAUNCHER IS A DOCK ITEM (THE CORNER DOCK, in Key mechanics) — it was
+    the top of the four-offset stack, at 92px.
 
 - ChessDB eval column (section 26, v0.128.0; side by side with Stockfish and
   colour-coded since v0.129.0): a cloud-analysis eval beside every
@@ -3002,242 +3039,115 @@ Currently working (v0.18.x).
 
 - Intuition storm on the repertoire's frontier (section 27, v0.130.0): the
   positions your own course lines END on, carried forward by REAL games — or,
-  on the SECOND SOURCE (§19, v0.152.0, "uncovered responses"), the position
-  after a popular reply the course never answers at a position it answers
-  OTHER replies at, most played first — one
-  at a time against a clock — or, in the SET mode (§17, v0.150.0), with no
-  clock at all and no mistake left behind — and, since §28, narrowable to the
-  part of the course that comes after a POSITION you name, gathering included —
-  Chessable teaches a line and stops, and this asks
-  what you do on the move after it stops. A move is graded for being DECENT
-  rather than for matching an engine. Launched from the COURSE TREE's header
-  (24), on a full-window panel of its own; the board is section 18's overlays in
-  a fourth mode.
-  **READ `DESIGN-intuition-storm.md` BEFORE CHANGING ANYTHING HERE** — §2 is the
-  wire, §3 the four findings the whole design rests on, §5 the stop and pick
-  rules, §6 the probe's measurements (every threshold in `CONFIG.storm` is one
-  of them) and §7 the eval band. `dev/probe-storm.js` still runs the entire
-  pipeline against the live APIs and is how any rule change is re-measured;
-  `--frontiers` is the cheapest question in the file to ask of a new course, and
-  `--dump-fens` feeds `dev/probe-cdb-quality.js`, which is §12.3b's measurement
-  of whether a ChessDB score is good enough to GRADE with — 174 moves against a
-  local search: 70% same band, 42 of the 52 disagreements ChessDB being HARSHER,
-  and NOT ONE move scored good that the engine called a mistake. So the bands
-  are sound as they stand; do not widen them, and do not add a `learn=0` gate to
-  the grade (the fill-ins measured marginally BETTER than the book entries).
-  What follows is only what an edit ELSEWHERE can break.
-  * THE GRADE IS STOCKFISH'S, NOT CHESSDB'S (§23, v0.158.0). Measured
-    2026-08-30 (DESIGN-intuition-storm.md §23.1, 50 positions / 387 moves):
-    ChessDB over-scores ITS OWN TOP MOVE by a median 11cp relative to the rest
-    of the same position, **14 positions to 1**, and a depth-30 re-search does
-    not move towards it — so it is a defect of the source, not knowledge the
-    shallower search lacked. Because a verdict is a difference against that one
-    number, the bias is paid by every OTHER move: it explains 70 of 100 band
-    disagreements, and correcting it alone takes agreement with a local search
-    from 74% to 88%. The mechanism is a WINNER'S CURSE — the anchor is a max
-    over noisy estimates — so it grows with the candidate count
-    (rho 0.559) and cannot be tuned out of a min-maxed graph.
-    **READ §23 BEFORE CHANGING ANY OF THIS.** What an edit ELSEWHERE can break:
-    - `d` ON A STORED ENTRY IS THE WHOLE COMPATIBILITY STORY: >0 means `m` is a
-      Stockfish list at that depth, ABSENT means ChessDB's — which is what every
-      entry written before v0.158.0 holds. So no cache key moved and nothing
-      migrates. It rides the wire with NO `wireVersion` bump (§14.19's
-      precedent) and it MUST ride: a phone cannot run the search, so a desktop
-      that deepened a position is the only way that phone ever grades it with an
-      engine. The merge takes the deeper list AND ITS MOVES together — a depth
-      without the scores it was measured on is a lie about every number in the
-      entry — and never lets a shallower list displace a deeper one.
-    - CHESSDB'S CHILD TIER IS UNREACHABLE ON A STOCKFISH LIST, and that is not
-      an optimisation to tidy away: `best(P)` from Stockfish minus
-      `best(P after m)` from ChessDB is exactly the cross-evaluator subtraction
-      §3.4 forbids, and the offset it would inject is the size of the bias
-      above. It survives for the ChessDB lists still in the store.
-    - `stormEngineLoss` NOW TAKES A KNOWN ANCHOR and is ONE search when it has
-      one. Two searches was never the point — the point is that both sides come
-      from one evaluator at one depth, which a stored list already guarantees.
-      That also removes §14.23's unsatisfiable pair-inside-one-budget. Verified
-      live 2026-08-31: 8002 ms in phase `child` against 16002 ms and two phases
-      on an undeepened position. The answer carries `oneSearch` so the tooltip
-      does not describe a search that never ran.
-    - THE WORKER REBUILDS THE ANALYZE MESSAGE FIELD BY FIELD
-      (`handleEngineAnalyze`, background.js), so a per-request engine option
-      added at either end and not added THERE is dropped in silence — the search
-      still runs, at the previous request's width. That is how a 12-move list
-      would have been stored as three, with nothing in the console.
-    - `sflist` IS A FOURTH SOURCE and `stormEstimated` must be FALSE for it.
-      That predicate gates `.clo-cdb--est`, which means "ChessDB computed this
-      for us just now" and nothing else (DESIGN-chessdb.md §3.3) — so it is
-      false for BOTH engine sources. `stormBestLine` treats it like `engine`
-      for the same reason: both halves come from one search, so it names the
-      ENGINE's best and prints no win rate, which is a book figure.
-    - DEPTH 20 OR IT IS NOT STORED (§23.7, v0.159.0), and `deepenDepth` is a
-      SCALAR for the same reason — a stored list is a STANDARD, used for as
-      long as the position is in the store and carried to other devices, so
-      "as deep as this machine managed" is not a cheaper version of the answer
-      but a different one wearing the same `d`. A per-profile target would put
-      a phone's depth-18 lists beside a desktop's depth-20 ones in one store
-      with nothing able to tell them apart. It is under BOTH `PROFILES`
-      ceilings (30 desktop, 25 mobile), so engine.js's `Math.min` never lowers
-      it. THREE things an edit elsewhere can break:
-      * THERE IS NO TIME BUDGET, deliberately the opposite of `armEnginePhase`'s
-        rule for the GRADING tier — that one has a user watching a clock and so
-        TAKES a search that runs out; this one has nobody waiting and must
-        ABANDON one. What bounds it is `deepenStallMs`, a PROGRESS watchdog
-        re-armed on each new iteration, over engine.js's own 15 s line-silence
-        respawn. Restoring a wall-clock cap restores the truncation.
-      * THE COMPLETION TRIGGER IS `deepestCompleteList`, NEVER `job.bestDepth`.
-        That is multipv 1's depth and bumps at the START of an iteration, so
-        under the strict rule it ends the search one line in and then refuses
-        the position for being one short — i.e. the pass stores NOTHING, on
-        every device, while looking like it is working.
-      * `deepenPickDepth(job, ended, C)` IS PURE AND IS THE WHOLE RULE, split
-        out of `finishEngineList` so `dev/check-storm.js` can execute it. Its
-        one relaxation is WIDTH and only once the engine has STOPPED (a
-        finished search can lose a line to a bounded score); depth never
-        relaxes.
-    - THE DEEPEN PASS IS A SECOND PASS OVER THE STORE, NEVER A STEP INSIDE
-      `storeAdd`. That function is synchronous and returns the boolean §14.17's
-      funnel counts, whose four outcomes must account for every candidate
-      examined; threading a 50-second search through it would make that
-      invariant depend on an engine. Separating them is also what upgrades the
-      positions already stored rather than stranding them.
-    - AN UNDEEPENED POSITION IS STILL USABLE and is graded exactly as it was
-      before this existed. Nothing waits for the pass, it never has to finish,
-      and it is NEVER A FILTER — §14.21's rule, and a filter here would strand
-      an undeepened store with nothing to play at all.
-    - …BUT THE DEEPENED HALF IS DEALT FIRST (§23.8, v0.163.0), which REVERSES
-      v0.158.0's "not a term in `stormStoreDraw`" — a store is normally only
-      PARTLY deepened (§23.5a's own run: 1 of 4, then 2 of 10, then 4 of 10), so
-      without this a session opens on a ChessDB verdict most of the time and the
-      CPU the pass spent buys nothing the user meets. §14.15's objection is
-      answered the way §14.19's term answered it — pure, rnd-injected, executed
-      by `dev/check-storm.js` with four controls. THREE things an edit elsewhere
-      can break:
-      * IT SITS SECOND, `(a.k - b.k) || (b.deep - a.deep) || (b.reach - a.reach)
-        || (a.r - b.r)`. NEVER above `k`: §14.15 is a rule about STARVATION and
-        this term in front of it reinstates exactly that — a deepened position
-        missed twice would open every session ahead of everything unseen, which
-        is v0.130.0's hardest-first order arriving by another door. Above
-        `reach`, because that one asks how often anybody MEETS the position and
-        this asks how well the answer can be GRADED.
-      * IT IS A BOOLEAN ON `d > 0`, NOT `undeepened`'s `d >= deepenDepth`. Those
-        answer different questions: that one is "is this list up to the standard
-        the pass writes", right for deciding what to SEARCH; this is "will this
-        grade with an engine", which a depth-18 list from an older build does
-        just as much as a depth-20 one. The stricter test sorts a perfectly
-        engine-scored position back in among ChessDB's. And a boolean rather
-        than the depth, for §14.19's reason one field over: a raw depth makes
-        the order deterministic inside the group and spends the random term's
-        variety on a distinction that changes no verdict.
-      * THE COUNT IS PRINTED (`storeScored()`, on the ready chip beside
-        `storeCount()`), because the order alone is INVISIBLE — a gather that
-        deepened few looks exactly like one that deepened many, which is the
-        whole of the report this came from. Source-scoped for `storeCount`'s
-        reason, and the clause is omitted at zero rather than reading
-        "· 0 engine-scored", which would reproach a pass nobody has run yet.
-    - THE BACKGROUND TOP-UP (§18.2) DOES NOT DEEPEN, and must not be "improved"
-      into doing so: it runs while a review is up, and a search started there
-      holds the engine claim a review retry's own grade needs — which fails as
-      "the engine is already claimed", i.e. a silently ungraded retry.
-    - CHESSDB KEEPS THE WALK — NARROWED BY §26 (v0.164.0), read that before
-      quoting this. It is still the walk's FIRST source on the has-games path,
-      for the reason it always was (coarse questions, ~11 per position at
-      380 ms). What changed is that it is no longer the walk's LIMIT.
-  * CHESSDB IS NO LONGER WHAT ENDS A WALK (§26, v0.164.0). Measured over 60
-    frontiers on all three courses: **42 of 42** walks stopped on `ChessDB has
-    no score here` — not one hit a chess rule — and past a frontier the median
-    walk died after FOUR plies. So ChessDB's coverage, not the stop rules, was
-    bounding the whole producer. `askScores(fen, source)` is the walk's one
-    scoring primitive now and falls through to Stockfish where the book is
-    ignorant. **READ `DESIGN-intuition-storm.md` §26 BEFORE CHANGING IT.** What
-    an edit ELSEWHERE can break:
-    - IT YIELDS TO THE GRADE, and that is the rule that makes searching inside
-      a walk safe at all. §14.23's tier bails with "the engine is already
-      claimed" and answers `No verdict` — §14.22.4's silent failure — so a walk
-      holding the one `st.eng` slot while a card is being answered reintroduces
-      it from a path nobody would look at. `askEngineScores` stands down on
-      `st.grading`, `solving()` and `st.eng`, exactly as §18.2's background pass
-      already does, and the stand-downs return BEFORE `st.eScores.set` so a
-      position refused for want of an engine is retried rather than cached as
-      unscoreable.
-    - `walkMultipv` MUST BE >= `minScored`, and this is the number whose wrong
-      value kills the feature in SILENCE: `stormPickReject` rejects on
-      `nScored < minScored` (6) and `spread5` is best-minus-FIFTH, so a narrower
-      list fails EVERY candidate while every walk still runs and every request
-      is still spent. The three-to-five a move is PICKED from (`randomTopN`) is
-      a separate, narrower number. Asserted in `dev/check-storm.js` §17.
-    - `walkDepth` (14) MUST STAY BELOW `deepenDepth` (20). §23.7's standard is
-      one number for every device because a stored list outlives its search and
-      crosses devices; a walk is deciding where to step next, which is a
-      different question and a cheaper one (measured: 6PV d14 is 1.5s against
-      d20's 15.5s, agreeing to a p90 of 12cp with nothing over 25cp). At or
-      above the standard a walk's list would masquerade as deepened and
-      `undeepened` would never revisit it. Also asserted.
-    - THE PROVENANCE RIDES ON THE ARRAY. `askEngineScores` hangs `depth` off the
-      list (`askGames`'s idiom), `stormCandidate` files it as `listDepth` and
-      `stormPack` writes it as `d` — so §23's whole compatibility story is
-      unchanged: absent `d` still means a ChessDB list, and a walk can now
-      produce either. A `listDepth` that never arrives stores an engine list
-      wearing ChessDB's clothes: it still grades, still prints, and is graded by
-      the source §23.1 measured as biased while `stormBestLine` calls it a
-      search.
-    - THE REORDER IS A BRANCH, NOT A SWAP. The explorer goes first, then the
-      sources diverge — the has-games path KEEPS its ChessDB stage-0 rejection,
-      because 3 of 47 such frontiers are unknown to it and without the check
-      each spends an explorer call and two game fetches to learn what one
-      request already said. `skipUnknownFrontiers` survives with its meaning
-      narrowed to "nothing at all could score this".
-    - THE INVENTED PATH IS ALWAYS `'engine'`, whichever pass is running.
-      ChessDB is unknown at 85% of no-games frontiers — which is why that
-      fallback, though shipped since v0.130.0, had NEVER been reached outside a
-      429 storm (0 of 13 sampled). Its eval band is asked of the walk's own
-      first search, so it costs nothing extra and judges the position on its
-      merits instead of rejecting it for want of data.
-    - THE SESSION AND THE GATHER USE DIFFERENT SOURCES, §14.17.3's precedent:
-      `walkSource: 'hybrid'` for the producer (the user is waiting, and it
-      shares the engine with the grade), `gatherWalkSource: 'engine'` for the
-      gather and background passes (nobody waiting, wake lock held, and every
-      position stored comes out engine-scored). A position's list is always
-      ENTIRELY one source, which is what keeps §3.4's cross-evaluator hazard out
-      of a candidate — `spread2`, `spread5` and `randomTopCp` all compare within
-      one list.
-    - `stormEngineList` IS SHARED BY TWO PASSES NOW, AND THE STATUS LINE TELLS
-      THEM APART BY `job.walk` — never by `kind`, which is `'list'` for both and
-      is what the list machinery keys on. The deepen pass and the walk's own
-      scorer both claim the one `st.eng` slot, so from v0.164.0 to v0.164.1 every
-      walk search repainted `setDeepenNote`: mid-gather the panel read
-      "Analysing… 16 left, depth 20" while a depth-14 WALK search ran, and the
-      elapsed figure §23.7 added — the only thing on screen separating a long
-      deepen search from a stuck one — was reset by each of them, so a real 207 s
-      search looked like a run of 2 s ones. Nothing errored and every counter
-      beside it stayed correct, which is why `node --check` and
-      `dev/check-storm.js` both passed it. Anything else that comes to share this
-      primitive must say which pass it is, in `bail()`'s wording too.
-    - §6'S YIELD NUMBERS NOW DESCRIBE A DIFFERENT WALK. They were measured
-      against one that died at ply 4; walks now run to their length, so
-      `maxPly`, `blunderCp` and `decidedCp` are being reached for the first
-      time. Treat §6.1's figures as a floor until `dev/probe-storm.js` is re-run.
+  on the SECOND SOURCE (§19, "uncovered responses"), the position after a
+  popular reply the course never answers at a position it answers OTHER replies
+  at, most played first — one at a time against a clock; or, in the SET mode
+  (§17), with no clock at all and no mistake left behind; and, since §28,
+  narrowable to the part of the course that comes after a POSITION you name,
+  gathering included. Chessable teaches a line and stops, and this asks what you
+  do on the move after it stops. A move is graded for being DECENT rather than
+  for matching an engine. Launched from the CORNER DOCK and from the COURSE
+  TREE's header (24), on a full-window panel of its own; the board is section
+  18's overlays in a fourth mode.
+  **READ `DESIGN-intuition-storm.md` BEFORE CHANGING ANYTHING INSIDE THIS
+  MODULE.** It is 400 KB and it is the whole feature: the loop, the pipeline,
+  every threshold's measurement, the version history, the live ground-truthing
+  and the control runs. Nothing of that is repeated here, and almost every rule
+  in it fails SILENTLY — a wrong comparator still returns every position, a
+  wrong perspective still prints a plausible number, a filter that never fires
+  still yields cards. Where to look:
+  * THE PIPELINE — §2 the wire · §3 the four findings the whole design rests on
+    (§3.4's one-evaluator rule above all) · §5 the stop and pick rules · §6 the
+    probe's measurements, which is where EVERY threshold in `CONFIG.storm` comes
+    from (§6.5 refutes walking deeper; do not retry `minPly` 6) · §7 the eval
+    band · §14.5 the producer · §14.9 the ply range · §14.13 the pre-roll ·
+    §14.14 paused lines · §14.18 + §14.18.4 the stub filter and the walk stop ·
+    §19 the second source · §25 the coverage key and the stored-position sweep.
+  * THE GRADE — §14.8 + §14.23 + §14.24 the three tiers and the engine one's
+    budgets · §14.20 which tier graded a card · §16 win probability and the five
+    bands (§16.2 the calibration) · §23 Stockfish scoring at gather time, §23.7
+    the one depth standard for every device · §26 the walk's own scorer.
+  * THE STORE — §14.11 what it is and why `produceFromStore` runs first · §14.15
+    /§14.19/§23.8 the draw order, term by term · §14.16 retirement and the
+    tombstones · §14.17 the funnel and its conservation invariant · §14.21 +
+    §28 the chapter and position scopes · §22 clearing it · §30/§30a/§30b the
+    line spread and the window that outlives a session.
+  * THE WIRE — §14.12 the transport · §14.25 + §15.7 the end-of-session pushes ·
+    §27b one card per course, and §27b.3 the chapter they live in · §28b.4 the
+    fourth card.
+  * THE REST — §8 the storm itself · §14.10 the review, §14.10a the hidden best
+    move, §14.10b Try again, §14.10c the card it ended on · §15 + §21 the
+    performance record · §17 the set · §18 the four post-set changes · §20 the
+    lead-in ply · §24 the wake lock · §27 the round · §28b/§28c the saved
+    positions · §31 the upright stage.
+  `dev/probe-storm.js` runs the entire pipeline against the live APIs and is how
+  any rule change is re-measured; `--frontiers` is the cheapest question in the
+  file to ask of a new course. `node dev/check-storm.js` executes the pure rules
+  and two impure ones. What follows is ONLY what an edit ELSEWHERE can break.
+  * IT OWNS THREE BRIDGES AND IS HANDED A FOURTH, all null-safe. `stormActive()`
+    — the course tree stands down on it by HIDING its own window (same size,
+    same z-index; two full-window panels at once is a state that should not
+    exist) and so, for free, by its keyboard's existing `ct.panel.hidden` guard.
+    `stormApi` (`open({bid,name})`, `answer(uci,san)`, `pass()`, `close()`, plus
+    §17's `isSet`/`retry`/`reveal`/`advance`/`analyse` and section 29's
+    `puzzleSolved`/`puzzleFailed`) — `open` returns FALSE when a session cannot
+    start, the contract every launcher here has, and `answer`/`pass` are what
+    section 18's `tryMove` and Skip call. `stormPanelSlot` is the panel's fifth
+    host (below). And `continuationStormApi` (`open(card, slot, opts)`,
+    `next(card)`, `verdict(v)`, `analyse(given, slots)`, `close()`), which
+    section 18 owns: the traffic goes BOTH ways because each side does something
+    the other cannot — 18 owns the board and the panel, 27 owns the queue, the
+    clock and the grade. Section 18 knows exactly two things about a session,
+    `cr.stormRetry` (§14.10b) and `cr.stormHold` (§17), and both change only the
+    words `syncStormUi` prints, and both are cleared in `closeReview`. It CALLS
+    `pinSyncApi.carrier` (16e) for all four of its cards, and reads
+    `continuationActive()`.
+  * THE PANEL HAS A FIFTH HOST, and it is the same placement as the fourth.
+    `stormPanelSlot` is a SECOND supplier beside `courseTreePanelSlot`, both
+    read through the top-level `inHostPanelSlot()`; `topPanelHostNow()` still
+    answers `'tree'` for either, because the two differ only in which window
+    measured the rect and a second host string would need a second placement
+    branch doing exactly the same thing. That slot exists ONLY while the
+    review's analysis board or §28b's set-up board is up — during a card the
+    database's top move would name the answer, which is section 20's reason for
+    leaving the panel's ordinary stand-down in place. `panelSlot()`/`dbSlot`
+    read `st.analysing || st.fenBoard` and NEVER a retry board (§14.10b).
+  * `cr.treeSlot` IS `cr.hostSlot` (+ `cr.hostKind`, `'tree' | 'storm' | ''`),
+    `.clo-cr-intree` IS `.clo-cr-inhost` and `positionInTree` is
+    `positionInHost`. Nothing about the mechanism changed — 24g's rules are
+    unchanged and apply to both guests — only the name.
+  * IT HAS TWO LAUNCHERS (v0.183.0): one in the CORNER DOCK (Key mechanics) and
+    the course tree's own, which it had alone until the dock existed. THE DOCK
+    ONE NEEDS NOTHING OF THE TREE'S: `startSession` reads the course listing
+    itself and §14.11's store usually answers before that lands, which is what
+    makes one click honest. `syncLauncher` is called from the TOP of `tick`,
+    ABOVE its `!st.running` return — the launcher's whole job is to exist while
+    no session does — and hides on `st.running` (the window covers the page) and
+    on `continuationActive()` (a board of ours is up, so `open` would refuse; a
+    control that cannot act must not be on screen to be pressed).
+    `st.launchBid` is read off the url every tick and is deliberately NOT
+    `st.bid`, which is the course a SESSION is about.
   * **IT MUST NEVER CALL CHESSDB'S `queue` OR `store`, and this is the single
     most tempting place in the codebase to break that rule.** The walk stops on
-    `unknown` ten to twelve times per fourteen frontiers, and "ask them to
-    analyse it" is one URL parameter away; those two actions spend a VOLUNTEER
-    NETWORK's compute (DESIGN-chessdb.md §2.4 — a queued position came back
-    analysed ~25 minutes later), and a storm would spend it in bursts of
-    hundreds. `handleChessdbFetch`'s allow-list in background.js is what makes
-    them unreachable, and it must stay an allow-list.
+    `unknown` constantly and "ask them to analyse it" is one URL parameter away;
+    those two actions spend a VOLUNTEER NETWORK's compute (DESIGN-chessdb.md
+    §2.4), and a storm would spend it in bursts of hundreds.
+    `handleChessdbFetch`'s allow-list in background.js is what makes them
+    unreachable, and it must stay an allow-list.
   * IT NEVER WRITES TO THE COURSE (section 24's rule, and this feature has the
     same tempting button one line away — "add this position as a puzzle" from a
     storm card; 19d/19e already do that safely from a BOARD), never touches
     Chessable's board, and reschedules nothing.
   * NO NUMBER IT SHOWS MAY BE PRESENTED AS A BOOK EVAL. It grades on `learn=1`
-    only, where a real book entry and an on-the-fly fill-in are indistinguishable
-    (DESIGN-chessdb.md §3.3) — which is fine for RANKING a move against the other
-    moves in the same position, and is why one request per position is enough —
-    so the verdict line wears `.clo-cdb--est`, section 26's existing "computed
-    for us just now" styling, and says so in its tooltip.
-  * IT NEVER SHOWS THE SAME POSITION TWICE (`st.seen`, keyed `cacheKey`).
-    Measured, not theoretical: duplicates arrive from two different games in the
-    same run.
+    only, where a real book entry and an on-the-fly fill-in are
+    indistinguishable (DESIGN-chessdb.md §3.3) — which is fine for RANKING a
+    move against the other moves in the same position, and is why one request
+    per position is enough — so a ChessDB-graded verdict wears `.clo-cdb--est`,
+    section 26's existing "computed for us just now" styling. `stormEstimated(v)`
+    is the ONE predicate both display hosts read (section 18's `syncStormUi` and
+    section 27's `renderReview`) and it is FALSE for both ENGINE sources and for
+    a PUZZLE (§14.20; section 29) — that class is a claim about where a number
+    came from, and §3.3's rule broken in either direction is silent.
   * THE HOST PERMISSION IS ONE PATH PREFIX, NOT A HOST. `https://lichess.org/*`
     is the extension's third, and unlike the other two that host also serves the
     user's whole account — so `clo-fetch-game`'s guard is
@@ -3249,7 +3159,10 @@ Currently working (v0.18.x).
     the worker's `as:'text'` read — `handleExplorerFetch` called `response.json()`
     unconditionally — and deliberately does NOT require a token, since an early
     401 there would make the no-permission fallback need the very thing it
-    exists to work without.
+    exists to work without. §19's second source needs neither game nor PGN and
+    so never touches this permission: `askMoves` reads `explorer.lichess.org`
+    only, and must not be "unified" with `askGames`, whose parameters are its
+    exact opposite (`moves` on, `topGames`/`recentGames` off).
   * `fetchExplorerData` MUST KEEP `topGames:'0'`/`recentGames:'0'`. The panel
     fetches on every position change and wants nothing it will not draw; the
     storm makes its OWN explorer call with them on, and with RELAXED filters
@@ -3259,1358 +3172,162 @@ Currently working (v0.18.x).
     from the design's §9. That cache is tagged with `lichessFilters` and a moves
     limit; the storm asks with different filters and `moves: '0'`, so it has
     nothing correct to write there and 24b's `flushDbCache` hazard cannot arise.
+  * IT CLAIMS THE SHARED ENGINE THE WAY SECTION 15 DOES (`state.altCheckBusy`
+    set with `state.engineFen` nulled first, so `syncEngine` stands down and
+    sends no stop), and `endEngineJob` is the ONE place that gives it back — on
+    the answer, on the timeout, on an engine error and on `endSession`. A leaked
+    claim is a panel whose engine never starts again. FOUR passes want that one
+    `st.eng` slot — the GRADE (§14.23), the DEEPEN pass (§23.7), the WALK's own
+    scorer (§26) and §18.2's BACKGROUND top-up — and the last three all YIELD to
+    the grade, standing down on `st.grading`, `solving()` and `st.eng`, because
+    the grade's own bail is "the engine is already claimed" answered as
+    `No verdict`, which is silent.
+  * THE WORKER REBUILDS THE ANALYZE MESSAGE FIELD BY FIELD
+    (`handleEngineAnalyze`, background.js), so a per-request engine option added
+    at either end and not added THERE is dropped in silence — the search still
+    runs, at the previous request's width. That is how a 12-move list would have
+    been stored as three, with nothing in the console.
+  * `stormCp`, `stormVerdictLine`, `stormBestLine`, `stormEstimated`,
+    `stormSourceLabel`, `stormSourceTitle`, `stormSharePct`, `stormGapNote` AND
+    §29's `stormPuzzleReviewLine` ARE TOP LEVEL AND MUST STAY THERE. Section
+    18's panel prints those lines while a card is up and section 27's review
+    prints them again afterwards — two closures, so a helper living in either
+    one is a `ReferenceError` in the other. `node --check` cannot see it and
+    neither can a sliced check, which flattens every scope into one.
+    `dev/check-storm.js` §0 asserts the indentation instead.
+  * THE CARD CARRIES EXACTLY ONE PLY, the position's own best move, and that is
+    load-bearing rather than decorative: section 18's `startLine` ends in
+    `step()`, and an EMPTY ply list reads there as "this line is already
+    finished", so the card would be skipped the instant it reached the board.
+    `tryMove`'s storm arm intercepts ABOVE the comparison, so that ply is never
+    used as an answer — only as what makes a card a card, and as the "best" the
+    verdict line names.
+  * THE REVIEW'S BOARDS ARE SECTION 11c's STATIC ONE (`.clo-cr-mini`), best move
+    GREEN and played move RED — so section 11c's three caller rules apply, and
+    the second is the one to watch: `paintShape` takes a colour KEY or a CSS
+    value and dropped anything else SILENTLY until v0.80.0.
+    `dev/harness.html`'s own arrow helper resolves the same keys, or a replica
+    could not be written in the terms the code is. That board's GLYPH FALLBACK
+    is sized off the SQUARE, not the board — `.clo-cr-mini .clo-cr-piece--glyph`
+    is `font-size: inherit`, so the board's own `font-size` IS the piece's type
+    size (board/10, the convention every other host uses); set to the board's
+    size instead it draws a 44px glyph in a 6px box, a
+    smear that passes every rect assertion and that a live session never shows,
+    real pieces being cloned SVGs sized in per cent.
+  * FOUR PIECES OF SHARED CODE CARRY SOMETHING FOR IT, and each is invisible
+    from the other end. `reduceCourse` carries per-variation `paused` and
+    course-level `allPaused` (§14.14; the WIRE field is `paused` and the app
+    calls it `isPaused`, so grepping for the UI's name misses it) — and it
+    needed NO `CONFIG.coverage.cacheKey` bump for §15's oid, which was already
+    in the reduced shape. `walkVariation` runs ABOVE every source test in
+    `stormFrontiers` — ONE WALK, TWO USES (§14.18) — behind the existing
+    `chunkVars` yield. 16e's `cardEntry`/`ensureSlot`/`carrier.write` took a
+    card NAME and a CHAPTER parameter for §27b — the chapter resolved by NAME
+    through the memoised `importTargetsOnce`, because a lid is per course —
+    with three rules in that shared code: `lid` is honoured at CREATE and
+    IGNORED ON OVERWRITE, so a card moved by hand stays moved and a failed
+    resolve can only put a NEW card in Main Level; `ensureSlot` still asks
+    `getList` WITH NO CHAPTER, which answers the whole course, so a card is
+    found wherever it lives and the move needed no migration; and a failed
+    resolve is NOT memoised — "no such chapter" is a real answer worth
+    remembering, a thrown read is a fact about this minute. There is NO
+    create-a-chapter call anywhere in this codebase. And any card added to that
+    carrier must DECODE the way `syncStats`/`syncStore` do (§28b.5): `read`
+    answers the comment VERBATIM in base32, so handing it straight to an
+    unpacker leaves the version `undefined` and the exchange is silently
+    PUSH-ONLY.
   * TWO PERSPECTIVE FLIPS, IN OPPOSITE DIRECTIONS, AND THE CHILD-NEGATION
     FALLBACK ARE THE SILENT FAILURES. `stormUserEval` reads a ChessDB score (the
     MOVER's) from the user's side and flips on WHOSE MOVE IT IS IN THE POSITION,
     never on which colour the course is for — the two are usually opposite, and
     getting it wrong inverts every frontier into a tidy column of backwards
-    numbers (it did, in the probe's own `--frontiers` block; §6.5).
-    `stormMoverCp` does the same for a STOCKFISH score, which engine.js has
-    already normalised to WHITE — so the two conversions run opposite ways in
-    one feature. And `stormMoveLoss`'s fallback is `best + childBest` because
+    numbers. `stormMoverCp` does the same for a STOCKFISH score, which engine.js
+    has already normalised to WHITE — so the two conversions run opposite ways
+    in one feature. And `stormMoveLoss`'s fallback is `best + childBest` because
     the child's best is the OPPONENT's; written as a subtraction it is wrong by
     twice the child's eval, which looks entirely plausible.
-    `node dev/check-storm.js` executes all three.
-  * GRADING HAS THREE TIERS AND THE THIRD IS NOT OPTIONAL (§3.4, §14.8). The
-    position's own scored list, then one `queryall` on the position after the
-    move, then TWO Stockfish searches. Measured live 2026-08-28: three answers
-    in a row on course 291847 were ungradeable without the third tier, because
-    §3.2's 98% coverage is a measurement over REAL continuations and the child
-    of an ARBITRARY move is a position no game ever reached.
-    - `engineDepth` IS A CEILING, `enginePhaseMs` IS THE LIMIT (§14.23,
-      v0.149.0). A search that runs out of its budget is TAKEN at whatever depth
-      it has reached, never discarded — which is what this tier used to do, and
-      why it answered `No verdict` on EVERY card from v0.130.0 to v0.148.0.
-      Measured live 2026-08-29: one depth-20 MultiPV-3 search took 20.7 s on the
-      author's desktop, so a PAIR of them under one 20 s watchdog was
-      unsatisfiable by arithmetic, and the job died holding a perfectly good
-      depth-17 evaluation. The failure is silent by construction — a slow
-      machine and an ignorant ChessDB both print "No verdict" — so
-      `dev/check-storm.js` §10 executes the whole state machine.
-      Three rules follow and each is a way the fix could be wrong:
-      THE REPLY IS CAPPED AT `job.bestDepth`, what the position ACTUALLY
-      reached, because a subtraction across two depths is the cross-evaluator
-      mistake one size down; a pair further apart than `engineDepthSlack` is
-      REFUSED (the cap means the reply can only be equal or shallower, and
-      shallower FLATTERS the move played); and the depth §14.20 names is
-      `Math.min` of the two, the one that ran and never the ceiling.
-    - IT IS TWO SEARCHES, NEVER ONE. A loss is a SUBTRACTION, and taking
-      `best(P)` from ChessDB's book while taking `best(P after m)` from
-      Stockfish puts the systematic offset between two evaluators — easily wider
-      than the whole `goodCp` band — straight into the verdict. For the same
-      reason an engine-graded line names the ENGINE's best move and score and
-      prints NO win rate, which is a book figure.
-    - IT CLAIMS THE SHARED ENGINE THE WAY SECTION 15 DOES (`state.altCheckBusy`
-      set with `state.engineFen` nulled first, so `syncEngine` stands down and
-      sends no stop), and `endEngineJob` is the ONE place that gives it back —
-      on the answer, on the timeout, on an engine error and on `endSession`. A
-      leaked claim is a panel whose engine never starts again.
-    - ITS WATCHDOGS ARE SECONDS, NOT MINUTES, unlike the alt check's: that one
-      is a popup being read, this is a card with a clock running. There are TWO
-      and the ordering is load-bearing — `enginePhaseMs` per search,
-      `engineTimeoutMs` over the pair as a BACKSTOP for a worker that answers
-      nothing at all, and `gradeTimeoutMs` over the whole grade with two ChessDB
-      round trips in front of it. Each must outlast the one inside it or the
-      inner one can never fire; `dev/check-storm.js` §10 asserts the chain.
-  * THE CARD CARRIES EXACTLY ONE PLY, the position's own best move, and that is
-    load-bearing rather than decorative: `startLine` ends in `step()`, and an
-    EMPTY ply list reads there as "this line is already finished", so the card
-    would be skipped the instant it reached the board. `tryMove`'s storm arm
-    intercepts ABOVE the comparison, so that ply is never used as an answer —
-    only as what makes a card a card, and as the "best" the verdict line names.
-  * IT OWNS TWO BRIDGES AND IS HANDED A THIRD. `stormActive()` — the course tree
-    stands down on it, by HIDING its own window (same size, same z-index; two
-    full-window panels at once is a state that should not exist) and so, for
-    free, by its keyboard's existing `ct.panel.hidden` guard. `stormApi`
-    (`open({bid,name})`, `answer(uci,san)`, `pass()`, `close()`) — `open` returns
-    FALSE when a session cannot start, the contract every launcher here has, and
-    `answer`/`pass` are what section 18's `tryMove` and Skip call. And
-    `continuationStormApi` (`open(card, slot)`, `next(card)`, `verdict(v)`,
-    `close()`), which section 18 owns: the traffic goes BOTH ways because each
-    side does something the other cannot — 18 owns the board and the panel, 27
-    owns the queue, the clock and the grade.
-  * `cr.treeSlot` IS NOW `cr.hostSlot` (+ `cr.hostKind`, `'tree' | 'storm' | ''`)
-    and `.clo-cr-intree` IS NOW `.clo-cr-inhost`. Nothing about the mechanism
-    changed — 24g's rules are unchanged and apply to both guests — only the name,
-    which was about to describe one of two hosts. `positionInTree` is
-    `positionInHost`.
-  * THE LAUNCHER IS IN THE COURSE TREE'S HEADER, not the corner: that corner
-    already holds four things (25 at 92px, 24 at 54px, 21 at 16px, 16d's pin dock
-    at 16px on every page) and a fifth would have to solve the cluster rather
-    than add an offset. The tree is the right host anyway — it already holds the
-    reading of the course the storm's stage 0 is about.
-  * THE PLY RANGE IS A USER SETTING (§14.9, `cloStormMinPly`/`cloStormMaxPly`),
-    and the pure walks never learn that. `cfg()` is `CONFIG.storm` with the
-    user's range folded in, built per call and handed to `stormWalkGame` /
-    `stormRandomLine` — so those stay pure and `dev/check-storm.js` keeps
-    executing them against a config it declares itself. The selectors show only
-    when NO clock is running: changing the range mid-session would describe an
-    exercise the queued positions are not from.
-  * A FRONTIER WITH NO GAMES GETS AN INVENTED LINE (§6.4's 5-in-14), never a
-    preferred one: `stormRandomLine` is reached only when the explorer answers
-    with nothing. It picks at random among ChessDB's own top moves — within
-    `randomTopCp` and at most `randomTopN` of them — and that band is what keeps
-    it plausible; a uniformly random legal move reaches positions no player
-    does, which is what §5.1's blunder stop keeps out of a real walk. Its
-    candidates carry `invented: true` and the panel SAYS so, because "N moves
-    past the line" is a claim about somebody's game and here there is none.
-    The blunder stop cannot fire on this walk by construction; `decidedCp` and
-    the unknown stop are what bound it.
-  * `stormCandidate` AND `stormAdvance` ARE SHARED BY BOTH WALKS. That is the
-    point: the two differ only in how the next move is chosen, and a second copy
-    of the seven pick numbers is a second place for a rule to be subtly
-    different.
-  * THE REVIEW (§14.10) KEEPS EVERY ANSWERED CARD (`st.history`, capped at
-    `reviewMax`) and is up INSTEAD of the stage once the clock has run out. Its
-    board is section 11c's STATIC one (`.clo-cr-mini`), with the best move drawn
-    in GREEN and the played one in RED where they differ — section 11c's three
-    caller rules apply, and the second is the one to watch: `paintShape` takes a
-    colour KEY or a CSS value and dropped anything else SILENTLY until v0.80.0.
-    `dev/harness.html`'s own arrow helper now resolves the same keys, or a
-    replica could not be written in the terms the code is.
-    THE BEST MOVE IS HIDDEN UNTIL ASKED FOR (§14.10a, v0.132.0): a "Best move"
-    button, or `b`. THREE SURFACES HIDE IT AND ALL THREE MUST AGREE — the green
-    arrow, the `stormBestLine` half of the legend, and the LIST's own best
-    column, which is the one that would otherwise spoil every position at once
-    rather than the one being looked at. The flag is on the ITEM
-    (`item.shown`), so it is per position and a position seen for the first
-    time is always hidden. The user's OWN move is never hidden — the red arrow
-    and `stormVerdictLine` are what make the position worth thinking about.
-    IT ALSO KEEPS THE CARD THE STORM ENDED ON (§14.10c, v0.138.0). `st.history`
-    is filled by `finishAnswer`, which an unanswered card never reaches, so
-    `endSession` pushes `st.card` itself — FIRST, above everything that clears
-    `st.card` or `st.grading`, both of which it reads — on EVERY route out. Two
-    rules: `nextCard` nulls `st.card` on its board-refused path, so the review
-    can never show a position nobody saw; and `stormVerdictLine` needs its
-    `v.unanswered` arm ABOVE `passed`, or the ordinary branch prints "your move"
-    about a card that was never answered. Nothing is scored and `storeNote` is
-    deliberately NOT called — the position keeps its place in the store exactly
-    as if it had never been drawn.
-    …AND THE POSITION CAN BE PLAYED AGAIN (§14.10b, v0.138.0): "Try again", or
-    `t`, puts a review item back on section 18's storm board — same mode, same
-    single ply, same three tiers — and scores NOTHING: no points, no streak, no
-    clock, no `storeNote`, no second `st.history` entry, and the row's own
-    verdict (the move played under the clock) is left as it was. Four things an
-    edit elsewhere can break:
-    - `grade` IS NOW A DISPATCHER over `runGrade(card, uci, san, alive, finish)`
-      and `gradeTiers(card, uci, alive)`. The two callers differ ONLY in those
-      two arguments; a second copy of the tiers is a second place for them to
-      fall out of step, and both answers would be plausible numbers.
-    - THE ATTEMPT IS NUMBERED (`st.retrySeq`, bumped by `toggleRetry`,
-      `retryAnother` and `endRetry`, and closed over by `alive`). A retry is
-      MEANT to be repeated, so a grade still in flight from the last attempt
-      would otherwise print over the position just put back — the alt check's
-      `reqId` problem, and its answer.
-    - IT IS EXCLUSIVE WITH `st.analysing` and each closes the other; both want
-      the stage's slots, and stepping to another review row closes both.
-      `panelSlot()` stays gated on `st.analysing` ALONE, so no database follows
-      a retry board — its top move would name the answer (section 20's rule).
-    - SECTION 18 KNOWS ONE THING ABOUT IT, `cr.stormRetry`, set by
-      `open(card, slot, opts)` and cleared in `closeReview`. It changes only the
-      words `syncStormUi` prints — every one of the timed ones ("No idea", "End
-      storm") names a session that is over — and turns Skip into "Try another
-      move", which `stormApi.pass()` routes to `retryAnother()`.
-  * WHICH OF THE THREE TIERS GRADED A CARD IS SAID (§14.20, v0.147.0). §3.4's
-    three sources are of wildly different strength and arrived wearing ONE
-    treatment and ONE tooltip; DESIGN-chessdb.md §3.3's rule read forwards says
-    three claims must not be presented as one. THREE things an edit elsewhere
-    can break:
-    - IT IS ON THE **SECOND** LINE (`stormBestLine`), never the verdict line —
-      that one is read in about a second with a clock running (§16.3) and its
-      one provenance clause ("by the engine") MOVED off it. All three sources
-      are named, not only the odd one out: naming just the engine is what left
-      'list' and 'child' reading as the same claim.
-    - `.clo-cdb--est` IS NO LONGER UNCONDITIONAL. It means "ChessDB computed
-      this for us just now" and nothing else, so it is true of both ChessDB
-      tiers and FALSE of the engine — which is §3.3's rule broken the other way
-      round, and how it shipped from v0.130.0. `stormEstimated(v)` is the one
-      predicate BOTH display hosts read (section 18's `syncStormUi` and section
-      27's `renderReview`); `stormSourceTitle(v)` is the three sentences.
-    - THE DEPTH COMES OFF THE ENGINE JOB (`job.depth`, resolved once, carried
-      out through `endEngineJob`'s answer), never from `CONFIG.storm.engineDepth`
-      at render time — that would name a profile which may not be the one that
-      ran. It does NOT ride §15's wire: that record counts bands, not sources,
-      and `statsWireVersion` stays 2.
-  * `stormCp`, `stormVerdictLine` AND `stormBestLine` ARE TOP LEVEL AND MUST
-    STAY THERE — and since v0.147.0 so are `stormEstimated`, `stormSourceLabel`
-    and `stormSourceTitle`, and since v0.152.0 `stormSharePct` and
-    `stormGapNote` (§19), for the same reason and with the same reach. Section 18's panel prints that line while a card is up and
-    section 27's review prints it again afterwards — two closures, so a helper
-    living in either one is a `ReferenceError` in the other. `node --check`
-    cannot see it and neither can a sliced check, which flattens every scope
-    into one; it shipped and threw at the first teardown (2026-08-28).
-    `dev/check-storm.js` §0 asserts the indentation instead.
-  * THE PANEL HAS A FIFTH HOST, and it is the same placement as the fourth.
-    `stormPanelSlot` is a SECOND supplier beside `courseTreePanelSlot`, both
-    read through the top-level `inHostPanelSlot()`; `topPanelHostNow()` still
-    answers `'tree'` for either, because the two differ only in which window
-    measured the rect and a second host string would need a second placement
-    branch doing exactly the same thing. The storm's third slot exists ONLY
-    while the review's analysis board is up — during a card the database's top
-    move would name the answer, which is section 20's reason for leaving the
-    panel's ordinary stand-down in place.
-  * THE POSITION STORE IS WHAT MAKES A SESSION START AT ONCE (§14.11,
-    `cloStormPositions` in storage.local, `{ [bid]: { [ck]: entry } }`). Finding
-    a position costs ~11 ChessDB requests and the store is where that is paid
-    once instead of once per session; measured live 2026-08-28, the first card
-    went from ~50 s to 3.1 s in the same tab.
-    - `produceFromStore()` RUNS BEFORE THE NETWORK PATH IS CONSIDERED, and must:
-      it needs no request and no await, so taking it second means every session
-      opens on a frontier walk with answers already sitting in storage.
-    - `stormPack`/`stormUnpack` use SHORT KEYS and keep EVERY scored move. The
-      tempting saving — the top few — is invisible: `stormMoveLoss` then misses
-      the user's move and falls through to a fallback that was the exception.
-    - `saveStore` RE-READS BEFORE IT WRITES (24b's `flushDbCache` lesson in a
-      second store): one object lives under that key and a write replaces it
-      whole, so only this course's slice is ours to replace.
-    - THE RETENTION RULE IS THE USER'S OWN (`stormRetain`, `storeDropOn`): a
-      position answered WELL leaves, one MISSED stays and comes round again, and
-      an UNGRADEABLE one stays too — it taught nothing either way, and dropping
-      it spends eleven requests to meet the same silence twice.
-    - …AND LEAVING THE STORE IS NOT THE SAME AS NOT COMING BACK (§14.16,
-      v0.142.0). THE PRODUCER'S WALK IS DETERMINISTIC — same frontier, same
-      games, same ChessDB answers, same positions — so a position dropped by the
-      rule above was re-harvested by the very next pass, re-stored (the store no
-      longer held it, which is the only thing `storeAdd` was checking) and
-      offered again. "It is unlikely to be found again" is the exact opposite of
-      true here. `stormDone(gone, ck, C, now)` is the guarantee and the
-      TOMBSTONE LIST is what it reads — the same `st.gone` §14.12's merge
-      already kept, asked at all THREE points a position can enter a session:
-      `storeAdd` (the write), `harvestCandidates` (the offer — the one place a
-      fresh walk reaches a board) and `produceFromStore` (defensively, deleting
-      rather than skipping). It AGES the tombstone itself, since only
-      `saveSyncMeta` prunes; a zero timestamp is "no record", never "retired at
-      the epoch". `goneDays` (60) is therefore a RETIREMENT HORIZON now, not
-      housekeeping.
-    - THE TOMBSTONE MUST SURVIVE THE TAB. `saveSyncMeta` was called from
-      `syncStore` AND NOWHERE ELSE, so on a device with no carrier course — or
-      one whose pull was not due — every retirement died with the page. It is
-      written at `endSession` beside `saveStore`, and capped locally at
-      `goneMaxLocal` (6000, oldest out): the wire's `goneMax` is 400 and is a
-      PAYLOAD bound, which as a horizon would cover about twenty sessions.
-    - THE RANDOM FACTOR IS `stormPickGames`, AND IT IS NOT THE GUARANTEE.
-      `harvestFrontier` took `games.slice(0, gamesPerFrontier)` and the
-      explorer's answer is stable (four top games in rating order, four recent
-      behind), so every frontier was asked the SAME question for ever and a
-      second gather's "nothing new to store" read as the course being exhausted.
-      Eight games two at a time is 28 pairs. Pure and rnd-injected,
-      `stormDrawFrontier`'s shape; a partial Fisher-Yates over a COPY, index
-      CLAMPED — an out-of-range pick puts `undefined` into the walk and fails
-      three steps later inside `askPgn`, complaining about the explorer.
-    - A GATHER WALKS MORE OF THEM (`gatherGamesPerFrontier`, 4, chosen off
-      `st.gathering` in `harvestFrontier`; §14.17.3). The two numbers exist
-      because the two passes pay with different things: a SESSION spends the
-      user's own waiting time, a GATHER has ten times the budget and nobody
-      waiting. Four of the EIGHT the explorer returns, not all — half is what
-      leaves a different draw for the next pass, which is the point above. It
-      needed no budget change and that is a MEASUREMENT (§6.1's ~9.8 ChessDB
-      requests per frontier at two games, so ~20 at four; a 50-frontier course
-      is ~1000 against `gatherMaxCdb`'s 4000, and `gatherTarget` stops a big one
-      first).
-    - A PASS REPORTS ITS FUNNEL, NOT JUST WHAT IT KEPT (§14.17, v0.143.0).
-      `st.gathered` counts NEW stores, and three completely different passes
-      produce the same "2 new" — a store already full, a course ChessDB does not
-      know, and a pass with nothing to walk. So every branch that discards
-      something counts it (`stormFunnelBlank`/`Bump`/`Why`, reported by
-      `stormFunnelNote` in the status line and `stormFunnelLines` in the
-      console). THE FOUR CANDIDATE OUTCOMES ARE EXHAUSTIVE —
-      `examined === rejected + retired + dup + stored` — and that conservation
-      is what `dev/check-storm.js` asserts, which is why it now executes two
-      IMPURE functions (`harvestCandidates`, `storeAdd`, with `st`/`C` injected
-      through `__setEnv`): the invariant lives in that function's control flow
-      and nowhere else, and a fifth `continue` added there and counted nowhere
-      leaves every individual number still looking plausible. `stormFunnelBump`
-      and `stormFunnelWhy` are NULL-SAFE because the producer runs with no
-      funnel at all. The funnel belongs to the PASS and is nulled when it
-      reports, or a session's own walks would go on adding to it.
-    - …AND A MISS COMES BACK AT THE **BACK** OF THE QUEUE (§14.15, v0.137.0).
-      `stormStoreDraw` sorts `k` ASCENDING — unseen first, most-missed last —
-      which REVERSES v0.130.0's hardest-first order; do not restore it. Because
-      the rule above already drops anything answered well, every `k > 0` entry
-      is a position the user has been shown and got wrong, so hardest-first
-      opened every session with the same failures and starved the fresh material
-      the gather pass paid ~11 requests each for. A REVERSED COMPARATOR IS
-      SILENT — every position is still returned, in a plausible sequence — which
-      is why `stormStoreDraw` is pure and rnd-injected (`stormDrawFrontier`'s
-      shape) and `dev/check-storm.js` executes it. `stormWirePack`'s own
-      `k`-descending sort is NOT the same question and stays: there it decides
-      what is worth CARRYING under the byte budget, where a failure count is
-      information that cannot be regenerated and a fresh position is
-      interchangeable with any other.
-    - A PULL, OR A GATHER PASS, MUST FEED THE SESSION IT LANDS IN (§14.13).
-      Both fill the store BEHIND a `storeDraw()` that has already happened —
-      the exchange is fired unawaited from `startSession`, and a gather CLEARS
-      the queue — so each ends by re-drawing `st.storeQueue` and calling
-      `produceFromStore()`. Re-drawing the whole store is safe and is the point:
-      every key already queued is in `st.seen`, which is what that function
-      filters on, so nothing incremental has to be got right. Without it a phone
-      that syncs nine positions still spends a minute walking frontiers past
-      them (reported live 2026-08-28).
-    - EVERY SESSION PUSHES THE STORE TOO (§14.25, v0.178.0), which is §15.7's
-      change one store over and carries the PUZZLE store with it (`syncStore`
-      awaits `syncPuzzles` on the same trip). `endSession` →
-      `pushStoreAfterSession`. The debt is a COUNTER (`st.storeSeq` vs
-      `storeSynced`) bumped by `noteStoreChanged`, whose TWO callers are
-      `saveStore` and `savePuzzleStore` — the one funnel every writer already
-      passes through, so a writer added later cannot forget it. FIVE rules an
-      edit elsewhere can break:
-      * `syncStore` CAPTURES THE COUNTER BEFORE IT READS THE CARD and claims
-        only that. The merge's own write-back, §14.24's background walk and a
-        second tab all land after it and are not in the payload; capturing late
-        marks them carried, which loses a position while every sync still
-        reports success. An early capture costs one extra exchange, which is
-        the direction to err in.
-      * IT ABANDONS ON A COURSE CHANGE. `const bid = st.bid` at the top, the
-        card named from it, the payload stamped with it, and a quiet return if
-        `st.bid` moved before the pack — otherwise course B's positions go onto
-        course A's card under `b: B`, which `stormWireForeign` then refuses FOR
-        EVER (§27b.5a's dead end). Pushing as a session ENDS is what made that
-        reachable: it is the moment the next session is opened. `syncPuzzles`
-        took the same guard.
-      * IT MUST NOT PUSH WHEN HANDING OVER TO A GATHER. `gather` sets
-        `st.handingToGather` around its `endSession('gathering instead')`; that
-        pass rewrites the store and pushes at the end, and an exchange started
-        here would still be in flight when that one fires — which `syncStore`
-        answers by RETURNING, so the gather's push would be the one dropped. A
-        named flag, never a test on `why`, which is a log string.
-      * IT IS DELIBERATELY NOT QUEUED, unlike §15.7's stats push: `roundSync`
-        AWAITS `syncStore`, and a re-fire would let the round switch course
-        underneath an exchange. The debt stands instead.
-      * A DEBT BELONGS TO ITS COURSE. `resetStoreDebt()` at both places
-        `st.bid` moves (`startSession` on a change, `cycleSwitch`), or an
-        exchange for B claims A's writes and marks A's card up to date with
-        nothing sent to it.
-      `dev/check-storm.js` §32 covers all of it except the funnel's two call
-      sites and the call in `endSession`.
-    - THE GATHER PASS IS THE SAME `harvestFrontier`, deliberately: a second walk
-      written for gathering is a second set of pick rules that will one day
-      disagree about what a usable position is. It has its own request ceiling
-      (`gatherMaxCdb`) because it is the burst the user asked for BY NAME, and it
-      ENDS whatever session is running — `tick` returns early while it runs, so a
-      session left alive underneath burns its clock with no board and no way out
-      (seen live).
-    - …AND IT HOLDS A SCREEN WAKE LOCK (§24, v0.161.0). It is the pass with
-      nobody touching anything — minutes of walking, then tens of seconds of
-      Stockfish per position — so on a phone it is the one that dies at the
-      screen timeout. `navigator.wakeLock` is a plain DOM API and costs NO
-      manifest permission, which is why it is the answer here. THREE things an
-      edit elsewhere can break: the `visibilitychange` listener is what makes it
-      WORK AT ALL (the browser drops the lock on every hide and never puts it
-      back, so without that one glance at another app ends it for the rest of
-      the pass — indistinguishable from the feature being absent); the scope is
-      THIS PASS, never a timed session and above all never §14.24's background
-      top-up, which yields to everything and must not hold a phone awake for a
-      quiet trickle; and every unavailable case fails SOFT with one `log` line,
-      never a `warn` — a fork with no API (the Lemur shape), a
-      Permissions-Policy header from Chessable, or a request made while hidden
-      are all ordinary. It is a screen-timeout fix and nothing else: Android may
-      still evict the tab, which is what `saveStore()` after every position
-      already answers.
-  * THE STORE IS CARRIED BY SECTION 16E'S TRANSPORT (§14.12) through
-    `pinSyncApi.carrier` — a bridge rather than a hoist, because which course,
-    the JWT, the informational-card shape, base32-not-base64 and the `oid`
-    overwrite are all decided there and decided once. `cardEntry` and
-    `ensureSlot` took a `name` parameter for it; nothing else in 16e changed.
-    - THE MERGE IS A UNION, SO IT NEEDS TOMBSTONES. Without them a position the
-      retention rule dropped comes back from the other device's snapshot on
-      every exchange, for ever. `storeNote` records one on every drop whether or
-      not syncing is on — it costs a timestamp and is needed the moment it is
-      switched on.
-    - IT IS READ-MERGE-WRITE, IN THAT ORDER. The card is a snapshot overwritten
-      in place, so writing first discards whatever the other device put there.
-    - THE SAN IS DROPPED ON THE WIRE and recomputed from the uci — about a third
-      of the payload, and the recompute is once per exchange rather than once per
-      session, which is why the LOCAL store keeps its SANs. A move whose uci will
-      not resolve is DROPPED rather than carried with a blank SAN.
-    - `maxWireBytes` IS MEASURED, not inherited: 162460 base32 characters written
-      to a comment and read back byte-exact, still base32-clean and still
-      informational (2026-08-28, course 453453; the test card was deleted and the
-      course re-read to prove it). 16e's own 120000 is untouched.
-  * PAUSED LINES ARE NOT STORMED (§14.14, v0.136.0), and the filter is ONE line
-    in `stormFrontiers` — which is why it covers the gather pass too, both
-    producers drawing from that function, so nothing paused can enter the store
-    either. THE WIRE FIELD IS `paused` AND THE APP DOES NOT CALL IT THAT: read
-    out of Chessable's public bundle 2026-08-28, the variation card's own test
-    is `1 == e.paused` on the getList row, while the redux store renames it
-    `isPaused` and `isCPaused` is optimistic post-toggle state — grepping for
-    either finds the UI's name and misses the wire's. ONE FLAG, TWO WORDS:
-    "PAUSED" for a pausable line and "SKIPPED" for the rest, both meaning the
-    user asked not to be asked, so no second condition. The count rides back on
-    the returned ARRAY (`frontiers.paused`) rather than changing the return
-    type. `allVariationsPaused` is carried by `reduceCourse` as `allPaused` and
-    is used ONLY to word a refusal — its relation to the per-variation flag is
-    unmeasured, and a course-level flag able to HIDE lines must not be guessed
-    at. NOT reached: the store, since `produceFromStore` runs before the course
-    is read (§14.11's whole point) — bounded, not fixed, and §14.14 says what
-    fixing it would cost.
-  * …AND A WALK THAT COMES BACK INSIDE THE REPERTOIRE STOPS THERE (§14.18.4,
-    v0.145.0). The same failure one ply later: a real game is free to leave the
-    course at the very first move the course had an answer for, and the card
-    that produces looks exactly like a good one. `stormReentered` is the
-    lookup, `stormFrontiers` now carries its own continuation index out
-    (`out.cont`) instead of dropping it, and both walks take it as a PARAMETER
-    — never a closure over `st`, which is what keeps stage 2 executable with no
-    network. THREE things an edit elsewhere can break:
-    - THE TEST IS SCOPED TO THE USER'S OWN MOVE, and that is the rule's whole
-      precision rather than an optimisation. The index holds every ply's
-      `before`, the OPPONENT's included, so an opponent-to-move position in it
-      means only that the course has a reply prepared for what the opponent is
-      ABOUT to play — if they play something else the user really is
-      unprepared, which is the good half of this feature. Removing the guard
-      still stops walks, still looks plausible, and silently discards exactly
-      those positions.
-    - IT IS COVERED BY A DIFFERENT MECHANISM FROM ITS TWO NEIGHBOURS, and that
-      asymmetry will look like an oversight. The paused filter (§14.14) and the
-      stub filter (§14.18) live INSIDE `stormFrontiers`, so both producers get
-      them for free; a walk is not inside it, so this one is threaded through
-      `harvestFrontier` — the shared entry both passes reach the walks through
-      — by `frontierCovered(f)`. Anything that ever walks by another route must
-      pass the index itself.
-    - IT IS A STOP, NOT A REJECTION, and the walk stops AT the position: the
-      position itself is not offered either. It gets its own row in §14.17's
-      `stops` table, so how often it fires is a number before it is an
-      argument. THE STORE IS NOT RE-FILTERED — positions harvested by an older
-      build age out through the retention rule and the tombstones.
-  * A LINE THAT ENDS WHERE ANOTHER ONE CARRIES ON IS NOT A FRONTIER (§14.18,
-    v0.144.0) — the transposition stub and the publisher's "- Introduction"
-    card, which stop at a position other lines of the same repertoire play on
-    from. Storming one walks a real game forward from a position the course
-    already answers, so the user improvises where their own book has a move.
-    Measured: 8 of 33 frontiers, 8 of 72 and 1 of 6 on the account's courses.
-    Like the paused filter it is INSIDE `stormFrontiers`, so it covers the
-    gather pass and the store for free, and its count rides back on the array
-    (`frontiers.covered`). TWO ASYMMETRIES WITH THE SOURCE EXCLUSIONS BESIDE IT,
-    and they are not oversights: a CUSTOM-FEN line and a PAUSED one can both be
-    the CONTINUER though neither may be a SOURCE — those rules answer "is this
-    line a usable frontier" and this index answers "does the course say anything
-    else here". It is SIDE-SCOPED for the same reason the frontier's own side
-    is (24h's rule): a line of the other colour moving there is the same board
-    met from the other end. `walkVariation` therefore runs ABOVE every source
-    test — ONE WALK, TWO USES — which costs +20% on a model-game-heavy course
-    (3.59 s → 4.31 s for 81 variations in node) behind the existing `chunkVars`
-    yield. NOT reached: a walk RE-ENTERING the repertoire after the frontier,
-    which is a different and much larger question (§14.18.3).
-  * NOTHING IS SHOWN UNTIL "Start" IS PRESSED (§14.13, v0.135.0), and the gate
-    is ONE line at the top of `nextCard` (`if (!st.started) { render(); return; }`).
-    Every route into the first card — `produce`'s finally, the store path in
-    `startSession`, the sync refill — goes through that function, so barring it
-    once bars all of them; a second gate elsewhere is how the two would come to
-    disagree. The `render()` in that early return is what enables the button as
-    the queue fills. The pre-roll exists because gathering is a REAL alternative
-    to playing and used to be a race against the producer: the first card starts
-    the clock, so a session could begin under a decision the user was still
-    making. `gather`'s "end whatever is running" arm and `nextCard`'s
-    `st.gathering` guard both STAY — they cover a gather pressed mid-session,
-    which this does not.
-  * HOW OFTEN ANYBODY REACHES A LINE END WEIGHTS THE STORE (§14.19, v0.146.0) —
-    §4's other half, paid for out of a reply the storm already fetches:
-    `askGames` now hangs the position's own `white + draws + black` off its
-    returned array, `harvestFrontier` keeps it on the frontier, and `stormPack`
-    stores it as `g`. FOUR things an edit elsewhere can break:
-    - `stormStoreDraw`'S EXISTING KEYS ARE UNTOUCHED and the new term goes
-      BETWEEN them: `(a.k - b.k) || (b.reach - a.reach) || (a.r - b.r)`. §14.15
-      is the rule — a re-weighted comparator there is silent from the outside —
-      so `k` ascending stays primary and the random term stays last. It also
-      took `C` as a THIRD PARAMETER for the bucket's `reachTop`, rather than
-      closing over the module-level one, which is what keeps it executable in
-      `dev/check-storm.js`.
-    - UNKNOWN IS THE TOP BUCKET, deliberately. Absence means "not recorded" and
-      never "zero games" (§14.16's rule for an older build's entry) — and every
-      position stored before v0.146.0 is unknown, so demoting them would freeze
-      an existing store out of every session until it had been gathered again.
-      The same rule runs the whole way down: `askGames` answers null, not 0, on
-      a reply with none of the three fields, and `stormPack` writes `undefined`.
-    - IT RIDES THE WIRE with NO `wireVersion` bump — it is not re-derivable on
-      the far device without another explorer request, and absence is already
-      read as unknown everywhere, so an old payload stays valid. The merge takes
-      a figure the other device has and never overwrites one it holds; unlike
-      §15's counters there is nothing to double-count, this being a property of
-      the position's frontier rather than of the device.
-    - IT IS REPORTED, NEVER PUT ON A LIVE CARD. Two hosts only: the gather's
-      CONSOLE breakdown (a third reason table — it stays out of
-      `stormFunnelNote`'s one-sentence status for that function's own reason)
-      and the review row's TOOLTIP. A card has one job.
-  * WALKING DEEPER IS REFUTED BY MEASUREMENT (§6.5) — `minPly` 6 left 291847's
-    survivors at +1.62/+1.87/+1.08/+1.20 and tripled the cost per position,
-    because a one-sided frontier HOLDS its advantage rather than dissipating it.
-    Do not retry it. `spreadMaxCp` is at 300 rather than 200 for the opposite
-    reason: it fired once in 54 candidates, and a value implying it does
-    something would be the misleading one.
-
-  * THE VERDICT IS WIN PROBABILITY LOST, NOT CENTIPAWNS (§16, v0.141.0), and
-    there are FIVE bands. `userHiCp` admits positions up to +200 and a centipawn
-    is not worth the same there as at equality — giving up 100cp from +500
-    leaves you winning, and the old flat 30/70cp rule called that the same thing
-    as giving up 100cp from 0. **READ DESIGN-intuition-storm.md §16 BEFORE
-    TOUCHING THE GRADE**; §16.2 is the calibration table. What an edit ELSEWHERE
-    can break:
-    - `wpK` (0.00368208) IS LICHESS'S OWN FIT AND IS NOT A DIAL. Changing it
-      re-scales every band at once and completely silently, since the verdicts
-      stay plausible. `dev/check-storm.js` §3 pins it by its CONSEQUENCES — the
-      curve's fixed points, and that the two scoring bands still land on the old
-      `goodCp`/`decentCp` at equality (33cp and 65cp against 30 and 70, within
-      5cp). That last assertion is the one that makes this a change of MEANING
-      rather than of difficulty, and it is what a re-tuned constant or a
-      mistyped threshold would quietly lose.
-    - EVERY SCORE IS CLAMPED TO ±`wpClampCp` BEFORE THE CONVERSION, which is why
-      a mate needs no band of its own: ChessDB writes one as ~30000 and the
-      engine tier as `engineMateCp`, and at ±1000 the curve is already at 97.6%.
-      Removing the clamp runs the arithmetic on numbers thirty times the board's
-      own scale.
-    - `stormMoveLoss` COMPUTES THE `wp` ITSELF, from the two scores it already
-      holds, and both are certainly the mover's. A caller pairing one number
-      from the book with one from somewhere else is exactly the cross-source
-      mixture §3.4's two-search rule exists to prevent.
-    - A PENALTY IS FLAT AND THE TEST IS THE SIGN, not a list of verdict names
-      (v0.139.0's rule, restated so a sixth band cannot be given a multiplied
-      penalty by accident). `finishAnswer`'s STREAK follows the same sign: it
-      extends on positive points, resets on negative, and holds on zero — so
-      `ok` holds it because zero points is what the middle band MEANS, and
-      `unknown` holds it by the older argument.
-    - A PASS IS A `blunder`. "I have no idea" costing less than a bad move would
-      make passing the way to protect a streak.
-    - `storeDropOn` IS THE TWO BANDS THAT SCORE (`great`, `good`). An `ok`
-      answer keeps its position: nothing was gained by it.
-    - THE FIVE BANDS ARE ONE COLOUR RAMP, defined ONCE in the stylesheet beside
-      `.clo-st-revrow--*`, with `.clo-st-bar-*` reading the same five tokens —
-      green, dim green, neutral, amber, red. Section 18's panel deliberately
-      draws only TWO of them (green for the two that score, red for the two that
-      cost, nothing for `ok`): that line is read in about a second with a clock
-      running, so the colour answers "did that score or cost" and the WORD
-      carries the degree.
-    - §15's RECORD COUNTS BANDS, so this changed its shape too: `a/g/o/b/x/u`
-      for `g/d/m/u`, `statsWireVersion` 2 so a version-1 payload is REFUSED
-      rather than misread (every field it has is a field this one also has),
-      `found` is the two bands that SCORE, and the stored loss is in TENTHS OF A
-      POINT of win probability — an average over centipawns would be an average
-      over a quantity whose meaning changes with the position it was measured
-      in, which is the whole reason the grade stopped using them.
-    - THE PICK RULES ARE STILL CENTIPAWNS (`blunderCp`, `decidedCp`,
-      `spreadMinCp`, `spreadMaxCp`) and were deliberately left alone: they
-      decide which positions are OFFERED, which is a different question, and
-      every one is a `dev/probe-storm.js` measurement. §16.5 records the one
-      place the same objection does apply — `spreadMinCp` buys ~15% less at +200
-      than at equality — and why fixing it needs the probe re-run rather than an
-      argument.
-  * A SESSION CAN BE SCOPED TO ONE CHAPTER (§14.21, v0.148.0) — §15 named the
-    worst chapter and left a whole-course storm as the only response. It is a
-    FILTER, not a producer: `stormFilterStore` narrows the store and
-    `stormFilterPool` the frontier pool, and nothing about how a position is
-    found, graded, stored or counted changes. FOUR things an edit elsewhere can
-    break:
-    - FILTER THE INPUT, NEVER THE ORDER. The scope must not become a term in
-      `stormStoreDraw`'s comparator — §14.15's rule, whose whole point is that a
-      re-weighted comparator there is silent from the outside. `storeDraw` hands
-      that function a smaller store; §14.19's reachability term is untouched.
-    - `stormFilterPool` COPIES THE ARRAY'S OWN PROPERTIES, and a plain
-      `.filter()` is the bug waiting there: `stormFrontiers` hangs `paused` and
-      `covered` (the refusals) AND `cont` off its result, and `cont` is what
-      `frontierCovered` reads for §14.18.4's walk stop — so the one-liner
-      switches that stop off for every scoped session, invisibly.
-    - THE POOL IS FILTERED AFTER THE WALK, never before it. The walk is what
-      knows which lines end where and is also what §14.18's stub index is built
-      from, so narrowing its input would change what "the course answers this
-      position" means. It is also why `stormFrontiers` now records EVERY oid on
-      a frontier and caps only the NAMES — that cap was always a display cap,
-      and a capped oid list answers the chapter question wrongly for a frontier
-      four lines converge on.
-    - A NARROW FILTER CAN STARVE AND IT MUST BE SAID (`stormScopeNote`, checked
-      BEFORE the existing refusals, since a scope is the only cause there the
-      user chose one press ago). A stored position with no oid is EXCLUDED and
-      counted, never included on the benefit of the doubt: it could be from
-      anywhere. `stormAgain` KEEPS the scope and now takes an optional spec, so
-      both Again listeners are wired `() => stormAgain()` — 24g's bare-listener
-      trap.
-  * THE PERFORMANCE RECORD (§15, v0.140.0): every graded answer counted against
-    the LINE whose frontier the position came from, rolled up per CHAPTER and
-    per COURSE, and carried between devices on 16e's transport. **READ
-    DESIGN-intuition-storm.md §15 BEFORE CHANGING IT** — §15.2 is the three
-    silent failures, §15.3 why it is a card of its own. What an edit ELSEWHERE
-    can break:
-    - THE COUNTERS ARE PER DEVICE (`cloStormDevice`) AND SUMMED ONLY ON READ.
-      The wire merge is a UNION over a whole snapshot, so a merge that ADDS two
-      devices' totals adds them again on every later exchange — while the
-      numbers stay plausible and keep growing, which is what working also looks
-      like. A device's own counters are monotone, so `max` on `n` is exact.
-      `dev/check-storm.js` §9's "a second exchange adds nothing" is the
-      assertion that catches it.
-    - `unknown` IS OUT OF BOTH HALVES OF THE FRACTION. It is a verdict about
-      ChessDB, not about the user — `finishAnswer` scores it nothing and holds
-      the streak for exactly that reason — so counting it as a failure marks the
-      user down for the book's ignorance and counting it as a success flatters
-      them. A row with nothing graded reads "—", never "0%". `unanswered`
-      (§14.10c) is refused outright, and a review RETRY (§14.10b) is not counted
-      at all: `statNote` is called from `finishAnswer`, never from the shared
-      `runGrade`.
-    - AN AVERAGE LOSS IS A MEAN OVER ANSWERS, NEVER OVER LINES. `stormStatRoll`
-      sums the raw `ls`/`lc` pairs and divides once; averaging a chapter's
-      lines' averages weights a line answered once like one answered forty
-      times.
-    - IT KEYS ON THE OID, so `stormFrontiers` now carries `oids` beside `names`
-      and `stormPack` stores `o`. `reduceCourse` was NOT touched — the oid was
-      already in its reduced shape — so `CONFIG.coverage.cacheKey` needed no
-      fifth bump. A position stored before v0.140.0 has no oid;
-      `backfillStoreOids` names it from the course listing `startSession` reads
-      anyway, BY NAME, and refuses a name that matches two variations — what it
-      cannot name is counted under one "Line not recorded" row rather than filed
-      under a guess.
-    - THE CHAPTER COSTS REQUESTS AND IS BEHIND A PRESS. `getList` does not say
-      which chapter a variation is in (that is why 24g's `fetchVariationChapter`
-      exists), so grouping a course is up to one request per chapter — cached
-      for good in `cloStormChapters`. It can only answer for a course the user
-      can ADD to, `getImportData` being the only call that enumerates chapters
-      and bought courses being absent from it; that refusal is said in words.
-    - THE VIEW MAY NOT BE UP WHILE A CARD IS. Section 18's board is pinned to
-      the STAGE's slots in document coordinates, so hiding the stage under a
-      live card leaves a board floating over the table. Enforced twice — the
-      settings row that holds the button is hidden while a clock runs, and
-      `toggleStats` refuses on `st.card`.
-    - IT IS A CARD OF ITS OWN ON THE WIRE, never a field in the position card:
-      that payload is CUT to fit its budget, so a statistic folded into it would
-      be dropped whenever a position list ran long, silently and after the
-      requests were spent. NO TOMBSTONES, unlike that card, and that is not an
-      oversight — a line leaves this record only by `stormStatsPrune`, a
-      function of its own timestamp that every device applies to the same
-      numbers, so the union converges by itself.
-    - EVERY SESSION PUSHES IT (§15.7, v0.177.0). `endSession` calls
-      `pushStatsAfterSession`, because until then the only two pushes were
-      "opening a session" and the button — so a set played on the phone reached
-      the desktop one session late, and a device only ever READ on carried
-      nothing at all. In `endSession` and NOT at the set's own end: every way
-      out of a session comes through that function (the clock, a set cleared,
-      "End storm", the board closing, a gather taking over), which is §14.10c's
-      reason for being there too. THREE rules an edit elsewhere can break, and
-      each fails silently — a push that never happens is exactly the behaviour
-      that was there before it existed. The gate is `st.statsPending`, set by
-      `statNote`, and it is NEITHER `statsDirty` (about the LOCAL write, cleared
-      by `saveStats` a statement after it is set) NOR `st.answered` (reset per
-      session, and untouched by a review retry): the debt is what has not left
-      the DEVICE. A push asked for while one is IN FLIGHT is QUEUED
-      (`st.statsResync`), never dropped — the exchange the session opened with
-      packed before this session's answers existed, which is the case most
-      likely to be "tidied" into a plain refusal. And the PAYLOAD clears the
-      debt, not the write landing: an answer counted mid-POST is not in that
-      snapshot, so a failed write puts it back. `dev/check-storm.js` §31
-      executes both functions against a stubbed carrier; the CALL in
-      `endSession` is the one part no assertion can cover.
-  * THE SET — no clock, and no mistake left behind (§17, v0.150.0): a second
-    exercise on the same material, chosen from a selector in the pre-roll row.
-    Up to `setSize` positions, each of which must be RESOLVED before the next is
-    offered, then a SECOND PASS re-asking whatever was not found first time. The
-    producer, the store, the grading tiers and the board are all shared and know
-    nothing about it; `st.mode` is read only where a clock is. **READ
-    DESIGN-intuition-storm.md §17 BEFORE CHANGING IT** — §17.1 is why it is a set
-    rather than an endless run or a survival mode, and §17.9 is what a live
-    session still has to answer. What an edit ELSEWHERE can break:
-    - THE BEST MOVE IS OFF THE PANEL WHILE A POSITION IS HELD AND THE ANSWER HAS
-      NOT BEEN ASKED FOR, and that is the whole mechanism rather than a nicety:
-      `stormBestLine` NAMES THE MOVE, so a "try again" offered underneath it is a
-      lookup and not an exercise. §14.10a's rule moved onto a live card, and it
-      inherits that rule's split exactly — the line ABOVE, which is the USER's own
-      move with its rank and its loss, STAYS. It is theirs, they have seen it, and
-      it is what makes the position worth another attempt; a card hiding whether
-      the move was even wrong is a board with no question on it. TWO surfaces have
-      to agree, not §14.10a's three: the panel's second line, and
-      `.clo-cdb--est` on it — that class is a claim about where a number came
-      from, and a masked line carries an INSTRUCTION, not a number.
-    - `stormSetHeld` IS DELIBERATELY NOT `!stormSetClean`. An `unknown` verdict is
-      settled and is not clean: ChessDB could not score the move, so there is no
-      mistake to correct and no best move to reveal, and a hold on one could never
-      be satisfied — the user trapped on a position with two doors, neither of
-      which leads anywhere. §15's record and §16's score both exclude `unknown`
-      for the same reason. It is the arm most likely to be "tidied" away, and
-      `dev/check-storm.js` §11 is what fails when it is.
-    - `setCleanOn` AND `storeDropOn` HAVE THE SAME MEMBERSHIP AND ARE WRITTEN OUT
-      TWICE. They answer "may we move on" and "has this position taught what it
-      can", and a change to either must be a deliberate change to the other. The
-      check asserts they still agree, so the duplication cannot silently become a
-      divergence.
-    - §15's RECORD **IS** WRITTEN SINCE v0.154.0 (§21) — the rule that it was not
-      left somebody who plays sets with a record of nothing. It is written from
-      the SAME TWO PLACES as the store, under the SAME guard: the first attempt
-      of the first round (`finishSetAnswer`) and a give-up before any attempt
-      (`setGiveUp`). So the set records exactly what the store records, and for
-      the same reason — that is the one thing that happens to a position which is
-      evidence about whether the move was known. A retry, the second pass and a
-      reveal are not, and none of them reaches `statNote`.
-    - IT REVEALS BEFORE IT ANALYSES. Section 19's board arrives with the engine
-      and the database beside it, both of which name the move within a second, so
-      "analyse blind" is not a state that exists — making the reveal explicit and
-      counted is the honest version of what would otherwise happen one panel over.
-    - `nextCard` NULLS `st.card` BEFORE IT PICKS, and the storm needs that too:
-      §14.10c's push otherwise saw the card just ANSWERED and put it in the review
-      a second time as `unanswered`. Every storm that ran out of positions did
-      this (§17.8).
-    - IT ADDS NO BRIDGE. `stormApi` grew four members (`isSet`, `retry`, `reveal`,
-      `advance`, `analyse`) and section 18 grew `cr.stormHold`, which is a verdict
-      the session has not accepted yet — the board is already shut behind one, so
-      nothing about the board changed.
-  * THE STORE CAN BE CLEARED (§22, v0.155.0), and it needed to be: a stored
-    position keeps the SHAPE it was written in, and §20's `before` is the first
-    field a later build added that absence cannot paper over — an entry written
-    before v0.153.0 simply cannot say which move made its position. Nothing else
-    fixes it: the retention rule drops a position only when it is answered WELL,
-    and `produceFromStore` runs before any walk.
-    - IT CLEARS THE POSITIONS AND NOTHING ELSE. The TOMBSTONES stay (§14.16 —
-      they record what was answered well, which is knowledge, and keeping them is
-      what stops a re-gather walking the user back through it) and so does §15's
-      RECORD (a third subject: how the repertoire was read). BOTH SOURCES, since
-      there is one store — the ready chip beside it is source-scoped and would
-      report a clear as partial, so the button's own sentences use `storeTotal()`.
-    - REFUSED WHILE A GATHER RUNS, in words. That pass writes into the object
-      this empties. The BACKGROUND top-up (§14.24) is deliberately not refused:
-      nobody just started it, and what it puts back is in the current shape.
-    - TWO PRESSES, section 13's shape and `clearArmMs`, with the arm dropped by
-      anything that takes the button off screen. Neutral outline idle, AMBER
-      armed — never green (this window's green is "storm" and "gather", the two
-      things it is for) and never red (nothing is wrong).
-    - `saveStore` NOW DELETES AN EMPTY SLICE rather than writing `{}`. Only a
-      clear or a fully aged-out course produces one, and in both the honest
-      record is "nothing stored", not "a store containing nothing".
-    - A CLEAR MUST BE SYNCED, AND NOT WITH TOMBSTONES (§22.6, v0.156.0). A
-      cleared position is ABSENT, and absent is what §14.12's union merge fills
-      in from the other device — so clearing and then syncing silently undid the
-      clear. Tombstoning them is the WRONG fix twice over: `stormDone` reads
-      that list as a 60-day RETIREMENT horizon, so it would block the re-gather
-      the clear is asking for. Instead a per-course HIGH-WATER TIMESTAMP
-      (`st.clearedAt`, `cl` in the same per-course record as the tombstones and
-      on the wire), merged by `max` and applied in BOTH directions — a remote
-      entry older than it is not taken, and a LOCAL entry older than it is
-      dropped. One direction alone only defends the device that pressed the
-      button. `wiped` is counted apart from `dropped`, whose sentence means
-      "already learned elsewhere". No `wireVersion` bump: absence reads as 0.
-      Its one cost is CLOCK SKEW — a position gathered on a device whose clock
-      is behind, moments after a clear on one ahead, is re-gathered.
-
-  * A SET'S ANSWERS ARE LABELLED, NOT SEGREGATED (§21, v0.154.0). §15's counters
-    gained ONE integer, `s` — how many of `n` were answered WITHOUT A CLOCK — and
-    a parallel `sv` map was deliberately rejected: it would touch every one of
-    the six functions that iterate `dv` and produce two half-empty tables, which
-    answers "which chapter am I weak on" worse than one full one.
-    - `s` IS A LABEL AND NEVER A TERM. Nothing divides by it, and
-      `stormStatRate`/`stormStatLoss` must stay byte-identical with and without
-      it — a rate that moved when an answer was unhurried is the one way this can
-      make a figure WRONG rather than absent, and every percentage would still
-      look like a percentage. `dev/check-storm.js` asserts the two rates are
-      equal for records differing only in `s`.
-    - IT RIDES THE WIRE WITH NO `statsWireVersion` BUMP, §19's precedent: absence
-      reads as 0, i.e. "all of these were timed", which is true of every answer
-      any earlier build counted. The other direction is safe by the merge's own
-      rule — a device only writes its own monotone counters, so an older device's
-      re-packed copy can never displace the original.
-    - `statUnhurriedNote` IS THE ONE WRITER of the sentence, in TWO hosts: a
-      faint line above the tables (rolled up over every course shown) and each
-      row's `n` cell. Both, because a tooltip is no answer on a touch device and
-      a whole-panel caveat is least use exactly when one row is all one
-      condition. It answers `''` when nothing was unhurried, so a record with no
-      sets in it renders exactly as it did.
-
-  * FOUR THINGS ASKED FOR AFTER THE SET SHIPPED (§18, v0.151.0). None of them
-    touches the producer, the store, the wire or the grade. **READ
-    DESIGN-intuition-storm.md §18 BEFORE CHANGING ANY OF THEM.** What an edit
-    ELSEWHERE can break:
-    - THE VERDICT PAUSE IS TWO NUMBERS (§18.1). `verdictFastMs` (1200) is used
-      when there is nothing under the verdict to read, and THE TEST IS THE SIGN
-      OF THE POINTS — §16's rule for the streak, applied to the pacing, so a
-      sixth band cannot be forgotten here. A set has no points and asks
-      `stormSetClean` instead. Both failure modes are silent: a fast value ABOVE
-      `verdictMs` inverts the rule while every card still advances, and one near
-      zero shows a verdict nobody can read. `dev/check-storm.js` §12 pins both.
-    - THE BACKGROUND TOP-UP (§18.2, `backfillOk`/`backfill`) IS BOUNDED BY FOUR
-      CLAUSES AND EACH IS LOAD-BEARING. It counts its ChessDB requests
-      SEPARATELY (`st.backfillCdb`), because `askCdb` sets `st.exhausted` on the
-      session's cap and that is what ends a session with "out of positions" — a
-      background walk reaching it would end the session the user is in the middle
-      of. It runs only with the queue at `queueTarget`, so it cannot take a
-      frontier the producer needs. It never runs while `solving()` or
-      `st.grading`, the ChessDB pacer being shared with the grade. And it MARKS
-      NOTHING `seen` — that set is what `produceFromStore` filters on, so a
-      background find would store a position and in the same breath make this
-      session unable to draw it; the `continue` that does this sits AFTER the
-      store write and after all four funnel counters, so §14.17's conservation is
-      untouched. Two knock-on rules in SHARED code: `harvestFrontier`'s games
-      loop breaks on `st.over && !storeOnly` (`st.over` is true for the whole
-      review, which is the state this exists for), and `storeAdd` refuses when
-      `st.backfillBid` no longer matches `st.bid` — a walk outlives its window by
-      up to one line end, and the storm can be reopened on another course inside
-      that gap. AND THAT FLAG IS AN ARGUMENT (`storeOnly`), NEVER
-      `st.backfilling`: `harvestFrontier`/`harvestCandidates`/`storeAdd` are
-      SHARED with the producer and the two overlap — `backfillOk` refuses while
-      `st.producing`, but `showCard` starts a producer inside one of the
-      background walk's awaits — so read off the flag the PRODUCER's harvest
-      returns no cards at all and then drains the pool looking for some.
-      `cloStormBackfill` is opt-OUT.
-    - `setSize` IS 6 (§18.3), and the check's bound moved with it. Nothing is
-      derived from it.
-    - ANALYSE IS ON `browseBtn` NOW (§18.4), not on `hint`, and it shows on
-      `cr.stormHold || cr.stormRetry` — a held set card and a review retry, the
-      two states where a position is being played AGAIN. `browseBtn` because in
-      storm mode it has never been anything else, there being no line to
-      navigate. NEVER during a live timed card: a database whose top row is the
-      answer is section 20's rule. `stormApi.analyse()` is the dispatcher and the
-      dispatch belongs in section 27 (`toggleAnalyse` for a review row,
-      `setAnalyse` for a held card, which reveals first).
-
-  * UNCOVERED RESPONSES — THE SECOND SOURCE (§19, v0.152.0): a position the
-    course ANSWERS, and a popular reply it never mentions. It covers 1…e5 and
-    1…c5 here and says nothing about 1…c6 — what do you play against 1…c6? A
-    SOURCE, orthogonal to §17's mode: either exercise runs on either source
-    (`st.source`, a setting like the mode and the ply range, its selector in the
-    pre-roll row). **READ DESIGN-intuition-storm.md §19 BEFORE CHANGING IT.**
-    What an edit ELSEWHERE can break:
-    - A DECISION POINT IS AN **OPPONENT**-TO-MOVE POSITION, and that guard is
-      the feature. On the user's own move an uncovered popular choice is a
-      repertoire DECISION (1…c5 over 1…e5) — section 6c's rule, 24b's reason —
-      so dropping it asks the user to improvise against lines they chose not to
-      play and reads as the course being full of holes. Whose move it is comes
-      from the LINE, never `courseSide` (24h).
-    - THE EXPLORER'S UCI IS RESOLVED THROUGH CloSan, NEVER COMPARED against the
-      covered set — section 6c's v0.48.1 trap from the other side, and here it
-      misses exactly the CASTLING replies and succeeds on everything else: the
-      storm then asks "what do you play against O-O?" about a position the
-      course answers.
-    - THE PAUSED / CUSTOM-FEN ASYMMETRY IS §14.18's, in its second home: neither
-      may be a SOURCE, both count as COVERAGE. And the reply's CHILD is checked
-      against §14.18.4's continuation index too, which is what catches a course
-      that answers the position by another move order.
-    - PRIORITY IS THE REPLY'S OWN GAME COUNT and it is `stormPack`'s `g` — i.e.
-      §14.19's reachability figure, measured one ply down — so `stormReachBucket`
-      and `stormStoreDraw`'s existing order need NO change and must not grow one
-      (§14.15: a re-weighted comparator there is silent).
-    - ONE STORE, TWO SOURCES. `u: 1` on an entry; absence is "a frontier
-      position", which is what every entry written before v0.152.0 is, so
-      nothing migrates and no cache key was bumped. `stormFilterSource` narrows
-      the INPUT, never the order, and composes with §14.21's chapter scope.
-      `storeCount()` is source-scoped (the chip, the background ceiling, the
-      summary all ask "ready for what I am about to do"); `storeTotal()` is the
-      wire's.
-    - TWO RECORDS, NEVER POOLED (§15, and the "own stats tab"): a course grows
-      `ulines` beside `lines`, everything that iterates one iterates
-      `STAT_MAPS`, and `stormStatsPrune`'s cap is PER MAP — a long uncovered
-      record must not delete a frontier line's history. `statsWireVersion` stays
-      2: `lines` is still `lines` and an absent `ulines` is a device that has
-      answered no uncovered positions.
-    - IT NEEDS NO GAME AND NO PGN, so it never touches the `lichess.org` host
-      permission — `askMoves` reads `explorer.lichess.org` only. Do not "unify"
-      it with `askGames`, whose parameters are its exact opposite (`moves` on,
-      `topGames`/`recentGames` off).
-    - `poolFor` AND `harvestOne` ARE THE WHOLE SEAM. Everything else — the
-      producer, the gather pass, the background top-up, the queue, the board,
-      the three grading tiers, the bands, the set, the retention rule, the
-      tombstones, the wire, the review — is shared and must stay unaware of the
-      source.
-
-  * TRANSPOSITIONS ARE ANSWERED BY A KEY OF THEIR OWN (§25, v0.162.0), and it is
-    NOT `cacheKey`. `stormCoverKey` is placement + side + castling, EN PASSANT
-    DROPPED, and it is the only key the continuation index (`out.cont`) is built
-    or read with — §14.18's stub filter, §14.18.4's walk stop, §19's child check
-    and the new store sweep. **READ DESIGN-intuition-storm.md §25 BEFORE
-    CHANGING IT.** What an edit elsewhere can break:
-    - A TRANSPOSITION IS EXACTLY A DIFFERENT LAST MOVE, which is why the ep
-      field cannot be in this key: 1.e4 e6 2.d4 c5 and 1.e4 c5 2.d4 e6 leave one
-      board with `c6` and `-` in that field, so `cacheKey` called them two
-      positions and the storm asked "what do you play against 2...c5?" about a
-      board the course answers with 3.Nf3. Measured over all three courses
-      (`dev/probe-transpositions.js`, 2026-08-31): the exact key was missing
-      between a fifth and a third of the re-entries it existed to catch, and
-      every one of them looked exactly like a real card.
-    - CASTLING STAYS. A king that has moved and come home leaves the same
-      placement and a genuinely different position (section 11's reasoning about
-      the review FEN). Only the field recording the PREVIOUS move is dropped, and
-      the one-sided cost is stated: a position differing from a covered one only
-      by an AVAILABLE en passant capture reads as covered and is not offered.
-    - IT IS NOT THE STORE KEY AND NOT A POSITION'S IDENTITY. `storeAdd`,
-      `st.seen`, `byEnd`/`byPos` and every wire key stay `cacheKey`. This one
-      answers "does the course say anything here", which is a different question
-      — and the probe measured ZERO decision points split by ep alone, so
-      grouping needs nothing.
-    - `dropCoveredStored()` IS THE OTHER HALF AND THE BIGGER ONE. §14.11's whole
-      point is that `produceFromStore` runs BEFORE the course is read, so a
-      stored position is dealt with no coverage test at all — and a repertoire
-      GROWS, usually because this feature found the gap, so the positions most
-      likely to be covered by now are exactly the ones already acted on. The
-      sweep runs the moment `st.pool` exists, in `startSession` AND in `gather`
-      (before a request is spent, and before the deepen pass puts tens of seconds
-      of Stockfish into a position about to go). ONE RULE, BOTH SOURCES; a PLAIN
-      DELETION, never a §14.16 tombstone (nothing was answered, and a re-harvest
-      now applies the same rule at the same key); it filters `st.storeQueue` and
-      `st.queue` too but leaves `st.seen`, and it never touches `st.card`.
-      A record with no `c` is LEFT — whose move it is cannot be guessed at, and a
-      sweep that guessed would delete positions on a coin toss.
-
-  * THE ANALYSIS BOARD OPENS ONE PLY EARLIER (§20, v0.153.0): the opponent's
-    move that MADE the position, played in as the line's first ply, so "Add as
-    puzzle" (19d) writes a card that asks its question after that move instead
-    of starting a move past it — and so a middlegame position can be placed at
-    all. It is 24g's `playUci` verbatim and section 19 needed NO change; what it
-    cost is `arrived.before` and the four places that fill it.
-    - `before` IS THE ONE FIELD OF AN ARRIVAL THAT CANNOT BE RECOMPUTED — a
-      capture loses the captured piece, so a FEN cannot be un-played. Hence it
-      is carried rather than derived, everywhere: `stormAdvance` (both walks and
-      §19's decision points), `stormFrontiers`'s `lastFen` (free, off
-      `walkVariation`'s last ply) and `stormWalkGame`'s OWN `lastFen`, which is
-      the one an implementation loses: the ply that ARRIVES at the frontier is
-      played in the fast-forward, before the walk's loop begins, and it is the
-      first card of every real-game session.
-    - THE STORE'S `a` HAS THREE ELEMENTS NOW and the third RIDES THE WIRE, for
-      §14.19's reason and at a higher price: ~60 of an entry's ~450 characters,
-      i.e. about an eighth fewer positions per exchange (a CUT, never a failed
-      one — the budget check is on the encoded size). NO `wireVersion` bump: a
-      two-element `a` is what every pre-v0.153.0 payload has and reads as "not
-      known", which simply opens the board on the card's own position.
-    - `analysisGiven` PROVES THE LEAD-IN BEFORE IT TAKES IT — the move must
-      resolve on `before` AND land on this card's own position (`cacheKey`).
-      `before` is a STORED field, so it outlives builds and crosses devices, and
-      a mismatched one opens the board a ply short with the wrong side to move:
-      a plausible-looking board about a position nobody saw. Both storm entry
-      points (`toggleAnalyse`, `setAnalyse`) go through it.
-
-  * THE ROUND — EVERY GATHERED COURSE, BOTH SOURCES, OVERNIGHT (§27, v0.165.0):
-    "Gather all courses" beside "Gather positions". It walks the courses the
-    STORE already holds positions for — its keys ARE "the courses gathered to
-    before", so no second list and no new storage key — one after another, both
-    sources each, a bounded leg at a time, going round until a whole pass buys
-    nothing. **READ `DESIGN-intuition-storm.md` §27 BEFORE CHANGING IT.**
-    - IT IS `gather()` IN A LOOP WITH SMALLER NUMBERS, and that is this feature's
-      own rule (`harvestFrontier` is shared by four passes for exactly this
-      reason). A second gather written for the round is a second set of pick
-      rules that will one day disagree about what a usable position is. The
-      options are `{ round, want, legMs, maxCdb, deepenMax }`.
-    - A LEG IS BOUNDED BY A CLOCK BEFORE A COUNT (`cycleLegMs`, 10 min). §26.4
-      measured ONE depth-20 MultiPV-12 deepen search at 207 s without finishing,
-      and `deepenPerFrontier` runs one after every frontier — so "15 positions"
-      is twenty minutes on a desktop and two hours on a phone, and a round
-      bounded only by a count cycles on one and not at all on the other.
-      `cycleTarget` is the ceiling a fast machine reaches first; `cycleDeepen`
-      bounds PHASE TWO, which is unbounded by design in a pass pressed by hand
-      and must not be here; `cycleMaxCdb` (through `st.gatherCap`, read in
-      `askCdb`) bounds a SATURATED course.
-    - `filling()`, NEVER `st.gathering`, at every gate. That flag is FALSE in the
-      gaps between legs — a course being switched, a pool being walked into shape
-      — and those gaps are the same state from the user's side. Nine sites plus
-      eight lines of `syncSettings`. It is a FUNCTION DECLARATION, not a `const`
-      arrow: `produce` and `nextCard` are declared above it.
-    - IT OWNS FOUR THINGS A LEG MUST NOT DO — the status line (a sentence per leg
-      is twenty a night), the queue refill (it belongs to the course the window
-      is put BACK on), the WAKE LOCK (§24's, held once across the night rather
-      than taken and dropped ten times an hour) and THE SYNC, which is per COURSE
-      (§27b) and not per leg: both legs of a course write the same card, so a
-      push between them is a round trip for a snapshot the next leg replaces.
-      `roundSync` is AWAITED by `runRound` before the course is switched —
-      `syncStore` reads `st.bid`/`st.store`/`st.gone`/`st.clearedAt` across
-      awaits of its own, and firing it and forgetting it merges one course's card
-      into another course's store, which is 27b's own defect from the other end.
-      It fires on DEEPENING as well as storing: a phone cannot run §23's search,
-      so a night spent scoring positions already held is exactly what the
-      transport is for. AND THE DEBT (`st.cyclePending`) IS RECORDED ABOVE THE
-      STOP CHECK, which is what makes it work at all: a round is ended BY HAND
-      mid-leg — an overnight pass is stopped in the morning — and `stopRound`
-      makes the next line return out of `runRound`, so recorded after it the
-      NEWEST work of the run is the one thing never pushed (measured: a round
-      that stored 17 positions left that course's card holding 1).
-      `gatherRound`'s finally settles it BEFORE `cycleGoHome`, while `st.bid` is
-      still the interrupted course, and the closing sentence counts what was
-      actually pushed (`st.cycleSynced`) rather than whether a course is
-      configured — it claimed every course had been synced on a round stopped
-      before its first push.
-    - `applyStormSource`, NEVER `saveStormSource` — the round walks both, and
-      that one persists the choice AND restarts the session in the pre-roll.
-    - THE CHAPTER SCOPE IS CLEARED FOR THE ROUND and restored after it.
-      `st.oidFilter` is a set of ONE course's oids; applied to another's pool by
-      `stormScope` it yields nothing at all with no explanation.
-    - `st.seen` IS SWITCHED WITH THE COURSE (a position key is a board, not a
-      course, and repertoires for one colour overlap), while the ChessDB and
-      ENGINE caches are deliberately KEPT — same reason read the other way, and
-      a search costs seconds. `st.deepenFailed` is per COURSE, not per leg:
-      §23's "per pass" list emptied at every leg hands the engine the same
-      refused position all night.
-    - `stopRound` IS CALLED FROM `closeStorm`, NEVER FROM `endSession`: `gather`
-      calls that itself on its first leg ("gathering instead"), so a stop in
-      there would have the round end itself the moment it started.
-    - `st.gen` GUARDS THE WAY HOME. The unwind is asynchronous, so a round
-      stopped by a teardown can still be in its `finally` when the storm has been
-      reopened on ANOTHER course — and `cycleGoHome` would move that new session
-      onto the old one's course. §14.24's `backfillBid` hazard one level up;
-      `startSession` and `closeStorm` bump it.
-    - IT OWNS NO BRIDGES and is called by nothing.
-
-  * ONE CARD PER COURSE (§27b, v0.166.0), and it is a CORRECTNESS fix, not the
-    capacity limit v0.165.0 called it. **READ `DESIGN-intuition-storm.md` §27b.**
-    - THE PAYLOAD CARRIED NO COURSE ID and there was ONE card name. So a second
-      course synced overwrote the first, and the next device to open the FIRST
-      course merged the other repertoire's positions AND its tombstones into it —
-      dealt in a session that attributed them to lines not in that course, with
-      those keys suppressed there for `goneDays`. Silent since v0.130.0; found by
-      reading the wire, NOT reproduced live.
-    - `stormCardName(bid)` is the name, `b` on the payload is the belt to that
-      braces, and `stormWireForeign(got, bid)` is the guard — PURE, split out of
-      `syncStore` so `dev/check-storm.js` §18 can execute it. A foreign payload is
-      REFUSED WHOLE, never filtered: the store is one snapshot and a tombstone
-      suppresses a key for sixty days, so no half of it is worth taking. A
-      payload that does not SAY is NOT foreign — that is every payload written
-      before v0.166.0, and refusing those breaks the one exchange an upgrading
-      device still wants. NO `wireVersion` bump (`cl`/`g`/`u`/`d`'s precedent).
-    - THE OLD CARD IS LEFT IN PLACE: it cannot be attributed to a course, so it
-      is neither read nor deleted. The cost is that a device on ≤0.165.0 silently
-      stops exchanging — no handshake, no warning.
-  * THE CARDS LIVE IN A CHAPTER (§27b.3) — `CONFIG.storm.cardChapter`,
-    "Intuition Storm", resolved by NAME through the memoised `importTargetsOnce`
-    because a lid is per course. Three rules in SHARED code (section 16e's
-    `cardEntry` / `ensureSlot` / `carrier.write` all took the parameter):
-    - `lid` IS HONOURED AT CREATE AND IGNORED ON OVERWRITE (ground-truthed
-      2026-08-31, §27b.3a: created at `lid: 1` then overwritten with `lid: 0`, the
-      card STAYED in chapter 1 while its text updated). So a card's chapter is
-      decided once, A CARD MOVED BY HAND STAYS MOVED, and a failed resolve can
-      only put a card being CREATED into Main Level — it can never move one. The
-      lid is still resolved and sent on every write as insurance, not mechanism.
-    - `ensureSlot` STILL ASKS `getList` WITH NO CHAPTER — that call answers the
-      whole course, so a card is found wherever it lives. This is what makes the
-      move need NO migration and cost nothing when the chapter is absent.
-    - IT FAILS SOFT TO MAIN LEVEL AND THE FAILURE IS NOT MEMOISED: "no such
-      chapter" is a real answer worth remembering, a thrown read is a fact about
-      this minute. There is NO create-a-chapter call anywhere in this codebase.
-    The STATS card goes there too and stays ONE card — §15's record is about
-    every course by construction, so there is nothing to split.
-
-  * IT EXPOSED TWO SILENT BUGS IN SHARED CODE (§27.6), and both fixes are in
-    code older features use:
-    - A GATHER PASS WALKED NOTHING DURING A REVIEW. `harvestFrontier` and
-      `harvestUncovered` break on `!st.running || (st.over && !storeOnly)` —
-      §14.24's rule, whose own note says it stops "a session's producer, as it
-      must". A GATHER is not a producer either: it fills the store and shows
-      nothing, its control is on screen throughout the review (which is where it
-      is pressed), and there `st.over` is true and `storeOnly` false — so every
-      game loop broke on its first iteration while the pass reported "Nothing new
-      to store". Silent since v0.130.0. The guard is now
-      `(st.over && !storeOnly && !st.gathering)`.
-    - "STORM AGAIN" WAS PRESSABLE DURING A GATHER. Both passes end the session
-      and then own `st.bid`, while the review keeps that button on screen.
-      `stormAgain` refuses while `filling()` and says why — rather than hiding
-      it, since the review is meant to be readable while the store fills.
-    - …and `gatherBtn` was wired BARE (24g's trap). Both gather buttons are
-      `() => f()` now, and the per-leg size is called `want` because an Event has
-      a `target`.
-  * STORM FROM A POSITION (§28, v0.170.0): a SCOPE, and it is §14.21's chapter
-    scope with ONE thing changed — where the oid set comes from. `stormFilterPool`,
-    `stormFilterStore` and `stormStoreDraw` were not touched, and both sources,
-    both modes, the gather pass, the background top-up and the wire are unaware of
-    it. **READ `DESIGN-intuition-storm.md` §28 BEFORE CHANGING IT.** What an edit
-    ELSEWHERE can break:
-    - THE KEY IS `stormCoverKey`, NOT `cacheKey` — §25's rule for the second
-      time, and it reads more directly here: a user pasting a FEN means THIS
-      BOARD, and en passant is exactly what two routes to one board disagree
-      about. `cacheKey` would tell them their course does not reach a position
-      half their repertoire plays.
-    - `stormFenKey` NORMALISES THE CASTLING FIELD, and this is a TOTAL, SILENT
-      failure when it is dropped: `parseFen` keeps `parts[2]` verbatim and
-      `fenFromPos` copies `pos.castling` verbatim, so a FEN pasted as `kqKQ`
-      would key as `kqKQ` and match NOTHING the walk builds, while the same FEN
-      in the usual order matches everything. Every key the walk produces
-      descends from START_FEN's `KQkq` through `makeMove`, which only ever
-      REMOVES characters. An unparseable FEN answers `''`, and `''` must never
-      become a scope — the caller widens to the course and says so.
-    - `stormLineThrough` COUNTS THE LINE END, not only the plies. `plies[i].before`
-      leaves out the position a line STOPS on, which is the frontier the user was
-      just looking at and so the most obvious thing to paste.
-    - THE SET IS RESOLVED IN `stormScope` AND NOWHERE ELSE, because that is the one
-      function BOTH producers reach the walk's answer through (`startSession` and
-      `gather`) — which is what makes "gathering, only narrowed" free. Resolving it
-      in `startSession` instead leaves every gather pass silently walking the whole
-      course while the window says it is storming one line. The latch is
-      `st.fenResolved`, NOT "`st.oidFilter` is still null": a chapter scope has
-      already filled that set, so the null test would leave this one unapplied on
-      exactly the sessions that asked for both. THE TWO COMPOSE BY INTERSECTION.
-    - `through` RIDES OUT ON THE POOL ARRAY beside `cont`/`paused`/`covered`
-      (§14.18.3's idiom, and now the walk's FOURTH use), off `C.fenKey` folded in
-      by `poolCfg()` — §14.9's idiom, which is what keeps both walks pure and
-      executable by `dev/check-storm.js`.
-    - THE STORE DRAW IS DEFERRED, and only under this scope. §14.11's early draw
-      is what opens a session with no network, and which lines pass through a
-      board is precisely what only the walk can say — so an unscoped or
-      chapter-scoped session is byte-for-byte unchanged and this one draws after
-      `stormScope`, before the emptiness refusal (so `st.storeCut` can explain a
-      starved scope) and fills the queue after `dropCoveredStored()`.
-    - IT IS NOT A THIRD SOURCE AND NOT A MODE, and above all not a filter on
-      POSITIONS: a stored position is up to sixteen plies past a line end, so
-      whether it is downstream of a course position is not answerable from the
-      entry. `o` is, which is the join §14.21 already uses.
-    - THE STORE ROUND TRIP IS A KNOWN SHAPE, NOT A BUG TO FIX (§28.4a). The pool
-      keeps a frontier when ANY of its lines is in scope (`oids.some`) while
-      `stormPack` writes ONE oid (`oids[0]`), so a frontier several lines converge
-      on can be stored under a line the scope excludes and then dropped by the
-      next session of that same scope — requests re-spent, nothing lost.
-      MEASURED at 2 of 1518 scoped positions, 0.08% of frontier-slots, zero on
-      two of the three courses (`dev/probe-storm-scope.js`). All three repairs
-      cost more than that: narrowing the pool to `oids[0]` drops frontiers that
-      really are in scope; REORDERING `oids` breaks the `oids[0]`/`names[0]`
-      alignment `stormPack` relies on, so §15's record would be filed against one
-      line and print another's name — a NEW silent defect; and a second oid set
-      for the store is exact but adds scope state `gatherRound`/`cycleGoHome`
-      must save and restore. `dev/check-storm.js` §28 drives the round trip end
-      to end AND asserts this shape, so a change that makes the two agree fails
-      there and has to say so. The same arithmetic has always applied to a
-      CHAPTER scope. `unattributed` is the bigger practical gap: a position
-      stored before v0.140.0 has no `o` and is in no scope at all.
-    - THE PRESETS ARE PER COURSE (`cloStormFens`, storage.local).
-      `writeFenPresets` re-reads before it writes (24b's `flushDbCache` rule,
-      third home) and an empty list LEAVES the blob rather than being stored as
-      `[]`. They are CARRIED since v0.181.0 — §28b below reverses v0.170.0's
-      "deliberately not on §16e's carrier".
-    - IT OWNS NO BRIDGES and is called by nothing.
-  * THE SAVED LIST, MADE USABLE (§28b, v0.181.0): a board to set the position up
-    on, a board on every saved row, three numbers under each name, and the list
-    carried between devices. **READ `DESIGN-intuition-storm.md` §28b BEFORE
-    CHANGING ANY OF IT.** The SCOPE is untouched — `stormFenKey`, `stormScope`'s
-    latch, the deferred store draw and §28.4a's known shape all stand. What an
-    edit ELSEWHERE can break:
-    - THE SET-UP BOARD IS `toggleAnalyse` WITH A DIFFERENT START POSITION, i.e.
-      `continuationStormApi.analyse({ startFen }, slots)` — section 19's board,
-      unchanged, on this window's slots. THE FIELD IS THE DISPLAY AND THE BOARD
-      IS THE AUTHORITY: `syncFenField` copies the position out on the 500 ms
-      poll, and `boardFen()` is what "Storm from this" and "Save" read, so a
-      poll one beat behind cannot commit the position before the last move.
-      `applyFenScope` prefers it ONLY where the caller named nothing — a press
-      on a saved row must storm THAT row.
-    - IT MUST NEVER BE UP OVER A CARD. Six closers: `startStorm`, `gather`,
-      `gatherRound`, `collectPuzzles`, `toggleStats` (the stats table hides the
-      stage those slots are measured from) and `closeStorm`. `syncSettings`
-      carries a BACKSTOP, deferred through `setTimeout` because `closeFenBoard`
-      renders and that runs inside `render`. Its teardown is NOTICED in `tick`,
-      never signalled (24g's discipline).
-    - THE DATABASE FOLLOWS IT, and that is not a breach of section 20's rule:
-      that rule is "the top move would name the answer", and there is no card
-      here. `panelSlot()` and `dbSlot` read `st.analysing || st.fenBoard`.
-    - THE MINI BOARD'S GLYPH FALLBACK IS SIZED OFF THE SQUARE, NOT THE BOARD.
-      `.clo-cr-mini .clo-cr-piece--glyph` is `font-size: inherit`, so the board's
-      own `font-size` IS the piece's type size and a square here is 6.5px —
-      board/10 is the convention every other host uses. Set to the board's size
-      it draws a 44px glyph in a 6px box: a smear that passes every rect
-      assertion, and one a live session never shows, since real pieces are cloned
-      SVGs sized in per cent.
-    - `stormLineThrough` IS NOW `stormLineKeys(w).has(key)`, so the rule about
-      which positions a line stands on — every `plies[i].before` AND THE END —
-      lives in one function and the single-key path (a session) cannot disagree
-      with the multi-key one (the box). `stormNoteLineKeys` fills the walk's
-      FIFTH index, `out.throughAll` (key -> Set(oid)), off `C.fenKeys` folded in
-      by `poolCfg()`; absent unless the course has saved positions.
-      `stormFilterPool` carries it WHOLE rather than narrowing it — it is a fact
-      about the COURSE, and a narrowed one would report a scoped session's own
-      filter back at itself.
-    - THE THREE NUMBERS ARE SECOND READINGS AND NOTHING ELSE (`fenPresetStats`):
-      the index above, then `stormFilterSource` + `stormFilterStore` — the exact
-      pair `storeDraw` uses, so the figure cannot disagree with the session a
-      press would open — then `stormStatRoll` over §15's record in the CURRENT
-      SOURCE's map. THREE STATES AND NOT TWO, which is the one place a row can
-      state a FALSEHOOD: "no line goes through this", "I have not looked yet"
-      and "you saved this after I looked" are three answers, and a count of zero
-      shows all three as the first. So the walk also carries `out.fenKeys` —
-      WHICH KEYS IT WAS ASKED ABOUT, never the same as which of them matched —
-      and `stormFilterPool` carries that list too.
-    - THE FOURTH CARD copies the third: one card per course (§27b),
-      `stormWireForeign` verbatim, read-merge-write, refused whole on an unknown
-      version, awaited LAST inside `syncStore` so all three ride one trip — plus
-      a direct push from a save and from a forget. THREE rules, each silent:
-      the merge key is `stormFenKey` AND NEVER THE FEN TEXT (one board saved
-      with different move counters on two devices is ONE position, which is
-      exactly what "copied out of a game" versus "set up on a board" produces);
-      LATER WINS THE NAME; and A TOMBSTONE ONLY BEATS AN ENTRY OLDER THAN
-      ITSELF, in both directions, or a position saved again after being
-      forgotten elsewhere can never come back.
-    - IT NEEDS TOMBSTONES AND `cloStormFens` HAS NONE — §14.12's rule in its
-      third home. `cloStormFensGone`, `{ [bid]: { coverKey: when } }`, aged at
-      `goneDays`, written by `noteFenGone` WHETHER OR NOT SYNCING IS ON (it costs
-      a timestamp and is needed the moment the switch is thrown), and CLEARED by
-      `addFenPreset` when the same board is saved again.
-    - THE READY CHIP IS NOW SCOPE-SCOPED (`storeReadySet`), which corrects a
-      figure wrong since §14.21: `storeCount()` is source-scoped and not
-      scope-scoped, so under a chapter or a position scope the chip reported the
-      whole course — invisible until this put a per-position "N ready" a few
-      pixels below it. `storeCount()` is UNCHANGED and stays what `backfillOk`'s
-      ceiling and both passes' logs are written against; narrowing those would
-      change §14.24 under a scope. `storeScored` takes the set, so the fraction
-      and its whole describe one set of positions.
-    - IT OWNS NO BRIDGES and is called by nothing.
-  * THE SAVED LIST, ARRANGED BY HAND (§28c, v0.182.0): three reports against
-    §28b, one of which is a bug in SHARED code. **READ
-    `DESIGN-intuition-storm.md` §28c.** The scope, the wire's shape, the
-    tombstones and §28.4a all stand.
-    - THE MINI BOARD IS 104px (128 touch), DOUBLED FROM §28b's 52 — with the
-      glyph fallback doubled WITH it (12px, 14px) rather than re-derived from
-      the board/10 convention, since the proportion is the one that was looked
-      at. A row is 116px now, so `.clo-st-fenlist` went 260 → 360 (430 touch);
-      it is SHORTER AGAIN (`.clo-st-fenbox--board`, 160/190) while the set-up
-      board is up, because `.clo-st-body` is a flex column that does not scroll
-      and every pixel this box takes comes off that board. And SMALLER AGAIN
-      under 400px of card (`@container`, never `@media` — §31's rule), where the
-      doubling would otherwise be paid for out of the NAME: measured, the label
-      falls under 40px on a touch phone.
-    - THE KEY SWALLOW'S STAND-DOWN — the bug, and it is section 18's; the rule
-      is written beside that listener, above.
-    - THE ORDER IS THE USER'S, moved a row at a time by a pair of arrows, and
-      `stormFenMerge` NO LONGER SORTS. A PERMUTATION IS THE ONE THING A UNION
-      CANNOT MERGE — two devices that have each reordered have both made a
-      legitimate choice and no `at` settles between them — so the SET and the
-      NAMES are shared and the ARRANGEMENT is each device's. The merge keeps the
-      local order and APPENDS what only that exchange brought, which is one
-      deleted `.sort()`: `byKey` is a Map, `set` on a key it holds does not move
-      it, and the locals go in first, so insertion order IS the rule. A device
-      holding NONE of them inherits the other's arrangement whole, out of the
-      array order the pack already writes — so the order travels with no field
-      for it. `fenPresetMax` therefore cuts the END of the arrangement, which is
-      no longer the same statement as "oldest out".
-    - IT OWNS NO BRIDGES and is called by nothing.
-  * IT EXPOSED A SILENT BUG IN `syncPuzzles` (§28b.5, fixed v0.181.0):
-    `carrier.read` answers the card's comment VERBATIM — base32, which is why
-    `encode`/`decode` are on the carrier at all — and that string was handed
-    straight to `stormPuzzleWireUnpack`, where `blob.v` is `undefined`. So the
-    version test refused every payload and THAT EXCHANGE HAS BEEN PUSH-ONLY
-    SINCE v0.171.0: the write half worked, and a phone that has never received a
-    puzzle looks exactly like one whose desktop card is simply newer. Any fifth
-    card must decode the same way `syncStats` and `syncStore` do.
-  * IT EXPOSED A SILENT BUG IN THE STORM'S OWN KEYBOARD (§28.7), and the fix is
-    in shared code: `onKey` is a `document` listener in CAPTURE phase that calls
-    `preventDefault`, and it had NO stand-down for a focused field — so an `s`
-    typed anywhere in this window opened the stats table INSTEAD of inserting a
-    letter, and `b`/`t`/the arrows walked the review underneath. It now returns
-    for `INPUT`/`TEXTAREA`/`SELECT`, with Escape BLURRING rather than closing the
-    window (section 24c's rule; 19d's for the `<select>` half, arrows and letters
-    being how a selector is driven). The selector half was already live: the mode,
-    source and share selectors have been in this row since v0.150.0.
-  * ONE CARD, ONE LINE (§30, v0.175.0, repaired v0.176.0; DESIGN-intuition-storm.md
-    §30 AND §30a, read both before touching any of this). Reported live: after a CLEAR, a set of
-    six was answered on six positions from the SAME line end. `harvestFrontier`
-    yields three to eight survivors and every one of them is from that one
-    frontier, and the producer pushed them all — so `queueTarget` was met by a
-    single variation. The store hid it: `stormStoreDraw`'s random term mixes
-    lines, so it only shows on a COLD store, i.e. exactly after §22's clear.
-    - `queueSpread` (1) IS HOW MANY OF A WALK'S SURVIVORS REACH THE QUEUE. The
-      rest are SPARES — already in the store, held in `st.spare` so they are
-      reachable this session without a second walk. It costs one walk per card
-      on a cold store, ~11 ChessDB requests, which `cdbMaxPerSession` (600) and
-      `maxPositions` (40) were already sized for.
-    - THREE DEAL POINTS SHARE ONE `st.dealtLines` (line ends dealt this session):
-      `takeStoreItem`, `takeQueued` and `takeQueuedPuzzle`. A puzzle and a graded
-      position from the same line are the same repetition, which is why they read
-      one set and not one each.
-    - THE COMPARATORS ARE UNTOUCHED. `stormStoreDraw` and `stormPuzzleDraw` still
-      order as they did — §14.15's rule — and this is a filter over what is taken
-      NEXT, exactly as §14.21's scope is a filter over the input.
-    - NONE OF THEM MAY WITHHOLD: when nothing qualifies the head is taken, so a
-      one-line scope still deals. AN EMPTY KEY NEVER BLOCKS, or a store nothing
-      can attribute would read as one variation.
-    - THE SET/STORM SPLIT IS IN `takeQueued` ALONE. A spare from a line already
-      dealt is taken in a STORM (a clock is running and a repeat beats an empty
-      board) and never in a SET — which waits for the producer instead — UNLESS
-      `st.exhausted`, without which a small course's set ends its first round
-      short with usable cards in hand. …AND THE QUEUE ALWAYS YIELDS, above that
-      wait: `produce` returns at once while the queue is at `queueTarget`, so a
-      set refusing a full queue would never call it and would stall with three
-      good cards in hand.
-    - v0.176.0: THE RULE WAS RIGHT AND THE FIELD IT READ WAS ALMOST NEVER THERE
-      (§30a, ground-truthed 2026-09-03 on the author's own account: of 41 synced
-      positions for course 453453, ZERO carried an oid). Four repairs, and each
-      is a way this switches itself off in silence:
-      * `stormWirePack` NOW CARRIES `o`. It never did — the NAME rode and the
-        oid did not — so every position from another device was unattributed and
-        all three take-functions read "no line" as "never blocks". Optional,
-        absence read as "not recorded", NO `wireVersion` bump (`g`/`d`/`cl`'s
-        precedent). The puzzle wire has carried its `o` since v0.171.0, which is
-        what makes this an oversight rather than a decision. `stormWireMerge`
-        TAKES ONE THE OTHER DEVICE HAS, exactly as it takes a `g` — a line is a
-        property of the POSITION's frontier, not of the device, so the two can
-        only disagree by one of them not knowing. Without that clause the merge
-        only ever ADDS entries this store was missing, and everything already
-        here from before v0.176.0 stays unattributed for ever.
-      * `backfillStoreOids` NOW RELABELS WHAT HAS ALREADY BEEN DRAWN
-        (`st.storeQueue`, `st.queue`, `st.spare`). §14.11's early draw happens
-        BEFORE the course is read and this needs the course listing, so writing
-        the oid into `st.store` alone reaches the one copy nothing is dealt
-        from. Patched in place, never re-drawn — a fresh `storeDraw()` would be
-        safe (§14.13) but would re-roll the random term and throw away the order
-        the session opened on. It also SAYS how many positions still have no
-        line, every time: a store the spread cannot work on is otherwise
-        invisible from the outside.
-      * THE SPREAD'S KEY IS `oid || name` (`stormLineKey` / `cardLineKey`), AND
-        §15'S RECORD MUST NEVER USE IT. The two ask different questions: the
-        record asks which line to FILE an answer under, where a guess is a lie
-        and a name two variations share is refused; the spread asks whether two
-        cards are from the same line end, where a name is a good answer and
-        being wrong merely DEFERS a card. Without the fallback the spread is off
-        for exactly the positions that need it most — 8 of the 11 unnamed above
-        were one cluster, under a name 13 variations of that course carry.
-      * `queuedOrDealt` IS THE PRODUCER'S OWN HALF. The deal point can only
-        choose among what it is handed, so a walk landing on a line already
-        dealt puts a repeat in front of the user however carefully `takeQueued`
-        scans; such a card goes to the spares and the loop draws another
-        frontier. Bounded TWICE and both clauses matter — only with something
-        already on the queue (variety is never worth an empty board), and ONCE
-        per `produce` call (a diversion is a whole extra ~11-request walk and
-        `produce` runs after every card).
-
-  * A WINDOW THAT OUTLIVES THE SESSION (§30b, v0.179.0). §30 spreads one SET;
-    this stops the set AFTER it being made of the same lines. `st.dealtLines` is
-    reset by `startSession`, so "Storm again" had no memory at all — and both
-    draws see the same store in the same comparator order, which is why the
-    repeat is likeliest on exactly the course that has just been stormed.
-    `CONFIG.storm.recentLines` (24, four sets' worth) line ends per course, in
-    `storage.local` under `recentKey`. **READ `DESIGN-intuition-storm.md` §30b
-    BEFORE CHANGING IT.** What an edit ELSEWHERE can break:
-    - THREE TIERS, NOT ONE SET, and every deal point scans in that order: a line
-      neither dealt this session nor in the window, then §30's rule UNCHANGED,
-      then the head. Unioning the window into `st.dealtLines` breaks two things
-      quietly — a SET would WAIT on it (nothing the producer finds can change an
-      answer about sittings already over, so it stalls and is rescued by the
-      deadlock clause, i.e. is correct by accident), and a line dealt last night
-      would rank EQUAL with one dealt two cards ago, which is the ordering the
-      feature is.
-    - IT IS A PREFERENCE AND MAY NEVER WITHHOLD. A course with fewer lines than
-      the window behaves exactly as it did before this existed — which is also
-      the right answer there.
-    - READ ONCE PER DOCUMENT, in-memory map AUTHORITATIVE, written from
-      `endSession`. The write is fire-and-forget, so a re-read at the next
-      `startSession` could land before it and hand "Storm again" the picture
-      from before the session it follows. Re-read-before-write on the way out
-      (24b's `flushDbCache` rule, fourth home).
-    - AN ENTRY IS MOVED, NOT DUPLICATED: the window is the last N LINE ENDS, not
-      the last N cards, or one line dealt a dozen times fills it and evicts
-      every other line the user has seen. `''` is never recorded and never
-      blocks (`stormLineKey`'s rule, fourth home).
-    - THE COMPARATORS ARE UNTOUCHED (§14.15) and so is `queuedOrDealt`: a
-      diversion is a whole extra ~11-request walk, and spending that to avoid a
-      line from last night is a worse trade than dealing it.
-    - …AND `takeQueuedPuzzle` HAD NEVER RUN. `nextPuzzleCard` shifted `pz.queue`
-      itself from v0.175.0 to v0.178.0, so the puzzle third of §30 executed
-      never — invisibly to `dev/check-storm.js` §30, which executes that
-      function directly and so kept passing over a function nothing called. A
-      CHECK THAT EXECUTES A RULE PROVES THE RULE, NOT THE PATH; two source-text
-      assertions now cover the call.
-
-  * UPRIGHT, THE BOARD IS ABOVE THE PANEL (§31, v0.180.0). The stacked stage now
-    fires on `(max-width: 700px) or (orientation: portrait)`, so a tablet held
-    upright gets it too — 820x1180 goes from a 358px board to a 798px one.
-    THREE things an edit elsewhere can break, and two of them are silent:
-    - `.clo-st` IS A `size` CONTAINER, NOT AN `inline-size` ONE, and that is the
-      orientation arm's whole life support: `orientation` is an answer about the
-      block axis, so against an inline-size container the clause never matches
-      and the stacked shape simply goes on firing at 700px and nowhere else,
-      with nothing in the console. Safe here for the tree's reason — this window
-      is `position: fixed` with `inset: 16px`, so neither dimension has ever come
-      from its contents. A harness replica added without an explicit inline
-      HEIGHT will collapse under it.
-    - THE SQUARE IS CENTRED BY `slots()`, ACROSS ONLY. When the height binds, the
-      slot is wider than the board pinned onto it and CSS cannot centre something
-      it is not drawing. The TOP stays the slot's: side by side the board and the
-      panel start on the same line, which is why that shape's spare pixels were
-      put UNDER the board, and centring vertically too would drop the board below
-      the panel's first line.
-    - THE BOARD MAY ONLY SHRINK AND THE PANEL'S 150px IS A FLOOR. Both halves are
-      what make `aspect-ratio: 1/1` safe in a column — the old note here was
-      right that it left the panel 2px, and that was with the board ALSO carrying
-      `flex: 1 1 auto`, free to grow against a panel with no `min-height` to
-      freeze at. Under `html.clo-touch` that floor is 200px: measured at 360px
-      wide, section 18's panel is 162-230px there, so the old fixed 150 was
-      clipping it on the very device this shape is for.
-
+  * A LOSS IS A SUBTRACTION, SO BOTH SIDES MUST COME FROM ONE EVALUATOR AT ONE
+    DEPTH (§3.4) — the rule the whole grade hangs off, and the one an
+    "optimisation" reaches for first. Four consequences, none of them tidyable:
+    the engine tier is TWO searches unless a stored list already supplies the
+    anchor; CHESSDB'S CHILD TIER IS UNREACHABLE ON A STOCKFISH LIST; a
+    position's scored list is always ENTIRELY one source, which is what keeps
+    `spread2`, `spread5` and `randomTopCp` comparing within one list; and an
+    engine-graded line names the ENGINE's best move and score and prints NO win
+    rate, which is a book figure.
+  * `d` ON A STORED ENTRY IS THE WHOLE COMPATIBILITY STORY (§23): >0 means the
+    move list is Stockfish's at that depth, ABSENT means ChessDB's — which is
+    what every entry written before v0.158.0 holds. So no cache key moved and
+    nothing migrates, and it rides the wire with NO `wireVersion` bump (`g`,
+    `o`, `u`, `cl` and §20's third `a` element are the same shape: optional,
+    absence read as "not recorded"). It MUST ride: a phone cannot run the
+    search, so a desktop that deepened a position is the only way that phone
+    ever grades it with an engine.
+  * ITS KEYBOARD STANDS DOWN FOR A FOCUSED FIELD (§28.7). `onKey` is a
+    `document` listener in CAPTURE phase that calls `preventDefault`, so without
+    it an `s` typed anywhere in this window opens the stats table INSTEAD of
+    inserting a letter and `b`/`t`/the arrows walk the review underneath. It
+    returns for `INPUT`/`TEXTAREA`/`SELECT`, with Escape BLURRING rather than
+    closing the window (24c's rule; 19d's for the `<select>` half, arrows and
+    letters being how a selector is driven).
+  * `.clo-st` IS A `size` CONTAINER, NOT AN `inline-size` ONE (§31), and that is
+    the stacked stage's whole life support: it fires on `(max-width: 700px) or
+    (orientation: portrait)`, and `orientation` is an answer about the block
+    axis, so against an inline-size container that clause never matches and the
+    stacked shape goes on firing at 700px and nowhere else, with nothing in the
+    console. Safe here for the tree's reason — this window is `position: fixed`
+    with `inset: 16px`, so neither dimension has ever come from its contents. A
+    `dev/harness.html` replica added without an explicit inline HEIGHT will
+    collapse under it, and every other size question in this window is a
+    `@container` query for the same reason.
+  * IT NEVER SHOWS THE SAME POSITION TWICE (`st.seen`, keyed `cacheKey`).
+    Measured, not theoretical: duplicates arrive from two different games in the
+    same run.
+  * §19's SECOND SOURCE INHERITS TWO RULES FROM ELSEWHERE IN THIS FILE, and both
+    fail by yielding a plausible session made of the wrong positions. A DECISION
+    POINT IS AN **OPPONENT**-TO-MOVE POSITION: on the user's own move an
+    uncovered popular choice is a repertoire DECISION (1…c5 over 1…e5) — section
+    6c's rule, 24b's reason — so dropping the guard asks the user to improvise
+    against lines they chose not to play and reads as the course being full of
+    holes, and whose move it is comes from the LINE, never `courseSide` (24h).
+    And THE EXPLORER'S UCI IS RESOLVED THROUGH CloSan, NEVER COMPARED against
+    the covered set — section 6c's v0.48.1 trap from the other side, and here it
+    misses exactly the CASTLING replies and succeeds on everything else, so the
+    storm asks "what do you play against O-O?" about a position the course
+    answers. §15's CHAPTER grouping has a shared-code cost of its own: `getList`
+    does not say which chapter a variation is in (that is why 24g's
+    `fetchVariationChapter` exists), so it is up to one request per chapter,
+    behind a press, cached in `cloStormChapters` — and it can only answer for a
+    course the user can ADD to, `getImportData` being the only call that
+    enumerates chapters and bought courses being absent from it.
+  * WHAT LOOKS LIKE A BUG HERE AND MUST NOT BE "FIXED", each argued in full at
+    the § named: `k` ASCENDING in `stormStoreDraw` — unseen first, most-missed
+    last; hardest-first was v0.130.0's order and starved the fresh material
+    (§14.15). `stormWirePack`'s own `k`-DESCENDING sort, which is NOT the same
+    question and stays (§14.15). UNKNOWN as the TOP reachability bucket, absence
+    meaning "not recorded" and never "zero games" (§14.19). AN UNDEEPENED
+    POSITION IS NEVER FILTERED OUT, only dealt later (§23, §23.8). A PAYLOAD
+    THAT DOES NOT SAY WHICH COURSE IT IS FOR IS NOT FOREIGN, and the
+    pre-v0.166.0 card is left in place rather than deleted (§27b). THE PICK
+    RULES ARE STILL CENTIPAWNS while the grade is win probability, because they
+    answer a different question (§16.5). `setCleanOn` and `storeDropOn` are
+    WRITTEN OUT TWICE with the same membership (§16, §17). `stormSetHeld` is
+    deliberately NOT `!stormSetClean` (§17.4). And `kind` stays `'list'` for
+    both passes that share `stormEngineList`; `job.walk` is what tells them
+    apart (§26.8).
+  * FOUR RULES INSIDE THE MODULE ARE NAMED HERE ONLY BECAUSE A "TIDY-UP" FROM
+    OUTSIDE REACHES THEM. Every comparator here (`stormStoreDraw`,
+    `stormPuzzleDraw`) is PURE and rnd-injected precisely because a reversed one
+    is undetectable from the outside, and a SCOPE filters the INPUT and must
+    never become a term in one (§14.15, §14.21). `stormFilterPool` COPIES the
+    pool array's own properties — `paused`, `covered`, `cont`, `through`,
+    `throughAll`, `fenKeys` — so a plain `.filter()` silently switches
+    §14.18.4's walk stop off. `st.dealtLines` is read by THREE deal points, a
+    puzzle counting as the same repetition as a graded position (§30). And
+    `stormLineKey` falls back to `oid || name` while §15's RECORD must never do
+    so, the two asking different questions — which line to FILE an answer under,
+    where a guess is a lie, against whether two cards are from the same line
+    end, where being wrong merely DEFERS a card (§30a).
 
 - Puzzles from the games that played your lines (section 29, v0.171.0): a
   tactic from a real game that went through one of the course's own positions,
