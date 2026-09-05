@@ -3160,12 +3160,20 @@ Currently working (v0.18.x).
   dealt instead of an ordinary storm card some fraction of the time. Source is
   the published `puzzle-explorer-data` set, through the extension's FOURTH host
   permission. Opt-IN and a PER CENT (`cloStormPuzzlePct`, absent = 0), in the
-  pre-roll row beside the mode and the source.
-  **READ `DESIGN-storm-puzzles.md` BEFORE CHANGING ANYTHING HERE.** What
-  follows is only what an edit ELSEWHERE can break.
+  pre-roll row beside the mode and the source, with the anchor BAND beside it
+  (29.3).
+  **READ `DESIGN-storm-puzzles.md` BEFORE CHANGING ANYTHING INSIDE THIS
+  MODULE.** §2 is why a puzzle is ANSWERED and never graded, and §2.1 the four
+  edits section 18 needed; §3 the anchor band, which is the measurement the
+  whole feature rests on and the thing the first draft got wrong, and §3.1a the
+  band as a setting; §4 the two gather stages and why they are split, §4.0 where
+  they sit in a pass; §5 the store; §6 the wire; §7 scoring and §7.1 the set;
+  §8 what it must never do; §12 collecting once (29.2); §13 the disguise (29.4);
+  §15 the display surfaces and the five times they were forgotten. What follows
+  is only what an edit ELSEWHERE can break.
   * A PUZZLE IS ANSWERED, NOT GRADED, and the two must never be "unified". A
-    storm position has no right answer and is judged by how much of the game
-    the move gave up (§16); a Lichess puzzle has a SOLUTION, so it is played by
+    storm position has no right answer and is judged by how much of the game the
+    move gave up (§16); a Lichess puzzle has a SOLUTION, so it is played by
     section 18's ordinary QUIZ path — which already walks a multi-ply line and
     auto-plays the opponent's replies. No ChessDB request, no engine search, no
     round trip. Routed through §3.4's three tiers instead, a tactic would be
@@ -3183,65 +3191,24 @@ Currently working (v0.18.x).
     `nextLine` finds nothing after it and calls `finish()`, which tears the
     overlays down and ends the session on the first puzzle solved. Section 27
     owns the queue and the pause between cards, as it does for a position.
-  * THE ANCHOR BAND IS A FLOOR AND A CEILING, AND THE FLOOR IS THE FEATURE.
-    Measured (§3): on one 38-ply line, plies 2/4/6/8 list 1434/1422/1451/1322
-    puzzles and plies 10/12/14/16 list 33/10/37/8. Below the floor a "match"
-    means the game shared an opening. THREE rules in `stormAnchorAdd`: band
-    membership is decided by a position's SHALLOWEST ply anywhere in the course
-    (per line, it still produces a plausible anchor set with the generic
-    positions quietly back in it); ply is ABSOLUTE in the game (`pliesBefore`),
-    never an index into the line, or a custom-FEN tactics line numbers its
-    first position 0; and side comes from the LINE (24h's rule), `m[2]` being
-    the colour that SOLVES a puzzle.
-  * THE BAND IS A USER SETTING WITH A SELECTOR (§29.3, v0.173.0), defaulting to
-    12-24, and only the FLOOR is a quality rule. §3.1 picked a ceiling of 16 as a
-    BUDGET decision — "ply 10-16 captures ~99% of the yield at half the shard
-    cost" — and v0.172.0 killed that premise: a full scan is seconds, so there is
-    nothing left to save by refusing to ask. 24 is deliberately ABOVE the current
-    publish threshold of 22, i.e. "everything the dataset will ever give", which
-    needs no edit when it gives more.
-    A DEFAULT MUST BE IN `puzzleAnchorPlyChoices` or the selector renders BLANK —
-    `applyPuzzleBand`'s fallback still returns it, so the band is correct and
-    every puzzle is found while the dropdown shows nothing. `dev/check-storm.js`
-    §29b asserts both defaults are among the choices, and that the floor stays
-    above §3's cliff.
-    CHANGING IT INVALIDATES NOTHING: the band gates COLLECTION, not dealing, so
-    narrowing leaves everything already collected in the store and still being
-    offered, and widening pays only for the anchors that are new (`store.a`
-    records every anchor ever scanned, by position key).
-  * THE CEILING IS CLAMPED TO THE LIVE `maxEmissionPly`, never a hardcoded 22.
-    Positions deeper than that are not indexed AT ALL — a hard cliff, not a
-    taper — but it is a publish threshold a republish can raise, and a hardcoded
-    copy leaves the band permanently narrower than the data allows with nothing
-    saying so.
+  * IN `pass()` THE SET ARM COMES BEFORE THE PUZZLE ARM. Routed the other way,
+    "no idea" on a set's puzzle produces a `blunder` verdict which
+    `stormSetHeld` holds BLIND — offering "try again" to somebody who has just
+    said they have no idea, with the solution still hidden.
+  * THE ANCHOR BAND IS A FLOOR AND A CEILING, AND THE FLOOR IS THE FEATURE
+    (§3): below it a "match" means only that the game shared an opening. THREE
+    rules in `stormAnchorAdd` — band membership is decided by a position's
+    SHALLOWEST ply anywhere in the course (per line, it still produces a
+    plausible anchor set with the generic positions quietly back in it); ply is
+    ABSOLUTE in the game (`pliesBefore`), never an index into the line, or a
+    custom-FEN tactics line numbers its first position 0; and side comes from
+    the LINE (24h's rule), `m[2]` being the colour that SOLVES a puzzle.
   * THE PUZZLE'S OWN START PLY IS DELIBERATELY UNFILTERED. That is a different
     question and the answer is no: the median puzzle from these games begins
-    around ply 55, so a start-ply band keeps only tactics inside the opening
-    and throws away ~95% of the supply. What matters is that the GAME played
-    the line, which is `m[3]`. Every host says so in those words and never
-    implies the tactic itself is in the opening.
-  * TWO GATHER STAGES, SPLIT BECAUSE THE COSTS ARE DIFFERENT PROBLEMS. Stage A
-    (anchors → candidates) is index-shard bound at 330 KB gzipped each, 136-182
-    of them for a real course, and is a ONE-OFF recorded in `store.a`. Stage B
-    (candidates → ready) is one 85 KB gzipped body fetch per SHARD GROUP —
-    §29.2 below replaces the "one per puzzle, batching cannot help" this used to
-    say, which was wrong twice over. Only stage B is small enough for §14.24's
-    background top-up; stage A must never run there.
-  * …AND THEY RUN FIRST IN A GATHER PASS, before the frontier walk. Moving them
-    back after it does not make the feature slower, it makes it UNREACHABLE, and
-    silently: guarded there on `st.gathering` and the leg's clock, they are
-    skipped by exactly the two ways a real pass ends — a hand gather is STOPPED
-    (200 frontiers with a depth-20 search after each, §26.4 measured one such
-    search at 207 s) and a round's leg TIMES OUT on `cycleLegMs`. An empty
-    puzzle store is also what a course with no puzzles looks like, and the
-    pass's own puzzle log line is guarded on the fetch counters, so it is
-    skipped with them. Shipped that way in v0.171.0, reported live, fixed in
-    v0.171.1 along with the two things the same report exposed: `pz.store` must
-    SWITCH WITH THE COURSE in `cycleSwitch` (it is written back under
-    `st.bid`, so a round filed one course's anchors, candidates and tombstones
-    into another course's slice — §27b's contamination one store over), and
-    `fillPuzzleQueue()` must be called after a pass, which is §14.13's rule
-    applied to the position queue and not to this one.
+    around ply 55, so a start-ply band keeps only tactics inside the opening and
+    throws away ~95% of the supply. What matters is that the GAME played the
+    line, which is `m[3]`. Every host says so in those words and never implies
+    the tactic itself is in the opening.
   * PICKED AT RANDOM AMONG SURVIVORS, never top-rated first: the build keeps at
     most 2000 puzzles per position BY RATING, so "highest rating" is the
     dataset's own truncation bias and would serve a diet of 2900s.
@@ -3268,114 +3235,46 @@ Currently working (v0.18.x).
     budget, while a ready puzzle is what a phone cannot produce. §27b's
     `stormWireForeign` is reused VERBATIM, which is why
     `stormPuzzleWireUnpack` must return `bid` and not `b`: named `b` it answered
-    "not foreign" for every card of every course, silently.
+    "not foreign" for every card of every course, silently. And it must DECODE
+    the way `syncStats`/`syncStore` do (§28b.5) — `carrier.read` answers base32
+    verbatim, and handing that straight to the unpacker made the exchange
+    silently PUSH-ONLY from v0.171.0 to v0.181.0.
   * §15 GAINS A THIRD MAP, `plines`. A puzzle is answered and a position is
     graded, and the two bands mean different things, so pooling them makes one
     percentage out of two questions. `statsWireVersion` stays 2 (§19's
     precedent). `cardLineRef` is the join — a puzzle has NO `storm` block, so a
     reader that looks there finds nothing and the map stays empty for ever while
     looking implemented. Answers are counted against the ANCHOR's line.
-  * EITHER QUEUE IS A CARD (`haveAnyCard`, v0.171.0, found live). Puzzles live
-    in `pz.queue` and positions in `st.queue`, and `nextCard` draws
+  * EITHER QUEUE IS A CARD (`haveAnyCard`). Puzzles live in `pz.queue` and
+    positions in `st.queue`, and `nextCard` draws
     `puzzlePick() || st.queue.shift()` — so a ready puzzle is dealable on its
-    own. BOTH Start guards read the one predicate, or they disagree and the bug
-    wears two faces: `syncSettings` asked only about `st.queue` and left Start
-    disabled on "Finding a position…" for ever whenever the position store was
-    empty and could not be filled (a course whose frontiers ChessDB does not
-    know, a narrow scope), while the selector beside it said a puzzle was ready;
-    `startStorm` asked the same thing, so even a forced press did nothing. The
-    count sentence names whichever queue is ready, or a puzzles-only start
-    reads "0 position(s) are ready".
-  * IN `pass()` THE SET ARM COMES BEFORE THE PUZZLE ARM. Routed the other way,
-    "no idea" on a set's puzzle produces a `blunder` verdict which
-    `stormSetHeld` holds BLIND — offering "try again" to somebody who has just
-    said they have no idea, with the solution still hidden.
-  * THE REVIEW HAD TO LEARN ABOUT IT OR IT CRASHES. `revMoves`, the arrival
-    tint and the row tooltip all dereferenced `card.storm` unguarded, and the
-    review opens after EVERY session — so the first answered puzzle would have
-    thrown. A puzzle row's "best" is the SOLUTION's first move, still behind
-    §14.10a's `item.shown` gate, which matters more here than anywhere: on a
-    graded card the best move is a fact about the position, on a puzzle it IS
-    the answer.
-    …AND SO DID THE LEGEND ABOVE IT (v0.171.0, found live). `stormBestLine` and
-    `stormVerdictLine` are about a GRADED card and read the `storm` block for
-    the rank, the scored list and the win rates. `renderReview` handed one
-    `undefined` and `stormBestLine` THREW — silently, since `toggleBest` had
-    already flipped `item.shown`, so "Best move" simply did nothing on every
-    press. `stormPuzzleReviewLine(v, bestSan, shown)` is the puzzle's own pair
-    of lines and is TOP LEVEL beside the other three, for §14.7's reason. The
-    same omission ran through §14.20's three predicates: `stormEstimated`,
-    `stormSourceLabel` and `stormSourceTitle` all answered as if ChessDB had
-    scored the card — which is DESIGN-chessdb.md §3.3's rule broken about a
-    feature that never touches ChessDB at all — so each takes `v.puzzle` first.
-  * THE LIVE CARD TINTS THE BLUNDER FROM THE CARD, NOT FROM `storm`
-    (`applyStormArrival`, v0.171.0, found live). A puzzle has no `storm` block,
-    so the graded arm alone left every puzzle opening with nothing tinted while
-    its own row in the review afterwards showed the move — `renderReview`
-    already read it the right way. One expression, two readers; keep them the
-    same shape.
-  * "SHOW THE MOVE" MUST SHOW THE MOVE (`syncPuzzleUi`, v0.171.0, found live).
-    §17's masking rule is that the solution is off the panel while a position
-    is held AND the answer has not been asked for — so the gate is
-    `hold.revealed` AND NOTHING ELSE. It was absent, and both doors that set
-    that flag ("Show the move", and a set's "no idea") left the panel saying
-    only "…is not it." — a button whose own tooltip promises the solution and
-    does nothing. A live card, a blind hold and a storm's failed card are all
-    still masked, the last of those because §14.10a's review gate answers there
-    instead.
+    own, and BOTH Start guards must read the one predicate or they disagree and
+    the bug wears two faces.
+  * THE FOUR PLACES THAT DESCRIBE A CARD MUST EACH TAKE THE PUZZLE ARM FIRST,
+    and every one of them shipped broken because a graded card and a puzzle look
+    identical until something dereferences `card.storm` (§15).
+    `stormPuzzleReviewLine` is TOP LEVEL beside the other three verdict-line
+    helpers, for their reason; §14.20's `stormEstimated` / `stormSourceLabel` /
+    `stormSourceTitle` each test `v.puzzle` first, or they answer as if ChessDB
+    had scored a card it never touched; `applyStormArrival` tints the blunder
+    from the CARD and not from `storm`; and `syncPuzzleUi`'s reveal gate is
+    `hold.revealed` AND NOTHING ELSE, §17's masking rule applied to a solution.
+    A puzzle row's loss column is `—`, never `?`, which means "could not be
+    scored" and reports a grading failure that never happened.
   * A CARD MUST NOT SAY WHICH KIND IT IS UNTIL A MOVE HAS BEEN PLAYED (29.4,
-    v0.174.0; DESIGN-storm-puzzles.md §13, and read it before touching either
-    `sync*Ui`). Knowing a tactic is THERE is most of finding it, and the panel
-    was answering that before the board had been looked at: "Find the win —
-    move 1 of 3 · a game 14 plies in · 1834 rated", with the THEMES a hover
-    away — "Mate in 3" IS the answer. So until the first move both panels print
-    the LINE NAME and nothing else.
-    - THE COST FALLS ON THE GRADED CARD, and that is what makes the rule
-      symmetrical rather than a puzzle-only tidy-up: a puzzle cannot truthfully
-      print "N moves past the line" (its position is a real game's middlegame,
-      thirty or forty plies past the book), so the only way for the two to read
-      alike is for NEITHER to say it. Withheld, not lost — the verdict line
-      replaces it a second later and the review row prints all of it.
-    - `puzzlesInPlay()` IS THE GATE and it is ASKED, not assumed:
-      `pz.on && (pz.queue.length || pz.seen.size)`. With puzzles off, or none
-      available on this course, the graded card keeps its sentence exactly as it
-      always had it. `seen` as well as `queue` because a SET's second pass
-      re-asks puzzles out of `st.set`, by which time the queue is regularly
-      empty — i.e. exactly the cards that already beat the user once would come
-      back wearing their rating.
-    - IT IS WRITTEN ONTO THE CARD (`card.disguise`) in `showCard`, the one point
-      every card passes through on its way to a board. A session-wide flag would
-      be re-asked at render time, which is where a card already dealt picks up a
-      later answer than the one it was dealt under.
-    - IT CLOSES ON THE FIRST MOVE and must: a wrong move ends the card with a
-      verdict, a right one is answered by the OPPONENT rather than by a verdict,
-      and that is itself the reveal. A RETRY board is never disguised on either
-      side — it is opened from the review, where everything has been said.
-    - THE BOARD IS NOT DISGUISED AND CANNOT BE. A middlegame is not an opening;
-      what this buys is that the POSITION is the only evidence, which is the
-      same evidence a real game gives.
-    - ON THE UNCOVERED SOURCE IT COSTS `stormGapNote` TOO, which is the more
-      painful of the two — that sentence is most of what §19's exercise asks.
-      Same reason and no way round it: a puzzle has no gap note, so keeping it
-      would make its ABSENCE mean "this is a puzzle" on every card of such a
-      session. The reply is still on the board as the tinted arrival.
-  * A PUZZLE ROW'S LOSS COLUMN IS `—`, NEVER `?` (`renderReview`, v0.174.0).
-    `?` there means "the position could not be scored", which is the whole of
-    §14.10a's argument for `…` in the column beside it — and about a card that is
-    ANSWERED rather than graded it reports a grading failure that never
-    happened.
-  * THE COLLECT BUTTON IS FILLED WHILE THIS COURSE HOLDS NOTHING (29.5,
-    v0.184.0, on request) — the ONE exception in that window to
-    DESIGN-ui-inventory §3's "one primary and Start is it", and not a slip to
-    tidy away: the two fills are never competing invitations, since with nothing
-    collected this is the press that comes first and the fill goes out for ever
-    the moment it has been made. "Collected" is `puzzleHeldCount()` — ready PLUS
-    ARCHIVED, never candidates, or a store trimmed back to `puzzleReadyMax`
-    would ask to be collected again. The three modifiers of that one button
-    (fresh, armed, running) are made EXCLUSIVE IN `syncSettings`, not by
-    stylesheet order — all three are of equal weight as selectors. The third
-    state a fill cannot express, a course scanned in full with no puzzles in the
-    band, is said in words in the tooltip off `puzzleScannedCount()`.
+    §13). Knowing a tactic is THERE is most of finding it, and "Mate in 3" IS
+    the answer — so until the first move both panels print the LINE NAME and
+    nothing else. THE COST FALLS ON THE GRADED CARD, which is what makes the
+    rule symmetrical rather than a puzzle-only tidy-up: a puzzle cannot
+    truthfully print "N moves past the line", so the only way for the two to
+    read alike is for NEITHER to say it — and on §19's uncovered source that
+    costs `stormGapNote` too, the more painful of the two, since keeping it
+    would make its ABSENCE mean "this is a puzzle" on every card. `puzzlesInPlay()`
+    is ASKED, not assumed, and written onto the card (`card.disguise`) in
+    `showCard`, the one point every card passes through on its way to a board.
+    It closes on the first move, and a RETRY board is never disguised. THE BOARD
+    IS NOT DISGUISED AND CANNOT BE — what this buys is that the POSITION is the
+    only evidence, which is the same evidence a real game gives.
   * IT OWNS NO BRIDGE. `stormApi` grew two members (`puzzleSolved`,
     `puzzleFailed`), called from section 18's quiz path.
   * NOTHING MAY BE FETCHED ON A PROFILE THAT HAS NOT SWITCHED IT ON. It is a
@@ -3383,10 +3282,23 @@ Currently working (v0.18.x).
     section 26's reason. The gather stages check `pz.on` before a single
     request; the store is still LOADED regardless, since a wire exchange can
     land on a session that is dealing none.
+  * THE TWO GATHER STAGES RUN FIRST IN A GATHER PASS, before the frontier walk.
+    Moving them back after it does not make the feature slower, it makes it
+    UNREACHABLE, and silently: guarded there on `st.gathering` and the leg's
+    clock, they are skipped by exactly the two ways a real pass ends — a hand
+    gather is STOPPED and a round's leg TIMES OUT on `cycleLegMs`. An empty
+    puzzle store is also what a course with no puzzles looks like. Two rules the
+    same report exposed: `pz.store` must SWITCH WITH THE COURSE in `cycleSwitch`
+    (it is written back under `st.bid`, so a round filed one course's anchors,
+    candidates and tombstones into another course's slice — §27b's
+    contamination one store over), and `fillPuzzleQueue()` must be called after
+    a pass, which is §14.13's rule applied to this queue.
+  * ONLY STAGE B IS SMALL ENOUGH FOR §18.2's BACKGROUND TOP-UP; stage A —
+    anchors to candidates, index-shard bound and a ONE-OFF recorded in
+    `store.a` — must never run there.
   * IT MUST NEVER WRITE TO THE COURSE (section 24's rule, and §11's), and this
     feature has the tempting button one line away: "add this puzzle to my
     course" from a card. 19d/19e already do that safely, from a BOARD.
-
 - COLLECTING A COURSE ONCE (section 29.2, v0.172.0): "Collect puzzles" runs both
   gather stages to completion in one press instead of a slice per overnight leg.
   Nothing about the anchor band, the grade, the store's semantics, the wire or
@@ -3484,7 +3396,8 @@ Currently working (v0.18.x).
   One rule reads like a bug and is not: A MISSING TUPLE FIELD PASSES EVERY
   FILTER, so older shards keep working — branch on field PRESENCE, never on a
   schema version, there isn't one. Themes are the single exception: `undefined`
-  PASSES and `[]` DROPS, and collapsing them is wrong in both directions at once.- SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
+  PASSES and `[]` DROPS, and collapsing them is wrong in both directions at once.
+- SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
   apply to the comment, alternative-move and arrows jobs as well
   (`quickEditSelectMoveEl`, hoisted out of `quickEditSelectMove` — which now just
   calls it and returns the textarea):

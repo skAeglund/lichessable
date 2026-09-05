@@ -134,6 +134,28 @@ shard and return nothing. The ceiling is a budget decision, not a quality one.
 Dropping the floor from 10 to 8 multiplies 455941's haul by 5.8×, and all of the
 increase is the generic junk.
 
+#### 3.1a The band is a setting, and the two ways it goes wrong quietly
+
+`cloStormPuzzleBand`, a selector in the pre-roll row beside `cloStormPuzzlePct`.
+Only the FLOOR is a quality rule; the ceiling is now "everything the dataset will
+ever give".
+
+* **A default must be a member of `puzzleAnchorPlyChoices` or the selector
+  renders BLANK.** `applyPuzzleBand`'s fallback still returns the default, so the
+  band is correct and every puzzle is found — the dropdown simply shows nothing,
+  which reads as a broken control rather than as a wrong one.
+  `dev/check-storm.js` §29b asserts both defaults are among the choices, and that
+  the floor stays above §3's measured cliff.
+* **The ceiling is clamped to the LIVE `maxEmissionPly`**, never a hardcoded 22.
+  Positions deeper than that are not indexed AT ALL — a hard cliff, not a taper —
+  but it is a publish threshold a republish can raise, and a hardcoded copy leaves
+  the band permanently narrower than the data allows with nothing saying so.
+
+**Changing the band invalidates nothing.** It gates COLLECTION, not dealing, so
+narrowing leaves everything already collected in the store and still being
+offered, and widening pays only for the anchors that are new — `store.a` records
+every anchor ever scanned, by position key.
+
 ### 3.2 Three rules in `stormAnchorAdd`
 
 * **Band membership is decided by a position's SHALLOWEST ply anywhere in the
@@ -834,3 +856,61 @@ collected one's transparent/`#a5c96a`; the position button is `#3a3630` with
 `#dcdcdc` text against Sync's transparent/`#949494`. Under `html.clo-touch` the
 row's own overflow is identical with the collect button shown and hidden, so the
 added replica is not what puts the row over its width.
+
+---
+
+## 15. The display surfaces, and the five times they were forgotten
+
+§2.1 lists the four edits section 18 needed to PLAY a puzzle. What it does not
+list is everything that DESCRIBES one, and each of these shipped broken because
+a graded card and a puzzle look identical until something dereferences
+`card.storm`. Every one was found live, none of them by `node --check`.
+
+* **`stormPuzzleReviewLine(v, bestSan, shown)` is TOP LEVEL**, beside
+  `stormCp` / `stormVerdictLine` / `stormBestLine`, for their reason
+  (DESIGN-intuition-storm.md §14.7): section 18's panel prints these lines while
+  a card is up and section 27's review prints them again afterwards, so a helper
+  living in either closure is a `ReferenceError` in the other.
+* **The legend threw on the first answered puzzle.** `stormBestLine` and
+  `stormVerdictLine` are about a GRADED card and read the `storm` block for the
+  rank, the scored list and the win rates. `renderReview` handed one `undefined`
+  and it threw — silently, because `toggleBest` had ALREADY flipped
+  `item.shown`, so "Best move" simply did nothing on every press.
+* **§14.20's three predicates each take `v.puzzle` first.**
+  `stormEstimated` / `stormSourceLabel` / `stormSourceTitle` otherwise answer as
+  if ChessDB had scored the card — which is DESIGN-chessdb.md §3.3's rule broken
+  about a feature that never touches ChessDB at all.
+* **The live card tints the blunder from the CARD, not from `storm`**
+  (`applyStormArrival`). The graded arm alone left every puzzle opening with
+  nothing tinted, while its own row in the review afterwards showed the move,
+  `renderReview` having already read it the right way. One expression, two
+  readers; keep them the same shape.
+* **`syncPuzzleUi`'s reveal gate is `hold.revealed` AND NOTHING ELSE.** §17's
+  masking rule is that the solution is off the panel while a position is held and
+  the answer has not been asked for — so both doors that set that flag ("Show the
+  move", and a set's "no idea") must open it. The gate was absent, and both left
+  the panel saying only "…is not it.": a button whose own tooltip promises the
+  solution and does nothing. A live card, a blind hold and a storm's failed card
+  are all still masked, the last because §14.10a's review gate answers there
+  instead.
+
+`revMoves`, the arrival tint and the row tooltip all dereferenced `card.storm`
+unguarded too, and the review opens after EVERY session. A puzzle row's "best"
+is the SOLUTION's first move, still behind §14.10a's `item.shown` gate — which
+matters more here than anywhere: on a graded card the best move is a fact about
+the position, on a puzzle it IS the answer.
+
+**A puzzle row's loss column is `—`, never `?`.** `?` there means "the position
+could not be scored", which is the whole of §14.10a's argument for `…` in the
+column beside it — and about a card that is ANSWERED rather than graded it
+reports a grading failure that never happened.
+
+**Either queue is a card** (`haveAnyCard`). Puzzles live in `pz.queue` and
+positions in `st.queue`, and `nextCard` draws `puzzlePick() || st.queue.shift()`,
+so a ready puzzle is dealable on its own. BOTH Start guards must read the one
+predicate, or they disagree and the bug wears two faces: `syncSettings` asking
+only about `st.queue` left Start disabled on "Finding a position…" for ever
+whenever the position store was empty and could not be filled, while the selector
+beside it said a puzzle was ready — and `startStorm` asked the same thing, so
+even a forced press did nothing. The count sentence names whichever queue is
+ready, or a puzzles-only start reads "0 position(s) are ready".
