@@ -1,105 +1,44 @@
 # CLAUDE.md — LiChessable
 
-Personal Chrome extension (Manifest V3), loaded unpacked. Injects a "Lichess
-Database" panel beneath Chessable's move table on Explore pages
-(`https://www.chessable.com/explore/<id>/`) and the Analysis board
-(`https://www.chessable.com/analysis/`, as sibling after the Opening
-Explorer container — always visible, since Chessable's explorer toggle is
-sometimes disabled — the panel fills the whole column right of the board and
-ADOPTS Chessable's own move tree into its top section)
-so course statistics can be compared against real Lichess games for the
-current position. Also adds an "Overstudy" widget to trainer sessions — review
-(`https://www.chessable.com/practice/…`) AND learn
-(`https://www.chessable.com/learn/…`, same MoveTrainer2 app, identical markup):
-two buttons (current / previous
-variation) that open the variation's overstudy in a background tab. In those
-trainer sessions the Lichess panel also appears once a variation is completed
-(browse state), following the board via a DOM-derived FEN. In that same browse
-state, hovering a mainline move shows a pencil that appends a PGN comment to the
-variation, EDITS that comment as a whole, or edits the move's ARROWS AND
-CIRCLES on a board of our own (section 12b) — all for courses you can edit, all
-by driving Chessable's own edit page in a
-small focused popup window; the same pencil works on standalone variation pages
-(`/variation/<id>/`), which also get the full Lichess panel (section 11b).
-Trainer sessions (/practice/ and /learn/ alike) can also auto-play moves the
-user already answered correctly earlier the same session (section 13; opt-in
-toggle on the overstudy widget). A wrong quiz answer offers an
-engine check of the refused move and one-click addition as an accepted
-alternative (section 15). Every move failed in a session is logged from the
-trainer's own per-move quiz record (section 16) and a "Retry" button walks
-those variations again as overstudy, with auto-play covering the moves already
-answered (section 17); "Drill mistakes" is the fast alternative to that pass —
-the same failed moves asked for on OUR OWN board, one card each, with no
-navigation and nothing rescheduled (section 20). The "Mistakes" list behind both
-is the WHOLE session's history, grouped by chapter and foldable: a move already
-gone through stays in it, dimmed and unticked, and can be retried or drilled as
-often as the session lasts. A move can also be PINNED (section
-16b), which is the one thing here that outlives the session: it comes back in
-the drill after half an hour, four hours and a day, and retires itself once it
-has been answered clean three times over three sittings. The offer to pin is
-made in the bottom-right corner RIGHT AFTER the mistake (16c) — the moment the
-user has an opinion about a move — and pins that have come round again are
-launched from that same corner ON ANY CHESSABLE PAGE (16d), onto a board of our
-own that needs nothing of Chessable's under it. A completed variation whose comment holds clickable
-subvariation lines offers "Review clickable(s)" — the button is deliberately not
-named after "continuations", since a line branching off earlier in the variation
-continues nothing — which quizzes those lines on
-OUR OWN board overlaid on Chessable's — theirs is navigation-only (section 18).
-A comment writing several branches as one run of clickable moves
-("1.e4 (1.d4 d5) 1...c5") yields ONE LINE PER BRANCH, all of them quizzable
-(v0.66.0; before that the whole run was dropped);
-an opt-in setting starts that review by itself, and ending it leaves THEIR board
-on the position the line reached. A "!" on such a line's FIRST move marks it
-IMPORTANT and every host of it — launcher, mid-quiz heads-up, quiz panel — turns
-amber and says so (section 18c). That same board doubles as a free-play
-ANALYSIS board (section 19): "Analyse" on the widget lets any legal move be
-played for either side from the completed position, with the Lichess panel and
-the engine following OUR board instead of Chessable's, and "Add as line" writes
-the line worked out there back into the course as a clickable line in the
-comment of the move it was opened on; it opens on the standalone variation page
-too (section 19b), from an "Analyse" button in the Lichess panel's own header —
-that page has no trainer row to host one. "Add as variation" (19c) writes the
-line as a real trainable card with the source's own plies in front of it, and
-"Add as puzzle" (section 19d) writes it ALONE, starting from the board's own
-position — a FromPosition card — into any chapter of any course you can import
-into, chosen from a picker in the panel. That same puzzle write is offered on the
-CLICKABLE LINES a comment prints (section 19e), from the right-click/long-press
-Chessable answers with its own "Add to Repertoire". A COURSE page
-(`https://www.chessable.com/course/<bid>/`) gets TWO whole-course panels. The
-COURSE TREE (section 24) walks the course into a position-keyed graph and
-browses it as Miller columns — standing anywhere, what did the author cover,
-how many of their lines take each move, and where do two chapters transpose
-into one; forced runs are folded into a row, so a 20-ply variation is two or
-three of them. An opt-in LICHESS SCAN (24b) reads the explorer for each column
-on screen and answers the other half of the question — how often real games play
-each of those moves, what share of them the course accounts for, and which
-popular replies it never answers at all. It also SCANS FOR SPLITS (24h): the
-positions the course answers with more than one of YOUR OWN moves — alternative
-moves that are not registered as alternatives, so the trainer will refuse
-whichever of them you happen to play — and, on request, reads each card to say
-which ones will actually refuse. Read-only, keyboard-driven, with a
-field that finds a line by name (24c). And "Repertoire coverage"
-(section 21): it walks the course's move tree against one of the user's own
-courses, lists the variations that are missing ranked by how likely the user is
-to face them, flags the lines their repertoire holds twice, and writes both
-answers back — adding the ticked lines through Chessable's own add call and
-deleting the surplus copies. The panel itself also BADGES the moves one of the
-user's own courses already plays (section 6c) — nominate a repertoire in the
-panel's cogwheel menu and every host of the panel marks what is prepared.
-A live quiz can also be answered BY TYPING (section 22): an opt-in field on the
-trainer row plays what you write on Chessable's own board, on sight, with no
-Enter for anything but O-O — and, once the variation is over, Enter on the same
-field asks for the next one, so a whole session can be played without letting go
-of the keyboard. A review session can also be answered WITHOUT PLAYING AT ALL
-(section 23, "show and grade"): the opponent's move is shown on OUR board, one
-key reveals the answer and a second key says whether it was known — the move is
-then played for the user, or marked wrong through Chessable's OWN "I don't know"
-control and played. Two keys for a whole session, so it can be studied from a
-Bluetooth ring. That mode also READS THE MOVES OUT (section 23b): the browser's
-own speech engine, SAN spelled into words, `1` to hear the last move again, and a
-BLINDFOLD setting that takes the pieces off our board — the board itself has to
-stay, since it is what covers Chessable's own.
+Personal Chrome extension (Manifest V3), loaded unpacked, for one user against
+Chessable. Two things it does, and everything else hangs off them: it puts a
+**Lichess Database panel** beside the position wherever Chessable shows one, and
+it adds **practice and editing** the site does not have — drilling the moves you
+got wrong, quizzing the lines an author only wrote about, and writing back into
+your own courses through Chessable's own edit page.
+
 Currently working (v0.18.x).
+
+**Where it runs.** `/explore/<id>/` and `/analysis/` (inside the same-origin mt1
+iframe), `/practice/…` and `/learn/…` (MoveTrainer2, one top document, identical
+markup), `/variation/<id>/`, and `/course/<bid>/`.
+
+**The map.** Section numbers are how this file refers to itself; each is a
+bullet under Key mechanics, and the feature-sized ones name a `DESIGN-*.md` to
+read first.
+
+| § | |
+|---|---|
+| 5b, 5c | local Stockfish (offscreen doc, worker is the hub); the shared Chessable JWT calls |
+| 6, 6b, 6c | the panel's fetch/cache; its filters and cogwheel; repertoire badges on every move row |
+| 9 | the Overstudy widget on the trainer row |
+| 11, 11b, 11c | the panel's hosts — review, `/variation/`, and the shared static board layer |
+| 12, 12b, 12c | quick-edit: the pencil, its four tabs, the driver, arrows, refreshing the host |
+| 13, 13b-d | auto-play of moves already answered this session; "difficult moves only" |
+| 15 | wrong-guess alt check: engine-check a refused move, add it as an alternative |
+| 16, 16b-e | the mistake log; pinned mistakes, their prompt, launcher and sync |
+| 17 | the retry runner — failed variations walked again as overstudy |
+| 18, 18b, 18c | clickable-line review; the mid-quiz heads-up; important lines |
+| 19, 19b-e | the analysis board; on `/variation/`; add as line / variation / puzzle |
+| 20 | the mistake drill — failed moves, one card each, on our own board |
+| 21 | repertoire coverage: what this course has that your repertoire lacks |
+| 22 | type a move: answer the live card from the keyboard |
+| 23, 23b, 23c | show and grade (two keys, no move); speech and blindfold; the key-move lead-in |
+| 24, 24b-h | the course tree; the Lichess scan; splits; an analysis board inside it |
+| 25, 25b-d | key moves vs difficult moves — lower a key range to cover what you get wrong |
+| 26 | the ChessDB eval column, and ChessDB as an engine source |
+| 27 | intuition storm: the positions your lines END on, graded for being decent |
+| 29, 29.2-.5 | puzzles from the games that played your lines; collecting a course |
 
 ## Structure
 
@@ -880,47 +819,37 @@ Currently working (v0.18.x).
     occupants") — the replica does NOT update itself, so a launcher added here
     is a launcher added there.
 - The TRAINER ROW is shared, and since v0.58.0 it has rules of its own that no
-  module may decide locally (DESIGN-ui-inventory.md is the whole argument;
-  `dev/harness.html` renders every state). Ground-truthed live 2026-08-03 on
-  course 453453 (overstudy of 70382641 — the route that reschedules nothing):
-  collapsed 107x29 label-only mid-quiz, expanded with NOTHING filled, the browse
-  row 473x38 with exactly one filled control, the manual collapse override
-  DROPPED at the state flip, and the chooser/cog popovers leaving the widget
-  height untouched. The one thing only a live run could show: a launcher wearing
-  `clo-rowprimary` AND `clo-cr-open--important` at once — green fill plus amber
-  ring, composing — which is why 18c's mark had to stop being a border recolour.
-  SIX modules append to `.clo-review`
-  — section 9 (overstudy), 13 (auto-play), 16/17 (mistakes/retry), 18-20
-  (continuation/analysis/drill), 22 (type a move), 23 (show and grade) — and each
-  one used to pick its
-  own colour and
-  land wherever `start()` happened to put it, so weight encoded WHICH MODULE
-  built a control and order encoded the BOOT SEQUENCE.
+  module may decide locally. SIX modules append to `.clo-review` — section 9
+  (overstudy), 13 (auto-play), 16/17 (mistakes/retry), 18-20
+  (continuation/analysis/drill), 22 (type a move), 23 (show and grade) — and
+  each used to pick its own colour and land wherever `start()` happened to put
+  it, so weight encoded WHICH MODULE built a control and order encoded the BOOT
+  SEQUENCE. **READ `DESIGN-ui-inventory.md` BEFORE ADDING A CONTROL HERE OR
+  PICKING A COLOUR FOR ONE** — it is the whole argument, §3 is the tier ruling,
+  and `dev/harness.html` renders every state with its measurements.
   * GROUPS. Every cluster carries `.clo-review-grp`, which owns the layout, the
     8px inset and the `1px #3d3a36` rule; a block of `order` declarations at the
     top of the row's stylesheet decides the sequence (title 0, TYPE A MOVE 1,
     mistakes 2, practice 3, overstudy 4, settings 5, status 99 — the field is
     first because it is the only thing here that acts on the card being
-    answered). So a module may keep
-    appending whenever it boots and still land in its own group — that is the
-    point, not a nicety. `.clo-review-grp:not(:has(> *:not([hidden])))` hides a
-    group whose every child is hidden, so a group that empties takes its
-    separator with it and no module has to tell the row it has nothing to show.
-    The overstudy pair got a wrapper (`.clo-os`) for this; it used to be two
-    loose children of the row.
+    answered). So a module may keep appending whenever it boots and still land
+    in its own group — that is the point, not a nicety.
+    `.clo-review-grp:not(:has(> *:not([hidden])))` hides a group whose every
+    child is hidden, so a group that empties takes its separator with it and no
+    module has to tell the row it has nothing to show. The overstudy pair got a
+    wrapper (`.clo-os`) for this.
   * ONE PRIMARY. `reviewRowPrimary()` (top level, beside `reviewStatusHost()`)
     returns a ROLE — `'stop' | 'queue' | 'clickables' | 'retry' | 'pinned' |
     null` — and each module applies `.clo-rowprimary` in its own `sync*`, but
-    ONLY to a control that is also showing. `'pinned'` (section 16b) is LAST on
-    purpose: a move failed today outranks a pin that has been waiting four
-    hours. Two states answer null deliberately: mid-quiz
-    (nothing in this row acts on the card being answered) and a clean browse
-    state with nothing outstanding. A named control that is HIDDEN fills
-    nothing, which is why the function needs no clause about our own overlays —
-    during a quiz/drill/analysis the practice launchers are hidden by their own
-    sync and the row goes quiet by itself. Inputs cross module boundaries
-    through the usual null-safe bridges: `retryRunActive()`,
-    `mistakeLogApi.pending()`, `continuationLineCounts()`.
+    ONLY to a control that is also showing. `'pinned'` (16b) is LAST on purpose:
+    a move failed today outranks a pin that has been waiting four hours. Two
+    states answer null deliberately: mid-quiz (nothing here acts on the card
+    being answered) and a clean browse state with nothing outstanding. A named
+    control that is HIDDEN fills nothing, which is why the function needs no
+    clause about our own overlays — during a quiz/drill/analysis the practice
+    launchers are hidden by their own sync and the row goes quiet by itself.
+    Inputs cross module boundaries through the usual null-safe bridges:
+    `retryRunActive()`, `mistakeLogApi.pending()`, `continuationLineCounts()`.
     The treatment is a MODIFIER (`.clo-review .clo-rowprimary`, nested so it
     beats every single-class base rule without any of them knowing it exists)
     and carries its own border, padding and radius, because the primary can land
@@ -930,39 +859,40 @@ Currently working (v0.18.x).
     an ordinary action, which is what every practice launcher wears (including
     both drill buttons, which used to be amber). AMBER OUTLINE = "you have N
     outstanding items" and NEVER launches anything — `.clo-mx-btn` alone. Amber
-    RING = section 18c's "an author marked this important", on both launchers
-    now, never an outline. Amber TEXT (no border) = the status line. Neutral
-    outline = an action away from the main task (Analyse, Overstudy).
-    Adding a control to this row means picking one of those, not inventing a
-    sixth; §3 of the design doc is the ruling. The ONE exemption is section 22's
-    move field, and only because it is not an action at all: a text input looks
-    like the inset well every other text field here uses and goes green at the
-    BORDER on focus, which says "the keyboard is going here" without claiming to
-    be the thing to press. `reviewRowPrimary()` is untouched for the same reason
-    — the primary fill is a claim about a BUTTON, and a field cannot be it.
-    The palette itself is 16 `:root`
-    TOKENS at the top of the stylesheet (v0.59.0), named by role
-    (`--clo-accent`, `--clo-attention`, `--clo-text-dim` …) — but `--clo-rep-*`
-    (6c) and `--clo-cr-important` (18c) deliberately stay beside their own rules,
-    because each carries paragraphs of argument about why that exact colour.
-  * COLLAPSED MID-QUIZ (v0.59.0, §3.3). Outside the browse state the row goes
-    down to its label plus whatever is actively RUNNING. Three CSS rules do it —
-    `.clo-review--collapsed .clo-review-grp { display: none }` and two exceptions,
-    `.clo-mx:has(> .clo-mx-mini:not([hidden]))` and
+    RING = section 18c's "an author marked this important", on both launchers,
+    never an outline — and a launcher really can wear `clo-rowprimary` AND
+    `clo-cr-open--important` at once, green fill plus amber ring COMPOSING,
+    which is why 18c's mark had to stop being a border recolour. Amber TEXT (no
+    border) = the status line. Neutral outline = an action away from the main
+    task (Analyse, Overstudy). Adding a control means picking one of those, not
+    inventing a sixth. The ONE exemption is section 22's move field, and only
+    because it is not an action at all: a text input looks like the inset well
+    every other text field here uses and goes green at the BORDER on focus,
+    which says "the keyboard is going here" without claiming to be the thing to
+    press — and `reviewRowPrimary()` is untouched for the same reason, the
+    primary fill being a claim about a BUTTON.
+    The palette itself is 16 `:root` TOKENS at the top of the stylesheet, named
+    by role (`--clo-accent`, `--clo-attention`, `--clo-text-dim` …) — but
+    `--clo-rep-*` (6c) and `--clo-cr-important` (18c) deliberately stay beside
+    their own rules, because each carries paragraphs of argument about why that
+    exact colour.
+  * COLLAPSED MID-QUIZ (§3.3). Outside the browse state the row goes down to its
+    label plus whatever is actively RUNNING. Three CSS rules do it —
+    `.clo-review--collapsed .clo-review-grp { display: none }` and two
+    exceptions, `.clo-mx:has(> .clo-mx-mini:not([hidden]))` and
     `.clo-tm:has(> .clo-tm-input:not([hidden]))`. Both READ the owning module's
-    own gates rather than adding a flag: while a pass runs, `count` and
-    `retry` are hidden and Skip/Stop are not, so "this group has a visible mini"
-    IS "a pass is running"; the move field is hidden by section 22 whenever there
-    is no live quiz, so "this group has a visible input" IS "a quiz is asking for
-    a move". Neither can drift. Auto-play's status chip
-    needs no rule — it lives on `.clo-review-status`, which is not a group.
-    The `:has()` is LOAD-BEARING in both, not decoration: `.clo-review-grp[hidden]`
+    own gates rather than adding a flag: while a pass runs, `count` and `retry`
+    are hidden and Skip/Stop are not, so "this group has a visible mini" IS "a
+    pass is running"; the move field is hidden by section 22 whenever there is
+    no live quiz, so "this group has a visible input" IS "a quiz is asking for a
+    move". Neither can drift. Auto-play's status chip needs no rule — it lives
+    on `.clo-review-status`, which is not a group.
+    THE `:has()` IS LOAD-BEARING IN BOTH, not decoration: `.clo-review-grp[hidden]`
     and the empty-group rule both sit at (0,2,0), which a plain
     `.clo-review--collapsed .clo-tm` would only TIE — and later-wins would then
-    show a group whose every child is hidden. Matching on the child's state takes
-    the exception to (0,4,0), i.e. strictly narrower than the rule it bends.
-    Measured in the harness: label-only 29px, with the move field 38px, and 58px
-    under `html.clo-touch`.
+    show a group whose every child is hidden. Matching on the child's state
+    takes the exception to (0,4,0), i.e. strictly narrower than the rule it
+    bends.
     State is section 9's: `collapseAuto` (what `reviewBrowseReady()` asks for)
     and `collapseManual` (the user overriding it, DROPPED the moment the state
     flips, and never persisted — a sticky collapse costs the browse-state
@@ -970,28 +900,23 @@ Currently working (v0.18.x).
     the overstudy chooser and calls `autoPlayCloseSettings`, which shuts the cog
     popover AND disarms a pending "Clear?": a confirm hidden between its two
     clicks is one the user can neither complete nor see they owe.
-  * ONE OVERSTUDY BUTTON (v0.59.0). "This variation" / "Previous variation" were
-    one intention split in two, and the second is unavailable for the whole
-    first variation of every session — a permanently-dead control describing a
-    choice that usually is not one. Now one button: with a distinct previous
-    variation it raises `.clo-os-menu` (which is also where the variation TITLES
-    finally live, instead of in a tooltip), otherwise it opens the only answer
-    there is. `previousEntry()` keeps the same-oid guard that in-session
-    back-navigation needs.
-  * AUTO-PLAY'S SETTINGS ARE BEHIND A COG (v0.59.0, F4). Toggle, speed and Clear
-    are persistent preferences and everything else in the row acts on the current
-    variation or session; the panel had already solved this with `.clo-cog`. The
-    cog CARRIES THE STATE — `.clo-ap-cog--on` plus the answer in words in its
-    tooltip — because that is the one thing hiding a toggle costs. Never a fill:
-    it is a setting, and a fill means "the one thing to do next".
-  * Both popovers (`.clo-os-menu`, `.clo-ap-menu`) are BODY-MOUNTED and fixed,
+  * ONE OVERSTUDY BUTTON: with a distinct previous variation it raises
+    `.clo-os-menu` (which is also where the variation TITLES live), otherwise it
+    opens the only answer there is. `previousEntry()` keeps the same-oid guard
+    that in-session back-navigation needs.
+  * AUTO-PLAY'S SETTINGS ARE BEHIND A COG, and the cog CARRIES THE STATE
+    (`.clo-ap-cog--on` plus the answer in words in its tooltip) — that is the
+    one thing hiding a toggle costs. NEVER A FILL: it is a setting, and a fill
+    means "the one thing to do next".
+  * BOTH POPOVERS (`.clo-os-menu`, `.clo-ap-menu`) ARE BODY-MOUNTED and fixed,
     placed once from their trigger's rect, like every other popup here. Inside
     the row they would change the widget's height, which the Lichess panel, the
-    alt-check chip and the heads-up all follow. Both swallow keydown/keypress/
-    keyup (MoveTrainer2 binds single-key shortcuts on `document` and does not
-    skip them for a focused control), close on an outside pointerdown in CAPTURE
-    phase by containment — never `stopPropagation`, the trainer underneath is
-    entitled to the event — and are dismissed rather than chased on resize.
+    alt-check chip and the heads-up all follow. Both swallow
+    keydown/keypress/keyup (MoveTrainer2 binds single-key shortcuts on
+    `document` and does not skip them for a focused control), close on an
+    outside pointerdown in CAPTURE phase BY CONTAINMENT — never
+    `stopPropagation`, the trainer underneath is entitled to the event — and are
+    dismissed rather than chased on resize.
 - Auto-play (section 13): records every move the user answers correctly during a
   trainer session and replays it when a later variation (or a transposition)
   reaches the same position, handing back at the first unproven move. Scope is
