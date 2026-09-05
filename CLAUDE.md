@@ -3688,11 +3688,35 @@ node --check engine/san.js
 python3 -c "import json; json.load(open('manifest.json'))"
 ```
 
+EVERY `dev/check-*.js` HERE WORKS THE SAME WAY, and the shape is the point: it
+EXECUTES the shipped function, sliced out of the source by
+`dev/slice-source.js`, so it cannot drift from what runs. To run a CONTROL,
+point `CLO_SRC` at a copy with the change reverted and confirm it FAILS —
+never that the check passes. **Each script's own header records what its
+controls were and what each one broke**; those records are measurements and
+they live there, not here. Two lessons from them belong with the method rather
+than with any one script: an early control of `check-continuation-lines.js`
+silently read the GOOD source and passed against a copy that still had the bug,
+and the first control run of `check-popup-placement.js` came back green because
+a NaN loses every comparison. A control that does not fail has proved nothing.
+
+`dev/probe-*.js` is the other half — those run against the LIVE APIs and are how
+a measurement is re-taken rather than re-quoted. Each names in its own header
+which § of which design doc rests on it.
+
 After ANY edit to CLAUDE.md, and after adding or removing a cross-module bridge:
 
 ```
 py dev/check-contracts.py
 ```
+
+It discovers every module-level bridge in `content/lichessable.js` (the
+`let x = null;` idiom, assigned a function or object by the owning section's
+init) and fails if one is not named in CLAUDE.md, or if CLAUDE.md still calls
+something a bridge that no longer exists. That is the one property a
+condensation must never lose: those names are how an edit in one section
+reaches into another, and they are exactly what a reader of the always-loaded
+file needs in order to know they should go and read a design doc.
 
 After touching section 25's proposal rule — `propose`, `snapToMove`, `plyBase`,
 `plyColor`, the baseline store, 25c's `poolByPosition` / `spreadByPosition`, or
@@ -3702,30 +3726,9 @@ After touching section 25's proposal rule — `propose`, `snapToMove`, `plyBase`
 node dev/check-key-moves.js
 ```
 
-Same discipline as the other checks: it EXECUTES the shipped `propose`, sliced
-out by `dev/slice-source.js`, over the five steps of the scenario 25b exists for
-(a range lowered to cover a difficult move, the move recovering, the range going
-back) plus the partial restore, the no-baseline invariant, the lead setting, the
-move-pair snap, and 25c's pooling. Both interesting cases are close to
-unreachable from a live session — one needs a range this extension lowered weeks
-ago, the other needs a move to have stopped being difficult since.
-It also executes 25d's index against a fake `getLesson` and fake feed rows,
-which is where the two-source rule and the cost rule live: a failed move is
-counted from the feed rather than from its RESET level (the case the combined
-predicate exists for), counts pool by position across cards, `unstudied`
-answers floor 1 with no call at all, and a lesson that will not align — or a
-variation past `lessonMax` — is UNKNOWN rather than "barely asked", so it can
-never lower a range on no evidence. Three more controls, each failing on
-exactly its own assertions: reverting `propose`'s arm (5), letting an untouched
-variation count as answered (3), and dropping the feed half of the count (2).
-
-THREE CONTROLS, each of which must fail on exactly its own assertion: 25b
-reverted (fails the two raise cases), `own.acc = acc` in place of the min (fails
-only the displayed-figure case), and the `acc >= threshold` guard weakened (fails
-only "a comfortable pool leaves an own record below the bar alone"). The second
-of those is why the first version of these checks was rewritten: it asserted the
-min was what made the spread additive, and passed against a source where it was
-not.
+Both interesting cases are close to unreachable from a live session — one needs
+a range this extension lowered weeks ago, the other needs a move to have stopped
+being difficult since.
 
 After touching section 26's ChessDB fold, its score bands or its colour ramp —
 `parseCdbAnswer`, `cdbEvalText`, `cdbTone`:
@@ -3734,28 +3737,12 @@ After touching section 26's ChessDB fold, its score bands or its colour ramp —
 node dev/check-chessdb.js
 ```
 
-Same discipline: it EXECUTES both, sliced out by `dev/slice-source.js`, against
-answers in the shape the live API returns. It also asserts the WORKER's action
-allow-list, read straight out of `background.js` — `queue` and `store` are this
-API's two writes and must stay unreachable, and a hidden automated tab cannot
-exercise the `querypv` path at all. Every failure mode here is SILENT —
-a missing band prints a mate as "+299.99" and a rook endgame as "+249.78", a
-lost perspective flip inverts every Black-to-move position into a tidy column of
-backwards numbers, and losing the `learn=0` half presents on-the-fly guesses as
-book evals. Controls run 2026-08-27 — perspective pinned to White, the mate band
-disabled, and a truthiness test in place of the `typeof score === 'number'`
-check — each failing on exactly its own assertions (4, 4 and 3), the last of
-those including "a score of 0 counts as book", which is the one a truthiness
-bug gets wrong in both directions at once.
-
-Since v0.129.0 it also covers the green<->red RAMP, which fails in the same
-silent way and for the same reason: `cdbEvalText` returns the tone alongside the
-text, so the check asserts the two AGREE across the whole score range and in
-both perspectives rather than case by case — a perspective bug in one band only
-is exactly what a hand-picked list of cases misses. Controls run 2026-08-27:
-`cdbTone(entry.score)` in place of `cdbTone(signed)` (the tone losing the
-perspective flip) fails on 8 assertions, six of them the range sweep; collapsing
-the mate/tablebase steps into the ordinary ramp fails on 6.
+Every failure mode here is SILENT: a missing band prints a mate as "+299.99" and
+a rook endgame as "+249.78", a lost perspective flip inverts every
+Black-to-move position into a tidy column of backwards numbers, and losing the
+`learn=0` half presents on-the-fly guesses as book evals. It also asserts the
+WORKER's action allow-list out of `background.js` — `queue` and `store` must
+stay unreachable — which a hidden automated tab cannot exercise at all.
 
 After touching `content/puzzles.js` — the position key, the shard hash, the
 theme vocabulary or the filters:
@@ -3771,232 +3758,99 @@ is also the correct answer for most positions, so a broken key derivation and
 an empty opening are the same observation from the outside. The EN-PASSANT
 normalisation is the one the dataset's own guide calls "the single most likely
 integration bug": miss it and every position after a double pawn push returns
-nothing. Controls run 2026-09-01, each failing on exactly its own assertions:
-ep normalisation removed so everything is stripped → 1; ep KEPT without the
-capture check, which is the guide's own bug → 2; `undefined`/`[]` collapsed in
-the theme filter → 1; `m[3]`/`m[4]` swapped in both ply filters → 3;
-`filterByColor` written so a missing colour fails → 2. BOTH ep controls are
-needed and neither alone is enough — "always strip" passes the 1.e4 case and
-fails only the capturable one, "never strip" does the reverse.
+nothing, and BOTH ep controls are needed — "always strip" passes the 1.e4 case
+and fails only the capturable one, "never strip" does the reverse.
 
-…and after touching section 29's own half — `stormAnchorAdd`,
-`stormFilterAnchors`, `stormPuzzleCand`/`Ready`/`Plies`/`UserPlies`/
-`Retain`/`Draw`/`Done`, `cardLineRef`, or the wire's
-`stormPuzzleCardName`/`WirePack`/`WireUnpack`/`WireMerge`. `dev/check-storm.js`
-§29, §29b and §29c execute all of them, and every failure there is silent in
-the same way: a puzzle that will not replay still looks like a puzzle in
-storage, a draw comparator that is wrong still returns every puzzle in a
-plausible order (§14.15, third home), an anchor band that has lost its floor
-still produces anchors — just generic ones — and a wire merge that
-double-counts keeps producing plausible, growing numbers. 18 controls, listed
-in that file's header. Two are worth repeating: the zero-tombstone assertion
-had to be asked NEAR THE EPOCH (at the far clock it passed for the wrong reason
-and covered nothing), and one control was a NO-OP until it was strengthened —
-a mutation that does not change behaviour proves nothing.
-
-After touching the LINE SPREAD (§30/§30a) — `takeStoreItem`, `takeQueued`,
-`takeQueuedPuzzle`, `queuedOrDealt`, `stormLineKey`, `cardLineKey`,
-`backfillStoreOids`, the wire's `o`, `st.dealtLines`, `st.spare` or
-`CONFIG.storm.queueSpread` — or §30b's WINDOW (`recentList`, `lineRecent`,
-`noteRecentLine`, `loadRecentLines`/`saveRecentLines` and
-`CONFIG.storm.recentLines`/`recentKey`), which is quiet in BOTH directions: a
-window that never matches leaves the feature switched off and looks exactly
-like a course with more lines than it has room for, while one applied as a HARD
-rule behaves correctly until the store is small and then deals the head anyway
-with the preferred order silently thrown away.
-`dev/check-storm.js` §30 executes all three (impure; `__setEnv` and `__setPz`).
-Every failure here is §14.15's shape: a spread that never fires still deals
-every position, in a plausible order, and looks exactly like the bug it was
-added to remove — six cards from one variation. Controls run 2026-09-03, each
-failing on exactly its own assertions and no others: `takeStoreItem` reduced to
-`q.shift()` → 2; its `dealtLines` seed dropped so only the queue is checked → 1;
-`takeQueued` reduced to `queue.shift() || spare.shift()` → 3; its `exhausted`
-clause dropped → 1; `takeQueuedPuzzle` reduced to `pz.queue.shift()` → 1. The
-v0.176.0 adds four groups and their own controls, run the same day:
-`takeQueued` reverted to a head-first shift of the QUEUE, 4; the oid dropped
-from the wire pack, 2; `backfillStoreOids`'s relabel of the already-drawn items
-removed, 2; `stormLineKey`'s name fallback removed, 3; `queuedOrDealt` reduced
-to the dealt set alone, 1. The producer's own loop is async and unreachable
-there, so what is pinned instead is the number it reads and the predicate it
-asks. Note the shape those controls forced on the assertions:
-they read the answer through `oidOf`/`ckOf`, because a reverted rule that
-returns `undefined` must FAIL an assertion rather than throw — a thrown control
-ends the run and proves nothing about the rest of it.
-
-After touching the DISGUISE (29.4) — `puzzlesInPlay`, `card.disguise` in
-`showCard`, or the `hush` arms of `syncStormUi` / `syncPuzzleUi`.
-`dev/check-storm.js` §29e executes the gate (impure; `__setPz` supplies `pz`).
-BOTH ways of being wrong are quiet: under-disguising leaks only on the cards
-that ARE tactics, which at 10% is one card in ten, and over-disguising silently
-costs every graded card the sentence that says where it is. Controls run
-2026-09-03, each failing on exactly its own assertion: reduced to
-`Boolean(pz.on)` → 1; the `seen` clause dropped → 1. The `hush` arms themselves
-are render code and are not asserted — `dev/harness.html` is where they are
-looked at, and a live session is the only place the two kinds can be seen side
-by side.
-
-After touching section 29.2's collect — `gatherPuzzleCandidates`,
-`gatherPuzzleBodies`, `takeCandidatesAt`, `stormPuzzleArchived`,
-`stormPuzzleArchiveDraw`, `refillReady`, `collectPuzzles`, `prunePuzzleStore`'s
-`byDepth`, or the worker's `handlePuzzleIndex`/`handlePuzzleBodies`/
-`handlePuzzleArchive` and `puzzlecache.js`:
-
-```
-node dev/check-storm.js            # §29d
-node dev/probe-puzzle-collect.js   # both stages, live, no Chessable session
-```
-
-`dev/check-storm.js` §29d executes the archive record and its draw. Both fail in
-§14.15's way — silently, with every puzzle still returned in a plausible order —
-and one of them fails in a second way that is worse: a record whose field names
-drift from the candidate's rebuilds every puzzle with no anchor line at all,
-which shows up only as §15's third stats map filling under one blank oid. Four
-controls run 2026-09-02, each failing on exactly its own assertions and no
-others: `stormPuzzleArchived` renaming the anchor depth `ap` → 2; the draw
-dropping its already-loaded exclusion → 3; dropping its retirement exclusion
-→ 3; the comparator reversed → 2.
-
-`dev/probe-puzzle-collect.js` runs BOTH stages against the live dataset from a
-LINE rather than a course, so it needs no Chessable session, and it replays every
-body it extracts — which is what `stormPuzzlePlies` asks before one is ever
-stored. It is how §12.1's per-fetch costs and §12.2's grouping saving are
-re-measured; both are the kind of number that is quoted for years after the thing
-it described has changed.
-
-`dev/probe-puzzles.js` is the measurement §3 rests on and the cheapest question
-to ask of a new course: it slices the shipped `stormAnchorAdd`, runs it against
-the live dataset, and reports how many anchors a band produces, what they cost
-in index shards and how many puzzles come back. `--bands` is the floor/ceiling
-sweep and needs no network at all.
-After touching section 27's producer — `stormFrontiers`, `stormDrawFrontier`,
-`stormUserEval`, `stormPgnMoves`, `stormPickReject`, `stormMoveLoss`,
-`stormMoverCp`, `stormGrade`, `stormPoints`, `stormCandidate`, `stormAdvance`,
-`stormWalkGame`, `stormRandomLine` or `stormCard` — or the verdict line it
-prints (`stormCp`, `stormVerdictLine`, `stormBestLine`), or the position store
-and its wire (`stormPack`, `stormUnpack`, `stormRetain`, `stormWirePack`,
-`stormWireUnpack`, `stormWireMerge`, and §22.6's `clearedAt` high-water mark,
-whose absence lets the next sync silently undo a clear) — or §20's LEAD-IN (`stormAdvance`'s
-`before`, `stormWalkGame`'s and `stormFrontiers`'s `lastFen`, the third element
-of `stormPack`/`stormUnpack`'s `a`, and `analysisGiven`), whose one failure mode
-is an analysis board opening a ply short with the wrong side to move — a board
-that looks entirely plausible and is about a position the user never saw — — or the GRADE ITSELF (§16: `stormWinPct`, `stormWpLoss`, `stormGrade`,
-`stormPoints`, `stormWp`, and `CONFIG.storm`'s `wpK`/`wpClampCp` and five
-bands), whose every failure mode is a verdict that still grades every move —
-or the PERFORMANCE RECORD (§15:
-`stormStatApply`, `stormStatPlus`, `stormStatSum`, `stormStatRoll`,
-`stormStatRate`, `stormStatLoss`, `stormStatsMerge`, `stormStatsPrune`,
-`stormStatsWirePack`, `stormStatsWireUnpack`, and §21's `s` counter and
-`statUnhurriedNote`), every one of whose failure modes is a plausible percentage
-— or ITS END-OF-SESSION PUSH (§15.7: `pushStatsAfterSession`, `syncStats`'s
-queue and its debt clearing, `st.statsPending`/`statsResync`, and `statNote`'s
-one write of the first), whose every failure mode is the behaviour that was
-there before it existed: the record simply leaves one session late, which from
-the outside is indistinguishable from it leaving on time — or THE STORE'S OWN
-(§14.25: `pushStoreAfterSession`, `noteStoreChanged`/`storeChanged`/
-`resetStoreDebt`, and `syncStore`'s early capture and its mid-flight course
-guard), where the same is true and one failure is worse than late — a payload
-written after the course moved puts B's positions on A's card, which
-`stormWireForeign` then refuses for ever — or the CHAPTER SCOPE's two filters (`stormFilterPool`,
-`stormFilterStore`, §14.21, whose pool filter written as a plain `.filter()`
-silently switches §14.18.4's walk stop off) — or the STORE'S DRAW ORDER
-(`stormStoreDraw`, §14.15: a
-reversed comparator returns every position in a plausible-looking sequence and
-is otherwise undetectable from the outside) — or the REACHABILITY term beside it
-(`stormReachBucket`, `stormReachLabel`, §14.19, whose UNKNOWN arm decides
-whether a store written by an older build is still reachable at all) — or the
-DEEPENED-FIRST term between them (§23.8, and `storeScored`, which is the only
-thing on screen that can tell a store the deepen pass has worked on from one it
-has not) — or the RETIREMENT rule
-(`stormDone`) and the random game pick (`stormPickGames`), §14.16, whose failing
-case needs a position answered WELL in one session and the same frontier drawn
-in the NEXT and so is close to unreachable from a live sitting — or the FUNNEL
-(`stormFunnelBlank`/`Bump`/`Why`/`Note`/`Lines`, and `harvestCandidates`'s own
-control flow, §14.17), whose invariant is that the four candidate outcomes
-account for every examined position — or the PAUSED filter in
-`stormFrontiers`
-(§14.14, whose whole failure mode is silence: a course with nothing paused
-answers identically either way) — or the STUB filter beside it (§14.18, whose
-failure mode is the same silence, plus two asymmetries an edit is likely to
-"tidy" away: a custom-FEN or paused line may be the CONTINUER though neither may
-be a SOURCE) — or the WALK's own re-entry stop (`stormReentered`, §14.18.4,
-whose failure mode is the same silence again and whose side-scoping guard, if
-"tidied" away, still stops walks and still looks plausible) — or the ENGINE
-TIER (§14.23: `stormEngineLoss`, `armEnginePhase`, `startEngineChild`,
-`finishEngineJob`, `endEngineJob`, `onStormEngineUpdate`, `keepEngineBest`,
-`keepEngineChild`, and the `CONFIG.storm` numbers `engineDepth`,
-`enginePhaseMs`, `engineDepthSlack`, `engineTimeoutMs`, `gradeTimeoutMs`),
-whose every failure mode is a tier that still runs and silently answers
-"No verdict" for ever — which is exactly what it did from v0.130.0 to v0.148.0,
-through a whole live verification pass, because a slow machine and an ignorant
-ChessDB print the same thing: a depth above engine.js's own `PROFILES` ceiling
-is CLAMPED rather than refused, each watchdog must outlast the one inside it,
-and an update short of the target depth must be KEPT rather than discarded or a
-budget that expires has nothing to answer with — or §19's SECOND SOURCE
-(`stormDecisions`, `stormUncoveredMoves`, `stormFilterSource`, `statMapOf`,
-`STAT_MAPS`, `stormSharePct`, `stormGapNote`, and `CONFIG.storm`'s
-`uncMinShare` / `uncMinGames` / `uncMaxPerPosition`), every rule of which
-fails by yielding a plausible session made of the wrong positions — the
-opponent-to-move guard turns the author's own choices into holes, a raw uci
-compare misses exactly the castling replies and succeeds everywhere else, a
-reversed comparator still returns every gap, and a missing store filter deals a
-frontier position into an uncovered session — or §25's COVERAGE KEY and the
-stored-position sweep (`stormCoverKey`, `dropCoveredStored`), whose failure is
-the quietest in this feature: a card whose position the repertoire covers looks
-exactly like a card whose position it does not, so putting `cacheKey` back
-silently restores the transposition hole and switching the sweep off silently
-restores the store dealing positions the user has already prepared:
+After touching section 27 or section 29 in almost any way:
 
 ```
 node dev/check-storm.js
 ```
 
-§28b's SAVED LIST adds a third group there — `stormLineKeys`,
-`stormNoteLineKeys` and the fourth card's `stormFenCardName` /
-`stormFenWirePack` / `stormFenWireUnpack` / `stormFenMerge`. Every one fails
-SILENTLY: an index that never fills leaves every row reading "reading the
-course…", which is also what a slow course looks like; a merge keyed on the FEN
-TEXT keeps two rows for one board for ever; and a merge without its tombstones
-undoes "forget this position" on the next exchange. Controls run 2026-09-05,
-each failing on exactly its own assertions and no others: the merge keyed on the
-text → 6; the tombstones ignored → 2; "a tombstone always wins" → 1; the
-multi-key index never filled → 5; `stormFilterPool` dropping it → 1; the wire
-pack forgetting the tombstones → 1; `out.fenKeys` not recorded → 3; the pool
-filter dropping that list → 1. And `stormLineKeys` losing the line-END
-clause now fails **10** where §28 recorded 5, because that rule feeds both paths.
-Note the shape those controls forced: the index is read through `sizeOf`/`setOf`
-accessors, since a switched-off one is `undefined` everywhere and a thrown
-control ends the run. The check's hand-built `C` also had to LEARN
-`fenPresetMax`/`fenWireVersion`/`fenGoneMax`/`fenCardName` — without them the
-version test compared `undefined` with `undefined` and PASSED, §27b's own
-vacuous shape.
+That file's header is the map of what it covers and why, section by section,
+and it is where every one of its ~60 control runs is recorded. Run it after
+touching any of:
 
-§28c adds four assertions to that same block, about the ORDER: the merge must
-keep the local arrangement, append an arrival rather than sorting it in, and let
-a device holding none of them inherit the other's whole. Silent when wrong — a
-re-sorted list holds the same positions under the same names, and only an
-exchange that CHANGED something writes back — so the fixture is built against
-the old rule, `older` really being older than `newer`. Control run 2026-09-05:
-the merge re-sorting by `at` → 2. Nothing there pins §28c's key stand-down; it
-is a `document` listener with no seam a check can execute, and both ways of
-being wrong look exactly like the field working until a particular key is
-pressed.
+* THE PRODUCER — `stormFrontiers`, `stormDrawFrontier`, `stormUserEval`,
+  `stormPgnMoves`, `stormPickReject`, `stormMoveLoss`, `stormMoverCp`,
+  `stormGrade`, `stormPoints`, `stormCandidate`, `stormAdvance`,
+  `stormWalkGame`, `stormRandomLine`, `stormCard`.
+* THE GRADE — §16's `stormWinPct` / `stormWpLoss` / `stormWp` and `CONFIG.storm`'s
+  `wpK` / `wpClampCp` and five bands; §14.23's engine tier (`stormEngineLoss`,
+  `armEnginePhase`, `startEngineChild`, `finishEngineJob`, `endEngineJob`,
+  `onStormEngineUpdate`, `keepEngineBest`, `keepEngineChild`, `engineDepth`,
+  `enginePhaseMs`, `engineDepthSlack`, `engineTimeoutMs`, `gradeTimeoutMs`);
+  §23's stored Stockfish list (`d` in the pack, the wire and the merge, and
+  `stormEstimated` / `stormSourceLabel` / `stormSourceTitle` / `stormBestLine`'s
+  handling of `sflist`); §23.7's depth rule (`deepenPickDepth`,
+  `deepestCompleteList`, `armDeepenStall`, `deepenDepth` / `deepenStallMs` /
+  `deepenMinMoves`); §26's walk scorer (`askScores`, `walkScorer`,
+  `askEngineScores`, `stormCandidate`'s `listDepth`, `walkDepth` /
+  `walkMultipv` / `walkSource` / `gatherWalkSource` / `inventedWalkSource` /
+  `walkEngineMax`).
+* THE STORE AND ITS WIRE — `stormPack`, `stormUnpack`, `stormRetain`,
+  `stormWirePack`, `stormWireUnpack`, `stormWireMerge`, §22.6's `clearedAt`
+  high-water mark, §20's lead-in (`stormAdvance`'s `before`, `stormWalkGame`'s
+  and `stormFrontiers`'s `lastFen`, the third element of `a`, `analysisGiven`),
+  §14.15's `stormStoreDraw`, §14.19's `stormReachBucket` / `stormReachLabel`,
+  §23.8's `storeScored`, §14.16's `stormDone` and `stormPickGames`, §14.17's
+  `stormFunnelBlank` / `Bump` / `Why` / `Note` / `Lines` and
+  `harvestCandidates`'s own control flow, §14.25's `pushStoreAfterSession` /
+  `noteStoreChanged` / `storeChanged` / `resetStoreDebt` and `syncStore`'s early
+  capture and mid-flight course guard, §27b's `stormCardName` and
+  `stormWireForeign`.
+* THE FILTERS — §14.14's paused filter, §14.18's stub filter, §14.18.4's
+  `stormReentered`, §14.21 + §28's `stormFilterPool` / `stormFilterStore` /
+  `stormFenKey` / `stormLineThrough` / `stormLineKeys` / `stormNoteLineKeys` and
+  `stormScope`'s own resolve, §25's `stormCoverKey` and `dropCoveredStored`,
+  §19's `stormDecisions` / `stormUncoveredMoves` / `stormFilterSource` /
+  `statMapOf` / `STAT_MAPS` / `stormSharePct` / `stormGapNote` and
+  `uncMinShare` / `uncMinGames` / `uncMaxPerPosition`.
+* THE RECORD — §15's `stormStatApply` / `Plus` / `Sum` / `Roll` / `Rate` /
+  `Loss` / `stormStatsMerge` / `stormStatsPrune` / `stormStatsWirePack` /
+  `WireUnpack`, §21's `s` counter and `statUnhurriedNote`, §15.7's
+  `pushStatsAfterSession` and `syncStats`'s queue and debt clearing.
+* THE REST — the verdict line (`stormCp`, `stormVerdictLine`, `stormBestLine`,
+  and §14.10c's `v.unanswered` arm); §17's `stormSetClean` / `stormSetHeld` /
+  `stormSetOutcome` / `stormSetTally` and `setCleanOn` / `setRetryMax` /
+  `setSize`; §18's `verdictFastMs` / `verdictMs` / `backfillMaxCdb` /
+  `backfillStore` / `backfillGapMs`; §28b's fourth card (`stormFenCardName` /
+  `stormFenWirePack` / `stormFenWireUnpack` / `stormFenMerge`); §30/§30a/§30b's
+  `takeStoreItem` / `takeQueued` / `takeQueuedPuzzle` / `queuedOrDealt` /
+  `stormLineKey` / `cardLineKey` / `backfillStoreOids` / `recentList` /
+  `lineRecent` / `noteRecentLine` / `loadRecentLines` / `saveRecentLines` and
+  `queueSpread` / `recentLines` / `recentKey`; 29.4's disguise (`puzzlesInPlay`,
+  `card.disguise`, the `hush` arms); and section 29's own half
+  (`stormAnchorAdd`, `stormFilterAnchors`, `stormPuzzleCand` / `Ready` /
+  `Plies` / `UserPlies` / `Retain` / `Draw` / `Done` / `Archived` /
+  `ArchiveDraw`, `cardLineRef`, `refillReady`, `takeCandidatesAt`,
+  `gatherPuzzleCandidates`, `gatherPuzzleBodies`, `collectPuzzles`,
+  `prunePuzzleStore`'s `byDepth`, and the wire's `stormPuzzleCardName` /
+  `WirePack` / `WireUnpack` / `WireMerge`).
 
-§28's SCOPE adds two pure rules to that file (§28): `stormFenKey` and
-`stormLineThrough`. Both fail SILENTLY and in the same direction — a key that
-never matches is a scope that finds no line, which looks exactly like a
-position the course does not reach. The castling normalisation is the one to
-watch: without it a FEN pasted with the rights in another order matches nothing
-while the same FEN in the usual order matches everything. Controls run
-2026-09-01, each failing on exactly its own assertions and no others: the
-castling normalisation removed → 1; `stormLineThrough`'s line-END clause
-removed → 5; `stormFenKey` keying on `cacheKey` → 15. `stormScope`'s own
-resolve is executed there too (impure, through `__setEnv`, like the funnel):
-the latch replaced by "`st.oidFilter` is still null" → 2, a union in place of
-the intersection → 2, plus the store round trip end to end (§28.4a). Note what
-the FIRST version of the composition assertions missed — a chapter set of `{1}` and a position every line in it goes through is
-satisfied by the FEN scope silently not applying at all, so the set must hold a
-line the position EXCLUDES and the latch must be asserted over a set that was
-already non-null.
+Four things about that file an edit elsewhere can break:
+
+* §0 ASSERTS THE INDENTATION of the verdict-line helpers, which no assertion
+  below it could: slicing flattens every scope into one, so nothing else there
+  can tell a helper section 18 can reach from one it cannot — and both sections
+  print that line.
+* IT EXECUTES TWO IMPURE FUNCTIONS (`harvestCandidates` and `storeAdd`, with
+  `st`/`C` injected through `__setEnv`; `__setPz` supplies `pz`), because
+  §14.17's conservation invariant lives in that function's control flow and
+  nowhere else.
+* `stormPgnMoves` READS ITS COMMENT PATTERN OUT OF `PGN_COMMENT_RE` rather than
+  a regex literal, and must keep doing so: `dev/slice-source.js` matches braces
+  and counts the ones inside a regex literal, so `/\{[^}]*\}/` truncates that
+  slice three lines in — silently, since a half-function is still something
+  `new Function` will accept.
+* THE CHECK'S HAND-BUILT `C` MUST LEARN EVERY STRING SETTING IT ASSERTS ON.
+  It is built from NUMERIC config fields, so a string reads `undefined` and a
+  version test compares `undefined` with `undefined` and PASSES — §27b's own
+  vacuous shape, caught once already. Anything asserted needs `str()` and an
+  assertion an absent value cannot satisfy.
+* A CHECK THAT EXECUTES A RULE PROVES THE RULE, NOT THE PATH. §30's puzzle third
+  passed for three versions over a function nothing called; two source-text
+  assertions now cover the call.
 
 §27's ROUND adds nothing to that file, deliberately: it is orchestration —
 `gatherRound` / `runRound` / `cycleSwitch` / `cycleGoHome` / `filling` — and it
@@ -4012,198 +3866,33 @@ Every survivor must be inside the gather pass itself, its own note/label, or
 `filling`. One left behind elsewhere is a card put on a board during a pass
 nobody is watching — and it would look exactly like the round working.
 
-§27b's two pure pieces ARE in that file, §18: `stormCardName` (two courses must
-never share a name) and `stormWireForeign` (a foreign card is refused, one that
-does not SAY is not). Both fail silently — the defect they close ran from
-v0.130.0 to v0.166.0 looking like a feature. Note what the first version of
-those assertions caught about the CHECK itself: `C` there is hand-built from
-NUMERIC config fields, so a string setting reads `undefined` and
-`stormCardName` returned "undefined · 453453 · do not delete", which contains
-the bid and differs per course and therefore PASSED. Any string setting added to
-`CONFIG.storm` and asserted there needs `str()`, and an assertion an absent
-value cannot satisfy.
+After touching section 29.2's collect — `gatherPuzzleCandidates`,
+`gatherPuzzleBodies`, `takeCandidatesAt`, `stormPuzzleArchived`,
+`stormPuzzleArchiveDraw`, `refillReady`, `collectPuzzles`, `prunePuzzleStore`'s
+`byDepth`, or the worker's `handlePuzzleIndex`/`handlePuzzleBodies`/
+`handlePuzzleArchive` and `puzzlecache.js`:
 
-…and after touching §26's WALK SCORER — `askScores`, `walkScorer`,
-`askEngineScores`, `harvestFrontier`'s explorer-first branch, `stormCandidate`'s
-`listDepth`, or `CONFIG.storm`'s `walkDepth` / `walkMultipv` / `walkSource` /
-`gatherWalkSource` / `inventedWalkSource` / `walkEngineMax`. Three failure modes,
-all silent. A `walkMultipv` below `minScored` fails EVERY candidate on "too few
-moves scored to rank an answer" while every walk still runs and every request is
-still spent — the storm simply finds nothing, on a course that looks like one
-ChessDB does not know. A `walkDepth` at or above `deepenDepth` files a walk's
-shallow list under §23.7's standard, where `undeepened` will never revisit it. And
-a `listDepth` that does not reach `stormPack` stores an engine list with no `d`,
-which grades as ChessDB's — the source §23.1 measured as biased — while
-`stormBestLine` calls it a search. Controls run 2026-08-31, each failing on
-exactly its own assertions and no others: `listDepth` never recorded → 3;
-`walkMultipv` narrowed to 4 → 2; `walkDepth` raised to 20 → 1.
+```
+node dev/check-storm.js            # §29d
+node dev/probe-puzzle-collect.js   # both stages, live, no Chessable session
+```
 
-`dev/probe-nogames-cdb.js` is the measurement §26 rests on and the cheapest way
-to re-ask it of a new course: it slices the shipped `stormFrontiers` and
-`stormRandomLine`, runs them against the live APIs, and reports how far a walk
-gets past a frontier with games against one without. It forces the random line
-length to `maxPly` on purpose — a walk that ran out of its own dice roll is
-otherwise indistinguishable from one that ran out of ChessDB.
+`dev/probe-puzzle-collect.js` runs BOTH stages against the live dataset from a
+LINE rather than a course, so it needs no Chessable session, and it replays
+every body it extracts — which is what `stormPuzzlePlies` asks before one is
+ever stored. It is how §12.1's per-fetch costs and §12.2's grouping saving are
+re-measured; both are the kind of number that is quoted for years after the
+thing it described has changed.
 
-…and after touching §23's STORED STOCKFISH LIST — `stormPack`/`stormUnpack`'s
-`d`, the wire's `d`, `stormWireMerge`'s deeper-list rule, or `stormEstimated` /
-`stormSourceLabel` / `stormSourceTitle` / `stormBestLine`'s handling of the
-`sflist` source. EVERY FAILURE HERE IS SILENT, and in the same way: a list is a
-list whichever source filled it, so `stormMoveLoss` still reads it, every
-verdict still prints and every number still looks like a number. `d` alone tells
-them apart — so a `d` dropped from the pack, the wire or the merge breaks
-nothing visible, it quietly puts the grade back on the source §23.1 measured as
-biased while labelling it a search. Controls run 2026-08-30, each failing on
-exactly its own assertions and no others: `d` dropped from the wire pack → 2;
-`stormEstimated` reverted to `v.source !== 'engine'` → 1; the merge's
-deeper-list rule disabled → 2.
-
-…and after touching §23.7's DEPTH RULE — `deepenPickDepth`,
-`deepestCompleteList`, `armDeepenStall`, the completion trigger in
-`onStormEngineUpdate`, or `CONFIG.storm`'s `deepenDepth` / `deepenStallMs` /
-`deepenMinMoves`. A stored list is a STANDARD, and every failure here writes one
-that is indistinguishable from a right one: `d` is the only thing that tells two
-lists apart and it is written from the same number that chose the iteration, so
-a rule picking an iteration IN FLIGHT files a partial list under a depth most of
-its moves never reached. The check executes the rule against the per-depth table
-a real search builds — in flight, complete, cut short, narrow-but-finished, a
-position with few legal moves — and asserts the config's own shape, which is
-where "one standard for every device" actually lives. Controls run 2026-08-31,
-each failing on exactly its own assertions and no others: the pre-v0.159.0 rule
-(take the deepest complete iteration, whatever it is) → 7; the width test
-dropped, so an iteration in flight counts as complete → 5; `deepenDepth`
-restored as a per-profile map → the config read throws by name.
-
-…and after touching §17's SET rules — `stormSetClean`, `stormSetHeld`,
-`stormSetOutcome`, `stormSetTally`, or `CONFIG.storm`'s `setCleanOn` /
-`setRetryMax` / `setSize`. All four fail SILENTLY: a hold rule that never fires
-leaves a mode behaving exactly like a storm with no clock (every card still
-appears, every verdict still prints, and the one thing the mode exists for simply
-never happens), `unknown` held traps the user on a position with no answer to
-reveal, and an outcome mis-filed still produces a plausible tally — "8 of 12
-first time" reads the same whether or not the retries were counted as first
-attempts. Controls run 2026-08-29, each failing on exactly its own assertions and
-no others: `stormSetHeld` written as `!stormSetClean` → 2; `stormSetOutcome`
-ignoring `revealed` → 2; the second pass folded into the first-time count → 2.
-
-…and after touching the VERDICT PAUSE or the BACKGROUND TOP-UP (§18, v0.151.0)
-— `CONFIG.storm`'s `verdictFastMs` / `verdictMs`, or `backfillMaxCdb` /
-`backfillStore` / `backfillGapMs`. §12 of that file asserts what an eye cannot:
-a `verdictFastMs` ABOVE `verdictMs` makes the "quick" path the slow one while
-every card still advances, one near zero shows a verdict nobody can read, and a
-`backfillStore` at or below `queueTarget` leaves a background pass that can never
-run — the session's own producer keeps the queue there — so the feature would
-simply, quietly, never happen. Controls run 2026-08-30, each failing on exactly
-one assertion: `verdictFastMs` at 3200 → 1; `backfillStore` at 3 → 1.
-
-…and after touching the verdict line it prints — `stormCp`, `stormVerdictLine`,
-`stormBestLine`, or §14.20's `stormEstimated` / `stormSourceLabel` /
-`stormSourceTitle`. Since v0.138.0 that includes the `v.unanswered` arm
-(§14.10c), whose failure mode is the quietest one there: with the arm gone the
-card the storm ended on falls through to the ordinary branch and reads "your
-move", a sentence claiming an answer nobody gave. Control run 2026-08-28 — arm
-removed — fails on exactly the two assertions that cover it and on no others.
-Since v0.139.0 it also covers the miss PENALTY and the signed rendering.
-Controls run 2026-08-28: the penalty multiplied by the streak fails on exactly
-2 (both long-streak cases, and NOT the plain one — which is the point of having
-all three); the penalty removed altogether fails on 3; the unconditional '+'
-restored fails on exactly 1.
-
-Same discipline: it EXECUTES them, sliced out by `dev/slice-source.js`, with no
-network — the walk takes its ChessDB lookup as a PARAMETER, which is also the
-only way to reach the stop rules deterministically. Four things here fail
-SILENTLY and every one still produces a tidy column of plausible numbers:
-
-* TWO PERSPECTIVE FLIPS, IN OPPOSITE DIRECTIONS. `stormUserEval` reads a
-  ChessDB score (the MOVER's) from the user's side — the bug the probe's own
-  `--frontiers` block shipped with (DESIGN-intuition-storm.md §6.5) — and
-  `stormMoverCp` reads a Stockfish score (WHITE's, normalised in engine.js) the
-  same way. Neither throws when it is backwards.
-* THE CHILD-NEGATION FALLBACK (`stormMoveLoss`): a subtraction where §3.4 wants
-  an addition, wrong by twice the child's eval.
-* THE STOP AND PICK RULES, where a rule that never fires yields MORE positions
-  and so looks like the feature working better.
-* THE GRADE'S OWN (v0.141.0, §3 of that file). `wpK` is Lichess's fit and not a
-  dial: a different constant re-scales every band at once while every verdict
-  stays plausible, so it is pinned by its CONSEQUENCES — the curve's fixed
-  points, and that the two scoring bands still land on the old 30cp/70cp at
-  equality. Losing the clamp runs the arithmetic on a mate's ~30000. Writing the
-  bands with `<=` puts each threshold in the band above it. And the penalty
-  multiplied by the streak is v0.139.0's bug in a new shape, now guarded by the
-  SIGN rather than by a list of names. Controls run 2026-08-28, each failing on
-  exactly its own assertions: `wpK` at 0.002 → 5; the clamp removed → 2; the
-  penalty multiplied → 3; the bands written `<=` → 2.
-* THE PERFORMANCE RECORD'S THREE (v0.140.0, §9 of that file), plus a FOURTH
-  since v0.141.0: `found` is the two bands that SCORE, and folding `ok` into it
-  turns "how often did I find the move" into "how often was it survivable".
-  Controls run 2026-08-28: `ok` folded into the numerator → 2; the loss summed
-  in centipawns again → 3. A denominator
-  that counts `unknown` marks the user down for ChessDB's ignorance; a merge
-  that SUMS two devices' counters sums them again on every later exchange, while
-  the numbers stay plausible and keep growing; and a chapter's average loss
-  taken over its LINES rather than its ANSWERS weights a line answered once like
-  one answered forty times. Controls run 2026-08-28, each failing on exactly its
-  own assertions and no others: the denominator widened to include `unknown`
-  → 2; the merge summing instead of taking the higher `n` → 5; a missing loss
-  read as 0 → 3; the roll-up averaging its lines' averages → 1. The merge one is
-  worth noting for its shape — it does NOT fail "the other device is added", the
-  assertion that looks like the merge test; it fails "a SECOND exchange adds
-  nothing", which is the only one a double-count can be seen in.
-* THE MISS PENALTY BEING MULTIPLIED (v0.139.0). `stormPoints` charges
-  `missPoints` (−2) FLAT and must keep doing so: the streak multiplier is a
-  reward for a run, and charging it against the answer that ENDS the run makes
-  one lapse after twelve right answers cost four times what the same lapse
-  costs after none. The score still moves in the right direction, just by the
-  wrong amount, and only on the answers hardest to reproduce on purpose — so
-  the assertion that catches it is the LONG-STREAK one, never the plain
-  `stormPoints('miss', 0, C)`, which a multiplied penalty passes (multiplier 1).
-  `unknown` and `unanswered` stay at 0: neither is the user's doing.
-  `stormVerdictLine` prints the figure SIGNED for the same change — an
-  unconditional '+' renders the penalty as "+-2", which survives every numeric
-  assertion about the points themselves.
-
-Controls run 2026-08-28 — the two flips unflipped, the fallback subtracted, the
-flat-position rule removed, `stormBestLine`'s same-move guard defeated, the
-invented line's move band widened to every legal move, the ply floor ignored,
-the store keeping only its top five moves, its invented mark lost, its
-`typeof score` check weakened, the retention rule inverted, the wire's
-tombstones removed, its failure-count merge dropped, an unresolvable move given
-a blank SAN, and the payload budget ignored — failing on 5, 4, 3, 3, 3, 1, 1, 3,
-1, 1, 3, 1, 1, 3 and 1 assertions respectively and on no others. Since v0.136.0,
-dropping the PAUSED filter fails on 8 (control run 2026-08-28) — the fixture's
-two paused lines are ordinary in every other respect, same colour and same
-length as the surviving one, so only the flag can be what excludes them, and one
-of them converges on the SURVIVING frontier, which is what catches a filter that
-drops the line but still lets it add its name and its draw weight. Since
-v0.137.0, restoring v0.130.0's hardest-first draw order fails on exactly the 5
-assertions that cover it (control run 2026-08-28). That last
-one is a bug a live session found: playing the TOP move printed it twice ("best
-Nxf3+ -0.89   Nxf3+ -0.89"), which reads as a defect rather than as agreement.
-Since v0.142.0 it also covers §14.16. Controls run 2026-08-28, each failing on
-exactly its own assertions and no others: `stormDone` returning false always
-(the guard removed) → 2; `stormDone` ignoring the horizon, i.e. a deletion
-rather than a retirement → 1; `stormPickGames` returning the first `n` again
-→ 1. That last assertion is written as a CONCRETE sequence rather than as "not
-the first two", so a pick that ignored `rnd` entirely cannot pass it by
-returning something else.
-Since v0.143.0 it also covers §14.17, and that section is the one place this
-file executes IMPURE code — `harvestCandidates` and `storeAdd`, with `st` and
-`C` injected through `__setEnv` — because the conservation invariant lives in
-that function's control flow. Controls run 2026-08-28, each failing on exactly
-its own assertions: a fifth `continue` counted nowhere → 3 (one of them the sum
-itself); the retired arm folded into the reject count → 4; the note losing its
-"where the positions went" half → 1.
-
-§0 of that file asserts something no assertion below it could: that the three
-verdict-line helpers are declared at TOP LEVEL. Slicing flattens every scope
-into one, so nothing else there can tell a helper section 18 can reach from one
-it cannot — and both sections print that line.
-
-Note that `stormPgnMoves` reads its comment pattern out of `PGN_COMMENT_RE`
-rather than a regex literal, and must keep doing so: `dev/slice-source.js`
-matches braces and counts the ones inside a regex literal, so `/\{[^}]*\}/`
-truncates that slice three lines in — silently, since a half-function is still
-something `new Function` will accept.
+`dev/probe-puzzles.js` is the measurement §3 rests on and the cheapest question
+to ask of a new course: it slices the shipped `stormAnchorAdd`, runs it against
+the live dataset, and reports how many anchors a band produces, what they cost
+in index shards and how many puzzles come back. `--bands` is the floor/ceiling
+sweep and needs no network at all. `dev/probe-nogames-cdb.js` is the same for
+§26 — how far a walk gets past a frontier with games against one without — and
+it forces the random line length to `maxPly` on purpose, since a walk that ran
+out of its own dice roll is otherwise indistinguishable from one that ran out of
+ChessDB.
 
 After touching `sanToUci` — or `sanToUciRelaxed`, the second pass beside it:
 
@@ -4231,49 +3920,15 @@ After touching section 24's walk, fold or columns — `buildCourseTree`,
 node dev/check-course-tree.js
 ```
 
-Same discipline: it EXECUTES them, sliced out by `dev/slice-source.js`, over a
-live `getList` dump of the account's courses. The dump (`dev/tmp-courses.json`)
-is GITIGNORED — course content is not ours to redistribute — and the recipe for
-remaking it in one console call is in the header of `dev/probe-course-tree.js`;
-without it the check exits 2 and says so. It has to be a real course: the fold's
-eighty-ply run and the position graph's back-edge both occur only on the bought
-one. Run a control (`CLO_SRC` at a copy with the change reverted) and confirm it
-FAILS — removing the fold's line-end stop and the cycle guard is caught by
-exactly the three assertions that cover them, and reverting `columnsFor`'s
-mid-run arm (24e) by exactly the five that cover the standing column. Those five
-are written to REPORT rather than throw when there is no third column, since
-that is precisely the control's shape.
-
-It also covers 24f against a hand-built cache entry, which is the only way to
-reach the three things there that fail SILENTLY — a missing win rate looks
-exactly like a position with no data: that BLACK is derived from the move's own
-total rather than stored (a control returning the draws instead fails on exactly
-the four assertions that cover it), that a gap row carries the split of the move
-it names, and that an entry written before the split still answers SHARES and
-simply draws no bar.
-
-It also covers 24h, whose one real judgement — whose move it is — is wrong
-INVISIBLY if taken from `positionSide`: the assertions name the two splits that
-reading hides on course 291847 AND that `positionSide` answers null at the root,
-so a control reverting to it fails on exactly four assertions and still passes
-every 453453 case, which is the whole point. Plus that every card named is a line
-written for the side to move, and that each card's `userPly` really does index
-its own move — the join onto `getLesson`, and the other thing here that would be
-wrong with full confidence. The alternatives verdict is covered against a
-SYNTHETIC `ct.alts` (a course where the user has registered one is not
-reproducible): an over-disambiguated spelling still resolves, an unresolvable one
-is dropped rather than guessed at, and a lesson that will not align claims
-nothing. Controls run 2026-08-26 — `positionSide`, a raw SAN compare, and the
-alignment check removed — each failing on exactly its own assertions.
-
-It also covers 24b and 24c against a FAKE explorer answer, which is the only way
-to reach the three things there that can be wrong invisibly: that `positionSide`
-answers null on a mixed course rather than taking `courseSide`'s majority (a
-control that falls back to it fails on exactly that one assertion), that the
-explorer's SAN is resolved through CloSan rather than compared — castling is the
-case, and a raw-compare control fails four assertions — and that a move under
-`gapMinShare` is not called a gap. Plus that every indexed line rebuilds into a
-contiguous path, which is what the find field stands on.
+It runs over a live `getList` dump of the account's courses
+(`dev/tmp-courses.json`, GITIGNORED — course content is not ours to
+redistribute; the recipe for remaking it in one console call is in the header of
+`dev/probe-course-tree.js`, and without it the check exits 2 and says so). It
+has to be a real course: the fold's eighty-ply run and the position graph's
+back-edge both occur only on the bought one. 24b, 24f and 24h are covered
+against a FAKE explorer answer, a hand-built cache entry and a SYNTHETIC
+`ct.alts` respectively — each being the only way to reach a judgement that is
+otherwise wrong INVISIBLY.
 
 After touching section 18's line reading — `walkLine`, `branchLines`,
 `quizzableLines`, `dropAmbiguous`, `mergeUserAlternatives`, or `tryMove`'s
@@ -4283,15 +3938,10 @@ alternative arm:
 node dev/check-continuation-lines.js
 ```
 
-It EXECUTES those functions, sliced out of `content/lichessable.js` by brace
-matching (`dev/slice-source.js`) and run against the real `engine/san.js` — so
-it cannot drift from the source, and a rename breaks the slice loudly. This
-exists because that arm has shipped broken twice on a class `node --check`
+This exists because that arm has shipped broken twice on a class `node --check`
 cannot see: v0.67.0's `applyMove(played)` with no resolved `mv` threw on EVERY
 alternative for six weeks, and v0.100.0's stranded `isNext` did the same in
-section 23. To run a control, point `CLO_SRC` at a copy with the change
-reverted and confirm it FAILS — an early version of that control silently read
-the good source and passed against a copy that still had the bug.
+section 23. AN EXTRACTION IN THIS FILE IS NOT SHIPPABLE ON STATIC CHECKS ALONE.
 
 After touching the popup placement helpers — `visualViewportBox`,
 `placeFixedPopup` — or the quick-edit popup's own `placePopup`:
@@ -4300,14 +3950,10 @@ After touching the popup placement helpers — `visualViewportBox`,
 node dev/check-popup-placement.js
 ```
 
-Same discipline again: it EXECUTES both helpers, sliced out by
-`dev/slice-source.js`, against the viewport shapes a phone presents and a
-desktop cannot be put into — a "Desktop site" layout viewport thousands of CSS
-pixels tall, an on-screen keyboard, a pinch-zoom offset. Every case passes on a
+It executes both against the viewport shapes a phone presents and a desktop
+cannot be put into — a "Desktop site" layout viewport thousands of CSS pixels
+tall, an on-screen keyboard, a pinch-zoom offset. Every case passes on a
 full-size window with the pre-fix arithmetic, which is why the check exists.
-Run a control (`CLO_SRC` at a copy with the change reverted) and confirm it
-FAILS — the first control run of this very file came back green because a NaN
-loses every comparison, which is now asserted against.
 
 After touching section 16b's store — `load`, `save`, `migrateLegacyStore`,
 `indexItems`, `itemKey` or the caps:
@@ -4316,12 +3962,10 @@ After touching section 16b's store — `load`, `save`, `migrateLegacyStore`,
 node dev/check-pin-store.js
 ```
 
-Same discipline as the check above: it EXECUTES the real `initPinnedMistakes`,
-sliced out by `dev/slice-source.js`, against a fake `chrome.storage` with TWO
-devices sharing one sync area — migration off the pre-v0.105.0 blob, the write
-diff, deletion-by-absent-key, the global cap, retirement, and that a device
-still hears about the other one after saving itself. Run a control (`CLO_SRC`
-pointed at a copy with the change reverted) and confirm it FAILS.
+It executes the real `initPinnedMistakes` against a fake `chrome.storage` with
+TWO devices sharing one sync area — migration off the pre-v0.105.0 blob, the
+write diff, deletion-by-absent-key, the global cap, retirement, and that a
+device still hears about the other one after saving itself.
 
 After touching section 23's auto-play walk — `computePrefix`, `cardIsProven`, or
 `sg.firstCard` where `anchor` sets it:
@@ -4330,15 +3974,13 @@ After touching section 23's auto-play walk — `computePrefix`, `cardIsProven`, 
 node dev/check-prefix-walk.js
 ```
 
-Same discipline again, and it pins a property rather than a bug. Under Study:
-Key Moves the trainer plays every user ply before the first key move itself —
-but Chessable ALSO clears `isUserMove` on those plies, so the walk never sees
-them and its first considered ply is the first card in BOTH study modes. That is
-what this file asserts, in the plan shape Chessable actually serves; the
-v0.112.0 change it was written for turned out to be a no-op
-(DESIGN-show-and-grade.md §4.6). What DOES change an answer is `cardIsProven`'s
-`cardIdx < firstCard` guard, and a control run against the pre-v0.112.0 source
-fails on exactly those two cases and passes every walk case.
+It pins a property rather than a bug. Under Study: Key Moves the trainer plays
+every user ply before the first key move itself — but Chessable ALSO clears
+`isUserMove` on those plies, so the walk never sees them and its first
+considered ply is the first card in BOTH study modes. That is what this file
+asserts, in the plan shape Chessable actually serves; the v0.112.0 change it was
+written for turned out to be a no-op (DESIGN-show-and-grade.md §4.6). What DOES
+change an answer is `cardIsProven`'s `cardIdx < firstCard` guard.
 
 After touching section 23c's shared-run-up rule — `maybeStartLead`,
 `leadCommonPlies`, `noteLeadShown`, `leadGoto`:
@@ -4347,21 +3989,8 @@ After touching section 23c's shared-run-up rule — `maybeStartLead`,
 node dev/check-lead-runup.js
 ```
 
-Same discipline: it EXECUTES them, sliced out by `dev/slice-source.js`, over a
-seven-variation chapter — the replay opening at the first ply that differs from
-the one just watched, a shallower branch point sending it back to the start
-ONCE, a skipped run-up leaving the branch point alone, and a replay cut short
-counting only what was shown. Every interesting case is the third or fourth
-variation in a sequence, which is why a live session is a poor way to check it.
-Run a control (`CLO_SRC` at a copy with the rule reverted) and confirm it FAILS.
-
-It discovers every module-level bridge in `content/lichessable.js` (the
-`let x = null;` idiom, assigned a function or object by the owning section's
-init) and fails if one is not named in CLAUDE.md, or if CLAUDE.md still calls
-something a bridge that no longer exists. That is the one property a
-condensation must never lose: those names are how an edit in one section
-reaches into another, and they are exactly what a reader of the always-loaded
-file needs in order to know they should go and read a design doc.
+Every interesting case is the third or fourth variation in a sequence, which is
+why a live session is a poor way to check it.
 
 `engine/san.js` is pure and requireable from node — spot-check SAN output
 (castling, disambiguation, promotion, en passant, mate `#`) directly when

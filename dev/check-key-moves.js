@@ -22,8 +22,27 @@
  * can never be recorded there at all. Pooling is what finds those, and the
  * property that matters is that pooling can only ever ADD.
  *
+ * It also covers 25d's proven index, against a fake `getLesson` and fake feed
+ * rows — which is where the two-source rule and the cost rule live: a failed
+ * move is counted from the FEED rather than from its RESET level (the case the
+ * combined predicate exists for), counts pool by position across cards,
+ * `unstudied` answers floor 1 with no call at all, and a lesson that will not
+ * align — or a variation past `lessonMax` — is UNKNOWN rather than "barely
+ * asked", so it can never lower a range on no evidence.
+ *
  * Run a control (CLO_SRC at a copy with the change reverted) and confirm it
- * FAILS: the pre-25b source proposes nothing at step 4.
+ * FAILS: the pre-25b source proposes nothing at step 4. Controls run, each
+ * failing on exactly its own assertions and no others:
+ *   * 25b reverted                                    → the two raise cases
+ *   * `own.acc = acc` in place of the min             → only the displayed-
+ *     figure case. This one is why the first version of these checks was
+ *     REWRITTEN: it asserted that the min was what made the spread additive,
+ *     and passed against a source where it was not.
+ *   * the `acc >= threshold` guard weakened           → only "a comfortable
+ *     pool leaves an own record below the bar alone"
+ *   * reverting `propose`'s arm                       → 5 fail
+ *   * an untouched variation counted as answered      → 3 fail
+ *   * the FEED half of the count dropped              → 2 fail
  *
  *   node dev/check-key-moves.js
  */

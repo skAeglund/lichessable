@@ -10,8 +10,28 @@
  * course, and two of them (§12.2's eighty-ply run, §12.5's back-edge) only
  * occur on the bought course.
  *
+ * The dump is GITIGNORED — course content is not ours to redistribute — and the
+ * recipe for remaking it in one console call is in the header of
+ * `dev/probe-course-tree.js`; without it this exits 2 and says so.
+ *
  * Run a control by pointing CLO_SRC at a copy with the change reverted and
- * confirming it FAILS.
+ * confirming it FAILS. Controls, each failing on exactly its own assertions and
+ * no others:
+ *   * the fold's line-end stop and the cycle guard removed → the three
+ *     assertions that cover them
+ *   * `columnsFor`'s mid-run arm (24e) reverted            → the five that
+ *     cover the standing column. Those five are written to REPORT rather than
+ *     throw when there is no third column, since that is precisely the shape a
+ *     control of this arm has.
+ *   * 24f's Black returned as the stored DRAWS rather than derived from the
+ *     move's own total                                     → 4 fail
+ *   * 24h's whose-move-it-is taken from `positionSide`      → 4 fail, and it
+ *     still passes every 453453 case, which is the whole point (run 2026-08-26)
+ *   * 24b's explorer SAN compared raw instead of resolved through CloSan
+ *                                                          → 4 fail, castling
+ *     being the case
+ *   * 24b's `positionSide` falling back to `courseSide`'s majority → 1 fail
+ *   * 24b's gap-list guard removed on the user's own move   → the first arm
  */
 'use strict';
 const fs = require('fs');

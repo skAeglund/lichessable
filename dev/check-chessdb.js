@@ -21,8 +21,31 @@
  *    "??", and `typeof x === 'number'` is the only thing between that and
  *    "NaN" in the table — a truthiness test also wrongly drops a real 0.
  *
+ * It also asserts the WORKER's action allow-list, read straight out of
+ * background.js — `queue` and `store` are this API's two WRITES and must stay
+ * unreachable, and a hidden automated tab cannot exercise the `querypv` path
+ * at all.
+ *
+ * Since v0.129.0 it also covers the green<->red RAMP, which fails in the same
+ * silent way and for the same reason. `cdbEvalText` returns the tone ALONGSIDE
+ * the text, so the check asserts the two AGREE across the whole score range and
+ * in both perspectives rather than case by case — a perspective bug in one band
+ * only is exactly what a hand-picked list of cases misses.
+ *
  * Run a control by pointing CLO_SRC at a copy with the change reverted and
- * confirming it FAILS.
+ * confirming it FAILS. Controls run 2026-08-27, each failing on exactly its own
+ * assertions and no others:
+ *   * the perspective pinned to White                  → 4 fail
+ *   * the mate band disabled                           → 4 fail
+ *   * a truthiness test in place of `typeof score === 'number'`
+ *                                                      → 3 fail, including "a
+ *     score of 0 counts as book", which is the one a truthiness bug gets wrong
+ *     in both directions at once
+ *   * `cdbTone(entry.score)` for `cdbTone(signed)`, i.e. the tone losing the
+ *     perspective flip                                 → 8 fail, six of them
+ *     the range sweep
+ *   * the mate/tablebase steps collapsed into the ordinary ramp
+ *                                                      → 6 fail
  */
 'use strict';
 const { sliceDecl, SRC_PATH } = require('./slice-source.js');
