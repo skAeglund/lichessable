@@ -3160,6 +3160,18 @@ Currently working (v0.18.x).
     `hold.revealed` AND NOTHING ELSE, §17's masking rule applied to a solution.
     A puzzle row's loss column is `—`, never `?`, which means "could not be
     scored" and reports a grading failure that never happened.
+  * THE COLLECT BUTTON IS FILLED WHILE THIS COURSE HOLDS NOTHING (29.5,
+    v0.184.0, on request) — the ONE exception in that window to
+    DESIGN-ui-inventory §3's "one primary and Start is it", and not a slip to
+    tidy away: the two fills are never competing invitations, since with nothing
+    collected this is the press that comes first and the fill goes out for ever
+    the moment it has been made. "Collected" is `puzzleHeldCount()` — ready PLUS
+    ARCHIVED, never candidates, or a store trimmed back to `puzzleReadyMax`
+    would ask to be collected again. The three modifiers of that one button
+    (fresh, armed, running) are made EXCLUSIVE IN `syncSettings`, not by
+    stylesheet order — all three are of equal weight as selectors. The third
+    state a fill cannot express, a course scanned in full with no puzzles in the
+    band, is said in words in the tooltip off `puzzleScannedCount()`.
   * A CARD MUST NOT SAY WHICH KIND IT IS UNTIL A MOVE HAS BEEN PLAYED (29.4,
     §13). Knowing a tactic is THERE is most of finding it, and "Mate in 3" IS
     the answer — so until the first move both panels print the LINE NAME and
