@@ -6526,6 +6526,11 @@ be pasted again. If they are ever wanted on the phone,
 `pinSyncApi.carrier` is there and this is a payload of a few hundred bytes; it
 is not worth a round trip and a merge rule today.
 
+> **REVERSED in v0.181.0 — see §28b.4.** The ruling was right about the cost and
+> wrong about the value: what is saved here is not a FEN, it is the *naming* of
+> the places a repertoire is made of, which is the one thing a phone cannot redo.
+> The list is now the fourth card on that carrier, tombstones and all.
+
 **It re-reads before it writes** — 24b's `flushDbCache` rule in its third home
 (`saveStore` is the second): one object lives under that key and a write
 replaces it whole, so only this course's slice is ours to replace. A second tab
@@ -6615,9 +6620,10 @@ the whole of the answer.
   `dev/check-storm.js` against the shipped source, and the surface is measured
   in the harness — but no session has actually been scoped to a position on
   Chessable, so the numbers in "N line(s) go through …" and the two refusal
-  sentences are unverified in place.
+  sentences are unverified in place. *(Done in v0.181.0 — §28b.8 ran the scope
+  end to end; the two refusal sentences were still not reached.)*
 * **The presets are local.** See 28.5 — a decision, not an oversight, but it
-  does mean a phone starts with an empty list.
+  does mean a phone starts with an empty list. *(Done in v0.181.0, §28b.4.)*
 * **A position scope's first card costs a course read.** Bounded (session
   cache, and the read happens anyway), unmeasured.
 * **The uncovered source's upstream decision points** — 28.4. Deliberate, and
@@ -7070,3 +7076,500 @@ lines. Capping its growth and centring the pair was considered and left alone: a
 ceiling that clips the Analysis panel is a worse failure than an over-tall box,
 and every number that would justify one is a measurement nobody has asked for
 yet.
+
+
+## 28b. The saved positions, made usable (v0.181.0)
+
+§28 shipped the scope and left the list of saved positions as thin as it could
+be: a FEN pasted into a field, a name beside it, and a row of chips. Four things
+were asked for, and they are all about that list rather than about the scope —
+the scope itself, its two pure rules, `stormScope`'s latch, the deferred store
+draw and §28.4a's known shape are all **unchanged**.
+
+> *"1. Instead of having to copy-paste a FEN from elsewhere, let's give the user
+> the option to make the moves on our board in panel and saving that FEN (or
+> starting). 2. Later when browsing the saved positions, we could show a
+> miniature board showing the FEN along with the title of each position. 3. We
+> could also show stats related to the saved position. 4. Not sure if
+> implemented already — but make sure that the saved positions are synced
+> between devices."*
+
+### 28b.1 The board is an input method, not a fifth view
+
+A repertoire position is a *place you know how to get to*. Almost nobody has its
+FEN to hand, so the field §28 shipped was asking for the one form of the answer
+the user does not have — while the window it sits in already contains a board
+that can be played on from any position, with the engine and the database beside
+it.
+
+So `Set up on a board` is **`toggleAnalyse` with a different start position and
+nothing else**: `continuationStormApi.analyse({ startFen }, slots)`, which is
+section 19's analysis board pinned to this window's own slots. The board, the
+drag layer, the promotion picker, the engine, the database and all three writes
+are section 19's and untouched. What the feature actually cost is a flag, a
+start FEN and the rules below.
+
+**The start FEN is the field if it parses, and `START_FEN` if it does not.** Not
+merely a safe default — a repertoire is walked from the standard position, so
+that is where setting one up begins.
+
+**The field is the display and the board is the authority.** `syncFenField`
+copies the position out on every poll so it can be read and pasted elsewhere;
+`boardFen()` is what "Storm from this" and "Save" actually read while the board
+is up. A poll that has not caught up must not be able to commit a position one
+move behind the board — the two are 500 ms apart and a user who plays a move and
+presses Save immediately would otherwise save the position before it.
+
+`applyFenScope` prefers the board **only where the caller named nothing**: a
+press on a saved row hands in that row's own FEN and must storm *that*.
+
+**It lives in the pre-roll and the review, and never over a card.** Four places
+close it — `startStorm`, `gather`, `gatherRound`, `collectPuzzles` — plus
+`toggleStats` (the stats table hides the stage those slots are measured from,
+§15.5's rule) and `closeStorm`. `syncSettings` carries a **backstop** rather than
+the mechanism, deferred through `setTimeout` because `closeFenBoard` renders and
+that code runs inside `render`.
+
+**Its teardown is noticed, never signalled** — 24g's discipline for the third
+time in this file. Section 18's own Exit and Escape close the board without
+going through us, so `tick` reads `continuationActive()` going false.
+
+**The database follows it, and that is not a breach of section 20's rule.** That
+rule is "the database's top move would name the answer", and here there is no
+card, no answer and nothing to spoil: navigating to a position is the whole
+point. `panelSlot()` therefore answers a rect for `st.analysing || st.fenBoard`.
+
+### 28b.2 A board on every row
+
+`.clo-cr-mini`, section 11c's static preview — the shape the review, the course
+tree and the heads-up already use. A FEN is not a position anybody can read, and
+a name is only a name until you have seen what it is on.
+
+**Oriented by whose move it is**, not by the course's colour. A scope is about a
+board rather than about a repertoire — the same board is saved from either side
+of a transposition — and "the side to play is at the bottom" is the reading every
+other board in this file gives a position with no card behind it. Said in the
+row's tooltip.
+
+**The glyph fallback is sized off the SQUARE, not off the board**, and this is
+worth recording because it measures correct while looking wrong.
+`.clo-cr-mini .clo-cr-piece--glyph` is `font-size: inherit`, so the board's own
+`font-size` *is* the piece's type size — and a square here is 6.5px. The first
+draft set 44px for a 52px board, which renders a 44px glyph inside a 6px box: a
+smear that passes every rect assertion. The convention the other hosts use is
+board/10 (the course tree's 240px board is 24px, the harness's 140px mini is
+14px), so 6px at 52 and 7px at 64. Real sessions clone Chessable's own SVGs,
+which are sized in per cent and never touch this — the fallback is exactly the
+case a check cannot see and a live run will not show either.
+
+The list became a **column**: rows are the width of the box and read downwards,
+which is what makes a dozen of them scannable. A wrapped grid of similar
+pictures is the one shape this must not have.
+
+### 28b.3 Three numbers, all free
+
+Everything a row now says is a second reading of something the session already
+holds. `fenPresetStats(key)`:
+
+* **how many lines go through it** — out of the walk's own index, below;
+* **how many stored positions are in scope** — `stormFilterSource` then
+  `stormFilterStore`, the exact pair `storeDraw` uses, so the figure cannot
+  disagree with the session a press would open;
+* **how that part of the repertoire has gone** — §15's record rolled up over
+  those lines with `stormStatRoll`, in the map of the **current source**, since
+  that is what "Storm from this" would play and the two records answer different
+  questions (§19).
+
+**Three states, not two**, and this is the one place a row could state a
+falsehood. "No line goes through this", "I have not looked yet" and "you saved
+this after I looked" are three different answers, and a count of zero shows all
+three as the first. So the index carries `out.fenKeys` — *which keys it was asked
+about*, which is not the same as which of them matched — and a key that is not in
+it reads "Saved — counted the next time this course is read." Storming it answers
+exactly (the scoped session's own refusal names the figure), and the next session
+counts it with the rest; a second walk of the whole course for one new row is not
+worth it.
+
+#### The index, and why it is one walk
+
+`C.fenKey` asks "which lines go through *this* board" of the one position being
+stormed. The box needs the same question asked of up to twelve at once, and a
+walk per preset is twelve walks of the course.
+
+So `stormNoteLineKeys(into, w, oid, keys)` fills `out.throughAll`, a
+`Map(key → Set(oid))`, on the SAME walk — §14.18.3's idiom, and now the walk's
+*fifth* use (the pool, the continuation index, the anchors, `through`, this).
+Absent unless the course has saved positions, so every other session pays
+nothing.
+
+**`stormLineThrough` is now written in terms of `stormLineKeys`.** The rule about
+which positions a line stands on — every `plies[i].before`, *and the end* — lives
+in one function, so the single-key test a session makes and the multi-key one the
+box makes cannot come to disagree about whether a line end counts. That is also
+why the "line-END clause removed" control now fails **10** assertions where §28
+recorded 5: the rule feeds both paths.
+
+**`stormFilterPool` carries the index WHOLE rather than narrowing it.** It
+answers "how many of this course's lines go through each saved position", which
+is a fact about the course and not about the scope the session happens to be
+running under — a narrowed one would report a scoped session's own filter back at
+itself.
+
+### 28b.4 The list on the wire
+
+§28.5 ruled these out of §16e's transport: *"a FEN is a line of text that can be
+pasted again."* That is true of a FEN and false of the **list**. What is saved
+here is the *naming* of the places a repertoire is made of — "Najdorf", "Open
+Sicilian, 6.Be3" — which is thought rather than data, and is exactly what a phone
+cannot redo and would not think to. The payload is a few hundred bytes. Reversed
+on request.
+
+It is the fourth card and it copies the third: **one card per course** (§27b),
+`stormWireForeign` reused verbatim, read-merge-write in that order, refused whole
+on an unknown version, and awaited last inside `syncStore` so all three cards ride
+one trip. It is also fired directly from a save and from a forget, since both are
+deliberate acts and neither should wait for the next session.
+
+**It needs tombstones** — §14.12's rule in its third home. The merge is a union,
+so without them "forget this position" is undone by the other device's snapshot
+on the next exchange, for ever. `cloStormFensGone`, `{ [bid]: { key: when } }`,
+aged at `goneDays`, written whether or not syncing is on (it costs a timestamp,
+and it is needed the moment the switch is thrown rather than from then on).
+
+Three rules, and each fails silently:
+
+* **The merge key is `stormFenKey`, not the FEN text.** The same board saved on
+  two devices with different move counters — which is exactly what happens when
+  one copies a FEN out of a game and the other sets it up on a board — is ONE
+  saved position. `addFenPreset` already replaces by that key locally, so this is
+  the rule the local list has always had. Keyed on the string, the list keeps two
+  rows for one board for ever.
+* **Later wins the name.** `at` is when a device last wrote the entry, and a
+  rename is the only field two devices can genuinely disagree about.
+* **A tombstone only beats an entry older than itself, in both directions.** A
+  position forgotten here and then deliberately saved again there comes back,
+  which is what a user means by saving it again. "The tombstone always wins" is
+  the naive version and it silently makes a re-save impossible.
+
+### 28b.5 It exposed a real bug in the puzzle sync
+
+`carrier.read` answers the card's comment **verbatim** — base32 — which is why
+`encode` and `decode` are on the carrier at all. `syncPuzzles` handed that string
+straight to `stormPuzzleWireUnpack`, where `blob.v` is `undefined`, so the version
+test refused every payload and **that exchange has been push-only since
+v0.171.0**.
+
+Silent by construction. The write half worked perfectly; a phone that has never
+received a puzzle and a desktop whose card is simply newer look identical from
+the outside; and §29's own note that "the desktop does both stages and the phone
+consumes" describes the half that was broken. `syncStats` decodes correctly two
+hundred lines below and `syncStore` two hundred above, which is what makes this a
+transcription slip rather than a misunderstanding.
+
+Found by reading the wire while writing a fourth card that had to do the same
+thing, exactly as §27b's contamination was.
+
+### 28b.6 What was measured
+
+`dev/harness.html` at 1200px, 2026-09-05, desktop and `html.clo-touch`:
+
+| width | settings row | box | row (item) | board | body overflow-x |
+|---|---|---|---|---|---|
+| 880 desktop | 858x54 | 858x274 | 840x64 | 52x52 | 0 |
+| 880 touch | 858x106 | 858x369 | 840x80 | 64x64 | 0 |
+| 520 desktop | 498x112 | 498x304 | 480x64 | 52x52 | 0 |
+| 520 touch | 498x180 | 498x369 | 480x80 | 64x64 | 0 |
+| 380 desktop | 358x140 | 358x334 | 340x64 | 52x52 | 0 |
+| 380 touch | 358x240 | 358x407 | 340x80 | 64x64 | 0 |
+| 330 desktop | 308x190 | 308x334 | 290x64 | 52x52 | 0 |
+| 330 touch | 308x276 | 308x445 | 290x80 | 64x64 | 0 |
+
+The **settings row is unchanged at every width** — the new button is in the box,
+not in the row, so §28.8's own table still stands. The box grew from 94 to 274
+(880 desktop), which is the feature: three rows carrying boards. Nothing
+overflows horizontally at any width, and the glyph fallback sits at 6px on a
+6.25px square desktop and 7px on 7.75px under touch.
+
+The harness card holding the pre-roll replica was raised from 300px to 560px so
+the box is not clipped — a fixture, not a measurement.
+
+### 28b.7 The controls
+
+`node dev/check-storm.js`, section 28b. Seven, run 2026-09-05, each failing on
+exactly its own assertions and no others:
+
+| control | fails |
+|---|---|
+| the merge keyed on the FEN TEXT rather than the coverage key | 6 |
+| the merge ignores its own tombstones | 2 |
+| a tombstone always wins, whatever its date | 1 |
+| the multi-key index is never filled | 5 |
+| `stormFilterPool` drops the index (a plain rebuild) | 1 |
+| `stormLineKeys` loses the line-END clause | 10 |
+| the wire pack forgets the tombstones | 1 |
+| the index does not record which keys it was asked about | 3 |
+| `stormFilterPool` drops that list | 1 |
+
+Three of those first came back as **throws** rather than failures, because the
+assertions read `map.get(key)` directly and a switched-off index is `undefined`
+everywhere. A thrown control ends the run and proves nothing about the rest of
+it — §30's own lesson, in its second home — so the index is read through
+`sizeOf`/`setOf` accessors instead.
+
+The check's hand-built `C` also had to learn `fenPresetMax`, `fenWireVersion`,
+`fenGoneMax` and `fenCardName`, read out of the shipped config rather than
+declared: without them the version test compared `undefined` with `undefined` and
+**passed**, which is §27b's `undefined` card name in a new place.
+
+`dev/probe-storm-scope.js` was found **already broken** against v0.171.0 (it
+never learned `stormAnchorAdd` or `stormFilterAnchors`) and was repaired in
+passing; it reproduces §28.4a's measurement — 2 of 609 scoped positions on course
+453453, zero on the other two.
+
+### 28b.7a It also corrected a number that had been wrong since §14.21
+
+The chip beside Start reads `storeCount()`, which is source-scoped and **not**
+scope-scoped — so under a chapter scope, and then under a position scope, it has
+always reported the whole course. Nothing showed it, because there was nothing
+beside it to disagree with. §28b puts a per-position "N ready" a few pixels
+below, and *"60 position(s) ready"* over *"53 ready"* is a contradiction on one
+screen (seen live 2026-09-05, and both numbers were individually right).
+
+`storeReadySet()` is `storeDraw`'s own pair of filters and is **the chip's number
+and nothing else**: `storeCount()` stays the course-wide figure `backfillOk`'s
+ceiling and both passes' logs are written against, since narrowing *those* would
+change §14.24's behaviour under a scope and that is a different decision.
+`storeScored` takes the set, so the fraction and its whole are about one set of
+positions — an unscoped `scored` beside a scoped count reads "53 ready · 60
+engine-scored", a fraction bigger than the thing it is a fraction of. The
+tooltip names the scope and gives the course-wide figure.
+
+### 28b.8 Live verification (2026-09-05, course 453453)
+
+Run end to end in the user's own Chrome, which is what §28.9's first item asked
+for:
+
+* the board opened on the start position with the Lichess database and the
+  engine beside it; 1.e4 (clicked on our own squares) put
+  `…/4P3/… b KQkq e3 0 1` in the field, and 1…c5 `…c6 0 2`;
+* `Save` wrote the row, whose stats read *"Saved — counted the next time this
+  course is read"* — §28b.3's third state, in place;
+* the card **`CLO-FENS · 453453 · do not delete`** appeared in the sync course
+  beside the other three, and decoded byte-exact to
+  `{"v":1,"at":…,"b":"453453","f":[["rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2","Sicilian",…]],"g":{},"n":1}`;
+* after an extension reload the row came back reading **"74 lines · 53 ready ·
+  0% found of 29"** — the index, the store filter and §15's record, all three;
+* pressing it scoped the session (*"Testing course › from Sicilian"*), the chip
+  narrowed to 53, and `Start` dealt a card *"4 moves past the line"*;
+* the box hid itself while the card was up and came back after the session; the
+  board opened again in the REVIEW state, hiding the review list, and closing it
+  put the list back;
+* `×` emptied the list and the card became
+  `{"f":[],"g":{"rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq":…},"n":0}`
+  — an empty list and a tombstone keyed on the three-field coverage key;
+* `Whole course` put the session back to 60 ready and the button to
+  "From position…".
+
+The mini board fell back to **glyphs** on the course page, which is section
+11c's documented behaviour: the persisted harvest is empty until a Chessable
+board has been on screen with the extension loaded. It renders correctly either
+way, and that is the one thing no check could have shown.
+
+### 28b.9 Not done
+* **The stats are a session's answer, not a course's.** `fenPresetStats` reads
+  `st.pool`, which is the pool of the source and scope the window is currently
+  on — so the "lines" figure is the whole course's (the index is carried whole)
+  while "ready" is the current source's. That is the right pair for deciding
+  what a press would do and the wrong one for browsing the list as a catalogue.
+* **The board cannot be flipped from the box.** Section 19's own Flip is on the
+  board's panel, which is up beside it, so this costs nothing today.
+
+## 28c. Three reports against §28b (v0.182.0)
+
+All three arrived together, hours after §28b shipped, and one of them is a real
+bug in shared code rather than a preference:
+
+> *"1. The miniature boards are too small. Try double the size. 2. The setup
+> board consumes input when trying to give a title to the position. 3. Allow the
+> user to change the order of the saved positions in the list."*
+
+### 28c.1 The board was too small to be the thing it is for
+
+52px is a 6.5px square. That is enough to tell a full board from an endgame and
+not enough to tell which pieces are on it — so the picture was answering the one
+question the NAME beside it already answers, and §28b.2's whole argument ("a FEN
+is not a position anybody can read, and a name is only a name until you have
+seen what it is on") was being made at a size that could not carry it.
+
+Doubled: **104px desktop, 128px under `html.clo-touch`**, with the glyph
+fallback doubled *with* them (12px and 14px). Doubled rather than re-derived
+from the /10 convention, because the proportion is the one that was actually
+looked at — a board/10 read would have given 10 and 13 and changed the drawing
+as well as the size.
+
+Two consequences, both measured rather than argued:
+
+* **The list's own height.** A row went from 64px to 116, so the old 260px
+  `max-height` showed two of them. 360 desktop / 430 touch, which is three and a
+  bit — the fourth row's edge is what says there is more below.
+* **…and it is shorter again while the set-up board is up**
+  (`.clo-st-fenbox--board`). `.clo-st-body` is a flex column that does not
+  scroll (section 24's rule), so every pixel this box takes comes off the STAGE,
+  which is the very board a position is being set up on. Measured: the box goes
+  460 → 260 desktop and 547 → 307 touch, i.e. 200-240px back to the board, which
+  on an 800px-tall laptop is the difference between a 250px board and a 450px
+  one.
+
+**And smaller again where the row runs out of width.** Doubling the board is
+paid for out of the label, which is what tells two similar pictures apart:
+measured, under ~400px of card the name falls below 100px desktop and below 40px
+under touch — three characters and an ellipsis. So a `@container (max-width:
+400px)` rule takes it to 80px, still half again what §28b shipped. A CONTAINER
+query and never a media one, §31's rule: this window is `position: fixed` with
+`inset: 16px`, so the two ask the same question and only the container can be
+sized in the harness. It must sit AFTER the touch rule and list both selectors —
+a container query changes *when* a rule applies and nothing about how strongly.
+
+### 28c.2 The set-up board ate the keyboard, and the bug is section 18's
+
+Reported as "the setup board consumes input when trying to give a title", and it
+is exactly that. Section 18's document-capture key handler is live whenever
+`cr.active`, and in analysis mode it binds single letters and the arrows:
+`f` flips the board, Backspace runs `anRemoveFrom`, the arrows walk the move
+list, Escape closes the board — each with `preventDefault`. So typing "French"
+into the storm's name field flipped the board and lost the letter, Backspace
+could not delete, and Escape threw away a half-typed name along with the board.
+
+It had a stand-down, and the stand-down **named two elements**:
+
+```js
+if (cr.ui && (e.target === cr.ui.anPrefix || e.target === cr.ui.anDest)) …
+```
+
+Those two are section 19's own lead-in field and destination picker, and until
+§28b they were the only fields this board had ever been opened beside. §28b
+opened it from the storm's position box, whose FEN and NAME fields sit a few
+pixels from the panel and belong to another module entirely — **a host's field
+cannot be named here**. So the test is now what the target IS
+(`INPUT`/`TEXTAREA`/`SELECT`/`contentEditable`), which is the shape §28.7 gave
+the storm's own `onKey` and section 24c's tree keyboard already had.
+
+**And it moved ABOVE `e.stopPropagation()`, which is the other half of the same
+bug.** That call does not stop the DEFAULT action — so the character still
+arrives, which is what the old comment says and why the lead-in field worked —
+but it does stop the event reaching the field's **own listeners**, and the
+box's Enter (`onFenKey`, "Storm from this") is one of those. A stand-down that
+only skips the shortcuts leaves a field that types but cannot commit.
+
+**The trainer is still covered, by the two fields covering themselves.**
+`swallowKeysOn(el)` is a new top-level helper beside `blurButton` — a
+bubble-phase `stopPropagation` on one element — and `anPrefix` and `anDest` now
+carry it. That is the quick-edit popup's discipline and section 22's: a
+capture-phase swallow is for a RUN we own and the whole document with it, and
+this is one element saying "these keys are mine". MoveTrainer2 binds its
+single-key shortcuts on `document` and does not skip a focused field, so without
+it an "n" typed into the lead-in would jump to the next variation.
+
+The storm's own box needs none: it lives on a `/course/` page, where
+MoveTrainer2 does not exist, and both other capture listeners that could reach
+it (§28.7's `onKey`, 24c's tree keyboard) already stand down for a focused
+field.
+
+**This is a bug in shared code and it was reachable before §28b.** Section 19e's
+popup can be open over a run and holds a `<select>`; it survives because it has
+a bubble swallow of its own and an explicit clause below. Nothing else put a
+foreign field under this board — which is why a named pair lasted ninety
+versions.
+
+### 28c.3 The order is the user's, and the merge had to stop sorting
+
+A vertical pair of arrows per row, between the board and its `×`.
+
+**Arrows and not a drag handle.** This list is inside a scroll container and
+lives on a phone as well as a desktop, where a drag is the one gesture that
+fights the scroll it is inside of; and the whole list is a dozen rows, so two
+presses move a row two places. **Disabled at the ends**, never hidden and never
+wrapping: hidden, the column changes width as the list is walked and the `×`
+moves under the pointer; wrapped, "move this up" means "send it to the bottom"
+for the one row where the press is most likely to have been a mis-aim. The
+replacement button takes the focus after each press, or moving a row three
+places means aiming three times.
+
+The interesting half is the wire.
+
+**A PERMUTATION IS THE ONE THING A UNION CANNOT MERGE.** Two devices that have
+each reordered have both made a legitimate choice and there is no `at` that
+settles between them — a field recording when the arrangement was last touched
+would only pick a winner by discarding the loser's arrangement whole. So:
+
+* the **set** and the **names** are shared, exactly as §28b.4 has them;
+* the **arrangement** is each device's own. `stormFenMerge` keeps the local
+  order and APPENDS what only this exchange brought.
+
+Which is one deletion: the `.sort((a, b) => b.at - a.at)` at the end of that
+function. `byKey` is a `Map`, `set` on a key it already holds does not move it,
+and the locals go in first — so insertion order *is* the rule above, stated
+once and nowhere else.
+
+**And a device holding NONE of them inherits the other's arrangement whole**,
+out of the array order the pack already writes. So the order does travel to a
+new phone after all, with no field for it and no rule about whose turn it is.
+
+`fenPresetMax` now cuts the END of the arrangement, which since the order became
+the user's own is no longer the same statement as "oldest out". That is the
+right end: the arrangement IS a statement about what matters, and the first
+thing to go is whatever arrived from elsewhere and has not been placed.
+
+Reordering does not sync, and does not need to.
+
+### 28c.4 What was measured
+
+`dev/harness.html` over `node dev/serve.js`, 2026-09-05, three saved rows:
+
+| card | settings row | box | list | row | board | label | row overflow-x |
+|---|---|---|---|---|---|---|---|
+| 852 desktop | 830x54 | 830x460 | 812x360 | 812x116 | 104 | 635 | 0 |
+| 492 desktop | 470x112 | 470x460 | 452x360 | 452x116 | 104 | 275 | 0 |
+| 392 desktop | 370x140 | 370x418 | 352x288 | 352x92 | 80 | 199 | 0 |
+| 302 desktop | 280x218 | 280x448 | 262x288 | 262x92 | 80 | 109 | 0 |
+| 852 touch | 830x106 | 830x547 | 812x430 | 812x139 | 128 | 589 | 0 |
+| 492 touch | 470x180 | 470x585 | 452x430 | 452x139 | 128 | 229 | 0 |
+| 392 touch | 370x240 | 370x455 | 352x300 | 352x96 | 80 | 137 | 0 |
+| 302 touch | 280x276 | 280x531 | 262x300 | 262x96 | 80 | 87 | 0 |
+
+The **settings row is unchanged at every width** — everything here is inside the
+box — so §28.8's own table still stands, as it did through §28b. Nothing
+overflows horizontally anywhere, the container rule fires between 492 and 392 as
+intended, and with the set-up board up the box is 260 desktop / 307 touch.
+
+### 28c.5 The controls
+
+`node dev/check-storm.js`, section 28b, four new assertions. One control, run
+2026-09-05:
+
+| control | fails |
+|---|---|
+| the merge re-sorts by `at`, as it did before v0.182.0 | 2 |
+
+It fails "the local arrangement survives an exchange" and "an arrival is
+appended rather than sorted in", and NOT "a device holding none of them inherits
+the arrangement whole" — that third assertion is about propagation rather than
+about the sort, and `at`-descending happens to agree with it on that fixture.
+Kept anyway: it is the thing that makes the order travel at all, and it would
+fail on a merge that sorted the other way or reversed the remote list.
+
+The fixture is built against the OLD rule on purpose — `older` really is older
+than `newer`, so `at`-descending and local order disagree, and an assertion
+either could satisfy proves nothing.
+
+**Nothing here pins §28c.2.** It is a `document` key listener and there is no
+seam a check could execute it through; the two ways it can be wrong (a
+stand-down that never fires, and one that fires but still swallows the field's
+own listeners) both look exactly like the field working until a particular key
+is pressed. Live verification is the only control there is.
+
+### 28c.6 Not done
+* **`moveFenPreset` is not executed by a check.** It is a swap of two
+  neighbours; what could be silently wrong about the ORDER lives in the merge,
+  and that is executed.
+* §28b.9's two items still stand.

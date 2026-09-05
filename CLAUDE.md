@@ -1398,6 +1398,22 @@ Currently working (v0.18.x).
     keypress would end the quiz. That listener STANDS DOWN on `showGradeActive()`,
     which is load-bearing rather than tidy — `start()` registers this one FIRST, so
     it would otherwise swallow space before section 23 ever saw it.
+    …AND ON A FOCUSED `INPUT`/`TEXTAREA`/`SELECT`/contentEditable, ASKED OF THE
+    ELEMENT'S KIND AND NOT ITS IDENTITY (§28c, v0.182.0), ABOVE the
+    `stopPropagation` rather than below it. It used to name two elements —
+    section 19's lead-in field and 19d's picker — which was enough for ninety
+    versions because they were the only fields this board had ever been opened
+    beside; §28b opens it from the STORM's position box, and A HOST'S FIELD
+    CANNOT BE NAMED HERE. Both halves matter and the second is the subtle one:
+    `stopPropagation` does not stop the DEFAULT action (so characters always
+    arrived) but it DOES stop the event reaching the field's OWN listeners, so a
+    stand-down that only skipped the shortcuts left a field that types and
+    cannot commit. THE TRAINER IS COVERED BY THE FIELDS THEMSELVES — the new
+    top-level `swallowKeysOn(el)` (a bubble-phase `stopPropagation`, beside
+    `blurButton`) is on `anPrefix` and `anDest`, which is section 22's and the
+    quick-edit popup's discipline. Anything that ever puts a field of its own
+    under this board inherits that: a capture swallow is for a RUN, a bubble one
+    is for an ELEMENT.
   * AUTO-PLAY AND THE ALT CHECK ARE INERT BY CONSTRUCTION here: they watch
     Chessable's board, which a quiz never touches. Only "Review now" (18b), which
     runs mid-quiz, has to hold anything off.
@@ -1552,10 +1568,12 @@ Currently working (v0.18.x).
   Chessable writes a line inside a comment and are NOT decoration. The lead-in
   is typed into a field in the panel and lives on `cr.addPrefix`, OUTSIDE
   `cr.an`: it is the user's wording, not the board's state, so it survives one
-  analysis closing and the next opening. The document-capture key swallow (below) SKIPS its own
-  board shortcuts while that field has focus, or typing "f" would flip the board
-  and an arrow would walk the move list instead of the caret; Escape blurs the
-  field rather than closing the board on a half-typed sentence. The text is
+  analysis closing and the next opening. The document-capture key swallow (below)
+  STANDS DOWN COMPLETELY while any text field or selector has focus (§28c) — or
+  typing "f" would flip the board and an arrow would walk the move list instead
+  of the caret; Escape blurs the field rather than closing the board on a
+  half-typed sentence. So THIS FIELD SWALLOWS FOR THE TRAINER ITSELF, in bubble
+  phase (`swallowKeysOn`), which is what that handler used to do for it. The text is
   APPENDED to the comment of ONE OF TWO mainline moves: the one the board was
   showing when the analysis opened (`cr.an.entry`), or THE ONE AFTER IT
   (`cr.an.entryNext`, v0.110.0 — see below). Both
@@ -1795,8 +1813,10 @@ Currently working (v0.18.x).
     throws a bare "HTTP 400".
   * `SELECTORS.variationTitle` (`#theOpeningTitle`) is the source variation's name
     verbatim, so naming the puzzle costs no course read. The document-capture key
-    swallow exempts the picker exactly as it exempts the lead-in field: arrows and
-    letters are how a `<select>` is driven.
+    swallow stands down for the picker exactly as it does for the lead-in field:
+    arrows and letters are how a `<select>` is driven. Since §28c that is a test
+    on the element's KIND, and the picker carries `swallowKeysOn` for the
+    trainer's sake — see section 18's bullet.
 - ADD AS PUZZLE ON A CLICKABLE LINE (section 19e, v0.98.0): 19d's write, offered
   where Chessable offers "Add to Repertoire" — right-click or long-press a
   clickable move in a comment. Both hosts. Same doc, `DESIGN-add-as-puzzle.md`
@@ -4331,12 +4351,122 @@ Currently working (v0.18.x).
       there and has to say so. The same arithmetic has always applied to a
       CHAPTER scope. `unattributed` is the bigger practical gap: a position
       stored before v0.140.0 has no `o` and is in no scope at all.
-    - THE PRESETS ARE PER COURSE AND LOCAL (`cloStormFens`, storage.local), and
-      DELIBERATELY NOT on §16e's carrier: that transport is for what a device
-      cannot regenerate, and a FEN is a line of text. `writeFenPresets` re-reads
-      before it writes (24b's `flushDbCache` rule, third home) and an empty list
-      LEAVES the blob rather than being stored as `[]`.
+    - THE PRESETS ARE PER COURSE (`cloStormFens`, storage.local).
+      `writeFenPresets` re-reads before it writes (24b's `flushDbCache` rule,
+      third home) and an empty list LEAVES the blob rather than being stored as
+      `[]`. They are CARRIED since v0.181.0 — §28b below reverses v0.170.0's
+      "deliberately not on §16e's carrier".
     - IT OWNS NO BRIDGES and is called by nothing.
+  * THE SAVED LIST, MADE USABLE (§28b, v0.181.0): a board to set the position up
+    on, a board on every saved row, three numbers under each name, and the list
+    carried between devices. **READ `DESIGN-intuition-storm.md` §28b BEFORE
+    CHANGING ANY OF IT.** The SCOPE is untouched — `stormFenKey`, `stormScope`'s
+    latch, the deferred store draw and §28.4a's known shape all stand. What an
+    edit ELSEWHERE can break:
+    - THE SET-UP BOARD IS `toggleAnalyse` WITH A DIFFERENT START POSITION, i.e.
+      `continuationStormApi.analyse({ startFen }, slots)` — section 19's board,
+      unchanged, on this window's slots. THE FIELD IS THE DISPLAY AND THE BOARD
+      IS THE AUTHORITY: `syncFenField` copies the position out on the 500 ms
+      poll, and `boardFen()` is what "Storm from this" and "Save" read, so a
+      poll one beat behind cannot commit the position before the last move.
+      `applyFenScope` prefers it ONLY where the caller named nothing — a press
+      on a saved row must storm THAT row.
+    - IT MUST NEVER BE UP OVER A CARD. Six closers: `startStorm`, `gather`,
+      `gatherRound`, `collectPuzzles`, `toggleStats` (the stats table hides the
+      stage those slots are measured from) and `closeStorm`. `syncSettings`
+      carries a BACKSTOP, deferred through `setTimeout` because `closeFenBoard`
+      renders and that runs inside `render`. Its teardown is NOTICED in `tick`,
+      never signalled (24g's discipline).
+    - THE DATABASE FOLLOWS IT, and that is not a breach of section 20's rule:
+      that rule is "the top move would name the answer", and there is no card
+      here. `panelSlot()` and `dbSlot` read `st.analysing || st.fenBoard`.
+    - THE MINI BOARD'S GLYPH FALLBACK IS SIZED OFF THE SQUARE, NOT THE BOARD.
+      `.clo-cr-mini .clo-cr-piece--glyph` is `font-size: inherit`, so the board's
+      own `font-size` IS the piece's type size and a square here is 6.5px —
+      board/10 is the convention every other host uses. Set to the board's size
+      it draws a 44px glyph in a 6px box: a smear that passes every rect
+      assertion, and one a live session never shows, since real pieces are cloned
+      SVGs sized in per cent.
+    - `stormLineThrough` IS NOW `stormLineKeys(w).has(key)`, so the rule about
+      which positions a line stands on — every `plies[i].before` AND THE END —
+      lives in one function and the single-key path (a session) cannot disagree
+      with the multi-key one (the box). `stormNoteLineKeys` fills the walk's
+      FIFTH index, `out.throughAll` (key -> Set(oid)), off `C.fenKeys` folded in
+      by `poolCfg()`; absent unless the course has saved positions.
+      `stormFilterPool` carries it WHOLE rather than narrowing it — it is a fact
+      about the COURSE, and a narrowed one would report a scoped session's own
+      filter back at itself.
+    - THE THREE NUMBERS ARE SECOND READINGS AND NOTHING ELSE (`fenPresetStats`):
+      the index above, then `stormFilterSource` + `stormFilterStore` — the exact
+      pair `storeDraw` uses, so the figure cannot disagree with the session a
+      press would open — then `stormStatRoll` over §15's record in the CURRENT
+      SOURCE's map. THREE STATES AND NOT TWO, which is the one place a row can
+      state a FALSEHOOD: "no line goes through this", "I have not looked yet"
+      and "you saved this after I looked" are three answers, and a count of zero
+      shows all three as the first. So the walk also carries `out.fenKeys` —
+      WHICH KEYS IT WAS ASKED ABOUT, never the same as which of them matched —
+      and `stormFilterPool` carries that list too.
+    - THE FOURTH CARD copies the third: one card per course (§27b),
+      `stormWireForeign` verbatim, read-merge-write, refused whole on an unknown
+      version, awaited LAST inside `syncStore` so all three ride one trip — plus
+      a direct push from a save and from a forget. THREE rules, each silent:
+      the merge key is `stormFenKey` AND NEVER THE FEN TEXT (one board saved
+      with different move counters on two devices is ONE position, which is
+      exactly what "copied out of a game" versus "set up on a board" produces);
+      LATER WINS THE NAME; and A TOMBSTONE ONLY BEATS AN ENTRY OLDER THAN
+      ITSELF, in both directions, or a position saved again after being
+      forgotten elsewhere can never come back.
+    - IT NEEDS TOMBSTONES AND `cloStormFens` HAS NONE — §14.12's rule in its
+      third home. `cloStormFensGone`, `{ [bid]: { coverKey: when } }`, aged at
+      `goneDays`, written by `noteFenGone` WHETHER OR NOT SYNCING IS ON (it costs
+      a timestamp and is needed the moment the switch is thrown), and CLEARED by
+      `addFenPreset` when the same board is saved again.
+    - THE READY CHIP IS NOW SCOPE-SCOPED (`storeReadySet`), which corrects a
+      figure wrong since §14.21: `storeCount()` is source-scoped and not
+      scope-scoped, so under a chapter or a position scope the chip reported the
+      whole course — invisible until this put a per-position "N ready" a few
+      pixels below it. `storeCount()` is UNCHANGED and stays what `backfillOk`'s
+      ceiling and both passes' logs are written against; narrowing those would
+      change §14.24 under a scope. `storeScored` takes the set, so the fraction
+      and its whole describe one set of positions.
+    - IT OWNS NO BRIDGES and is called by nothing.
+  * THE SAVED LIST, ARRANGED BY HAND (§28c, v0.182.0): three reports against
+    §28b, one of which is a bug in SHARED code. **READ
+    `DESIGN-intuition-storm.md` §28c.** The scope, the wire's shape, the
+    tombstones and §28.4a all stand.
+    - THE MINI BOARD IS 104px (128 touch), DOUBLED FROM §28b's 52 — with the
+      glyph fallback doubled WITH it (12px, 14px) rather than re-derived from
+      the board/10 convention, since the proportion is the one that was looked
+      at. A row is 116px now, so `.clo-st-fenlist` went 260 → 360 (430 touch);
+      it is SHORTER AGAIN (`.clo-st-fenbox--board`, 160/190) while the set-up
+      board is up, because `.clo-st-body` is a flex column that does not scroll
+      and every pixel this box takes comes off that board. And SMALLER AGAIN
+      under 400px of card (`@container`, never `@media` — §31's rule), where the
+      doubling would otherwise be paid for out of the NAME: measured, the label
+      falls under 40px on a touch phone.
+    - THE KEY SWALLOW'S STAND-DOWN — the bug, and it is section 18's; the rule
+      is written beside that listener, above.
+    - THE ORDER IS THE USER'S, moved a row at a time by a pair of arrows, and
+      `stormFenMerge` NO LONGER SORTS. A PERMUTATION IS THE ONE THING A UNION
+      CANNOT MERGE — two devices that have each reordered have both made a
+      legitimate choice and no `at` settles between them — so the SET and the
+      NAMES are shared and the ARRANGEMENT is each device's. The merge keeps the
+      local order and APPENDS what only that exchange brought, which is one
+      deleted `.sort()`: `byKey` is a Map, `set` on a key it holds does not move
+      it, and the locals go in first, so insertion order IS the rule. A device
+      holding NONE of them inherits the other's arrangement whole, out of the
+      array order the pack already writes — so the order travels with no field
+      for it. `fenPresetMax` therefore cuts the END of the arrangement, which is
+      no longer the same statement as "oldest out".
+    - IT OWNS NO BRIDGES and is called by nothing.
+  * IT EXPOSED A SILENT BUG IN `syncPuzzles` (§28b.5, fixed v0.181.0):
+    `carrier.read` answers the card's comment VERBATIM — base32, which is why
+    `encode`/`decode` are on the carrier at all — and that string was handed
+    straight to `stormPuzzleWireUnpack`, where `blob.v` is `undefined`. So the
+    version test refused every payload and THAT EXCHANGE HAS BEEN PUSH-ONLY
+    SINCE v0.171.0: the write half worked, and a phone that has never received a
+    puzzle looks exactly like one whose desktop card is simply newer. Any fifth
+    card must decode the same way `syncStats` and `syncStore` do.
   * IT EXPOSED A SILENT BUG IN THE STORM'S OWN KEYBOARD (§28.7), and the fix is
     in shared code: `onKey` is a `document` listener in CAPTURE phase that calls
     `preventDefault`, and it had NO stand-down for a focused field — so an `s`
@@ -5090,6 +5220,37 @@ restores the store dealing positions the user has already prepared:
 ```
 node dev/check-storm.js
 ```
+
+§28b's SAVED LIST adds a third group there — `stormLineKeys`,
+`stormNoteLineKeys` and the fourth card's `stormFenCardName` /
+`stormFenWirePack` / `stormFenWireUnpack` / `stormFenMerge`. Every one fails
+SILENTLY: an index that never fills leaves every row reading "reading the
+course…", which is also what a slow course looks like; a merge keyed on the FEN
+TEXT keeps two rows for one board for ever; and a merge without its tombstones
+undoes "forget this position" on the next exchange. Controls run 2026-09-05,
+each failing on exactly its own assertions and no others: the merge keyed on the
+text → 6; the tombstones ignored → 2; "a tombstone always wins" → 1; the
+multi-key index never filled → 5; `stormFilterPool` dropping it → 1; the wire
+pack forgetting the tombstones → 1; `out.fenKeys` not recorded → 3; the pool
+filter dropping that list → 1. And `stormLineKeys` losing the line-END
+clause now fails **10** where §28 recorded 5, because that rule feeds both paths.
+Note the shape those controls forced: the index is read through `sizeOf`/`setOf`
+accessors, since a switched-off one is `undefined` everywhere and a thrown
+control ends the run. The check's hand-built `C` also had to LEARN
+`fenPresetMax`/`fenWireVersion`/`fenGoneMax`/`fenCardName` — without them the
+version test compared `undefined` with `undefined` and PASSED, §27b's own
+vacuous shape.
+
+§28c adds four assertions to that same block, about the ORDER: the merge must
+keep the local arrangement, append an arrival rather than sorting it in, and let
+a device holding none of them inherit the other's whole. Silent when wrong — a
+re-sorted list holds the same positions under the same names, and only an
+exchange that CHANGED something writes back — so the fixture is built against
+the old rule, `older` really being older than `newer`. Control run 2026-09-05:
+the merge re-sorting by `at` → 2. Nothing there pins §28c's key stand-down; it
+is a `document` listener with no seam a check can execute, and both ways of
+being wrong look exactly like the field working until a particular key is
+pressed.
 
 §28's SCOPE adds two pure rules to that file (§28): `stormFenKey` and
 `stormLineThrough`. Both fail SILENTLY and in the same direction — a key that

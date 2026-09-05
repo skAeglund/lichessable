@@ -3499,7 +3499,7 @@ body {
            is nothing for it to cover. Scoped session: the sub-line says which
            position, and the button&rsquo;s own label repeats it. -->
       <div class="hx-stage">
-        <div class="clo-st hx-pos" style="width:min(880px,100%);height:300px">
+        <div class="clo-st hx-pos" style="width:min(880px,100%);height:560px">
           <div class="clo-st-head">
             <span class="clo-st-title">Intuition storm</span>
             <span class="clo-st-sub">Intermediate Starter Kit &rsaquo; from Najdorf</span>
@@ -3535,25 +3535,75 @@ body {
               <div class="clo-st-fenrow">
                 <input type="text" class="clo-st-feninput" value="rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 7">
                 <input type="text" class="clo-st-feninput clo-st-fenname" value="Najdorf">
+                <!-- &sect;28b) the board's door. Neutral, and its LABEL carries the state
+                     &mdash; add clo-st-fensetup--on and read "Close the board" for the
+                     other half. -->
+                <button type="button" class="clo-st-sync clo-st-fensetup">Set up on a board</button>
                 <button type="button" class="clo-st-gather clo-st-fengo">Storm from this</button>
                 <button type="button" class="clo-st-sync">Save</button>
                 <button type="button" class="clo-st-sync">Whole course</button>
               </div>
               <div class="clo-st-fenmsg">Saved as &ldquo;Najdorf&rdquo;.</div>
+              <!-- &sect;28b) a COLUMN of rows, each carrying a board and two lines. The
+                   pair is still pick-or-forget and the running one still wears accent
+                   TEXT rather than a border, the pair sharing that border. The three
+                   numbers under a name are: how many of the course's lines go through
+                   the position, how many stored positions are in scope, and how that
+                   part of the repertoire has gone.
+                   &sect;28c) the board is 104px now (128 under clo-touch) and the row
+                   carries a vertical pair of arrows between it and the &times;,
+                   DISABLED at the ends rather than hidden &mdash; a column that changes
+                   width as the list is walked moves the &times; under the pointer. Add
+                   clo-st-fenbox--board to the box above for the shape the list takes
+                   while the set-up board is on the stage. -->
               <div class="clo-st-fenlist">
-                <!-- the chip is a PAIR: pick it, or forget it. The one that is running
-                     wears accent TEXT and not a border &mdash; the pair shares the border, so
-                     recolouring it would light the &times; as well. -->
                 <div class="clo-st-fenitem">
-                  <button type="button" class="clo-st-fenpick clo-st-fenpick--on">Najdorf</button>
+                  <button type="button" class="clo-st-fenpick clo-st-fenpick--on">
+                    <div class="clo-cr-mini clo-st-fenmini hx-pos"
+                         data-hx-board="rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w"></div>
+                    <div class="clo-st-fentext">
+                      <div class="clo-st-fenlabel">Najdorf</div>
+                      <div class="clo-st-fenstats">14 lines &middot; 22 ready &middot; 61% found of 31</div>
+                    </div>
+                  </button>
+                  <div class="clo-st-fenmoves">
+                    <button type="button" class="clo-st-fenmove" disabled>&uarr;</button>
+                    <button type="button" class="clo-st-fenmove">&darr;</button>
+                  </div>
                   <button type="button" class="clo-st-fendrop">&times;</button>
                 </div>
                 <div class="clo-st-fenitem">
-                  <button type="button" class="clo-st-fenpick">Open Sicilian, 6.Be3</button>
+                  <button type="button" class="clo-st-fenpick">
+                    <div class="clo-cr-mini clo-st-fenmini hx-pos"
+                         data-hx-board="r1bqkb1r/pp2pppp/2np1n2/8/3NP3/2N1B3/PPP2PPP/R2QKB1R b"
+                         data-hx-view="b"></div>
+                    <div class="clo-st-fentext">
+                      <div class="clo-st-fenlabel">Open Sicilian, 6.Be3</div>
+                      <div class="clo-st-fenstats">6 lines &middot; 9 ready</div>
+                    </div>
+                  </button>
+                  <div class="clo-st-fenmoves">
+                    <button type="button" class="clo-st-fenmove">&uarr;</button>
+                    <button type="button" class="clo-st-fenmove">&darr;</button>
+                  </div>
                   <button type="button" class="clo-st-fendrop">&times;</button>
                 </div>
+                <!-- no name, so the FEN's own first two fields stand in; and the
+                     course has not been walked yet, which is a different sentence
+                     from "no line goes through it". -->
                 <div class="clo-st-fenitem">
-                  <button type="button" class="clo-st-fenpick">r1bqkbnr/pp1ppppp w</button>
+                  <button type="button" class="clo-st-fenpick">
+                    <div class="clo-cr-mini clo-st-fenmini hx-pos"
+                         data-hx-board="rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w"></div>
+                    <div class="clo-st-fentext">
+                      <div class="clo-st-fenlabel">rnbqkbnr/pp1ppppp w</div>
+                      <div class="clo-st-fenstats">Reading the course&hellip;</div>
+                    </div>
+                  </button>
+                  <div class="clo-st-fenmoves">
+                    <button type="button" class="clo-st-fenmove">&uarr;</button>
+                    <button type="button" class="clo-st-fenmove" disabled>&darr;</button>
+                  </div>
                   <button type="button" class="clo-st-fendrop">&times;</button>
                 </div>
               </div>

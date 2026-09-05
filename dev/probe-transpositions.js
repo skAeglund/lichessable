@@ -39,6 +39,7 @@ const src = [
   sliceDecl('RELAXED_SAN_RE'), sliceDecl('sanToUciRelaxed'), sliceDecl('sanToUci'),
   sliceDecl('fenAfterUci'), sliceDecl('walkVariation'), sliceDecl('sideOf'),
   sliceDecl('stormCoverKey'),
+  sliceDecl('stormLineKeys'), sliceDecl('stormNoteLineKeys'),
   sliceDecl('stormDecisions'), sliceDecl('stormFrontiers'),
   'return { stormDecisions, stormFrontiers, walkVariation, sideOf, sanToUci, fenAfterUci, stormCoverKey };',
 ].join('\n');

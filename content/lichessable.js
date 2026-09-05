@@ -1944,16 +1944,38 @@
       // THE PRESETS ARE PER COURSE and live in `storage.local`: a position is
       // only meaningful against the repertoire it is a place in, and the whole
       // point of saving one is that "the Najdorf" is where this course's own
-      // work is. Deliberately NOT carried by §16e's transport — that carrier is
-      // for what a device cannot regenerate (positions bought with requests,
-      // a performance record), and a FEN is a line of text the user can paste
-      // again. If they are ever wanted on the phone, `pinSyncApi.carrier` is
-      // there and this is a payload of a few hundred bytes.
+      // work is.
       fenPresetKey: 'cloStormFens',   // { [bid]: [{ fen, name, at }] }
-      // Per COURSE, oldest out. A dozen is more places than a repertoire has;
-      // the cap is here so a list nobody prunes cannot grow without limit.
+      // Per COURSE. A dozen is more places than a repertoire has; the cap is
+      // here so a list nobody prunes cannot grow without limit.
+      //
+      // §28c) IT CUTS THE END OF THE LIST, which since the order became the
+      // user's own is no longer the same thing as "oldest out". That is the
+      // right end to cut: the arrangement IS a statement about what matters,
+      // and a merge appends what it did not have, so the first thing to go is
+      // whatever arrived from another device and has not been placed.
       fenPresetMax: 12,
       fenNameMax: 60,
+      // §28b) …AND THEY ARE CARRIED, which reverses v0.170.0's "deliberately
+      // not on §16e's transport". That ruling was right about the COST — a FEN
+      // is a line of text and the payload is a few hundred bytes — and wrong
+      // about the value: the list is not the FEN, it is the NAMING of the
+      // positions a repertoire is actually made of, which is exactly the work a
+      // phone cannot redo and would not think to.
+      //
+      // ONE CARD PER COURSE (§27b), and the presets are per course already, so
+      // the bid is on the payload as well as in the name.
+      fenCardName: 'CLO-FENS',
+      fenWireVersion: 1,
+      // Twelve entries of ~90 bytes plus their tombstones. Deliberately far
+      // under `maxBytes` — this card is the smallest of the four and there is
+      // nothing here worth cutting to fit.
+      fenMaxWireBytes: 12000,
+      // A DELETION IS AN ABSENT KEY, so a union merge needs tombstones or a
+      // forgotten position comes back from the other device for ever —
+      // §14.12's rule in its third home. Aged out at `goneDays` like the rest.
+      fenGoneKey: 'cloStormFensGone',  // { [bid]: { coverKey: whenForgotten } }
+      fenGoneMax: 40,
 
       // --- the producer (§8.3) --------------------------------------------
       // ITS UNIT IS A FRONTIER, NOT A POSITION: one frontier yields two game
@@ -2807,6 +2829,30 @@
   function blurButton(e) {
     const el = e && e.currentTarget;
     if (el && typeof el.blur === 'function') el.blur();
+  }
+
+  /**
+   * …and the other half of the same problem, for a surface that DOES take the
+   * keyboard: MoveTrainer2 binds single-key shortcuts on `document` and does
+   * not skip a focused control, so an "n" typed into a field of ours would send
+   * the trainer to the next variation.
+   *
+   * BUBBLE PHASE, which is the quick-edit popup's discipline and section 22's:
+   * a capture-phase swallow is for a RUN we own and the whole document with it,
+   * and this is one element saying "these keys are mine". The default action is
+   * untouched — `stopPropagation` does not prevent it — so the character still
+   * arrives, which is the whole point.
+   *
+   * Written out here because §28c needs it twice: section 18's document-capture
+   * handler now stands down for a focused field completely (a host's own field
+   * cannot be named there), and the two controls that used to rely on that
+   * handler's named exemption have to cover themselves instead.
+   */
+  function swallowKeysOn(el) {
+    if (!el) return;
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      el.addEventListener(type, (e) => { e.stopPropagation(); });
+    }
   }
 
   /**
@@ -23454,6 +23500,13 @@
       const anPrefix = document.createElement('input');
       anPrefix.type = 'text';
       anPrefix.className = 'clo-cr-anprefix';
+      // §28c) …AND IT SWALLOWS FOR THE TRAINER ITSELF, in BUBBLE phase — the
+      // quick-edit popup's discipline and section 22's, and the reason the
+      // document-capture handler above can now stand down for it completely.
+      // MoveTrainer2 binds single-key shortcuts on `document` and does not skip
+      // a focused field, so without this an "n" typed here would jump to the
+      // next variation. The default action still inserts the character.
+      swallowKeysOn(anPrefix);
       anPrefix.placeholder = 'Text before the line (optional)';
       anPrefix.title = 'Written before the line in the comment, e.g. ' +
         '“An example continuation:”. Kept for the next analysis in this tab.';
@@ -23473,6 +23526,7 @@
       // without opening anything, since the arming sentence refers to it.
       const anDest = document.createElement('select');
       anDest.className = 'clo-cr-andest';
+      swallowKeysOn(anDest);   // §28c, exactly as for the lead-in above
       anDest.title = 'Which chapter "Add as puzzle" writes to. Remembered for next time.';
       anDest.hidden = true;
       anDest.addEventListener('change', () => {
@@ -26277,10 +26331,9 @@
     for (const type of ['keydown', 'keypress', 'keyup']) {
       document.addEventListener(type, (e) => {
         if (!cr.active || e.ctrlKey || e.metaKey || e.altKey) return;
-        // Swallowed for the trainer either way — stopPropagation does not stop
-        // the default action, so the character still reaches a focused field.
-        e.stopPropagation();
-        if (type !== 'keydown') return;
+        // A FOCUSED TEXT FIELD OR SELECTOR OWNS THE KEYBOARD, and this test sits
+        // ABOVE the swallow rather than below it (§28c, v0.182.0).
+        //
         // Typing the lead-in: none of the single-key board shortcuts apply, or
         // an "f" would flip the board and an arrow would move through the line
         // instead of the text. Escape steps out of the field rather than
@@ -26288,10 +26341,36 @@
         // …and the same for the destination picker (19d), where the arrows and
         // the letter keys are how a <select> is driven: taking them for the
         // board would make the chapter list impossible to use from the keyboard.
-        if (cr.ui && (e.target === cr.ui.anPrefix || e.target === cr.ui.anDest)) {
-          if (e.key === 'Escape') e.target.blur();
+        //
+        // ASKED OF THE ELEMENT'S KIND, NOT OF ITS IDENTITY. Those two are OURS,
+        // and they were the only fields this board had ever been opened beside
+        // — so a named pair was enough until §28b opened it from the storm's own
+        // position box, whose FEN and NAME fields sit a few pixels from the
+        // panel and belong to another module entirely. A HOST'S FIELD CANNOT BE
+        // NAMED HERE. Reported live: typing "French" into a name flipped the
+        // board on the "f" and lost the letter, Backspace ran `anRemoveFrom`
+        // instead of deleting a character, the arrows walked the move list, and
+        // Escape closed the board over a half-typed name.
+        //
+        // AND ABOVE `stopPropagation`, which is the other half of the same bug:
+        // that call does not stop the DEFAULT action, so the character still
+        // arrives — but it does stop the event reaching the field's own
+        // listeners, and the box's Enter (`onFenKey`) is one of those. So the
+        // exemption has to be a real stand-down and not merely a skip of the
+        // shortcuts. THE TRAINER IS STILL COVERED: the two fields above swallow
+        // for themselves in BUBBLE phase, which is the discipline section 22's
+        // move field and the quick-edit popup already use, and the storm's own
+        // box lives on a `/course/` page where MoveTrainer2 does not exist.
+        const tag = (e.target && e.target.tagName) || '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+            (e.target && e.target.isContentEditable)) {
+          if (type === 'keydown' && e.key === 'Escape' && e.target.blur) e.target.blur();
           return;
         }
+        // Swallowed for the trainer either way — stopPropagation does not stop
+        // the default action, so the character still reaches a focused field.
+        e.stopPropagation();
+        if (type !== 'keydown') return;
         // Section 19e's popup can be open over a run. It has its own bubble
         // swallow for the trainer's sake; here it needs the board shortcuts kept
         // off its own controls for the same reason as the two above.
@@ -35623,6 +35702,23 @@
       fenOpen: false,     // …and whether the box that offers them is up
       fenMsg: '',         // one line: what the last press in it did, or refused
       fenSig: '',         // what the list was last drawn from (see `syncSettings`)
+      // §28b) THE SET-UP BOARD: section 19's analysis board, on the storm's own
+      // slots, used as an INPUT to the FEN field rather than as a place to
+      // work. It exists only in the pre-roll and the review, never over a card.
+      fenBoard: false,
+      fenLast: '',        // …and the position it was last read at, so the poll
+                          // rewrites the field only when the board has moved
+      // §28b) …and the tombstones the wire merge needs, per course:
+      // `{ [bid]: { coverKey: whenForgotten } }`. A deletion is an absent key,
+      // so without these a forgotten position comes back from the other device
+      // on every exchange — §14.12's rule in its third home.
+      fenGone: null,
+      fenSyncing: false,
+      // §28b) BUMPED WHEREVER `st.pool` IS ASSIGNED, so the box can tell "the
+      // course has not been walked yet" from "it has, and no line goes through
+      // this position" — two very different sentences — without putting an
+      // object identity into a signature string.
+      poolSeq: 0,
       gathering: false,   // the fill-only pass is running
       gone: null,         // §14.12's tombstones for st.bid: { ck: whenDropped }
       syncing: false,
@@ -37280,6 +37376,7 @@
           'shorter than its floor.', 'warn');
         return false;
       }
+      if (st.fenBoard) closeFenBoard();   // §28b, as `gather`
       pz.collecting = true;
       pz.collectStop = false;
       const t0 = Date.now();
@@ -38204,7 +38301,8 @@
     }
 
     /**
-     * §28) …and whether one of the course's own lines goes through it.
+     * §28) THE POSITIONS ONE LINE STANDS ON, as coverage keys — and so whether
+     * it goes through a board the user named (`stormLineThrough` below).
      *
      * THE END COUNTS, not only the plies: `plies[i].before` is every position a
      * move is played FROM, which leaves out the one the line stops on — and a
@@ -38213,13 +38311,44 @@
      *
      * Pure, and it takes a walk rather than a variation so the caller can share
      * the ONE walk `stormFrontiers` and `stormDecisions` already make of every
-     * line (§14.18's "one walk, two uses", now three).
+     * line (§14.18's "one walk, two uses", now four).
      */
+    function stormLineKeys(w) {
+      const out = new Set();
+      if (!w) return out;
+      out.add(stormCoverKey(w.end));
+      for (const p of w.plies) out.add(stormCoverKey(p.before));
+      return out;
+    }
+
     function stormLineThrough(w, key) {
       if (!w || !key) return false;
-      if (stormCoverKey(w.end) === key) return true;
-      for (const p of w.plies) if (stormCoverKey(p.before) === key) return true;
-      return false;
+      return stormLineKeys(w).has(key);
+    }
+
+    /**
+     * §28b) …and the same question asked of MANY keys at once, which is what
+     * the saved list needs: "how many of my lines go through each of these
+     * twelve positions" is one walk, not twelve.
+     *
+     * WRITTEN IN TERMS OF `stormLineKeys` FOR THE SAME REASON `stormLineThrough`
+     * is: the rule about which positions a line stands on lives in ONE function,
+     * so the single-key path a session takes and the multi-key path the box
+     * takes cannot come to disagree about whether a line end counts.
+     *
+     * Pure, and a no-op with no keys — which is every session that has not got
+     * a saved position in this course.
+     */
+    function stormNoteLineKeys(into, w, oid, keys) {
+      if (!into || !w || !keys || !keys.length) return;
+      const mine = stormLineKeys(w);
+      const id = String(oid);
+      for (const key of keys) {
+        if (!key || !mine.has(key)) continue;
+        let set = into.get(key);
+        if (!set) into.set(key, set = new Set());
+        set.add(id);
+      }
     }
 
     /**
@@ -38385,6 +38514,10 @@
       // gather, which costs one map write per ply inside the band.
       const anchors = new Map();
       const through = new Set();
+      // §28b) …and a FIFTH USE: how many lines go through each of the course's
+      // SAVED positions, which is what the pre-roll box prints beside each one.
+      // A Map of key -> Set(oid), empty unless `C.fenKeys` names any.
+      const throughAll = new Map();
       let covered = 0;
       for (const v of vars || []) {
         // Section 24's walk yields for the same reason: this is `walkVariation`
@@ -38403,6 +38536,10 @@
         if (w) for (const p of w.plies) cont[side].add(stormCoverKey(p.before));
         stormAnchorAdd(anchors, w, v, side, C);
         if (w && C.fenKey && stormLineThrough(w, C.fenKey)) through.add(String(v.oid));
+        // §28b) …and the SAVED list's own question, asked of every preset at
+        // once. `C.fenKeys` is absent unless this course has saved positions,
+        // and the walk it rides is the one being made anyway.
+        if (w) stormNoteLineKeys(throughAll, w, v.oid, C.fenKeys);
         if (v.sans.length < C.minVarPlies) continue;
         // PAUSED LINES ARE NOT STORMED. "Paused" and "skipped" are Chessable's
         // two words for one flag (see `reduceCourse`) and both mean the user
@@ -38474,6 +38611,16 @@
       out.cont = cont;
       // §28) …and the third index, for the same reason and by the same route.
       out.through = through;
+      // §28b) …and the saved list's, which is the same index asked of many
+      // keys. Empty on every session of a course with nothing saved.
+      out.throughAll = throughAll;
+      // …AND WHICH KEYS IT WAS ASKED ABOUT, which is not the same as which of
+      // them matched: a key with no entry has no line through it, and a key
+      // that was never asked about has no answer at all. Without this the two
+      // are one number and a position saved SINCE the walk reads "no line of
+      // this course goes through it" — a confident falsehood about the row the
+      // user has just made.
+      out.fenKeys = (C.fenKeys || []).slice();
       // §3) …and the anchors, by the same route and for the same reason: one
       // walk of the course, and the caller that wants them is not the caller
       // that wants the pool.
@@ -38534,6 +38681,7 @@
       // set is only ever intersected with the oids of pool entries, which carry
       // their own side rule already.
       const through = new Set();
+      const throughAll = new Map();   // §28b, as in `stormFrontiers`
       let paused = 0;
       let i = 0;
       for (const v of vars || []) {
@@ -38552,6 +38700,7 @@
         for (const ply of w.plies) cont[side].add(stormCoverKey(ply.before));
         stormAnchorAdd(anchors, w, v, side, C);
         if (C.fenKey && stormLineThrough(w, C.fenKey)) through.add(String(v.oid));
+        stormNoteLineKeys(throughAll, w, v.oid, C.fenKeys);   // §28b
         const eligible = !v.paused &&
           !(v.fen && cacheKey(v.fen) !== cacheKey(START_FEN));
         if (v.paused) paused++;
@@ -38597,6 +38746,16 @@
       out.cont = cont;
       // §28) …and the third index, for the same reason and by the same route.
       out.through = through;
+      // §28b) …and the saved list's, which is the same index asked of many
+      // keys. Empty on every session of a course with nothing saved.
+      out.throughAll = throughAll;
+      // …AND WHICH KEYS IT WAS ASKED ABOUT, which is not the same as which of
+      // them matched: a key with no entry has no line through it, and a key
+      // that was never asked about has no answer at all. Without this the two
+      // are one number and a position saved SINCE the walk reads "no line of
+      // this course goes through it" — a confident falsehood about the row the
+      // user has just made.
+      out.fenKeys = (C.fenKeys || []).slice();
       // §3) …and the anchors, likewise.
       out.anchors = anchors;
       return out;
@@ -38669,6 +38828,13 @@
       out.cont = pool.cont;
       out.paused = pool.paused;
       out.covered = pool.covered;
+      // §28b) …and the saved list's index, copied WHOLE rather than narrowed:
+      // it answers "how many of this course's lines go through each saved
+      // position", which is a fact about the course and not about the scope
+      // the session happens to be running under. Narrowing it would make the
+      // box report a scoped session's own filter back at itself.
+      out.throughAll = pool.throughAll;
+      out.fenKeys = pool.fenKeys;
       // §3) …and the anchors, which are NARROWED rather than copied: a scoped
       // session's puzzles must come from the lines it is about. An anchor
       // several lines converge on survives if ANY of them is in scope, which is
@@ -40936,13 +41102,52 @@
      */
     async function loadFenPresets() {
       try {
-        const got = await chrome.storage.local.get(C.fenPresetKey);
+        const got = await chrome.storage.local.get([C.fenPresetKey, C.fenGoneKey]);
         const raw = got && got[C.fenPresetKey];
         st.fenStore = (raw && typeof raw === 'object') ? raw : {};
+        const gone = got && got[C.fenGoneKey];
+        st.fenGone = (gone && typeof gone === 'object') ? gone : {};
       } catch (err) {
         warn('storm: the saved positions are unreadable:', err);
         st.fenStore = {};
+        st.fenGone = {};
       }
+    }
+
+    /** This course's tombstones, always an object. */
+    function fenGone() {
+      const all = st.fenGone || {};
+      const mine = all[String(st.bid)];
+      return (mine && typeof mine === 'object') ? mine : {};
+    }
+
+    /**
+     * §28b) A FORGOTTEN POSITION, recorded — and it is recorded whether or not
+     * syncing is on, for §14.12's reason one store over: it costs a timestamp,
+     * and it is needed the moment the switch is thrown rather than from then
+     * on. Aged at `goneDays` on the way out, like every other tombstone here.
+     *
+     * RE-READS BEFORE IT WRITES, `writeFenPresets`' own rule: one object lives
+     * under this key too.
+     */
+    async function writeFenGone(mine) {
+      st.fenGone = st.fenGone || {};
+      st.fenGone[String(st.bid)] = mine;
+      try {
+        const got = await chrome.storage.local.get(C.fenGoneKey);
+        const all = (got && got[C.fenGoneKey] && typeof got[C.fenGoneKey] === 'object')
+          ? got[C.fenGoneKey] : {};
+        if (Object.keys(mine).length) all[String(st.bid)] = mine;
+        else delete all[String(st.bid)];
+        await chrome.storage.local.set({ [C.fenGoneKey]: all });
+      } catch (err) {
+        warn('storm: could not record the forgotten position:', err);
+      }
+    }
+
+    async function noteFenGone(key) {
+      if (!key) return;
+      await writeFenGone({ ...fenGone(), [key]: Date.now() });
     }
 
     /** This course's list, always an array. */
@@ -40982,7 +41187,42 @@
         .slice(0, C.fenNameMax), at: Date.now() };
       const list = [entry].concat(
         fenPresets().filter((e) => stormFenKey(e && e.fen) !== key));
+      // §28b) A position SAVED AGAIN outlives whatever tombstone it left behind,
+      // or a re-save on this device would be undone by the next merge — which is
+      // the same rule §14.16 states the other way round, and the one a union
+      // merge needs stated at both ends.
+      const gone = fenGone();
+      if (gone[key]) {
+        const rest = { ...gone };
+        delete rest[key];
+        await writeFenGone(rest);
+      }
       await writeFenPresets(list.slice(0, C.fenPresetMax));
+      return true;
+    }
+
+    /**
+     * §28c) ONE ROW, MOVED ONE PLACE. A swap rather than a splice: the two
+     * neighbours are the whole of what a press changes, and a splice through a
+     * list this short is the same answer written so that an off-by-one is
+     * invisible.
+     *
+     * BY INDEX, `removeFenPreset`'s reason: the index is what the row was drawn
+     * from, and a coverage key cannot name a row whose FEN no longer parses.
+     *
+     * IT DOES NOT SYNC, and that is a decision rather than an omission — see
+     * `stormFenMerge`, which no longer re-sorts: the SET and the NAMES are
+     * shared and the ARRANGEMENT is this device's, because a permutation is the
+     * one thing a union cannot merge.
+     */
+    async function moveFenPreset(i, dir) {
+      const list = fenPresets().slice();
+      const j = i + dir;
+      if (i < 0 || i >= list.length || j < 0 || j >= list.length) return false;
+      const held = list[i];
+      list[i] = list[j];
+      list[j] = held;
+      await writeFenPresets(list);
       return true;
     }
 
@@ -40995,6 +41235,7 @@
     async function removeFenPreset(i) {
       const list = fenPresets();
       if (i < 0 || i >= list.length) return;
+      await noteFenGone(stormFenKey(list[i] && list[i].fen));
       await writeFenPresets(list.filter((_, n) => n !== i));
     }
 
@@ -41248,6 +41489,12 @@
         puzzleAnchorMaxPly: band.hi,
       };
       if (st.fenKey) out.fenKey = st.fenKey;
+      // §28b) THE SAVED POSITIONS' OWN KEYS, so the one walk this session makes
+      // can also say how many lines go through each of them — which is what the
+      // box prints beside each row. Absent where there are none, which is what
+      // keeps `stormNoteLineKeys` a no-op on every other course.
+      const keys = fenPresets().map((e) => stormFenKey(e && e.fen)).filter(Boolean);
+      if (keys.length) out.fenKeys = keys;
       return out;
     };
 
@@ -41736,7 +41983,12 @@
         // (§27b's hazard). Firing this and forgetting it is how one course's
         // puzzles get merged into another course's card.
         await syncPuzzles(reason);
-        st.storeSynced = seq;   // §14.25: both cards are now up to date
+        // §28b) …and the saved positions, on the same trip and for the same
+        // argument, one card further along. AWAITED and last: all three write
+        // through one carrier and all three read `st.bid` across awaits of
+        // their own (§27b's hazard).
+        await syncFenPresets(reason);
+        st.storeSynced = seq;   // §14.25: all three cards are now up to date
         setSyncNote('Synced — ' + packed.n + ' of ' + storeTotal() + ' carried' +
           (merged.added ? ', ' + merged.added + ' taken from another device' : '') +
           (merged.dropped ? ', ' + merged.dropped + ' already learned elsewhere' : '') +
@@ -41932,7 +42184,25 @@
       const cardName = stormPuzzleCardName(bid);
       try {
         let merged = { added: 0, dropped: 0, bumped: 0 };
-        const blob = await carrier.read(cardName);
+        // THE CARD IS TEXT AND THE UNPACK WANTS AN OBJECT. `carrier.read`
+        // answers the comment verbatim — base32 — which is why `decode` and
+        // `encode` are on the carrier at all; handing that string straight to
+        // `stormPuzzleWireUnpack` made `blob.v` `undefined`, so the version
+        // test refused every payload and this exchange has been PUSH-ONLY since
+        // v0.171.0. Silent by construction: a phone that has never received a
+        // puzzle and a desktop whose card is simply newer look identical from
+        // the outside, and the write half worked perfectly. Fixed v0.181.0.
+        const text = await carrier.read(cardName);
+        let blob = null;
+        if (text) {
+          try {
+            blob = JSON.parse(new TextDecoder().decode(carrier.decode(text)));
+          } catch (err) {
+            // A payload we cannot read must not be treated as "the other device
+            // has nothing", which would push ours over it (`syncStats`' rule).
+            throw new Error('the stored puzzle list could not be read');
+          }
+        }
         if (blob) {
           const got = stormPuzzleWireUnpack(blob, C);
           if (got) {
@@ -41970,6 +42240,209 @@
         }
       } catch (err) {
         warn('storm: the puzzle sync failed:', err);
+      }
+    }
+
+    // ----------------------------------------------------------------------
+    // §28b) THE SAVED POSITIONS ON THE WIRE
+    //
+    // v0.170.0 ruled these out of §16e's transport on the argument that "a FEN
+    // is a line of text the user can paste again". That is true of a FEN and
+    // false of the LIST: what is saved here is the naming of the places a
+    // repertoire is actually made of — "Najdorf", "Open Sicilian, 6.Be3" — which
+    // is thought rather than data, and is exactly what a phone cannot redo.
+    // Asked for by name, and the payload is a few hundred bytes.
+    //
+    // ONE CARD PER COURSE (§27b), the presets being per course already, and
+    // `stormWireForeign` is reused verbatim for the third time.
+    //
+    // IT NEEDS TOMBSTONES (§14.12's rule, third home): a union merge fills an
+    // absent entry back in from the other device's snapshot, so "forget this
+    // position" would undo itself on the next exchange, for ever.
+    // ----------------------------------------------------------------------
+
+    function stormFenCardName(bid, C0) {
+      const cfg = C0 || C;
+      return cfg.fenCardName + ' · ' + String(bid || '') + ' · do not delete';
+    }
+
+    /**
+     * The list as a payload, newest first.
+     *
+     * NOT CUT TO FIT, unlike the other three cards: twelve entries of ~90 bytes
+     * cannot approach `fenMaxWireBytes`, so a budget loop here would be
+     * machinery guarding an impossibility. `carrier.write` still refuses an
+     * oversized payload, which is the backstop that matters.
+     */
+    function stormFenWirePack(list, gone, C0, bid) {
+      const cfg = C0 || C;
+      const now = Date.now();
+      const cutoff = now - cfg.goneDays * 24 * 60 * 60 * 1000;
+      const out = { v: cfg.fenWireVersion, at: now, b: String(bid || ''), f: [], g: {} };
+      for (const e of (list || []).slice(0, cfg.fenPresetMax)) {
+        if (!e || !e.fen) continue;
+        out.f.push([String(e.fen), String(e.name || ''), e.at || 0]);
+      }
+      const tombs = Object.keys(gone || {})
+        .filter((k) => (gone[k] || 0) > cutoff)
+        .sort((a, b) => (gone[b] || 0) - (gone[a] || 0))
+        .slice(0, cfg.fenGoneMax);
+      for (const k of tombs) out.g[k] = gone[k];
+      out.n = out.f.length;
+      return out;
+    }
+
+    /** …and back. Refused WHOLE on a version this build does not know, the
+     *  discipline the other three cards share. `bid`, NOT `b`, because
+     *  `stormWireForeign` reads that name and a mismatch there is silent. */
+    function stormFenWireUnpack(blob, C0) {
+      const cfg = C0 || C;
+      if (!blob || blob.v !== cfg.fenWireVersion || !Array.isArray(blob.f)) return null;
+      const list = [];
+      for (const a of blob.f) {
+        if (!Array.isArray(a) || !a[0]) continue;
+        list.push({ fen: String(a[0]), name: String(a[1] || ''), at: a[2] || 0 });
+      }
+      return { list, gone: blob.g || {}, at: blob.at || 0,
+        bid: blob.b ? String(blob.b) : '' };
+    }
+
+    /**
+     * A UNION KEYED ON THE COVERAGE KEY, with the tombstones applied after it.
+     *
+     * THE KEY IS `stormFenKey`, NOT THE FEN STRING, and that is why this is not
+     * a two-line concat: the same board saved on two devices with different
+     * move counters — which is exactly what happens when one is copied out of a
+     * game and the other set up on a board — is ONE saved position, and a merge
+     * keyed on the text would keep both in the list for ever. `addFenPreset`
+     * already replaces by that key locally, so this is the rule the local list
+     * has always had.
+     *
+     * LATER WINS THE NAME. `at` is when a device last wrote the entry, and a
+     * rename is the only field two devices can genuinely disagree about.
+     *
+     * …BUT NOT THE ORDER (§28c). The list is arranged by hand now, and a
+     * PERMUTATION IS THE ONE THING A UNION CANNOT MERGE: two devices that have
+     * each reordered have both made a legitimate choice, and there is no `at`
+     * that settles between them — a field saying when the arrangement was last
+     * touched would only pick a winner by discarding the loser's whole
+     * arrangement. So the SET and the NAMES are shared and the ARRANGEMENT is
+     * each device's own: the local order is kept exactly, and entries only this
+     * exchange brought are APPENDED in the order the other device had them.
+     * Which means a device holding NONE of them inherits the other's
+     * arrangement whole, so the order does travel to a new phone after all —
+     * out of the array order the pack already writes, with no field for it and
+     * no rule about whose turn it is.
+     *
+     * That is why there is no `.sort()` at the end of this function. `byKey` is
+     * a Map, `set` on a key it already has does not move it, and the locals go
+     * in first — so insertion order IS the rule above, stated once.
+     *
+     * A TOMBSTONE ONLY BEATS AN ENTRY OLDER THAN ITSELF, in both directions — so
+     * a position forgotten here and then deliberately saved again there comes
+     * back, which is what a user means by saving it again.
+     *
+     * Pure. `gone` is copied rather than mutated, so a caller that refuses the
+     * result is left with the tombstones it had.
+     */
+    function stormFenMerge(local, gone, remote, remoteGone, C0) {
+      const cfg = C0 || C;
+      const out = { added: 0, bumped: 0, dropped: 0 };
+      const tombs = { ...(gone || {}) };
+      const byKey = new Map();
+      for (const e of local || []) {
+        const k = stormFenKey(e && e.fen);
+        if (!k || byKey.has(k)) continue;
+        byKey.set(k, { ...e });
+      }
+      for (const e of remote || []) {
+        const k = stormFenKey(e && e.fen);
+        if (!k) continue;
+        if ((tombs[k] || 0) >= (e.at || 0)) { out.dropped++; continue; }
+        const have = byKey.get(k);
+        if (!have) { byKey.set(k, { ...e }); out.added++; continue; }
+        if ((e.at || 0) <= (have.at || 0)) continue;
+        if ((e.name || '') !== (have.name || '')) out.bumped++;
+        byKey.set(k, { ...have, name: e.name || have.name, at: e.at });
+      }
+      for (const k of Object.keys(remoteGone || {})) {
+        const at = remoteGone[k] || 0;
+        if (!at) continue;
+        if (!tombs[k] || tombs[k] < at) tombs[k] = at;
+        const have = byKey.get(k);
+        if (have && (have.at || 0) <= at) { byKey.delete(k); out.dropped++; }
+      }
+      const list = [...byKey.values()].slice(0, cfg.fenPresetMax);
+      return { list, gone: tombs, ...out };
+    }
+
+    /**
+     * One exchange. Read, merge, write — `syncStore`'s order, for its reason:
+     * the card is a snapshot overwritten in place, so writing first discards
+     * whatever the other device put there.
+     *
+     * It fails soft everywhere. The local list is authoritative and the card is
+     * a copy, so a refusal costs a log line and the box goes on working.
+     */
+    async function syncFenPresets(reason) {
+      if (st.fenSyncing) return false;
+      if (!pinSyncApi || !pinSyncApi.carrier) return false;
+      const carrier = pinSyncApi.carrier;
+      if (!carrier.course()) return false;
+      if (!st.fenStore) await loadFenPresets();
+      // §27b's hazard: `fenPresets()` and `fenGone()` both read `st.bid`, and
+      // the window can be reopened on another course inside an await.
+      const bid = st.bid;
+      const cardName = stormFenCardName(bid);
+      st.fenSyncing = true;
+      try {
+        let merged = { added: 0, bumped: 0, dropped: 0 };
+        let list = fenPresets();
+        let gone = fenGone();
+        const text = await carrier.read(cardName);
+        if (text) {
+          let blob = null;
+          try {
+            blob = JSON.parse(new TextDecoder().decode(carrier.decode(text)));
+          } catch (err) {
+            throw new Error('the saved-positions card could not be read');
+          }
+          const got = stormFenWireUnpack(blob, C);
+          if (got && stormWireForeign(got, bid)) {
+            warn('storm: the saved-positions card names another course — refused');
+          } else if (got) {
+            const m = stormFenMerge(list, gone, got.list, got.gone, C);
+            list = m.list;
+            gone = m.gone;
+            merged = m;
+          }
+        }
+        if (st.bid !== bid) {
+          log('storm: the saved-position sync was abandoned (' + reason +
+            ') — the course changed');
+          return false;
+        }
+        if (merged.added || merged.bumped || merged.dropped) {
+          await writeFenPresets(list);
+          await writeFenGone(gone);
+        }
+        const packed = stormFenWirePack(list, gone, C, bid);
+        const wire = carrier.encode(
+          new TextEncoder().encode(JSON.stringify(packed)));
+        await carrier.write(cardName, wire, C.fenMaxWireBytes, C.cardChapter);
+        log('storm: saved positions synced (' + reason + ') —', packed.n, 'carried,',
+          merged.added, 'added,', merged.dropped, 'dropped,', wire.length, 'bytes');
+        return true;
+      } catch (err) {
+        warn('storm: the saved-position sync failed:', err);
+        return false;
+      } finally {
+        st.fenSyncing = false;
+        // The list may have changed under the box, and `syncSettings` redraws it
+        // only on a signature change — which a merge does not necessarily move,
+        // a renamed entry leaving the count alone.
+        st.fenSig = '';
+        render();
       }
     }
 
@@ -42361,6 +42834,10 @@
      */
     function startStorm() {
       if (!st.running || st.over || st.started || filling()) return;
+      // §28b) The set-up board is pinned to the slots the first card wants, and
+      // section 18 refuses to open a card over an active run of its own. Closed
+      // rather than refused: a press of Start is unambiguous.
+      if (st.fenBoard) closeFenBoard();
       // §29.2) …and not while a COLLECT is running. It is deliberately not part
       // of `filling()` (it walks no frontier and spends no ChessDB request, so
       // nothing that stands down for a gather has any reason to stand down for
@@ -42478,6 +42955,9 @@
       const deepenMax = Number.isFinite(o.deepenMax) ? o.deepenMax : Infinity;
       if (st.gathering) { stopGather(); return; }
       if (!st.bid) return;
+      // §28b) The set-up board is pinned to the stage, which this pass hides
+      // with the rest of the settings row.
+      if (st.fenBoard) closeFenBoard();
       // GATHERING ENDS WHATEVER IS RUNNING, and it has to: this pass owns the
       // pool and the request budget, and `tick` returns early while it runs —
       // so a session left alive underneath would go on burning its clock with
@@ -42555,6 +43035,7 @@
           // started from inside a chapter-scoped session is a pass for that
           // chapter.
           st.pool = stormScope(await poolFor(course.vars));
+          st.poolSeq++;   // §28b
           st.poolSize = st.pool.length;
           st.name = course.name || st.name;
           // §19b: before a single request is spent, and before the deepen pass
@@ -42834,6 +43315,7 @@
       // The pool is per (course, source) AND is consumed by the draw, so it is
       // dropped on every leg boundary and rebuilt by the leg itself.
       st.pool = [];
+      st.poolSeq++;   // §28b
       st.poolSize = 0;
       if (same) return;
       await saveStore();
@@ -42974,6 +43456,7 @@
             // pre-roll, restarts the session.
             applyStormSource(source);
             st.pool = [];
+            st.poolSeq++;   // §28b
             setRoundNote();
             render();
             // What this LEG is about to add, so the debt below is recorded per
@@ -43057,6 +43540,7 @@
         setStatus('Not signed in to Chessable in this tab.', 'warn');
         return;
       }
+      if (st.fenBoard) closeFenBoard();   // §28b, as `gather`
       st.cycling = true;
       // Everything that has to be put back, taken before the first leg moves
       // any of it. The SOURCE is in here because the round walks both.
@@ -43749,6 +44233,7 @@
       // session nobody asked for.
       st.started = false;
       st.pool = [];
+      st.poolSeq++;   // §28b
       st.queue = [];
       st.spare = [];
       st.dealtLines = new Set();
@@ -44019,6 +44504,7 @@
           'continues past them');
       }
       st.pool = frontiers;
+      st.poolSeq++;   // §28b
       st.poolSize = frontiers.length;
       st.name = course.name || st.name;
       // §19b) …and now that the course has been read, the coverage index it
@@ -45029,6 +45515,7 @@
       // a board two statements before `endSession` tears it down again.
       if (st.analysing) closeAnalyse(false);
       if (st.retry) endRetry();
+      if (st.fenBoard) closeFenBoard();   // §28b, and for the same reason
       // §27) THE ROUND FIRST, and never from `endSession`: `gather` calls that
       // itself on its first leg ("gathering instead"), so a `stopRound` in there
       // would have the round stop itself the moment it started.
@@ -45040,12 +45527,17 @@
       st.card = null;
       st.queue = [];
       st.pool = [];
+      st.poolSeq++;   // §28b
       st.viewStats = false;   // §15.4: the next session opens on the storm
       // §28) …and on the whole course, with the box shut: the window is reopened
       // on other courses and this list is per course.
       st.fenOpen = false;
       st.fenMsg = '';
       st.fenSig = '';
+      st.fenBoard = false;
+      st.fenLast = '';
+      st.fenBoard = false;
+      st.fenLast = '';
       st.verdict = null;
       st.history = [];
       st.analysing = false;
@@ -45094,7 +45586,12 @@
      * that wants a database beside it.
      */
     function panelSlot() {
-      if (!st.analysing || !st.ui || !st.ui.dbSlot || st.ui.dbSlot.hidden) return null;
+      // §28b) …AND THE SET-UP BOARD, which wants the database and the engine for
+      // the same reason the review's board does and with none of section 20's
+      // objection: there is no card, no answer and nothing to spoil — the whole
+      // point of that board is to navigate to a position.
+      if (!(st.analysing || st.fenBoard)) return null;
+      if (!st.ui || !st.ui.dbSlot || st.ui.dbSlot.hidden) return null;
       if (!st.ui.stage || st.ui.stage.hidden) return null;
       const r = st.ui.dbSlot.getBoundingClientRect();
       if (!r.width || !r.height) return null;
@@ -45387,6 +45884,10 @@
       fenBtn.type = 'button';
       fenBtn.addEventListener('click', () => {
         st.fenOpen = !st.fenOpen;
+        // §28b) SHUTTING THE BOX SHUTS THE BOARD. The board is that box's own
+        // field by another name, and one left standing over the window with
+        // nothing on screen explaining it is the state to avoid.
+        if (!st.fenOpen && st.fenBoard) closeFenBoard();
         // Opening it clears whatever the last press said, so a stale "saved" or
         // "that is not a position I can read" is not the first thing read.
         if (st.fenOpen) st.fenMsg = '';
@@ -45448,11 +45949,19 @@
       const fenGo = el('button', 'clo-st-gather clo-st-fengo', 'Storm from this');
       fenGo.type = 'button';
       fenGo.addEventListener('click', () => applyFenScope());
+      // §28b) THE BOARD, and it is an INPUT METHOD rather than a fifth view:
+      // a repertoire position is a place you know how to get to and almost
+      // never a FEN you have to hand, so the field beside it was asking for the
+      // one form of the answer nobody has. NEUTRAL — the green in this box is
+      // spent on "Storm from this", and this opens something rather than
+      // starting it, which is `fenBtn`'s own argument one level down.
+      const fenSetup = el('button', 'clo-st-sync clo-st-fensetup', 'Set up on a board');
+      fenSetup.type = 'button';
+      fenSetup.addEventListener('click', () => toggleFenBoard());
       const fenSave = el('button', 'clo-st-sync', 'Save');
       fenSave.type = 'button';
-      fenSave.title = 'Keep this position in a list for this course. Saved on this ' +
-        'device only — a FEN is a line of text you can paste again, so it is not ' +
-        'worth a round trip to your other devices.';
+      fenSave.title = 'Keep this position in the list for this course, and carry ' +
+        'it to your other devices through your own Chessable course.';
       fenSave.addEventListener('click', () => saveFenFromBox());
       const fenWhole = el('button', 'clo-st-sync', 'Whole course');
       fenWhole.type = 'button';
@@ -45472,7 +45981,7 @@
       };
       fenInput.addEventListener('keydown', onFenKey);
       fenNameInput.addEventListener('keydown', onFenKey);
-      fenRow.append(fenInput, fenNameInput, fenGo, fenSave, fenWhole);
+      fenRow.append(fenInput, fenNameInput, fenSetup, fenGo, fenSave, fenWhole);
       const fenMsg = el('div', 'clo-st-fenmsg');
       fenMsg.hidden = true;
       const fenList = el('div', 'clo-st-fenlist');
@@ -45602,7 +46111,8 @@
       st.ui = { sub, clock, score, streak, status, note, stage, boardSlot, panelSlot, summary,
         settings, modeSel, sourceSel, puzzleSel, pzBandGroup, pzMinSel, pzMaxSel,
         plyGroup, uncGroup, shareSel,
-        fenBtn, fenBox, fenInput, fenNameInput, fenGo, fenSave, fenWhole, fenMsg, fenList,
+        fenBtn, fenBox, fenInput, fenNameInput, fenSetup, fenGo, fenSave, fenWhole,
+        fenMsg, fenList,
         statsTabA, statsTabB,
         minSel, maxSel, startBtn, gatherBtn, roundBtn, collectBtn, clearBtn, bgBtn, ready,
         syncBtn, syncNote,
@@ -45801,12 +46311,34 @@
      *  fraction OF that number and the two must be about the same set.
      *
      *  `d > 0`, the same test the draw uses and for the same reason. */
-    const storeScored = () => {
-      if (!st.store) return 0;
-      const mine = stormFilterSource(st.store, st.source);
+    const storeScored = (set) => {
+      const mine = set ||
+        (st.store ? stormFilterSource(st.store, st.source) : {});
       let n = 0;
       for (const ck of Object.keys(mine)) if (mine[ck].d > 0) n++;
       return n;
+    };
+
+    /**
+     * §28b) …and the store a press of START WOULD ACTUALLY DRAW ON: the above,
+     * narrowed by whatever scope is in force — §14.21's chapter or §28's
+     * position. It is `storeDraw`'s own pair of filters and nothing else, so
+     * the chip cannot disagree with the session it is describing.
+     *
+     * THE CHIP'S OWN NUMBER, AND NOTHING ELSE. `storeCount()` stays the
+     * course-wide figure `backfillOk`'s ceiling and both passes' logs are
+     * written against — narrowing THOSE would change §14.24's behaviour under a
+     * scope, which is a different decision and not one this needs.
+     *
+     * The chip has over-reported under a scope since §14.21 shipped it, and
+     * nothing showed it: §28b put a per-position "N ready" a few pixels below,
+     * and "60 position(s) ready" over "53 ready" is a contradiction on one
+     * screen. Seen live 2026-09-05.
+     */
+    const storeReadySet = () => {
+      if (!st.store) return {};
+      const mine = stormFilterSource(st.store, st.source);
+      return st.oidFilter ? stormFilterStore(mine, st.oidFilter).kept : mine;
     };
 
     function syncSettings() {
@@ -45818,9 +46350,15 @@
       // they are reading.
       // §23.8) …and how many of them Stockfish has scored. Resolved ONCE: this
       // runs from `render`, and the helper walks the store behind a filter.
-      const scored = storeScored();
+      // §28b) BOTH OFF THE SCOPED SET, so the pair is about one set of
+      // positions: an unscoped `scored` beside a scoped count can read
+      // "53 ready · 60 engine-scored", which is a fraction bigger than its own
+      // whole.
+      const readySet = storeReadySet();
+      const readyN = Object.keys(readySet).length;
+      const scored = storeScored(readySet);
       st.ui.ready.textContent = st.store
-        ? storeCount() + ' position(s) ready' +
+        ? readyN + ' position(s) ready' +
           // Printed only when the deepen pass has actually done something on
           // this course: on a store it has never touched the honest reading is
           // the plain count, and "· 0 engine-scored" beside it would be a
@@ -45828,6 +46366,12 @@
           (scored ? ' · ' + scored + ' engine-scored' : '') +
           (st.backfilling ? ' · filling…' : '') : '';
       st.ui.ready.title = [
+        // §28b) …and WHICH positions those are, wherever it is not all of them.
+        // A count that has silently changed meaning is worse than no count.
+        st.oidFilter && scopeWhere()
+          ? 'Stored positions from the lines in ' + scopeWhere() +
+            '; this course has ' + storeCount() + ' for this source in all'
+          : '',
         scored
           ? scored + ' of them carry a Stockfish list and are dealt first; ' +
             'the rest are graded by the ChessDB ranking'
@@ -46032,24 +46576,139 @@
       st.ui.fenBox.hidden = !st.fenOpen;
       st.ui.fenGo.disabled = filling();
       st.ui.fenSave.disabled = filling();
+      // §28b) THE SET-UP BOARD's own door. Its LABEL carries the state, the two
+      // buttons beside it having taught the row that habit, and it is refused
+      // wherever the slots belong to something else.
+      st.ui.fenSetup.textContent = st.fenBoard ? 'Close the board' : 'Set up on a board';
+      st.ui.fenSetup.classList.toggle('clo-st-fensetup--on', st.fenBoard);
+      st.ui.fenSetup.disabled = filling() || pz.collecting || Boolean(st.card);
+      st.ui.fenSetup.title = st.fenBoard
+        ? 'Put the board away. What is on it is already in the field beside this, ' +
+          'so nothing is lost.'
+        : 'Play the position out instead of pasting it — any legal move for ' +
+          'either side, from the position in the field or from the start. The ' +
+          'database and the engine follow the board, and "Storm from this" and ' +
+          '"Save" then read the board rather than the field.';
       // Only while nothing is being timed: see the note where this is built.
       // A gather pass is never timed, so its own control cannot hide under it.
       st.ui.settings.hidden = timing() && !filling();
       // The box goes with the row, and by the same test: it is the row's own
       // second line, so it must not be left standing over a live card.
       if (st.ui.settings.hidden) st.ui.fenBox.hidden = true;
+      // §28b) …AND THE BOARD GOES WITH THE BOX, for the box's own reason: it is
+      // that box's field by another name. A BACKSTOP rather than the mechanism —
+      // the three passes that hide this row close the board themselves — and
+      // DEFERRED, because `closeFenBoard` renders and this is inside `render`.
+      if (st.ui.fenBox.hidden && st.fenBoard) setTimeout(closeFenBoard, 0);
       // …and its CONTENTS are redrawn only when something in them has changed.
       // `syncSettings` runs from `render`, which runs from the 500 ms tick, and
       // this list is made of BUTTONS — rebuilding them twice a second would drop
       // the focus and the hover off whichever row the user was reaching for
       // (section 6c's `syncRepertoireLine` rule, for its reason). The field is
       // never written here at all, so a half-typed FEN cannot be eaten.
-      const sig = [st.fenOpen, st.fenKey, st.fenMsg, st.lid,
-        fenPresets().length].join('|');
+      // §28b) …and the four things a ROW now says besides its name: which
+      // position is running (`fenKey`, which the board moves), how many lines
+      // the walk found through each one (`poolSeq`), how much of the store is in
+      // scope (`storeSeq`, bumped by every write of it) and which record is
+      // being reported (`source`).
+      const sig = [st.fenOpen, st.fenKey, st.fenMsg, st.lid, st.fenBoard,
+        fenPresets().length, st.poolSeq, st.storeSeq, st.source].join('|');
       if (sig !== st.fenSig) {
         st.fenSig = sig;
         if (st.fenOpen) renderFenBox();
       }
+    }
+
+    /**
+     * §28b) THE SET-UP BOARD — section 19's analysis board, on this window's own
+     * slots, with the FEN field following it.
+     *
+     * IT IS `toggleAnalyse` WITH A DIFFERENT START POSITION AND NOTHING ELSE.
+     * The board, the drag layer, the promotion picker, the engine, the database
+     * and the three writes are all section 19's and unchanged; what this adds is
+     * a start FEN taken from the field (or the standard position) and a flag
+     * saying whose board it is. `analysisGiven` is not consulted — there is no
+     * card here, and `{ startFen }` is the one field a host must supply.
+     *
+     * THE FIELD IS THE DISPLAY AND THE BOARD IS THE AUTHORITY. `syncFenField`
+     * copies the position out on every poll so what is on screen is readable and
+     * copyable, and `boardFen()` is what "Storm from this" and "Save" actually
+     * read while it is up — so a poll that has not caught up cannot commit a
+     * position one move behind the board.
+     *
+     * IT LIVES IN THE PRE-ROLL AND THE REVIEW, never over a card: `startStorm`
+     * and both fill passes close it, and `syncSettings` hides the box that holds
+     * its button the moment a clock starts.
+     */
+    function toggleFenBoard() {
+      if (st.fenBoard) { closeFenBoard(); return; }
+      openFenBoard();
+    }
+
+    function openFenBoard() {
+      if (!st.ui || st.fenBoard) return;
+      if (filling() || pz.collecting || st.card) return;
+      if (!continuationStormApi) {
+        st.fenMsg = 'The board is not available on this page.';
+        renderFenBox();
+        return;
+      }
+      // Both of the review's own board states want the same slots, and neither
+      // is what the user just asked for.
+      if (st.retry) endRetry();
+      if (st.analysing) closeAnalyse(false);
+      // The field if it holds a position, the standard start if it does not —
+      // a repertoire is walked from there, so that is the useful default and
+      // not merely a safe one.
+      const typed = st.ui.fenInput.value.trim();
+      const startFen = (typed && CloSan.parseFen(typed)) ? typed : START_FEN;
+      st.fenBoard = true;
+      st.fenLast = '';
+      // BEFORE the open: `slots()` measures a laid-out stage and answers null
+      // while it is hidden, which it is for the whole of a review.
+      render();
+      if (!continuationStormApi.analyse({ startFen }, slots)) {
+        st.fenBoard = false;
+        render();
+        st.fenMsg = 'The board could not be opened here.';
+        renderFenBox();
+        return;
+      }
+      st.fenMsg = 'Play the moves you want to storm from, then press ' +
+        '"Storm from this" or "Save".';
+      renderFenBox();
+      syncFenField();
+      // The Lichess panel follows the board rather than a poll later — 24g's
+      // `openExplore` does the same, for the same reason.
+      topPanelTick();
+    }
+
+    function closeFenBoard() {
+      if (!st.fenBoard) return;
+      st.fenBoard = false;
+      if (continuationStormApi) continuationStormApi.close();
+      render();
+      topPanelTick();
+      // The review's own board and list come back where there is one; in the
+      // pre-roll `render` has already left the stage empty, which is its
+      // ordinary state there.
+      if (st.over && st.history.length) renderReview();
+    }
+
+    /** The position on the set-up board, or '' — the authority while it is up. */
+    function boardFen() {
+      if (!st.fenBoard || !continuationAnalysisFen) return '';
+      return continuationAnalysisFen() || '';
+    }
+
+    /** …copied into the field so it can be read and pasted elsewhere. Called
+     *  from the poll, so it is a DISPLAY and never what a press reads. */
+    function syncFenField() {
+      if (!st.fenBoard || !st.ui) return;
+      const fen = boardFen();
+      if (!fen || fen === st.fenLast) return;
+      st.fenLast = fen;
+      st.ui.fenInput.value = fen;
     }
 
     /**
@@ -46072,8 +46731,11 @@
           : 'The gather pass is still running — stop it first.', 'warn');
         return;
       }
+      // §28b) THE BOARD OUTRANKS THE FIELD while it is up, and only where the
+      // caller named nothing: a press on a saved row hands in that row's FEN and
+      // must storm THAT, not whatever the board is showing.
       const fen = String(raw !== undefined ? raw
-        : (st.ui && st.ui.fenInput ? st.ui.fenInput.value : '')).trim();
+        : (boardFen() || (st.ui && st.ui.fenInput ? st.ui.fenInput.value : ''))).trim();
       if (!fen) {
         st.fenMsg = 'Paste a FEN first — the position you want to storm from.';
         renderFenBox();
@@ -46099,7 +46761,7 @@
     /** …and the save, which is the box's other button. */
     async function saveFenFromBox() {
       if (!st.ui) return;
-      const fen = st.ui.fenInput.value.trim();
+      const fen = (boardFen() || st.ui.fenInput.value).trim();
       if (!stormFenKey(fen)) {
         st.fenMsg = fen
           ? 'That is not a position I can read, so there is nothing to save.'
@@ -46110,7 +46772,101 @@
       const name = st.ui.fenNameInput.value.trim();
       await addFenPreset(fen, name);
       st.fenMsg = 'Saved' + (name ? ' as “' + name + '”' : '') + '.';
+      // The stats beside every row are counted off the walk's own index, which
+      // knows nothing about a position saved since it was made.
+      st.fenSig = '';
       renderFenBox();
+      // §28b) …and out to the other devices. Fire and forget: a save is a
+      // deliberate act and the list is authoritative here whatever the exchange
+      // does, so nothing waits on it and a failure is a log line.
+      syncFenPresets('a position was saved');
+    }
+
+    /**
+     * §28b) WHAT IS BEHIND ONE SAVED POSITION, in three numbers — and all three
+     * are free, being second readings of things this session already holds.
+     *
+     *  * HOW MANY LINES go through it, out of the walk's own `throughAll` index
+     *    (`stormNoteLineKeys`): the same question `stormScope` asks of the one
+     *    position being stormed, asked of every saved one at once.
+     *  * HOW MANY STORED POSITIONS are in scope, i.e. how much of a session it
+     *    can open with — `stormFilterSource` then `stormFilterStore`, the exact
+     *    pair `storeDraw` uses, so the figure cannot disagree with the session.
+     *  * HOW THAT PART OF THE REPERTOIRE HAS GONE, §15's record rolled up over
+     *    those lines. In the map of the CURRENT SOURCE, because that is what a
+     *    press of "Storm from this" would play and the two records answer
+     *    different questions (§19).
+     *
+     * NULL WHILE THE COURSE HAS NOT BEEN WALKED, which the box says in words:
+     * "no line goes through this" and "I have not looked yet" are opposite
+     * answers and a zero would show them as the same one.
+     */
+    function fenPresetStats(key) {
+      if (!key) return null;
+      const all = st.pool && st.pool.throughAll;
+      if (!all) return null;
+      // Asked about, or not asked about: see `out.fenKeys`. `poolCfg` builds
+      // that list when the pool is walked, so a position saved since is simply
+      // not in it, and the row says so rather than claiming a count of zero.
+      const asked = (st.pool.fenKeys || []).indexOf(key) >= 0;
+      if (!asked) return { pending: true };
+      const oids = all.get(key) || new Set();
+      const mine = stormFilterSource(st.store || {}, st.source);
+      const ready = Object.keys(stormFilterStore(mine, oids).kept).length;
+      const c = courseStats(false);
+      const rec = c ? c[uncoveredOn() ? 'ulines' : 'lines'] : null;
+      const rows = [];
+      if (rec) for (const oid of oids) { if (rec[oid]) rows.push(rec[oid]); }
+      const roll = stormStatRoll(rows);
+      return { lines: oids.size, ready, graded: stormStatGraded(roll),
+        rate: stormStatRate(roll), loss: stormStatLoss(roll) };
+    }
+
+    /** …as the one line a row prints under its name. */
+    function fenStatsLine(stats) {
+      if (!stats) return 'Reading the course…';
+      // Saved since the course was walked. Storming it answers exactly, and the
+      // next session counts it with the rest — which is cheaper than a second
+      // walk of the whole course for one row.
+      if (stats.pending) return 'Saved — counted the next time this course is read.';
+      if (!stats.lines) return 'No line of this course goes through it.';
+      const bits = [stats.lines + (stats.lines === 1 ? ' line' : ' lines')];
+      bits.push(stats.ready + ' ready');
+      if (stats.graded) {
+        bits.push(Math.round((stats.rate || 0) * 100) + '% found of ' + stats.graded);
+      }
+      return bits.join(' · ');
+    }
+
+    /**
+     * §28b) A SAVED POSITION'S OWN BOARD — section 11c's static preview
+     * (`.clo-cr-mini`, the shape the review, the course tree and the heads-up
+     * use), because a FEN is not a position anybody can read and a name is only
+     * a name until you have seen what it is on.
+     *
+     * ORIENTED BY WHOSE MOVE IT IS, not by the course's colour. A scope is
+     * about a board rather than about a repertoire — the same board is saved
+     * from either side of a transposition — and "the side to play is at the
+     * bottom" is the reading every other board in this file gives a position
+     * with no card behind it. Said in the row's tooltip.
+     */
+    function fenMiniBoard(fen) {
+      const board = el('div', 'clo-cr-mini clo-st-fenmini');
+      const grid = el('div', 'clo-cr-grid');
+      const layer = el('div', 'clo-cr-layer');
+      board.append(grid, layer);
+      const pos = CloSan.parseFen(String(fen || '').trim());
+      const view = pos && pos.side === 'b' ? 'b' : 'w';
+      fillBoardGrid(grid, view, () => {});
+      if (!pos) return board;
+      for (let idx = 0; idx < 64; idx++) {
+        const letter = pos.board[idx];
+        if (!letter) continue;
+        const piece = makeBoardPiece(letter);
+        placeBoardPiece(piece, idx, view);
+        layer.appendChild(piece);
+      }
+      return board;
     }
 
     /**
@@ -46122,6 +46878,11 @@
     function renderFenBox() {
       if (!st.ui) return;
       const u = st.ui;
+      // §28c) The list gives the stage its height back while a position is
+      // being set up on the board — the body is a flex column that does not
+      // scroll, so what this box takes comes off that board. Read live rather
+      // than passed in: this function is called from six places.
+      u.fenBox.classList.toggle('clo-st-fenbox--board', Boolean(st.fenBoard));
       u.fenMsg.textContent = st.fenMsg || '';
       u.fenMsg.hidden = !st.fenMsg;
       u.fenWhole.hidden = !st.fenKey && !st.lid;
@@ -46142,11 +46903,27 @@
         // reads as noise. The whole string is in the title either way.
         const shown = (e.name || '').trim() ||
           String((e && e.fen) || '').split(' ').slice(0, 2).join(' ');
-        const pick = el('button', 'clo-st-fenpick', shown);
+        const pick = el('button', 'clo-st-fenpick');
         pick.type = 'button';
+        const stats = fenPresetStats(key);
+        const pos = CloSan.parseFen(String((e && e.fen) || '').trim());
         pick.title = String((e && e.fen) || '') +
+          (pos ? '\n' + (pos.side === 'b' ? 'Black' : 'White') + ' to move, ' +
+            'and the board is drawn from that side.' : '') +
+          (stats && stats.graded && stats.loss !== null
+            ? '\nAverage loss on these lines: ' + stats.loss.toFixed(2) +
+              ' of a point of win probability.' : '') +
           (key && key === st.fenKey ? '\n(this is what you are storming)' : '');
         pick.classList.toggle('clo-st-fenpick--on', Boolean(key) && key === st.fenKey);
+        // §28b) THE BOARD FIRST, then the name, then the numbers — the order the
+        // row is actually read in: the picture says which position this is
+        // faster than any name can, and the name is what tells two similar
+        // pictures apart.
+        pick.append(fenMiniBoard(e && e.fen));
+        const text = el('div', 'clo-st-fentext');
+        text.append(el('div', 'clo-st-fenlabel', shown));
+        text.append(el('div', 'clo-st-fenstats', fenStatsLine(stats)));
+        pick.append(text);
         pick.addEventListener('click', () => {
           // The field is filled as well as the session restarted, so the row
           // that is running is also the text that can be edited.
@@ -46160,9 +46937,38 @@
         drop.addEventListener('click', async () => {
           await removeFenPreset(i);
           st.fenMsg = '';
+          st.fenSig = '';
           renderFenBox();
+          // §28b) A FORGETTING TRAVELS TOO, or the other device puts it back on
+          // the next exchange — which is the whole reason the tombstones exist.
+          syncFenPresets('a position was forgotten');
         });
-        row.append(pick, drop);
+        // §28c) THE ORDER IS THE USER'S, moved a place at a time. Disabled at
+        // the ends rather than hidden or wrapped — see the stylesheet.
+        const moves = el('div', 'clo-st-fenmoves');
+        const moveBtn = (dir, glyph, why) => {
+          const b = el('button', 'clo-st-fenmove', glyph);
+          b.type = 'button';
+          b.title = why;
+          b.disabled = dir < 0 ? i === 0 : i === saved.length - 1;
+          b.addEventListener('click', async () => {
+            if (!(await moveFenPreset(i, dir))) return;
+            st.fenSig = '';
+            renderFenBox();
+            // THE PRESSED BUTTON IS GONE — the list is rebuilt whole — so its
+            // replacement takes the focus, or moving a row three places means
+            // aiming three times. Its own row moved by `dir`, and each row
+            // carries the pair in the same order.
+            const btns = u.fenList.querySelectorAll('.clo-st-fenmove');
+            const want = btns[(i + dir) * 2 + (dir < 0 ? 0 : 1)];
+            if (want && !want.disabled) want.focus();
+          });
+          return b;
+        };
+        moves.append(
+          moveBtn(-1, '↑', 'Move this position up the list'),
+          moveBtn(1, '↓', 'Move this position down the list'));
+        row.append(pick, moves, drop);
         list.append(row);
       });
     }
@@ -46249,7 +47055,11 @@
       // pinned to the stage's slots, so the stage comes back while the review's
       // own board and list stand down.
       const reviewable = st.over && st.history.length > 0;
-      const onStage = st.analysing || Boolean(st.retry);
+      // §28b) …and the SET-UP BOARD is a fourth thing pinned to those slots. It
+      // is the only one of them that can be up with nothing in the history at
+      // all, which is why the stage's own test below is `onStage` rather than
+      // `reviewable && onStage`.
+      const onStage = st.analysing || Boolean(st.retry) || st.fenBoard;
       // §15.4: the stats view is the FOURTH, and it hides all three of the
       // others — including the stage, which is why it may never be up while a
       // card is (section 18's board is pinned to that stage's slots and would
@@ -46264,16 +47074,16 @@
       // is pinned to the slots of.
       const onStats = st.viewStats && !st.card && !timing();
       st.ui.stats.hidden = !onStats;
-      st.ui.stage.hidden = onStats || !(!st.over || (reviewable && onStage));
+      st.ui.stage.hidden = onStats || !(!st.over || onStage);
       // The database slot exists for the analysis board and for nothing else —
       // NOT for a retry, where the database's top move would name the answer
       // (section 20's rule for the drill, and the card's own).
       // Sized BEFORE the overlays are placed — `slots()` and `panelSlot()` both
       // measure a laid-out stage, so a slot revealed after the placement is a
       // rect of zero.
-      st.ui.dbSlot.hidden = !st.analysing;
+      st.ui.dbSlot.hidden = !(st.analysing || st.fenBoard);
       st.ui.review.hidden = onStats || !(reviewable && !onStage);
-      st.ui.summary.hidden = onStats || !(st.over && !reviewable);
+      st.ui.summary.hidden = onStats || !(st.over && !reviewable) || st.fenBoard;
       syncSettings();
       if (onStats) renderStats();
       else if (reviewable) renderReview();
@@ -46621,6 +47431,7 @@
         // is what the stage makes way for.
         if (st.analysing) closeAnalyse();
         if (st.retry) endRetry();
+        if (st.fenBoard) closeFenBoard();   // §28b, and it is a third one
       }
       render();
     }
@@ -47187,6 +47998,12 @@
       // Exit or Escape, and the review has to come back rather than leaving the
       // window on an empty stage.
       if (st.analysing && continuationActive && !continuationActive()) closeAnalyse();
+      // §28b) …and the SET-UP BOARD, whose Exit is section 18's own. Noticed
+      // rather than signalled, 24g's discipline for the third time here.
+      if (st.fenBoard && continuationActive && !continuationActive()) closeFenBoard();
+      // …and while it IS up, the field follows it. A display, not an authority:
+      // see `syncFenField`.
+      syncFenField();
       // …and the same for the review's RETRY board (§14.10b), whose "Back to the
       // review" is section 18's own Exit button.
       if (st.retry && continuationActive && !continuationActive()) endRetry();

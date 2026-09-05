@@ -7029,13 +7029,38 @@ button.clo-st-strow:hover { background: var(--clo-bg-raised); }
 
 .clo-st-fenmsg[hidden] { display: none; }
 
+/* §28b) THE SET-UP BOARD's door, wearing the state in its label exactly as
+   `.clo-st-fenbtn` and `.clo-st-bgbtn` do. */
+.clo-st-fensetup.clo-st-fensetup--on,
+.clo-st-fensetup.clo-st-fensetup--on:hover:not(:disabled) {
+  color: var(--clo-text-bright);
+  border-color: var(--clo-accent);
+}
+
+/* §28b) A COLUMN, not a wrap of chips. Each row now carries a BOARD and two
+   lines of text, so they are the width of the box and are read downwards —
+   which is also what makes a dozen of them scannable, a wrapped grid of
+   pictures being the one shape a list of similar positions must not have. */
 .clo-st-fenlist {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
-  flex-wrap: wrap;
   margin-top: 8px;
+  /* A row is now ~116px rather than 64, so the old 260 showed two of them. Three
+     and a bit, which is what makes the fourth one's edge say there is more
+     below — a scroll container whose contents end exactly at its own bottom
+     reads as a list that ends there. */
+  max-height: 360px;
+  overflow-y: auto;
 }
+
+/* …AND SHORTER WHILE THE SET-UP BOARD IS UP. `.clo-st-body` is a flex column
+   that does not scroll (section 24's rule), so every pixel this box takes comes
+   off the STAGE — i.e. off the very board the user is setting a position up on,
+   which on an 800px-tall laptop is the difference between a 250px board and a
+   450px one. While that board is up the list is not what is being looked at. */
+.clo-st-fenbox--board .clo-st-fenlist { max-height: 160px; }
 
 .clo-st-fenempty {
   color: var(--clo-text-faint);
@@ -7046,7 +7071,7 @@ button.clo-st-strow:hover { background: var(--clo-bg-raised); }
 /* A saved position is a PAIR — pick it, or forget it — drawn as one chip so the
    × cannot be mistaken for a control over the row above. */
 .clo-st-fenitem {
-  display: inline-flex;
+  display: flex;
   align-items: stretch;
   border: 1px solid var(--clo-bg-raised);
   border-radius: 3px;
@@ -7062,17 +7087,107 @@ button.clo-st-strow:hover { background: var(--clo-bg-raised); }
   font-family: inherit;
   font-size: 12px;
   padding: 4px 10px;
-  max-width: 26ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* §28b) THE BOARD, THEN THE WORDS — the order the row is read in. `flex: 1` so
+   the pair fills the box and the × stays at the far end wherever the text runs
+   out; `min-width: 0` so the label can ellipsis rather than push the × off. */
+.clo-st-fenpick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  padding: 5px 8px;
+}
+
 .clo-st-fenpick:hover { color: var(--clo-text-bright); }
+
+/* Section 11c's static preview at list size. A SQUARE, and the one dimension is
+   declared here rather than measured: unlike the review's board this one is not
+   sized against a stage, so the number is a decision rather than a measurement.
+   104px, DOUBLED from the 52 §28b shipped — reported as too small to read, and
+   it was: 52px is a 6.5px square, which is enough to tell a full board from an
+   endgame and not enough to tell which pieces are on it, so the row's picture
+   was answering the one question the NAME beside it already answers. */
+.clo-st-fenmini {
+  width: 104px;
+  height: 104px;
+  /* THE GLYPH FALLBACK IS SIZED OFF THE SQUARE, NOT OFF THE BOARD.
+     `.clo-cr-mini .clo-cr-piece--glyph` is `font-size: inherit`, so this is the
+     piece's own type size and a square here is 13px — the /10 the course tree's
+     board and the harness's own replicas use. Set to the BOARD's size it
+     renders a 104px glyph inside a 13px box, which measures as a correct board
+     and looks like a smear. DOUBLED WITH THE BOARD, so the piece keeps exactly
+     the proportion it was drawn at rather than being re-derived: whatever else
+     the ratio is, it is the one that was looked at. Real games clone
+     Chessable's SVGs, which are sized in per cent and never touch this. */
+  font-size: 12px;
+  border: 1px solid var(--clo-bg-raised);
+}
+
+.clo-st-fentext {
+  flex: 1;
+  min-width: 0;
+}
+
+.clo-st-fenlabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The three numbers, in the faint 11px every secondary line in this window uses
+   — never accent, and never a colour: they are a description of the position,
+   not a verdict on it. */
+.clo-st-fenstats {
+  color: var(--clo-text-faint);
+  font-size: 11px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* The one that is RUNNING. Accent TEXT, not a border: the chip already has one
    and the pair shares it, so recolouring it would light the × as well. */
 .clo-st-fenpick--on { color: var(--clo-accent); }
+
+/* §28c) THE ORDER IS THE USER'S. A VERTICAL PAIR OF ARROWS, not a drag handle:
+   this list lives inside a scroll container and on a phone as well as a desktop,
+   where a drag is the one gesture that fights the scroll it is inside of — and
+   the whole list is a dozen rows, so two presses move a row two places and
+   nothing needs a gesture at all. Between the row and its x, so the destructive
+   control stays alone at the far end. */
+.clo-st-fenmoves {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border-left: 1px solid var(--clo-bg-raised);
+}
+
+.clo-st-fenmove {
+  border: 0;
+  background: transparent;
+  color: var(--clo-text-faint);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
+.clo-st-fenmove:hover:not(:disabled) { color: var(--clo-text-bright); }
+
+/* DISABLED AT THE ENDS - never hidden, and never wrapping round. Hidden, the
+   column changes width as the list is walked and the x moves under the pointer;
+   wrapped, "move this up" means "send it to the bottom" for the one row where
+   the press is most likely to have been a mis-aim. */
+.clo-st-fenmove:disabled { opacity: 0.3; cursor: default; }
 
 .clo-st-fendrop {
   padding: 4px 8px;
@@ -7256,8 +7371,36 @@ html.clo-touch .clo-st-start { font-size: 14px; padding: 7px 16px; }
 html.clo-touch .clo-st-feninput { font-size: 16px; padding: 6px 8px; }
 html.clo-touch .clo-st-fenmsg,
 html.clo-touch .clo-st-fenempty { font-size: 13px; }
-html.clo-touch .clo-st-fenpick { font-size: 14px; padding: 7px 12px; }
-html.clo-touch .clo-st-fendrop { font-size: 14px; padding: 7px 11px; }
+html.clo-touch .clo-st-fenpick { font-size: 14px; padding: 7px 10px; }
+html.clo-touch .clo-st-fendrop { font-size: 14px; padding: 7px 13px; }
+html.clo-touch .clo-st-fenmove { font-size: 13px; padding: 8px 11px; }
+html.clo-touch .clo-st-fenstats { font-size: 12px; }
+/* The board grows with the type: it is the row's tap target as much as the name
+   is, and at 104px beside 14px text it reads as a decoration rather than as the
+   position. */
+html.clo-touch .clo-st-fenmini { width: 128px; height: 128px; font-size: 14px; }
+
+/* §28c) …AND SMALLER AGAIN WHERE THE ROW RUNS OUT OF WIDTH. Doubling the board
+   was paid for out of the NAME beside it, which is what tells two similar
+   pictures apart: measured, under ~400px of card the label falls below 100px
+   desktop and below 40px under touch, i.e. three characters and an ellipsis.
+   80px is still half again what §28b shipped, and one value for both because
+   what binds here is the width and not the type size.
+
+   A `@container` QUERY, never `@media` — §31's rule: this window is
+   `position: fixed` with `inset: 16px`, so the two ask the same question, and
+   only the container can be SIZED in `dev/harness.html`.
+
+   IT MUST COME AFTER THE TOUCH RULE ABOVE. Both selectors are listed because
+   `html.clo-touch .clo-st-fenmini` is (0,2,1) and a bare class inside a
+   container query is still (0,1,0) — a container query changes when a rule
+   applies and nothing about how strongly it does. */
+@container (max-width: 400px) {
+  .clo-st-fenmini,
+  html.clo-touch .clo-st-fenmini { width: 80px; height: 80px; font-size: 9px; }
+}
+html.clo-touch .clo-st-fenlist { max-height: 430px; }
+html.clo-touch .clo-st-fenbox--board .clo-st-fenlist { max-height: 190px; }
 html.clo-touch .clo-st-sum-cost { font-size: 13px; }
 html.clo-touch .clo-st-revlegend { font-size: 13px; }
 html.clo-touch .clo-st-revrow { font-size: 15px; padding: 7px 8px; }

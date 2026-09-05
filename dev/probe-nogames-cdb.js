@@ -40,6 +40,7 @@ const src = [
   sliceDecl('RELAXED_SAN_RE'), sliceDecl('sanToUciRelaxed'), sliceDecl('sanToUci'),
   sliceDecl('fenAfterUci'), sliceDecl('walkVariation'), sliceDecl('sideOf'),
   sliceDecl('stormCoverKey'), sliceDecl('stormFrontiers'),
+  sliceDecl('stormLineKeys'), sliceDecl('stormNoteLineKeys'),
   sliceDecl('stormUserEval'), sliceDecl('stormWinPct'), sliceDecl('stormWpLoss'),
   sliceDecl('stormPickReject'),
   sliceDecl('stormCandidate'), sliceDecl('stormAdvance'), sliceDecl('stormReentered'),

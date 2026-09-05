@@ -29,6 +29,12 @@ const src = [
   sliceDecl('RELAXED_SAN_RE'), sliceDecl('sanToUciRelaxed'), sliceDecl('sanToUci'),
   sliceDecl('fenAfterUci'), sliceDecl('walkVariation'), sliceDecl('sideOf'),
   sliceDecl('stormCoverKey'), sliceDecl('stormFenKey'), sliceDecl('stormLineThrough'),
+  sliceDecl('stormLineKeys'), sliceDecl('stormNoteLineKeys'),
+  // §29) …and the anchor collector, which both walks call: without it the
+  // slice throws before a single frontier is walked (this probe had gone stale
+  // against v0.171.0 and was fixed in passing, v0.181.0).
+  sliceDecl('stormAnchorAdd'), sliceDecl('pliesBefore'),
+  sliceDecl('stormFilterAnchors'),
   sliceDecl('stormFrontiers'), sliceDecl('stormFilterPool'),
   'return { stormFrontiers, stormFilterPool, stormFenKey, stormCoverKey,' +
   '         stormLineThrough, walkVariation, sanToUci, fenAfterUci, sideOf };',

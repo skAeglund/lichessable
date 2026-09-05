@@ -176,7 +176,13 @@ const src = [
   // a key that never matches is a scope that finds no line, which looks exactly
   // like a position the course does not reach.
   sliceDecl('stormFenKey'),
+  // §28b) The rule itself, which `stormLineThrough` is now expressed in terms
+  // of — one home for "which positions does a line stand on", so the single-key
+  // test a session makes and the multi-key one the saved list makes cannot come
+  // to disagree about whether a line END counts.
+  sliceDecl('stormLineKeys'),
   sliceDecl('stormLineThrough'),
+  sliceDecl('stormNoteLineKeys'),
   sliceDecl('stormFrontiers'),
   // §19's stage 0 and stage 1, and the store split that keeps the two sources
   // apart. Every one of them fails SILENTLY — see section 13.
@@ -316,6 +322,11 @@ const src = [
   'async function saveStore() {}',
   'async function saveSyncMeta() {}',
   'async function syncPuzzles() {}',
+  // §28b) …and the third card the exchange now writes. Stubbed like the puzzle
+  // one: what matters here is that `syncStore` reaches `storeSynced` past it,
+  // and its own pure half (pack / unpack / merge) is executed in section 28b
+  // below.
+  'async function syncFenPresets() {}',
   'function storeTotal() { return Object.keys(st.store || {}).length; }',
   'function storeDraw() { return []; }',
   'function produceFromStore() { return false; }',
@@ -402,12 +413,21 @@ const src = [
   sliceDecl('stormSharePct'),
   sliceDecl('stormGapNote'),
   sliceDecl('stormEstimated'),
+  // §28b) The saved positions' own card, its payload and its merge. Every one
+  // fails silently: a merge that ignores its tombstones puts a forgotten
+  // position back for ever, and one keyed on the FEN text rather than the
+  // coverage key keeps two rows for one board.
+  sliceDecl('stormFenCardName'),
+  sliceDecl('stormFenWirePack'),
+  sliceDecl('stormFenWireUnpack'),
+  sliceDecl('stormFenMerge'),
   sliceDecl('stormSourceLabel'),
   sliceDecl('stormSourceTitle'),
   sliceDecl('stormVerdictLine'),
   sliceDecl('stormBestLine'),
   'return { stormFrontiers, stormDecisions, stormUncoveredMoves, stormCoverKey,' +
-  '         stormFenKey, stormLineThrough,' +
+  '         stormFenKey, stormLineKeys, stormLineThrough, stormNoteLineKeys,' +
+  '         stormFenCardName, stormFenWirePack, stormFenWireUnpack, stormFenMerge,' +
   '         stormFilterSource, stormSharePct, stormGapNote,' +
   '         statMapOf, STAT_MAPS,' +
   '         stormDrawFrontier, stormUserEval, stormPgnMoves,' +
@@ -558,6 +578,12 @@ const C = {
   enginePhaseMs: num('enginePhaseMs'), engineDepthSlack: num('engineDepthSlack'),
   engineMateCp: num('engineMateCp'),
   wireVersion: num('wireVersion'), goneMax: num('goneMax'), goneDays: num('goneDays'),
+  // §28b) The saved list's own four. READ rather than declared, `str`'s own
+  // recorded reason: a reader that quietly answers `undefined` makes the
+  // version test compare undefined with undefined and PASS, which is the
+  // vacuous shape §27b's `undefined` card name was caught being.
+  fenPresetMax: num('fenPresetMax'), fenWireVersion: num('fenWireVersion'),
+  fenGoneMax: num('fenGoneMax'), fenCardName: str('fenCardName'),
   // Read out of the shipped file the same way, so the rule and the assertions
   // about it cannot disagree about which verdicts drop a position.
   storeDropOn: (cfgBody.match(/storeDropOn:\s*\[([^\]]*)\]/) || [, ''])[1]
@@ -3880,6 +3906,229 @@ const leadsTo = (arrived, fen) => {
         m: [['f3d4', 'Nxd4', 20]], k: 0 } };
       eq('a position stored under a line the scope excludes is dropped',
         Object.keys(S.stormFilterStore(wrongFirst, through).kept).length, 0);
+    }
+
+    // --- §28b) THE SAVED LIST: many keys at once, and the wire --------------
+    //
+    // Two new rules, and both are silent when wrong. `stormNoteLineKeys` is the
+    // same question `C.fenKey` asks, asked of every SAVED position at once — an
+    // index that never fills leaves every row of the box reading "reading the
+    // course…" for ever, which is also what a slow course looks like. And the
+    // merge is a UNION, so without its tombstones a forgotten position comes
+    // back from the other device on every exchange, while a merge keyed on the
+    // FEN TEXT rather than the coverage key keeps two rows for one board.
+    console.log('\n-- 28b) the saved list and its wire (§28b) --\n');
+
+    // `stormLineThrough` is now written in terms of `stormLineKeys`, so the two
+    // cannot disagree about whether a line END counts. Asserted directly, since
+    // "expressed in terms of" is exactly the kind of claim a later edit undoes.
+    const lk = S.stormLineKeys(walk);
+    eq('the key set holds every position a move is played from', lk.size, 6);
+    eq('…the END among them', lk.has(S.stormFenKey(f5)), true);
+    eq('…and it is what the single-key test reads',
+      lk.has(S.stormFenKey(f2)), S.stormLineThrough(walk, S.stormFenKey(f2)));
+    eq('no walk is an empty set', S.stormLineKeys(null).size, 0);
+
+    // The multi-key index, off the SAME walks. It must agree with `C.fenKey`
+    // key for key: a saved position and a stormed one are the same question.
+    const many = { ...C, fenKeys: [S.stormFenKey(f2), S.stormFenKey(f5),
+      S.stormFenKey(off)] };
+    // READ THROUGH ACCESSORS, never `map.get(k)` directly: a control that
+    // switches this index off leaves `undefined` everywhere, and a thrown
+    // control ends the run and proves nothing about the rest of it (§30's own
+    // lesson, and this is its second home).
+    const sizeOf = (m) => ((m && m.size) || 0);
+    const setOf = (m, k) => (m && m.get(k) ? [...m.get(k)].sort() : []);
+    const multi = (await S.stormFrontiers(vars, many)).throughAll;
+    eq('the index names one entry per key that matched anything', sizeOf(multi), 2);
+    eq('…and the f2 entry is the set `fenKey` builds',
+      setOf(multi, S.stormFenKey(f2)), [...through].sort());
+    eq('…and the f5 entry is the one a line-END scope builds',
+      setOf(multi, S.stormFenKey(f5)), [...atEnd].sort());
+    eq('a key no line goes through has no entry at all',
+      Boolean(multi && multi.has(S.stormFenKey(off))), false);
+    // …AND "ASKED ABOUT" IS RECORDED SEPARATELY FROM "MATCHED". Without it the
+    // box cannot tell a position no line goes through from one saved SINCE the
+    // walk, and reports the second as the first — a confident falsehood about
+    // the row the user has just made.
+    const asked = (await S.stormFrontiers(vars, many)).fenKeys || [];
+    eq('the index records which keys it was asked about', asked.length, 3);
+    eq('…including the one that matched nothing',
+      asked.indexOf(S.stormFenKey(off)) >= 0, true);
+    eq('…and an unscoped walk was asked about none',
+      ((await S.stormFrontiers(vars, C)).fenKeys || []).length, 0);
+    eq('the pool filter carries that list too',
+      (S.stormFilterPool(await S.stormFrontiers(vars, many), through).fenKeys || []).length, 3);
+    eq('with no keys the index stays empty',
+      sizeOf((await S.stormFrontiers(vars, C)).throughAll), 0);
+    // The uncovered walk fills it the same way, which is what lets the box
+    // print the same numbers whichever source the session is on.
+    eq('the uncovered walk carries it too',
+      sizeOf((await S.stormDecisions(vars, many)).throughAll), 2);
+    // …and `stormFilterPool` carries it WHOLE rather than narrowing it: it is a
+    // fact about the course, not about the scope the session happens to run
+    // under, and a narrowed one would report a scope back at itself.
+    eq('the pool filter carries the index across',
+      sizeOf(S.stormFilterPool(await S.stormFrontiers(vars, many), through).throughAll), 2);
+
+    // --- the card, the payload and the merge -------------------------------
+    // §27b's rule for the fourth time: two courses must never share a name.
+    eq('the card names the course',
+      S.stormFenCardName('453453', C) === S.stormFenCardName('291847', C), false);
+    eq('…and says so in words', /453453/.test(S.stormFenCardName('453453', C)), true);
+
+    const now28 = 2e12;
+    const mk = (fen, name, at) => ({ fen, name, at });
+    const localList = [mk(f5, 'Ruy', now28 - 1000), mk(f2, 'Open games', now28 - 2000)];
+    {
+      const packed = S.stormFenWirePack(localList, { zzz: now28 - 3000 }, C, '453453');
+      eq('the payload carries every entry', packed.n, 2);
+      eq('…and names its course', packed.b, '453453');
+      eq('…and its tombstones', Object.keys(packed.g), ['zzz']);
+      const back = S.stormFenWireUnpack(packed, C);
+      eq('…and it comes back whole', back.list.length, 2);
+      eq('…with the names intact', back.list[0].name, 'Ruy');
+      eq('…and the field `stormWireForeign` reads is `bid`', back.bid, '453453');
+      eq('a foreign card is refused by the shared guard',
+        S.stormWireForeign(back, '291847'), true);
+      eq('…and this course\'s own is not', S.stormWireForeign(back, '453453'), false);
+      // A version this build does not know is refused WHOLE, never half-read.
+      eq('a newer payload is refused',
+        S.stormFenWireUnpack({ ...packed, v: 99 }, C), null);
+      eq('…and so is one with no list at all',
+        S.stormFenWireUnpack({ v: C.fenWireVersion }, C), null);
+      // An aged tombstone is not carried: it has done its work and the entry it
+      // suppressed can be found again.
+      // OLD RELATIVE TO THE REAL CLOCK: `stormFenWirePack` ages against
+      // `Date.now()` like the other three packs, so a fixture timestamp in the
+      // future (which `now28` is) would keep every tombstone and this would
+      // pass for the wrong reason.
+      const stale = S.stormFenWirePack(localList,
+        { old: Date.now() - (C.goneDays + 1) * 86400000 }, C, '453453');
+      eq('a tombstone past the horizon is dropped', Object.keys(stale.g).length, 0);
+    }
+
+    {
+      // THE KEY IS THE COVERAGE KEY AND NOT THE TEXT. The same board with
+      // different move counters is ONE saved position — which is exactly what
+      // happens when one device copies a FEN out of a game and the other sets it
+      // up on a board — and a merge keyed on the string would keep both for ever.
+      const sameBoard = f5.replace(/ \d+ \d+$/, ' 9 40');
+      eq('the two spellings really do differ', sameBoard === f5, false);
+      const m = S.stormFenMerge([mk(f5, 'Ruy', now28 - 1000)], {},
+        [mk(sameBoard, 'Ruy Lopez', now28)], {}, C);
+      eq('one board is one row', m.list.length, 1);
+      eq('…and the LATER name wins', m.list[0].name, 'Ruy Lopez');
+      eq('…counted as a rename rather than as an arrival', m.added, 0);
+      eq('…and reported', m.bumped, 1);
+      // …and an OLDER remote copy changes nothing.
+      const m2 = S.stormFenMerge([mk(f5, 'Ruy Lopez', now28)], {},
+        [mk(f5, 'Ruy', now28 - 5000)], {}, C);
+      eq('an older remote name does not overwrite a newer one',
+        m2.list[0].name, 'Ruy Lopez');
+      eq('…and nothing is reported', m2.bumped + m2.added, 0);
+    }
+
+    {
+      // A UNION: the other device's positions arrive.
+      const m = S.stormFenMerge([mk(f5, 'Ruy', now28)], {},
+        [mk(f2, 'Open games', now28 - 100)], {}, C);
+      eq('the other device\'s position is taken', m.list.length, 2);
+      eq('…and counted', m.added, 1);
+      eq('…appended behind what was already here', m.list[0].name, 'Ruy');
+    }
+
+    {
+      // §28c) THE ORDER IS THE LOCAL LIST'S, and the merge must not re-sort it.
+      // The list is arranged by hand now, and a PERMUTATION IS THE ONE THING A
+      // UNION CANNOT MERGE — two devices that have each reordered have both
+      // made a legitimate choice and no `at` settles between them — so the SET
+      // and the NAMES are shared while the ARRANGEMENT is each device's own.
+      //
+      // SILENT WHEN WRONG, which is why it is executed: a re-sorted list holds
+      // exactly the same positions under exactly the same names, so the only
+      // symptom is that an arrangement made on Tuesday is gone on Wednesday —
+      // and only on the exchanges that changed something, the merge writing
+      // back only when it did. THE FIXTURE IS BUILT AGAINST THE OLD RULE:
+      // `older` really is older than `newer`, so `at`-descending and local
+      // order disagree, and an assertion either could satisfy proves nothing.
+      const older = mk(f5, 'Ruy', now28 - 5000);
+      const newer = mk(f2, 'Open games', now28 - 1000);
+      const kept = S.stormFenMerge([older, newer], {}, [newer, older], {}, C);
+      eq('the local arrangement survives an exchange',
+        kept.list.map((e) => e.name), ['Ruy', 'Open games']);
+      const arrived = S.stormFenMerge([older], {}, [newer], {}, C);
+      eq('…and an arrival is appended rather than sorted in',
+        arrived.list.map((e) => e.name), ['Ruy', 'Open games']);
+      // …AND A DEVICE HOLDING NONE OF THEM INHERITS THE ARRANGEMENT WHOLE. That
+      // is what makes it travel to a new phone at all, out of the array order
+      // the pack already writes — no field for it, and no rule about whose turn
+      // it is.
+      const fresh = S.stormFenMerge([], {}, [newer, older], {}, C);
+      eq('a device holding none of them inherits the arrangement whole',
+        fresh.list.map((e) => e.name), ['Open games', 'Ruy']);
+    }
+
+    {
+      // TOMBSTONES, in both directions. Without them "forget this position" is
+      // undone by the next exchange, for ever — §14.12's rule in its third home.
+      const key5 = S.stormFenKey(f5);
+      const mine = S.stormFenMerge([], { [key5]: now28 }, [mk(f5, 'Ruy', now28 - 1)],
+        {}, C);
+      eq('a position forgotten HERE is not taken back', mine.list.length, 0);
+      eq('…and is counted as dropped', mine.dropped, 1);
+      const theirs = S.stormFenMerge([mk(f5, 'Ruy', now28 - 1)], {}, [],
+        { [key5]: now28 }, C);
+      eq('a position forgotten THERE is dropped here', theirs.list.length, 0);
+      eq('…and its tombstone is adopted', theirs.gone[key5], now28);
+      // …AND A TOMBSTONE ONLY BEATS AN ENTRY OLDER THAN ITSELF. Saving a
+      // position again is a decision, and it must survive the other device's
+      // memory of having dropped it — which is the direction a naive
+      // "tombstone always wins" gets wrong, silently and for ever.
+      const resaved = S.stormFenMerge([mk(f5, 'Ruy', now28 + 1000)], {}, [],
+        { [key5]: now28 }, C);
+      eq('a position saved again after the tombstone survives', resaved.list.length, 1);
+      const remoteResave = S.stormFenMerge([], { [key5]: now28 },
+        [mk(f5, 'Ruy', now28 + 1000)], {}, C);
+      eq('…in the other direction too', remoteResave.list.length, 1);
+    }
+
+    {
+      // The cap, and the order it cuts in: newest kept.
+      const many2 = [];
+      for (let i = 0; i < C.fenPresetMax + 4; i++) {
+        many2.push(mk(step(START_FEN, i % 2 ? 'e4' : 'd4'), 'n' + i, now28 - i));
+      }
+      // Those are only two distinct boards, so the KEY collapse is what is
+      // asserted first — a merge keyed on the text would report sixteen.
+      const m = S.stormFenMerge(many2, {}, [], {}, C);
+      eq('duplicate boards collapse to one row each', m.list.length, 2);
+      // …and enough DISTINCT boards to overflow it. One pawn walked further up
+      // the board each time, so every entry is a different position and none of
+      // them has to be a legal continuation of the last.
+      const spread = [];
+      const files = 'abcdefgh'.split('');
+      for (let i = 0; i < C.fenPresetMax + 4; i++) {
+        const f = files[i % 8];
+        const rank = 3 + Math.floor(i / 8);
+        spread.push(mk(step(START_FEN, f + rank), 'n' + i, now28 - i));
+      }
+      const m2 = S.stormFenMerge(spread, {}, [], {}, C);
+      eq('the list is capped', m2.list.length, C.fenPresetMax);
+      // …AT THE END OF THE ARRANGEMENT (§28c), which since the order became the
+      // user's own is no longer the same statement as "the oldest go".
+      eq('…and it is the head of the list that survives', m2.list[0].name, 'n0');
+      eq('…cut at its own end', m2.list[C.fenPresetMax - 1].name,
+        'n' + (C.fenPresetMax - 1));
+    }
+
+    {
+      // `gone` IS COPIED, not mutated: a caller that refuses the result must be
+      // left with the tombstones it had.
+      const key5 = S.stormFenKey(f5);
+      const mineGone = {};
+      S.stormFenMerge([], mineGone, [], { [key5]: now28 }, C);
+      eq('the caller\'s tombstones are untouched', Object.keys(mineGone).length, 0);
     }
   }
 
