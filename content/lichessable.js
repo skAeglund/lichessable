@@ -2628,6 +2628,7 @@
   const CT_BTN_ID     = 'lichessable-ct-btn';   // "Course tree" launcher (section 24)
   const CT_PANEL_ID   = 'lichessable-ct';       // the course tree browser (section 24)
   const ST_PANEL_ID   = 'lichessable-storm';    // the intuition storm window (section 27)
+  const ST_BTN_ID     = 'lichessable-st-btn';   // "Intuition storm" launcher (section 27)
 
   const log  = (...a) => console.log(CONFIG.logPrefix, ...a);
   const warn = (...a) => console.warn(CONFIG.logPrefix, ...a);
@@ -2853,6 +2854,42 @@
     for (const type of ['keydown', 'keypress', 'keyup']) {
       el.addEventListener(type, (e) => { e.stopPropagation(); });
     }
+  }
+
+  /**
+   * THE CORNER DOCK — the one home for every floating launcher in the
+   * bottom-right of a chessable.com page.
+   *
+   * Five modules put a control there and each used to be `position: fixed`
+   * with a hardcoded `bottom`: section 25's key moves (92px), 24's course tree
+   * (54px), 21's coverage (16px), 16d's pin dock — which also takes 16px and
+   * shows on EVERY page, so on a course page it sat ON TOP of the coverage
+   * launcher (reported live) — and 27's storm, which is why it never got one
+   * at all and was launched from inside the course tree's header instead. The
+   * offsets had also been unmaintainable for four sections: each had to know
+   * the heights of the other three, and every note about them said so.
+   *
+   * So there are no offsets now. One body-mounted flex column, and the
+   * SEQUENCE is a block of `order` declarations in the stylesheet — the
+   * trainer row's discipline (section 9), for the trainer row's reason: a
+   * module may keep appending whenever it boots and still land in its own
+   * slot, and a launcher that hides takes its space with it (a `display: none`
+   * child is not a flex item), so no module has to tell the dock what the
+   * others are doing.
+   *
+   * Idempotent and self-healing. Every caller's own `mount()` already tests
+   * `launcher.isConnected` and rebuilds, and a rebuild comes back through
+   * here, so a dock removed by anything is recreated on the next tick.
+   */
+  const DOCK_ID = 'lichessable-dock';
+  function cornerDock() {
+    let dock = document.getElementById(DOCK_ID);
+    if (dock && dock.isConnected) return dock;
+    dock = document.createElement('div');
+    dock.id = DOCK_ID;
+    dock.className = 'clo-dock';
+    document.body.appendChild(dock);
+    return dock;
   }
 
   /**
@@ -17131,7 +17168,7 @@
 
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'clo-pin-dock__btn';
+      btn.className = 'clo-pin-dock__btn clo-dock-btn clo-dock-btn--primary';
       btn.addEventListener('click', (e) => {
         blurButton(e);
         const due = (pinApi && pinApi.due(null)) || [];
@@ -17148,7 +17185,7 @@
       msg.hidden = true;
 
       el.append(btn, msg);
-      document.body.appendChild(el);
+      cornerDock().appendChild(el);
       dk.el = el;
       dk.label = btn;
       dk.msg = msg;
@@ -27566,7 +27603,7 @@
     }
 
     function buildLauncher() {
-      const btn = el('button', 'clo-cov-launch', 'Repertoire coverage');
+      const btn = el('button', 'clo-cov-launch clo-dock-btn', 'Repertoire coverage');
       btn.id = COV_BTN_ID;
       btn.type = 'button';
       btn.title = 'Compare this course against one of your own repertoires and list the ' +
@@ -27576,7 +27613,7 @@
         render();
         loadBooks();
       });
-      document.body.appendChild(btn);
+      cornerDock().appendChild(btn);
       cv.launcher = btn;
     }
 
@@ -35000,13 +35037,13 @@
       splitBtn.type = 'button';
       splitBtn.addEventListener('click', () => { ct.splitsOpen = !ct.splitsOpen; renderTree(); });
 
-      // 27. In THIS header rather than in the corner of the page: that corner
-      // already holds four things (25's key-moves panel at 92px, this tree at
-      // 54px, 21's coverage at 16px and 16d's pin dock, which is on every page
-      // at 16px), and a fifth would have to solve that cluster rather than add
-      // an offset. The tree is the right host anyway — it is the surface that
-      // is already about "what does this course cover", and the storm is the
-      // question about where it stops.
+      // 27. In THIS header, AND, since v0.183.0, in the corner dock as well.
+      // It used to be here alone, on the argument that the corner held four
+      // things at four hardcoded offsets and a fifth would have to solve that
+      // cluster rather than add to it — which `cornerDock()` now does. This one
+      // stays because the tree is the surface already about "what does this
+      // course cover", and the storm is the question about where it stops: a
+      // reader standing in here should not have to leave to ask it.
       const stormBtn = el('button', 'clo-ct-toggle', 'Storm');
       stormBtn.type = 'button';
       stormBtn.title = 'Intuition storm: real games that carried on past the point one of ' +
@@ -35120,7 +35157,7 @@
     }
 
     function buildLauncher() {
-      const btn = el('button', 'clo-ct-launch', 'Course tree');
+      const btn = el('button', 'clo-ct-launch clo-dock-btn', 'Course tree');
       btn.id = CT_BTN_ID;
       btn.type = 'button';
       btn.title = 'Walk this course as a tree of positions: what the author covers from each ' +
@@ -35130,7 +35167,7 @@
         render();
         if (!ct.tree && !ct.busy) runWalk();
       });
-      document.body.appendChild(btn);
+      cornerDock().appendChild(btn);
       ct.launcher = btn;
     }
 
@@ -35598,6 +35635,11 @@
       uncShare: C.uncMinShare,
       panel: null,
       ui: null,
+      // The corner-dock launcher and the course it would open on, kept apart
+      // from `st.bid` — that one is the course a SESSION is about, and this is
+      // read off the url on every tick whether or not one is running.
+      launcher: null,
+      launchBid: '',
       // --- stage 0 --------------------------------------------------------
       pool: [],          // eligible frontiers not yet drawn, weighted by `n`
       poolSize: 0,       // …and how many there were, for the summary line
@@ -45625,6 +45667,61 @@
       };
     }
 
+    /**
+     * THE LAUNCHER, in the corner dock. Until v0.183.0 the storm was opened
+     * from inside the course tree's header, on the argument that the corner
+     * already held four things and a fifth would have to solve that cluster
+     * rather than add an offset to it. The dock IS that cluster solved, and
+     * this is one of the two controls here that get pressed most — so it is
+     * one click from the course page now. The tree's own button stays exactly
+     * where it was, for anyone already in there.
+     *
+     * It needs NOTHING of the tree's: `startSession` reads the course listing
+     * itself, and §14.11's store is what usually answers before that lands —
+     * which is the whole reason a single click is honest here.
+     */
+    function buildLauncher() {
+      const stale = document.getElementById(ST_BTN_ID);
+      if (stale) stale.remove();
+      const btn = el('button', 'clo-st-launch clo-dock-btn clo-dock-btn--primary',
+        'Intuition storm');
+      btn.id = ST_BTN_ID;
+      btn.type = 'button';
+      btn.title = 'Intuition storm: real games that carried on past the point one of ' +
+        'this course’s lines stops, one position at a time. Your move is graded for being ' +
+        'DECENT, not for matching an engine.\n' +
+        'It reads the Lichess opening explorer and the ChessDB analysis book, so it sends ' +
+        'these positions to both.';
+      btn.addEventListener('click', (e) => {
+        blurButton(e);
+        if (!stormApi || !st.launchBid) return;
+        // `open` holds the three refusals (already running, no course, a board
+        // of ours up) and answers false rather than throwing.
+        stormApi.open({ bid: st.launchBid, name: st.name || '' });
+      });
+      cornerDock().appendChild(btn);
+      st.launcher = btn;
+    }
+
+    /** Called from the TOP of `tick`, above its `!st.running` return — the
+     *  launcher's whole job is to exist while no session does. */
+    function syncLauncher() {
+      const m = CHAPTER_EDIT_RE.test(location.pathname)
+        ? null : COURSE_PATH_RE.exec(location.pathname);
+      if (!m) {
+        if (st.launcher) st.launcher.hidden = true;
+        st.launchBid = '';
+        return;
+      }
+      st.launchBid = m[1];
+      if (!st.launcher || !st.launcher.isConnected) buildLauncher();
+      // Hidden while the window is up — it covers the page — and while any
+      // board of ours is, since `open` would refuse: a control that cannot act
+      // should not be on screen to be pressed.
+      st.launcher.hidden = st.running ||
+        Boolean(continuationActive && continuationActive());
+    }
+
     function mount() {
       const stale = document.getElementById(ST_PANEL_ID);
       if (stale && st.panel !== stale) stale.remove();
@@ -47949,6 +48046,7 @@
     // ----------------------------------------------------------------------
 
     function tick() {
+      syncLauncher();
       if (!st.running) return;
       const onCourse = !CHAPTER_EDIT_RE.test(location.pathname) &&
         COURSE_PATH_RE.test(location.pathname);
@@ -49544,7 +49642,7 @@
       }
     }
     function buildLauncher() {
-      const btn = el('button', 'clo-km-launch', 'Key moves');
+      const btn = el('button', 'clo-km-launch clo-dock-btn', 'Key moves');
       btn.id = KM_BTN_ID;
       btn.type = 'button';
       btn.title = 'Which moves you actually get wrong are being skipped by ' +
@@ -49554,7 +49652,7 @@
         render();
         if (!km.report && !km.busy) runScan();
       });
-      document.body.appendChild(btn);
+      cornerDock().appendChild(btn);
       km.launcher = btn;
     }
 

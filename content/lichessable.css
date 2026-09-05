@@ -2497,23 +2497,105 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-mx-cancel:hover { color: #fff; }
 
-/* --- the pinned-mistake corner (sections 16c and 16d) ------------------------
-   ONE corner of the viewport for everything the pinned list says to the user:
-   the offer made right after a mistake, and the launcher for pins that have
-   come round. They can never appear together — the offer is trainer-only and
-   the launcher is everywhere BUT a trainer page — so they share the spot rather
-   than stacking, and the user learns one place to look.
+/* === THE CORNER DOCK — every floating launcher on a chessable.com page ======
+   Five modules put a control in the bottom-right corner and each used to be
+   `position: fixed` with a hardcoded `bottom`: section 25's key moves at 92px,
+   24's course tree at 54px, 21's coverage at 16px, and 16d's pin dock — which
+   also took 16px and shows on EVERY page, so on a course page it sat ON TOP of
+   the coverage launcher. Reported live. 27's storm never got a launcher here at
+   all for exactly this reason and was opened from inside the course tree
+   instead. Four sections carried a note about the arithmetic and each had to
+   know the other three's heights.
+
+   SO THERE ARE NO OFFSETS. One flex column, and the SEQUENCE is the block of
+   `order` declarations below — the trainer row's discipline (section 9), for
+   the trainer row's reason: a module may keep appending whenever it boots and
+   still land in its own slot, and a launcher that hides takes its space with it
+   (a `display: none` child is not a flex item), so nothing here has to know
+   what the others are doing. `cornerDock()` in lichessable.js is the one
+   builder; anything new put in this corner joins the column and picks an
+   `order`, and never an offset.
 
    `position: fixed`, unlike the panel and the overlays. Section 11's ban on
    fixed is about anchoring to SCROLLING CONTENT, which makes an element chase
-   the page; neither of these is anchored to content. They are notifications,
-   anchored to the viewport, exactly like the popups here already are.
+   the page; this is anchored to the viewport, exactly like every popup here.
 
    BELOW our own board (z 100000) and above everything of Chessable's: a drill
-   in progress must cover them, which is also the belt to the JS braces that
-   hide both while a board is up. */
-.clo-pin-prompt,
-.clo-pin-dock {
+   in progress must cover it, which is also the belt to the JS braces that hide
+   each launcher while a board is up.
+
+   POINTER-EVENTS: the column's box spans its widest child, so the gaps between
+   buttons would otherwise swallow clicks meant for the page underneath. */
+.clo-dock {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 99990;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  pointer-events: none;
+  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.clo-dock > * { pointer-events: auto; }
+
+/* THE ORDER, top of the column to bottom. The two things pressed most sit
+   LOWEST — nearest the thumb on a phone, and nearest the corner the eye
+   already goes to — with the three that open a report to read above them. */
+.clo-dock .clo-km-launch  { order: 1; }
+.clo-dock .clo-ct-launch  { order: 2; }
+.clo-dock .clo-cov-launch { order: 3; }
+.clo-dock .clo-st-launch  { order: 4; }
+.clo-dock .clo-pin-dock   { order: 5; }
+
+/* ONE SIZE, SET ONCE. Doubled class so it beats every launcher's own
+   single-class base rule without any of them having to know this exists — the
+   trainer row's `.clo-review .clo-rowprimary` trick, for the same reason.
+   Bigger than the 13px/7px these were: this is a corner of somebody else's
+   page, and a control that is hard to hit is a control that is not used. */
+.clo-dock .clo-dock-btn {
+  box-sizing: border-box;
+  min-height: 42px;
+  padding: 11px 18px;
+  border-radius: 4px;
+  font-size: 15px;
+  font-family: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;  /* a launcher label that wraps stops reading as a button */
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+
+/* TWO TIERS, and this REVERSES the old ruling that the coverage launcher is
+   "the one filled green thing in this corner". The corner now holds five, and
+   the two that matter are the two that PRACTISE — the drill and the storm.
+   Everything else here opens a report about the course, which is a different
+   kind of act and gets the neutral outline the tree and key moves already wore.
+   So: filled green = "do some work now", outline = "read something". Both
+   greens are the same claim, made about the two halves of one activity, which
+   is why this is not two primaries competing (DESIGN-ui-inventory §3). */
+.clo-dock .clo-dock-btn--primary {
+  border: 1px solid var(--clo-accent);
+  background: var(--clo-accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.clo-dock .clo-dock-btn--primary:hover {
+  background: var(--clo-accent-hover);
+  border-color: var(--clo-accent-hover);
+}
+
+/* --- the pinned-mistake corner (sections 16c and 16d) ------------------------
+   The offer made right after a mistake (16c) is NOT in the dock: it is
+   trainer-only, and the dock is empty on a trainer page (every launcher in it
+   hides there), so it keeps the corner to itself and keeps its own fixed
+   positioning. The launcher (16d) is a dock item like the rest. */
+.clo-pin-prompt {
   position: fixed;
   right: 16px;
   bottom: 16px;
@@ -2628,7 +2710,9 @@ html.clo-injecting .legal-square-capture-mt2 {
   border-color: var(--clo-accent-hover);
 }
 
-/* --- 16d: the floating launcher -------------------------------------------- */
+/* --- 16d: the floating launcher, a dock item -------------------------------
+   It carries its own error line under the button, so it is a small column of
+   its own inside the dock's column rather than a bare button. */
 .clo-pin-dock {
   display: flex;
   flex-direction: column;
@@ -2637,26 +2721,14 @@ html.clo-injecting .legal-square-capture-mt2 {
   max-width: 300px;
 }
 
-/* Filled green, and this one is not a modifier of anything: it is alone on the
-   page, so there is no row for it to be the primary OF — the fill just says
-   "there is something to do". Amber would be wrong for the reason it is wrong
-   in the row: this launches a quiz, it does not open a list. */
+/* Filled green — one of the dock's two primaries (`clo-dock-btn--primary`
+   carries the fill now). Amber would be wrong for the reason it is wrong in
+   the trainer row: this launches a quiz, it does not open a list. */
 .clo-pin-dock__btn {
   border: 1px solid var(--clo-accent);
   background: var(--clo-accent);
   color: #fff;
-  padding: 8px 14px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
   font-family: inherit;
-  white-space: nowrap;  /* a launcher label that wraps stops reading as a button */
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
-}
-
-.clo-pin-dock__btn:hover {
-  background: var(--clo-accent-hover);
-  border-color: var(--clo-accent-hover);
 }
 
 .clo-pin-dock__msg {
@@ -4162,23 +4234,17 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 
 .clo-dm-launch[hidden] { display: none; }
 
+/* A dock item (see THE CORNER DOCK above for the position and the size). It
+   was the corner's one filled green button until v0.183.0; the fill now belongs
+   to the two controls that PRACTISE, and this one opens a report — the same
+   tier as the course tree and key moves beside it. */
 .clo-cov-launch {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 99999;
-  border: 1px solid var(--clo-accent);
-  background: var(--clo-accent);
-  color: #fff;
-  padding: 7px 14px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 13px;
-  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--clo-line);
+  background: var(--clo-bg);
+  color: var(--clo-text-bright);
 }
 
-.clo-cov-launch:hover { background: var(--clo-accent-hover); border-color: var(--clo-accent-hover); }
+.clo-cov-launch:hover { border-color: var(--clo-line-hover); }
 .clo-cov-launch[hidden] { display: none; }
 
 .clo-cov {
@@ -4585,24 +4651,13 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
    third. Anything else added to this corner has to solve the whole cluster.
    =========================================================================== */
 
+/* A dock item; the position and the size are THE CORNER DOCK's, above.
+   Neutral outline: DESIGN-ui-inventory §3's "an action away from the main
+   task", the tier every report launcher in this corner now wears. */
 .clo-ct-launch {
-  position: fixed;
-  right: 16px;
-  /* One row above section 21's launcher, which sits at 16px. */
-  bottom: 54px;
-  z-index: 99999;
-  /* Neutral outline, not a fill: DESIGN-ui-inventory §3's "an action away from
-     the main task". The coverage launcher beside it is the filled green one,
-     and two fills in one corner is two primaries. */
   border: 1px solid var(--clo-line);
   background: var(--clo-bg);
   color: var(--clo-text-bright);
-  padding: 7px 14px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 13px;
-  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .clo-ct-launch:hover { border-color: var(--clo-line-hover); }
@@ -5984,9 +6039,19 @@ html.clo-touch .clo-pin-prompt__x {
   padding: 4px 8px;
 }
 
-html.clo-touch .clo-pin-dock__btn {
-  font-size: 16px;
-  padding: 12px 18px;
+/* THE DOCK ON A PHONE. One rule for every launcher in it (the per-launcher
+   touch rules this replaced each said something slightly different), and a
+   bigger step than the rest of this block takes: these are the controls a
+   course page is opened FOR, and the corner of a page held in one hand is
+   exactly where a 13px button is missed. Trebled class so it outranks both the
+   dock's own desktop rule and anything a launcher declares for itself. */
+html.clo-touch .clo-dock { gap: 10px; }
+
+html.clo-touch .clo-dock .clo-dock-btn {
+  min-height: 56px;
+  padding: 15px 22px;
+  font-size: 17px;
+  border-radius: 6px;
 }
 
 html.clo-touch .clo-pin-dock__msg { font-size: 14px; }
@@ -6018,11 +6083,6 @@ html.clo-touch .clo-mx-cancel {
 
 /* Coverage panel (section 21). Its own width already clamps to the viewport,
    so only the type and the tap targets grow. */
-
-html.clo-touch .clo-cov-launch {
-  font-size: 15px;
-  padding: 10px 16px;
-}
 
 html.clo-touch .clo-cov {
   font-size: 15px;
@@ -6149,7 +6209,6 @@ html.clo-touch .clo-sg-lead-btn {
   .clo-ct-split { grid-template-columns: minmax(0, 1fr); }
 }
 
-html.clo-touch .clo-ct-launch { font-size: 15px; padding: 9px 16px; }
 html.clo-touch .clo-ct { font-size: 15px; }
 html.clo-touch .clo-ct-btn { font-size: 14px; padding: 7px 14px; }
 html.clo-touch .clo-ct-x { font-size: 22px; padding: 0 6px; }
@@ -6199,6 +6258,13 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
    The two slots are measured and then COVERED by surfaces that already exist:
    section 18's board and its panel, pinned onto them by `positionInHost`
    exactly as 24g pins the analysis board. Nothing is drawn into them here. */
+
+/* The launcher — a dock item, and one of its two primaries, so the fill and the
+   size both come from THE CORNER DOCK's rules. It had no launcher of its own
+   until v0.183.0: the storm was opened from inside the course tree's header on
+   the argument that the corner already held four things and a fifth would have
+   to solve that cluster. The dock is that cluster solved. */
+.clo-st-launch[hidden] { display: none; }
 
 .clo-st {
   position: fixed;
@@ -7451,28 +7517,13 @@ html.clo-touch .clo-st-stattab { font-size: 14px; padding: 7px 13px; }
    report you read while deciding something, and its longest row is one line of
    move chips. */
 
+/* A dock item; the position and the size are THE CORNER DOCK's, above. The
+   note that used to live here — this at 92px, the tree at 54px, coverage at
+   16px and the pin dock also at 16px — was the arithmetic the dock removes. */
 .clo-km-launch {
-  position: fixed;
-  right: 16px;
-  /* THE CORNER NOW HOLDS FOUR THINGS on a course page: this (92px), the course
-     tree (54px), the coverage report (16px) and section 16d's pin dock, which
-     shows on every page and also takes 16px. The stack is why this one did not
-     make the existing overlap a three-way; anything further put here has to
-     solve the whole cluster rather than add a fifth offset. */
-  bottom: 92px;
-  z-index: 99999;
-  /* Neutral outline, DESIGN-ui-inventory §3's "an action away from the main
-     task" — the same tier as the course tree beside it. The coverage launcher
-     is the one filled green thing in this corner and stays that way. */
   border: 1px solid var(--clo-line);
   background: var(--clo-bg);
   color: var(--clo-text-bright);
-  padding: 7px 14px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 13px;
-  font-family: 'Noto Sans', -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .clo-km-launch:hover { border-color: var(--clo-line-hover); }
@@ -7690,7 +7741,6 @@ html.clo-touch .clo-st-stattab { font-size: 14px; padding: 7px 13px; }
 }
 
 html.clo-touch .clo-km,
-html.clo-touch .clo-km-launch { font-size: 15px; }
 html.clo-touch .clo-km-btn { padding: 7px 12px; font-size: 14px; }
 html.clo-touch .clo-km-detail,
 html.clo-touch .clo-km-fix,

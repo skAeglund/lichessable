@@ -2224,13 +2224,19 @@ body {
          amber — which in the trainer row means "you have N outstanding items" on something
          that only opens a list — would be the wrong vocabulary.</p>
       <div class="hx-stage hx-row">
-        <div class="clo-pin-dock hx-pos">
-          <button type="button" class="clo-pin-dock__btn">★ Drill pinned (3)</button>
+        <div class="clo-dock hx-pos">
+          <div class="clo-pin-dock">
+            <button type="button"
+              class="clo-pin-dock__btn clo-dock-btn clo-dock-btn--primary">★ Drill pinned (3)</button>
+          </div>
         </div>
-        <div class="clo-pin-dock hx-pos">
-          <button type="button" class="clo-pin-dock__btn">★ Drill pinned (1)</button>
-          <div class="clo-pin-dock__msg">Could not open the drill — close whatever board is open
-            and try again.</div>
+        <div class="clo-dock hx-pos">
+          <div class="clo-pin-dock">
+            <button type="button"
+              class="clo-pin-dock__btn clo-dock-btn clo-dock-btn--primary">★ Drill pinned (1)</button>
+            <div class="clo-pin-dock__msg">Could not open the drill — close whatever board is open
+              and try again.</div>
+          </div>
         </div>
       </div>
     </div>
@@ -2550,7 +2556,9 @@ body {
     <div class="hx-card">
       <h3>Launcher · empty · busy</h3>
       <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px">
-        <button type="button" class="clo-cov-launch hx-pos">Repertoire coverage</button>
+        <div class="clo-dock hx-pos">
+          <button type="button" class="clo-cov-launch clo-dock-btn">Repertoire coverage</button>
+        </div>
         <div class="clo-cov hx-pos" style="width:330px">
           <div class="clo-cov-head">
             <span class="clo-cov-title">Repertoire coverage</span>
@@ -3011,12 +3019,14 @@ body {
 
     <div class="hx-card">
       <h3>Launcher · walking · refused</h3>
-      <p>The launcher is a NEUTRAL outline, one row above the coverage panel's filled
-        green one — two fills in one corner would be two primaries
-        (DESIGN-ui-inventory §3).</p>
+      <p>The launcher is a NEUTRAL outline in the corner dock — the tier every launcher
+        that opens a REPORT wears since v0.183.0. The two filled greens down there are the
+        two that practise (DESIGN-ui-inventory §3).</p>
       <div class="hx-stage" style="display:flex;flex-direction:column;gap:14px;align-items:flex-start">
-        <button type="button" class="clo-ct-launch hx-pos">Course tree</button>
-        <button type="button" class="clo-cov-launch hx-pos">Repertoire coverage</button>
+        <div class="clo-dock hx-pos">
+          <button type="button" class="clo-ct-launch clo-dock-btn">Course tree</button>
+          <button type="button" class="clo-cov-launch clo-dock-btn">Repertoire coverage</button>
+        </div>
         <div class="clo-ct hx-pos" style="width:420px">
           <div class="clo-ct-head">
             <span class="clo-ct-title">Course tree</span>
@@ -3345,14 +3355,27 @@ body {
     </div>
 
     <div class="hx-card">
-      <h3>The corner, all four occupants</h3>
-      <p>A course page stacks three of these; 16d's pin dock shows on EVERY page and
-        also takes 16px, so it already overlapped the coverage launcher before this
-        one existed. A fifth has to solve the cluster rather than add an offset.</p>
-      <div class="hx-stage" style="display:flex;flex-direction:column;gap:10px;align-items:flex-start">
-        <button type="button" class="clo-km-launch hx-pos">Key moves</button>
-        <button type="button" class="clo-ct-launch hx-pos">Course tree</button>
-        <button type="button" class="clo-cov-launch hx-pos">Repertoire coverage</button>
+      <h3>THE CORNER DOCK, all five occupants</h3>
+      <p class="hx-note">Every floating launcher on a chessable.com page, in one flex column.
+        Until v0.183.0 each was <code>position: fixed</code> with a hardcoded bottom — 92px,
+        54px, 16px, and 16d's pin dock ALSO at 16px on every page, which is why it sat on top
+        of the coverage launcher. There are no offsets now: the sequence is a block of
+        <code>order</code> declarations, the trainer row's discipline, so a launcher that hides
+        takes its own space with it. The two that PRACTISE are filled green and sit lowest —
+        nearest the thumb; the three that open a report are neutral outlines above them.
+        The real thing is bottom-right of the viewport and right-aligned.</p>
+      <div class="hx-stage" style="align-items:flex-start">
+        <div class="clo-dock hx-pos">
+          <button type="button" class="clo-km-launch clo-dock-btn">Key moves</button>
+          <button type="button" class="clo-ct-launch clo-dock-btn">Course tree</button>
+          <button type="button" class="clo-cov-launch clo-dock-btn">Repertoire coverage</button>
+          <button type="button"
+            class="clo-st-launch clo-dock-btn clo-dock-btn--primary">Intuition storm</button>
+          <div class="clo-pin-dock">
+            <button type="button"
+              class="clo-pin-dock__btn clo-dock-btn clo-dock-btn--primary">★ Drill pinned (3)</button>
+          </div>
+        </div>
       </div>
     </div>
 
