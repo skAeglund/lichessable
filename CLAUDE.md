@@ -2574,208 +2574,112 @@ Currently working (v0.18.x).
   * A COURSE WHOSE LINES MOSTLY WILL NOT REPLAY REFUSES, with them named in the
     console. Section 21's lesson: a parse detail taken at face value once
     produced a confident "0 of 77 present · 0 missing".
-- Key moves vs difficult moves (sections 25, 25b, 25c and 25d, v0.122.0): the moves the
-  user actually gets WRONG must not be the moves Chessable's "Key Moves Only"
-  study mode silently plays for them. A course-page panel (`/course/<bid>/`) reads
-  the key range back out of the course, reads the per-move record out of the
-  Difficult Moves feed, lists the difficult moves sitting OUTSIDE the range, and
-  lowers each variation's key range to cover them through the quick-edit driver —
-  and, once a move stops being difficult, puts the range BACK where it came from
-  (25b). Optionally it pools that record by POSITION rather than by card (25c),
-  which is the only way to see a move that is hard in a line where it is never
-  even asked.
-  **READ `DESIGN-key-moves.md` BEFORE CHANGING ANYTHING HERE** — §1 is how a key
-  range is stored and the string-comparison bug in Chessable's own handler, §4 is
-  the reconstructed page-order rule and its measured error, §5 is the write, §7 is
-  the restore, §8 is the spread. What follows is only what an edit ELSEWHERE can
-  break.
+- Key moves vs difficult moves (sections 25, 25b, 25c and 25d, v0.122.0): the
+  moves the user actually gets WRONG must not be the moves Chessable's "Key
+  Moves Only" study mode silently plays for them. A course-page panel
+  (`/course/<bid>/`) reads the key range back out of the course, reads the
+  per-move record out of the Difficult Moves feed, lists the difficult moves
+  sitting OUTSIDE the range, and lowers each variation's key range to cover them
+  through the quick-edit driver — and, once a move stops being difficult, puts
+  the range BACK where it came from (25b). Optionally it pools that record by
+  POSITION rather than by card (25c), which is the only way to see a move that
+  is hard in a line where it is never even asked; 25d covers a move the user has
+  barely been ASKED as well.
+  **READ `DESIGN-key-moves.md` BEFORE CHANGING ANYTHING INSIDE THIS MODULE.**
+  §1 is how a key range is stored and the string-comparison bug in Chessable's
+  own handler · §4 the reconstructed page-order rule and its measured error ·
+  §5 the write · §7 the restore, §7.1 the baseline store, §7.2 `propose()` and
+  §7.4 the two arming states · §8 the spread, §8.1 pooled-not-averaged and §8.2
+  add-only · §9 never-asked, §9.2 what a LEVEL is (read out of Chessable's own
+  bundle: null/0 is "no record" and not level zero, the reported value is the
+  internal level PLUS 3, and a failure RESETS the base), §9.3 why the question
+  must be asked of the POSITION, §9.4 the read and its cost. What follows is
+  only what an edit ELSEWHERE can break.
   * A KEY RANGE IS ONLY EVER MOVED TO A PLY THIS FEATURE CAN NAME EXACTLY.
     Earlier, to a difficult move in the user's own record; later, ONLY back to
     the ply this feature itself took it from, recorded at the time. Never to an
     estimate, and never past an end mark. That is why §4's reconstruction of
     Chessable's rule may LOWER a range and may never raise one: its whole
-    measured error (15%) is "later than Chessable", and later-than-Chessable as a
+    measured error is "later than Chessable", and later-than-Chessable as a
     RAISE stops asking for material the user is being tested on.
-  * `propose()` IS THE ONE PLACE THE DIRECTION IS DECIDED, and both callers
-    (`analyse` on a fresh read, `reanalyse` when a setting changes) go through it.
-    It compares `needed` — the earliest difficult move in the WHOLE variation
-    minus the lead — against `ideal`, which is the recorded original for a range
-    this tool has moved and simply `low` for one it has not. `min` of the two,
-    snapped. Reading `needed` off `outside` instead of `hard` is the mistake to
-    avoid: once a range can be raised, the difficult moves INSIDE it are exactly
-    what stops it going all the way back.
-  * THE BASELINE STORE IS `chrome.storage.LOCAL`, not session — the whole point is
-    that it outlives the sitting in which the move was hard. `low` is written ONCE
-    (a second lowering must not overwrite the original, or the range could never
-    get all the way back); `setTo` is where we last put it and is the record's own
-    validity check — a mark that has moved since means somebody else owns this
-    range now (Chessable's own recalculation, the edit page by hand), so the
-    record is DROPPED rather than acted on.
   * THE DRIVER JOB CARRIES `fromPlyIndex`, the ply the mark is expected to be on,
-    and REFUSES when it is anywhere else. That guard is not optional now that the
-    write moves a range in either direction: "the mark is earlier than the target"
-    used to be a safe surprise to shrug off and is now a legitimate instruction.
-  * TWO BUTTONS, ARMED SEPARATELY (`km.armed` is `'' | 'lower' | 'raise'`).
-    Lowering only ever adds to what is quizzed and restoring only ever takes away,
-    so one armed press must never mean both.
-  * CHESSABLE'S RECORD IS PER CARD, NOT PER POSITION (25c), and that is the fact
-    the whole feature's coverage rests on: the same move in the same position is a
-    separate history in every variation that plays it, and a move in a variation's
-    RUN-UP is never asked there, so it can never be recorded there at all. The
-    variations most in need of a lowering are the least able to produce evidence
-    for it. `poolByPosition` + `spreadByPosition` (opt-in, `cloKeyMoveSpread`) are
-    the answer; measured on course 453453, it takes the panel from 5 variations to
-    lower to 51.
-  * `difficultRowCounts(row)` IS TOP LEVEL AND IS WHY: pooling needs the two
-    numbers, not the ratio — averaging six percentages would weight a 9-attempt
-    card like a 56-attempt one. `difficultRowAccuracy` is now expressed in terms
-    of it, so section 13b's rule is unchanged and still stated once.
-  * THE SPREAD MAY ONLY EVER ADD, and the line that guarantees it is
-    `if (acc >= threshold) continue` in `spreadByPosition` — a pooled figure at or
-    above the bar leaves a variation's own record completely alone. Pooling raises
-    a move above the bar as readily as it drops one below it (a row at 88.9% pools
-    to 93.6% on the test course), and this toggle must never WITHDRAW a lowering
-    the user could already see. The `min(own, pooled)` beside it only picks the
-    figure DISPLAYED when both are under the bar.
-  * `analyse` IS ASYNC AND YIELDS EVERY `chunkVars`, because the spread walks every
-    variation with CloSan: measured 2.0 s for 80 variations synchronously, i.e. a
-    frozen tab. Only the spread path yields — without it the analysis is a few
-    milliseconds and the macrotasks would cost more than the work. `respread()`
-    re-derives from the CACHED course and rows, so a toggle costs no fetch.
-  * THE COUNT IS PRINTED BEFORE ANYTHING CAN BE ARMED (`km.spreadEl`), because the
-    spread is the one setting here that can take a press from five variations to
-    seventy. A chip whose figure came from elsewhere is drawn DASHED and says so in
-    its tooltip: a percentage on a card with no record would otherwise read as a
-    measurement of that card.
-  * `difficultRowAccuracy(row)` AND `difficultPlyIndex(v, row)` ARE TOP LEVEL AND
-    SHARED with section 13b. The first is the accuracy rule — timeouts dropped
-    from BOTH halves of the fraction, `giveU` still counting — and it is shared
-    precisely so the two features cannot disagree about which moves are hard;
-    13b's `reduceDifficultRow` calls it. The threshold is 13b's too
-    (`cloDifficultThreshold`). Nothing about difficulty is re-decided in 25.
-    The second returns -1 rather than a guess when the SAN at the computed ply
-    does not match the row's `correctMove`: that index is what a key range gets
-    lowered to cover, and covering the wrong move is worse than covering none.
-  * `reduceCourse` NOW CARRIES PER-PLY `keys`, and that cost a bump of
-    `CONFIG.coverage.cacheKey` (`cloCourseListCache` → `…2`) SHARED WITH SECTIONS
-    21 AND 24. A listing written by an older build parses fine and is silently
-    missing the field, which reads as "this course has no key moves anywhere" —
-    hence a new KEY rather than a version check, so old entries age out.
-    Section 24's note that `isKey` "must not be added back" was about adding it
-    to the TREE, where it is noise; it is this section's whole subject.
-  * A KEY RANGE OPENS ON A WHOLE MOVE (§1.3, ground-truthed): a mark written onto
-    Black's 1...a6 comes back stored on White's 1.h3. So the proposal is snapped
-    here (`snapToMove`) rather than left for the server — the sentence on screen
-    has to be what will happen, and the driver's "already covered" test compares
-    the stored mark against the ply asked for, which unsnapped would answer "no"
-    for ever on a variation already fixed.
+    and REFUSES when it is anywhere else — a constraint on the SHARED quick-edit
+    driver (section 12). That guard is not optional now that the write moves a
+    range in either direction: "the mark is earlier than the target" used to be a
+    safe surprise to shrug off and is now a legitimate instruction.
+  * `difficultRowAccuracy(row)`, `difficultRowCounts(row)` AND
+    `difficultPlyIndex(v, row)` ARE TOP LEVEL AND SHARED WITH SECTION 13b.
+    `difficultRowAccuracy` is the accuracy rule — timeouts dropped from BOTH
+    halves of the fraction, `giveU` still counting — and it is shared precisely
+    so the two features cannot disagree about which moves are hard; 13b's
+    `reduceDifficultRow` calls it, and the threshold is 13b's too
+    (`cloDifficultThreshold`). NOTHING ABOUT DIFFICULTY IS RE-DECIDED IN 25.
+    `difficultRowCounts` exists because pooling needs the two NUMBERS and not the
+    ratio — averaging six percentages would weight a 9-attempt card like a
+    56-attempt one — and `difficultRowAccuracy` is expressed in terms of it, so
+    13b's rule is still stated once. `difficultPlyIndex` returns -1 rather than a
+    guess when the SAN at the computed ply does not match the row's
+    `correctMove`: that index is what a key range gets lowered to cover, and
+    covering the wrong move is worse than covering none.
+  * `reduceCourse` CARRIES THREE THINGS FOR IT, and each cost a bump of
+    `CONFIG.coverage.cacheKey` SHARED WITH SECTIONS 21, 24 AND 27 — a listing
+    written by an older build parses fine and is silently missing the field,
+    hence a new KEY rather than a version check, so old entries age out. The
+    bumps, in order: per-ply `keys` (`cloCourseListCache` → `…2`); then
+    per-variation `unstudied` and course-level `keyMode` (`…2` → `…3`); then
+    section 27's per-variation `paused` and course-level `allPaused`
+    (`…3` → `…4`, and only 27 reads either). `unstudied` is `learnMW`/`learnMB`,
+    ground-truthed 80/80 as the count of that variation's user moves with no
+    level (`reviewM*` is the count currently DUE); `keyMode` is the user's own
+    study mode for the course (`isKeyMode`, matching the per-move
+    `default_study`) and the panel STATES it while nothing branches on it — a
+    range still outlives a mode switch. Section 24's note that `isKey` "must not
+    be added back" was about adding it to the TREE, where it is noise; here it
+    is the whole subject.
+  * `analyse` IS ASYNC AND YIELDS EVERY `chunkVars`, because the spread walks
+    every variation with CloSan — measured 2.0 s for 80 variations
+    synchronously, i.e. a frozen tab. ONLY the spread path yields: without it
+    the analysis is a few milliseconds and the macrotasks would cost more than
+    the work.
+  * THE FIX PASS IS SEQUENTIAL AND TWO-PRESS. One variation is one driver visit
+    — a focused popup, a page load, a submit — so it is a watchable, stoppable
+    queue with a local watchdog per variation (section 19's rule: the worker's
+    job timer does not survive an idle restart) and a `maxWrites` cap. Section
+    19c's arming press, for section 19c's reason.
   * IT OWNS NO BRIDGES and is called by nothing. It reads `fetchCourse`,
     `dropCourseCache`, `chessableCreds`, `chessableBooksOnce`, `sideOf` and
     `popupDriverBounds`, all shared and all unchanged.
-  * A MOVE THE USER HAS BARELY BEEN ASKED IS COVERED TOO (25d, opt-in
-    `cloKeyMoveUnproven` — a NUMBER, 0 = off, else "answered fewer than N
-    times", max 5). HOW OFTEN A MOVE HAS BEEN ANSWERED IS TWO SOURCES, and each
-    covers where the other is blind: the difficult-moves feed's own
-    `successes` for a move that has EVER FAILED, and `level - 3` from
-    `getLesson` for one that never has. DESIGN-key-moves.md §9.2 decodes the
-    level out of Chessable's own bundle and the facts are shared code's
-    business: **null/0 is "no record", not level zero**; the reported value is
-    the internal level PLUS 3 (min 4, cap 20); and it increments once per
-    sitting from a base that a failure RESETS — so for a never-failed move
-    `level - 3` is exactly the number of sittings it was answered in, and for a
-    failed one it is only the streak since, which is why the feed half is not
-    optional (a floor on the level alone drags back 46 variations against 25).
-    A finished session posts only the plies with `isUserMove`, which under
-    Study: Key Moves is exactly the key ones, so a move the range hides can
-    never gain a level; overstudy is level-neutral in the same code.
-  * ASKED OF THE POSITION, NEVER OF THE CARD, and this is the measurement the
-    feature stands on (§9.3): per card, 56 of 65 ranges on the test course go to
-    ply 0 — Key Moves Only switched off wholesale — because a card's run-up is
-    unanswered BY CONSTRUCTION. Pooled by position it is 24 ranges, none at ply
-    0. Counts are SUMMED across every card that plays the position, the same
-    pooling 25c does and with the same key (`posMoveKey`).
-  * A COURSE WITH NO RECORD AT ALL PROPOSES NOTHING (`idx.empty`). With nothing
-    answered every move is under the floor and the "answer" would be every range
-    at ply 0. Said in words in the panel instead.
-  * `propose()` TAKES IT AS A THIRD NUMBER IN THE SAME `min`, with NO LEAD
-    subtracted — the lead is context before a DIFFICULT move, this is "ask this
-    move", and stacking them compounds. Everything §7 says still holds for free:
-    a restore is capped at the first move with no record.
-  * THE FLOOR DECIDES THE READ (§9.4). At 1 ("never at all") the question is a
-    boolean and `unstudied` answers it FREE — only a PART-learned variation
-    costs a `getLesson` (measured: 0 on either test course). ABOVE 1 the values
-    are needed, so every variation with anything studied is read (14 here, ~12 s;
-    `lessonMax` = 200 is the cap, and what it drops is `unknown` rather than
-    "barely asked", so it can only leave a range alone). An index built with the
-    values is `exact` and serves every floor; the cheap one serves only floor 1.
-  * `reduceCourse` NOW ALSO CARRIES per-variation `unstudied` and course-level
-    `keyMode`, which cost the THIRD bump of `CONFIG.coverage.cacheKey`
-    (`…2` → `…3`) shared with 21 and 24. (Section 27 took a FOURTH, `…3` → `…4`,
-    for per-variation `paused` + course-level `allPaused`; same rule, and only
-    27 reads either.) `unstudied` is `learnMW`/`learnMB`,
-    ground-truthed 80/80 as the count of that variation's user moves with no
-    level (and `reviewM*` as the count currently DUE).
-    `keyMode` is the user's own study mode for the course (`isKeyMode`, matching
-    the per-move `default_study`); the panel STATES it and nothing branches on
-    it — a range still outlives a mode switch.
-  * THE FIX PASS IS SEQUENTIAL AND TWO-PRESS. One variation is one driver visit —
-    a focused popup, a page load, a submit — so it is a watchable, stoppable queue
-    with a local watchdog per variation (section 19's rule: the worker's job timer
-    does not survive an idle restart) and a `maxWrites` cap. Section 19c's arming
-    press, for section 19c's reason.
-  * ITS LAUNCHER IS A DOCK ITEM (THE CORNER DOCK, in Key mechanics) — it was
-    the top of the four-offset stack, at 92px.
-
+  * ITS LAUNCHER IS A DOCK ITEM (THE CORNER DOCK, in Key mechanics) — it was the
+    top of the four-offset stack, at 92px.
 - ChessDB eval column (section 26, v0.128.0; side by side with Stockfish and
-  colour-coded since v0.129.0): a cloud-analysis eval beside every
-  move in the Lichess panel — where the explorer says how OFTEN a move is
-  played, this says how GOOD it is, at book depth, with no WASM and no engine
-  running. OPT-IN (`cloChessdbEval`, storage.local, absent = off; checkbox in the
-  panel's own cogwheel menu, section 6b, where the panel's other preferences
-  live). It is the SECOND host permission this extension has ever had.
-  **READ `DESIGN-chessdb.md` BEFORE CHANGING ANYTHING HERE** — §2 is the wire,
-  §3 the three findings the design rests on, §6.4 the side-by-side engine
-  section, §7.1 the colour ramp and the ruling it reverses, §10 what is still
-  unmeasured. What follows is only what an edit ELSEWHERE can break.
-  * IT IS TWO REQUESTS PER POSITION AND THAT IS NOT WASTE (§3.2/§3.3). `learn=1`
-    scores EVERY legal move but computes the unknown ones on the spot; `learn=0`
-    scores only what is really in the distributed book. NOTHING INSIDE A
-    `learn=1` ANSWER DISTINGUISHES THE TWO — measured, the on-the-fly fills
-    routinely carry a HIGHER `note` than the real book entries beside them, and
-    `rank` is 0 for both. So "is this eval trustworthy" is answerable only by
-    asking twice, which is what `book` on each entry records and what
-    `.clo-cdb--est` draws. Collapsing this to one request silently turns every
-    estimate into a claim.
-  * THERE IS NO DEPTH FIELD, and both candidates look exactly like one (§3.1).
-    `querypv`'s `depth` is the PV LENGTH (34/34, 24/24, 49/49 measured) and the
-    `note`'s first number moves the opposite way from it. Neither is comparable
-    to `CONFIG.engine`'s depth 30. Do not write a depth gate against them.
+  colour-coded since v0.129.0): a cloud-analysis eval beside every move in the
+  Lichess panel — where the explorer says how OFTEN a move is played, this says
+  how GOOD it is, at book depth, with no WASM and no engine running. OPT-IN
+  (`cloChessdbEval`, storage.local, absent = off; checkbox in the panel's own
+  cogwheel menu, section 6b). It is the SECOND host permission this extension
+  has ever had.
+  **READ `DESIGN-chessdb.md` BEFORE CHANGING ANYTHING INSIDE THIS MODULE.**
+  §2 the wire and §2.3 the encodings · §2.4 why `queue` must never be called ·
+  §3 the three findings the design rests on: §3.1 THERE IS NO DEPTH FIELD and
+  both candidates look exactly like one, §3.2/§3.3 why it is TWO requests per
+  position and nothing inside a `learn=1` answer distinguishes a book entry from
+  an on-the-fly fill-in, §3.4 `unknown` · §4 coverage · §5 the gate · §6.1 the
+  engine section and §6.4 the side-by-side layout with its measurements · §7 the
+  column's three inherited constraints and §7.1 the colour ruling it reverses ·
+  §10 what is still unmeasured. What follows is only what an edit ELSEWHERE can
+  break.
   * THE WORKER ALLOWS `queryall` AND NOTHING ELSE (`handleChessdbFetch`,
     background.js). `queue` and `store` are this API's two WRITES — they spend a
-    volunteer network's compute, ground-truthed live (a queued position came
-    back analysed ~25 minutes later) — so the guard is an allow-list of one
-    rather than a block-list, and nothing may reach them from a poll or a scan.
-  * SCORES ARE THE MOVER'S; THE PANEL IS WHITE'S. `cdbEvalText` flips on Black's
-    move, because the engine section directly above the table is normalised to
-    White (in engine.js) and two conventions in one panel is one too many. This
-    is the opposite call from 24f's mover-score, which has no engine beside it.
-  * THREE SCORE BANDS, and a plain centipawn read is wrong in two of them: a
-    mate is `30000 - distance` (mate in 1 = 29999) and a TABLEBASE result is
-    ~`25000 - DTZ` (KRK win in 22 = 24978, note `(W-0022)`). Without the bands a
-    rook endgame prints "+249.78" — a plausible-looking number that never
-    throws. The lettered note is the authority; the numeric band is the fallback.
-  * THE EXPLORER'S UCI IS RESOLVED THROUGH CloSan BEFORE THE LOOKUP, never
-    compared raw — section 6c's v0.48.1 rule, from the OTHER side of the same
-    trap. Lichess writes castling king-takes-rook (`e1h1`); ChessDB writes
-    `e1g1`, which is what CloSan and every index in this file use. So the CDB
-    map is keyed by ChessDB's own uci and each Lichess row is resolved with
-    `sanToUci` into that spelling (`tr.dataset.cdbUci`). A raw compare misses
-    exactly the castling rows, and SUCCEEDS everywhere else.
+    volunteer network's compute, ground-truthed live (a queued position came back
+    analysed ~25 minutes later) — so the guard is an ALLOW-LIST OF ONE rather
+    than a block-list, and nothing may reach them from a poll or a scan. Section
+    27 leans on this: its walk stops on `unknown` constantly and "ask them to
+    analyse it" is one URL parameter away.
   * `cdbWanted()` IS A PRIVACY GATE BEFORE IT IS A BUDGET ONE. The column is
     opt-in because chessdb.cn is a SECOND third party seeing the position, so
     nothing may ask on a user who has switched nothing on. Since v0.129.0 the
     only exception is the `chessdb` SOURCE, which has nothing else to fall back
-    to; `auto` was in that clause and must not go back — the companion's gate is
+    to; `auto` was in that clause and MUST NOT go back — the companion's gate is
     `cdbCurrent()`, which requires the column, so an `auto` user with the column
     off would have every position sent twice for an answer nothing ever reads.
   * IT NEVER DELAYS THE LICHESS TABLE. `requestCdb` is fired from `refresh()`
@@ -2784,85 +2688,78 @@ Currently working (v0.18.x).
     by `fillCdbEvals()` a round trip later. `state.cdbFen` is what stops a
     previous position's evals painting onto the current rows — never assume it
     equals `state.fen`, which is the whole reason `cdbCurrent()` exists.
-  * COLOUR: A GREEN<->RED RAMP (v0.129.0, §7.1) — which REVERSES v0.128.0's
-    "plain dim text, never green" on the author's instruction. What the old
-    ruling leaves behind are the ramp's constraints, and all four are
-    load-bearing: it is WHITE'S PERSPECTIVE, the same as the digits, so it says
-    which SIDE is favoured and never "this is the good move" (a green "−1.5" is
-    the version 24f's ruling was right about); the tone is computed IN
-    `cdbEvalText` off the same `signed` value as the text, never by a second
-    function reading the text back, because a colour disagreeing with the sign
-    beside it is completely silent; the hues are its own (`--clo-ev-*`), never
-    the accent green or `--clo-rep-risk`, since the repertoire badges are 9px
-    marks one column over; and `eq` sets NOTHING, so an equal position stays
-    plain dim text.
-    A TONE SETS `--clo-ev-tone`, NEVER `color`. Each host reads
-    `color: var(--clo-ev-tone, <its own default>)`, which is what keeps the ramp
-    out of every specificity fight in the stylesheet — no doubled selector, no
-    order dependence, and Stockfish's own numbers stay uncoloured by simply not
-    being given a tone. `applyEvalTone(el, tone)` is the one writer.
-  * IT NO LONGER REPLACES STOCKFISH UNDER `auto` (v0.129.0, §6.4). The two run
-    SIDE BY SIDE: the search keeps the section's big numbers, the book is
-    painted beside its lines at 11px, plus a labelled head chip carrying the
-    book's OWN best (read off `cdbBestMoves(1)`, not off pv 1 — the two
-    disagreeing is most of the value of showing both). `chessdb` is untouched
-    and still owns the section outright; `local` still sees nothing. Four rules:
-    - THE JOIN IS `pv.uci`, which `engine/engine.js` now sends beside `pv.san` —
-      that san is a numbered STRING ("5.Nf3 Nc6 …") and joins onto nothing.
-      Both Stockfish and ChessDB spell castling `e1g1`, so 6c's v0.48.1 trap,
-      which is LICHESS's `e1h1`, is not on this path.
-    - THE `cdbPending` HOLD IS NOW `chessdb`-ONLY. It existed to stop `auto`
-      booting a WASM engine for the ~400 ms before the book answered; under
-      `auto` Stockfish is what is being started, so there is nothing to wait for.
-    - THE BOOK CAN LAND AFTER THE SEARCH (cached explorer data, engine already
-      running). `state.enginePvs`/`enginePvsFen` keep the last update so
-      `applyCdbAnswer` can repaint the companion, and the fen guard is what
-      stops one position's lines being annotated with another's evals.
-    - HIERARCHY IS THE FEATURE: 15px/600 head and 13px lines for the search,
-      11px and dim for the book. A "tidy-up" that equalises them removes the
-      whole point. `.clo-engine--cdb` carries the per-line column, so with no
-      book the section is byte-identical to the pre-v0.129.0 one — measured 0
-      overflow at 300/330/360/420 px, desktop and touch.
-  * UNDER `html.clo-touch` THE GAMES COLUMN IS HIDDEN when this column is on,
-    and that is a measurement, not a preference: the four-column touch table is
+  * THE EXPLORER'S UCI IS RESOLVED THROUGH CloSan BEFORE THE LOOKUP, never
+    compared raw — section 6c's v0.48.1 rule, from the OTHER side of the same
+    trap. Lichess writes castling KING-TAKES-ROOK (`e1h1`); ChessDB writes
+    `e1g1`, which is what CloSan and every index in this file use. So the CDB map
+    is keyed by ChessDB's own uci and each Lichess row is resolved with
+    `sanToUci` into that spelling (`tr.dataset.cdbUci`). A raw compare misses
+    exactly the castling rows, and SUCCEEDS everywhere else.
+  * SCORES ARE THE MOVER'S; THE PANEL IS WHITE'S. `cdbEvalText` flips on Black's
+    move, because the engine section directly above the table is normalised to
+    White (in engine.js) and two conventions in one panel is one too many. This
+    is the opposite call from 24f's mover-score, which has no engine beside it.
+    THREE SCORE BANDS, and a plain centipawn read is wrong in two of them: a mate
+    is `30000 - distance` and a TABLEBASE result is ~`25000 - DTZ`, so without
+    the bands a rook endgame prints "+249.78" — a plausible-looking number that
+    never throws. The lettered note is the authority; the numeric band is the
+    fallback.
+  * A TONE SETS `--clo-ev-tone`, NEVER `color`. Each host reads
+    `color: var(--clo-ev-tone, <its own default>)`, which is what keeps the
+    green<->red ramp out of every specificity fight in the stylesheet — no
+    doubled selector, no order dependence, and Stockfish's own numbers stay
+    uncoloured by simply not being given a tone. `applyEvalTone(el, tone)` is the
+    one writer. Four constraints on the ramp itself, all load-bearing: it is
+    WHITE'S PERSPECTIVE, the same as the digits, so it says which SIDE is
+    favoured and never "this is the good move" (a green "−1.5" is the version
+    24f's ruling was right about); the tone is computed IN `cdbEvalText` off the
+    same `signed` value as the text, never by a second function reading the text
+    back, because a colour disagreeing with the sign beside it is completely
+    silent; the hues are its own (`--clo-ev-*`), never the accent green or
+    `--clo-rep-risk`, since the repertoire badges are 9px marks one column over;
+    and `eq` sets NOTHING, so an equal position stays plain dim text.
+  * UNDER `html.clo-touch` THE GAMES COLUMN IS HIDDEN when this column is on, and
+    that is a MEASUREMENT, not a preference: the four-column touch table is
     already at the edge (330px panel: needs 328, has 328) and at the panel's own
     300px minimum it overflows by 11px unaided, so a fifth column does not fit.
     Games yields because % says the same thing and the exact count is kept in the
-    percentage cell's tooltip. Anything added to this table has to re-measure.
+    percentage cell's tooltip. ANYTHING ADDED TO THIS TABLE HAS TO RE-MEASURE.
   * IT ALSO ANSWERS THE ENGINE SECTION (§6.1, `cloEngineSource`:
     `auto` | `chessdb` | `local`, options page) — under `chessdb` OUTRIGHT, and
-    under `auto` beside Stockfish (the bullet above; §6.4). `syncEngine`
-    branches BEFORE its ordinary analyze: under `chessdb`, with the book able to
-    answer, it fills the same three lines from `queryall` (already cached) plus
-    one `querypv` per line, and Stockfish is never started. Four rules an edit
-    elsewhere can break:
+    under `auto` BESIDE Stockfish (§6.4). `syncEngine` branches BEFORE its
+    ordinary analyze, and four rules an edit elsewhere can break:
     - THE GATE IS `cdbEngineReady()`, i.e. "at least one move here is in the
       book", never a depth (§3.1). Under `chessdb` nothing is ever booted, which
       is that state's whole purpose, so an unknown position gets a sentence
       rather than a search.
     - `syncEngine` HOLDS WHILE AN ANSWER IS IN FLIGHT (`state.cdbPending`,
-      compared on `cacheKey`) — SCOPED TO `chessdb` since v0.129.0, where it
-      buys the promise that state exists for. The hold is released in a
-      `finally`, because a hold that outlives its fetch is an engine section
-      that never starts at all.
+      compared on `cacheKey`) — SCOPED TO `chessdb` since v0.129.0, where it buys
+      the promise that state exists for. The hold is released in a `finally`,
+      because a hold that outlives its fetch is an engine section that never
+      starts at all.
     - `applyCdbAnswer` CALLS `syncEngine()`. The source decision is not
-      answerable until the answer lands — before it, `cdbEngineReady()` is
-      false for want of data rather than because the book is ignorant.
+      answerable until the answer lands — before it, `cdbEngineReady()` is false
+      for want of data rather than because the book is ignorant. That function
+      also repaints the companion, since the book can land AFTER the search
+      (cached explorer data, engine already running); `state.enginePvs` /
+      `enginePvsFen` keep the last update, and the fen guard is what stops one
+      position's lines being annotated with another's evals.
     - THE EVAL COMES FROM `queryall`, NOT from the `querypv` replies. queryall
       already scored every move from the PARENT's mover perspective; taking the
-      child's score instead means negating it back up a ply, which is the kind
-      of arithmetic that is wrong in one case out of four and looks right in
-      the other three. The pv reply is used for its `pvSAN` continuation only.
-    The section is LABELLED "ChessDB" whenever it is the source, and the depth
-    slot says `book · N ply line` rather than borrowing the word "depth" for a
-    number that means something else entirely.
-  * IT OWNS NO BRIDGES and is called by nothing. It reads `cacheKey`,
-    `sanToUci`, `fenAfterUci`, `CloSan` and the panel's own `state`/`ui`, all
-    unchanged.
+      child's score instead means negating it back up a ply, which is the kind of
+      arithmetic that is wrong in one case out of four and looks right in the
+      other three. The pv reply is used for its `pvSAN` continuation only.
+    THE JOIN TO STOCKFISH IS `pv.uci`, which `engine/engine.js` sends beside
+    `pv.san` — that san is a numbered STRING ("5.Nf3 Nc6 …") and joins onto
+    nothing. Both engines spell castling `e1g1`, so 6c's trap is not on this
+    path. The section is LABELLED "ChessDB" whenever it is the source, and the
+    depth slot says `book · N ply line` rather than borrowing the word "depth"
+    for a number that means something else entirely.
+  * IT OWNS NO BRIDGES and is called by nothing. It reads `cacheKey`, `sanToUci`,
+    `fenAfterUci`, `CloSan` and the panel's own `state`/`ui`, all unchanged.
   * EVERYTHING FAILS SOFT: an unreachable host, a rejected fetch, or a position
     ChessDB has never seen (the ordinary case off theory, and for most tactics
     courses' custom start FENs) leaves an empty column and nothing else changed.
-
 - Intuition storm on the repertoire's frontier (section 27, v0.130.0): the
   positions your own course lines END on, carried forward by REAL games — or,
   on the SECOND SOURCE (§19, "uncovered responses"), the position after a
