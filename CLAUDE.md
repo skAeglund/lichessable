@@ -3538,6 +3538,18 @@ Currently working (v0.18.x).
     §14.10a's argument for `…` in the column beside it — and about a card that is
     ANSWERED rather than graded it reports a grading failure that never
     happened.
+  * THE COLLECT BUTTON IS FILLED WHILE THIS COURSE HOLDS NOTHING (29.5,
+    v0.184.0, on request) — the ONE exception in that window to
+    DESIGN-ui-inventory §3's "one primary and Start is it", and not a slip to
+    tidy away: the two fills are never competing invitations, since with nothing
+    collected this is the press that comes first and the fill goes out for ever
+    the moment it has been made. "Collected" is `puzzleHeldCount()` — ready PLUS
+    ARCHIVED, never candidates, or a store trimmed back to `puzzleReadyMax`
+    would ask to be collected again. The three modifiers of that one button
+    (fresh, armed, running) are made EXCLUSIVE IN `syncSettings`, not by
+    stylesheet order — all three are of equal weight as selectors. The third
+    state a fill cannot express, a course scanned in full with no puzzles in the
+    band, is said in words in the tooltip off `puzzleScannedCount()`.
   * IT OWNS NO BRIDGE. `stormApi` grew two members (`puzzleSolved`,
     `puzzleFailed`), called from section 18's quiz path.
   * NOTHING MAY BE FETCHED ON A PROFILE THAT HAS NOT SWITCHED IT ON. It is a

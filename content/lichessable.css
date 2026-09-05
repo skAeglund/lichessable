@@ -6509,6 +6509,24 @@ html.clo-touch .clo-ct-badge { width: 10px; height: 10px; }
   border-color: var(--clo-attention-line);
 }
 
+/* §29.5) THE PUZZLE COLLECT WITH NOTHING HELD (v0.184.0, on request) — a FILL,
+   and the one exception in this window to "Start is the only primary"
+   (DESIGN-ui-inventory §3). The argument for it is that the two fills are never
+   competing invitations: while a course has no puzzles at all this is the press
+   that comes first, and it goes out permanently the moment it has been made, so
+   the state is a one-off rather than a second standing primary. The green is the
+   button's OWN idle green filled in, not a new colour — what changes is weight,
+   which is the only thing that could say "there is something here that has never
+   been done".
+
+   It never has to outrank the armed or running rules below and beside it: all
+   three are decided in `syncSettings` and only one is ever applied. */
+.clo-st-collectbtn.clo-st-collectbtn--fresh,
+.clo-st-collectbtn.clo-st-collectbtn--fresh:hover:not(:disabled) {
+  background: var(--clo-accent);
+  color: #fff;
+}
+
 /* §29.2) The puzzle collect, armed. AMBER like the clear above and for the same
    reason — "you have something outstanding" is what a confirm waiting for its
    second press is — and NOT the green it wears idle, which in this window means
@@ -7038,6 +7056,27 @@ button.clo-st-strow:hover { background: var(--clo-bg-raised); }
    and three words say which one, where a lit border could not. Never a fill and
    never green — DESIGN-ui-inventory §3 allows this window one primary and Start
    is it, and this row's green is spent on "gather". */
+/* §28) …AND IT IS THE LOUDEST OF THE NEUTRALS (v0.184.0, on request). It wore
+   `.clo-st-sync`'s flat outline exactly, which put it at one weight with Sync,
+   Background, Clear and Stats — four controls it is not the peer of: those act
+   on the store or open a report, and this one changes what the whole session is
+   ABOUT. So it stays inside the neutral vocabulary (no green — this row's green
+   is spent on "gather", and the window's one fill is Start) and takes the two
+   steps available inside it: a RAISED ground, which nothing else in the row has,
+   and bright text. The three states then read as a progression rather than as
+   three colours: raised, brighter under the pointer, accent-bordered once a
+   scope is in force. */
+.clo-st-fenbtn {
+  background: var(--clo-bg-raised);
+  border-color: var(--clo-line);
+  color: var(--clo-text-bright);
+}
+
+.clo-st-fenbtn:hover:not(:disabled) {
+  border-color: var(--clo-line-hover);
+  color: #fff;
+}
+
 .clo-st-fenbtn.clo-st-fenbtn--on,
 .clo-st-fenbtn.clo-st-fenbtn--on:hover:not(:disabled) {
   color: var(--clo-text-bright);

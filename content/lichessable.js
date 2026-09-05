@@ -37534,6 +37534,22 @@
     const puzzleCandCount = () =>
       (pz.store ? Object.keys(pz.store.c).length : 0);
 
+    /** §29.2) HOW MANY PUZZLES THIS COURSE HOLDS — loaded PLUS archived, which
+     *  is what "have I collected this course yet" means and is the question the
+     *  collect button's own fill answers. The archive is the durable half
+     *  (§29.2), so a course whose ready list has been trimmed back is still a
+     *  collected course; CANDIDATES are deliberately not counted, being ids seen
+     *  in an index rather than puzzles anybody has yet. */
+    const puzzleHeldCount = () =>
+      (pz.store ? Object.keys(pz.store.r).length + Object.keys(pz.store.p).length : 0);
+
+    /** Anchors already read. A different question from the one above, and the
+     *  only way to tell "never collected" from "collected, and this course
+     *  simply has no puzzles in the band" — which the tooltip says in words,
+     *  since the fill alone cannot. */
+    const puzzleScannedCount = () =>
+      (pz.store ? Object.keys(pz.store.a).length : 0);
+
     /** meta.json, once, and kept on `pz.meta` so `puzzleBand` can read it
      *  synchronously. Failure is ordinary and leaves the declared band in
      *  force — see `puzzleBand`. */
@@ -46597,6 +46613,26 @@
         : (st.collectArmed ? 'Collect puzzles?' : 'Collect puzzles');
       st.ui.collectBtn.classList.toggle('clo-st-gather--on', pz.collecting);
       st.ui.collectBtn.classList.toggle('clo-st-collectbtn--armed', st.collectArmed);
+      // §29.5) …AND A FILL WHILE THIS COURSE HAS NOTHING (v0.184.0, on
+      // request). The one thing the row could not say was whether collecting
+      // had ever been done here — the counts live in a tooltip, so a course
+      // fully collected and one never touched looked identical. So the button
+      // is FILLED while nothing is held and outlined once something is, which
+      // is the row's own reading of a fill ("the thing to do next") applied to
+      // one control rather than to the window.
+      //
+      // It is an exception to "this window allows one primary and Start is it"
+      // (DESIGN-ui-inventory §3) and a deliberate one: the two fills are never
+      // both an invitation at once — with nothing collected this is the press
+      // that has to happen first, and it goes out for ever the moment it has.
+      //
+      // EXCLUSIVE IN JS, not left to the cascade: armed is AMBER and running is
+      // the gather fill, and both are states of this same button. Deciding it
+      // here means the stylesheet needs no ordering rule between three
+      // modifiers of equal weight.
+      st.ui.collectBtn.classList.toggle('clo-st-collectbtn--fresh',
+        canCollect && !filling() && !pz.collecting && !st.collectArmed &&
+        !puzzleHeldCount());
       st.ui.collectBtn.title = pz.collecting
         ? 'Stop after the shards being read now. Everything collected so far is ' +
           'already stored.'
@@ -46608,9 +46644,19 @@
             'it reads is kept, so this course never needs fetching again.'
           : 'Collect every puzzle from games that played this course’s lines, in ' +
             'one pass instead of a little each night. ' +
-            (puzzleReadyCount() || pz.archived
-              ? puzzleReadyCount() + ' loaded, ' + pz.archived + ' in the archive. '
-              : '') +
+            // §29.5) The fill above says WHETHER anything is held; this says
+            // how much, and it is also the one place the third state can be
+            // read — a course scanned in full that simply has no puzzles in
+            // the band, which from the outside looks exactly like one never
+            // collected.
+            (puzzleHeldCount()
+              ? puzzleReadyCount() + ' loaded for this course, ' +
+                Object.keys(pz.store.p).length + ' more in the archive' +
+                (pz.archived ? ' (' + pz.archived + ' across all courses)' : '') + '. '
+              : (puzzleScannedCount()
+                ? 'Nothing found for this course yet, though ' +
+                  puzzleScannedCount() + ' of its positions have been read. '
+                : 'Nothing has been collected for this course yet. ')) +
             'Anything already collected is skipped, so pressing it again is cheap.');
       // §27) …and it is not the control while a ROUND owns the pass: the round's
       // own button is the one that stops it, and "Stop gathering" here would end

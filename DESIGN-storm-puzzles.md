@@ -757,3 +757,80 @@ card in ten; over-disguising silently costs every graded card the sentence that
 says where it is. Controls run 2026-09-03, each failing on exactly its own
 assertion and no others: reduced to `Boolean(pz.on)` → 1; the `seen` clause
 dropped → 1.
+
+## 14. Saying whether a course has been collected — §29.5 (v0.184.0)
+
+Reported: standing in the storm window there was no way to tell a course whose
+puzzles have all been collected from one that has never been touched. Both show
+the same green-outlined "Collect puzzles", and the counts that would settle it
+live in a tooltip nobody hovers.
+
+### 14.1 A fill, and why this window gets a second one
+
+The rule this bends is DESIGN-ui-inventory §3 as applied here: *this window
+allows one primary and Start is it.* The exception is granted on one argument —
+the two fills are never competing invitations. While the course holds nothing,
+collecting is the press that has to happen first and Start is offering a session
+made entirely of positions; the moment anything has been collected the fill goes
+out, permanently, and this button drops back to the green outline every other
+gather-shaped control in the row wears. So it is a one-off state, not a second
+standing primary.
+
+The colour is the button's own idle green filled in rather than a new one. What
+changes is *weight*, which is the only property left that could say "there is
+something here that has never been done" — the row's vocabulary already spends
+green outline on ordinary actions, amber on "you have something outstanding",
+and neutral on the actions away from the main task.
+
+### 14.2 What "collected" means
+
+`puzzleHeldCount()` — ready plus **archived**, for this course. The archive is
+the durable half (§12), so a course whose ready list has been trimmed back to
+`puzzleReadyMax` is still a collected course; a fill returning after a trim
+would be a lie about work already paid for.
+
+Candidates are deliberately not counted. A candidate is an id seen in an index,
+which is stage A having run and stage B not — i.e. exactly the state where the
+press still has something to do.
+
+There is a third state the fill cannot express: a course scanned in full that
+simply has no puzzles in the band. From the outside that is indistinguishable
+from one never collected, and it is the one place a user could press for ever
+and get nothing. The tooltip carries it in words — "Nothing found for this
+course yet, though N of its positions have been read" — read off
+`puzzleScannedCount()`, which is `store.a`, the anchor record.
+
+### 14.3 Exclusive in JS, not in the cascade
+
+Three modifiers describe one button: fresh (green fill), armed (amber,
+`--clo-attention`) and running (`clo-st-gather--on`, the gather fill). All three
+are of equal weight as selectors, so an ordering rule in the stylesheet would be
+the only thing keeping them apart — and the armed one already carries a comment
+saying it is doubled to outrank the base green. `syncSettings` decides instead:
+the fresh class is applied only when the button is not armed, not running, not
+disabled and the course holds nothing. Nothing in the stylesheet has to know
+about the other two.
+
+### 14.4 "From position…" beside it
+
+Same pass, same complaint one control over. It wore `.clo-st-sync`'s flat
+outline exactly, which put it at one weight with Sync, Background, Clear and
+Stats — four controls it is not the peer of: those act on the store or open a
+report, and this one changes what the whole session is *about*.
+
+It stays inside the neutral vocabulary — no green, that being spent on "gather",
+and no fill, Start being the window's own — and takes the two steps available
+inside it: a raised ground (`--clo-bg-raised`, which nothing else in the row
+has) and bright text. Its three states then read as one progression rather than
+as three colours: raised, brighter under the pointer, accent-bordered once a
+scope is in force.
+
+### 14.5 Verification
+
+Measured in `dev/harness.html`, which renders both collect states and every
+`.clo-st-fenbtn` state. Desktop: every control in the row stays 24px tall, so
+neither change reflows it; the fresh collect is `#629924` on white against the
+collected one's transparent/`#a5c96a`; the position button is `#3a3630` with
+`#dcdcdc` text against Sync's transparent/`#949494`. Under `html.clo-touch` the
+row's own overflow is identical with the collect button shown and hidden, so the
+added replica is not what puts the row over its width.

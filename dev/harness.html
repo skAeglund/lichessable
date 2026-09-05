@@ -3496,6 +3496,10 @@ body {
                    that has one. Never a fill: this window has one primary and Start
                    is it. -->
               <button type="button" class="clo-st-gather clo-st-roundbtn">Gather all courses</button>
+              <!-- &sect;29.5) COLLECT with nothing held on this course: the one FILL
+                   in this window besides Start, and a one-off &mdash; it goes out
+                   permanently the moment anything has been collected. -->
+              <button type="button" class="clo-st-gather clo-st-collectbtn clo-st-collectbtn--fresh">Collect puzzles</button>
               <button type="button" class="clo-st-sync clo-st-clearbtn clo-st-clearbtn--armed">Clear positions?</button>
               <!-- &sect;14.24) the background top-up's switch. NEUTRAL, beside
                    Gather and deliberately not its green: green outline in this row is
@@ -3549,6 +3553,9 @@ body {
               <button type="button" class="clo-st-start">Start</button>
               <button type="button" class="clo-st-gather">Gather positions</button>
               <button type="button" class="clo-st-gather clo-st-roundbtn">Gather all courses</button>
+              <!-- &sect;29.5) &hellip;and once this course holds puzzles, the ordinary
+                   green outline every other gather-shaped control wears. -->
+              <button type="button" class="clo-st-gather clo-st-collectbtn">Collect puzzles</button>
               <button type="button" class="clo-st-sync clo-st-clearbtn">Clear positions</button>
               <button type="button" class="clo-st-sync clo-st-bgbtn">Background: on</button>
               <button type="button" class="clo-st-sync">Sync</button>
