@@ -159,55 +159,40 @@ read first.
 - `dev/check-contracts.py` — asserts every cross-module bridge in
   `content/lichessable.js` is named in CLAUDE.md. Run it after ANY edit to this
   file (see Verification).
-- `DESIGN-*.md` — ONE PER FEATURE, and each is the required reading its section in
-  Key mechanics points at. They hold the loop, the measurements, the version
+- `DESIGN-*.md` — ONE PER FEATURE, and each is the required reading its section
+  in Key mechanics points at. They hold the loop, the measurements, the version
   history and the live ground-truthing; this file holds only what an edit
-  elsewhere can break.
-  * `DESIGN-autoplay.md` — section 13 (§12 = everything since the original design)
-  * `DESIGN-difficult-moves.md` — sections 13b/13c/13d
-  * `DESIGN-continuation-review.md` — section 18 (§7) and the heads-up 18b (§6, §8)
-  * `DESIGN-retry-mistakes.md` — sections 16/17 (§7 = the log and runner as built)
-  * `DESIGN-pinned-mistakes.md` — section 16b, and the pinned arms of 17's popup
-    and 20's launcher
-  * `DESIGN-quick-edit.md` — section 12, incl. §6 refreshing the host after a save
-  * `DESIGN-quick-edit-arrows.md` — section 12b only
-  * `DESIGN-show-and-grade.md` — sections 23 and 23b (§4 = auto-play, §14 = the
-    live ground truth, §15 = what must never happen, §18 = what is still open)
-  * `DESIGN-key-move-leadin.md` — section 23c (§2 = the gate, live; §3 = the loop)
-  * `DESIGN-repertoire-coverage.md` — section 21
-  * `DESIGN-course-tree.md` — sections 24, 24b, 24c, 24d, 24e, 24f, 24g and 24h (§12 = the LIVE
-    ground truth, which overrides §3.5, §5.1 and §8; §12.7 is why `sanToUci` has a
-    second pass; §15 is the Lichess scan, and §15.1 is where §7's "no fetch per
-    column" is LIFTED — do not quote that rule from §7 without reading it; §17 is
-    the mid-run column and the one exception to §14.2's auto-take; §19 is the
-    split scan, and §19.2 is the measurement that decides its one real judgement)
-  * `DESIGN-key-moves.md` — sections 25, 25b, 25c and 25d (§1 = how Chessable
-    stores a key range and the bug in its own handler; §5 = the write and the two
-    live driver failures it exposed in SHARED code; §7 = putting a range BACK;
-    §8 = why Chessable's record is per CARD and what pooling it by position costs;
-    §9 = what an SRS level means, read out of Chessable's own bundle, why "how
-    often has this been answered" needs the feed AND the level, and why the
-    question has to be asked of the position)
-  * `DESIGN-add-as-variation.md` — section 19c (§2 = the wire, and the ten live facts)
-  * `DESIGN-add-as-puzzle.md` — sections 19d and 19e (§2 = the wire, incl. the
-    move-PAIR fold; §6 = the clickable-line menu and why data-fen cannot be trusted)
-  * `DESIGN-chessdb.md` — section 26 (§2 = the wire; §3 = the three findings the
-    design rests on, and §3.1 is a do-not-reintroduce; §5 = the gate; §6.2 = why
-    the alt check is deliberately NOT on this; §10 = what is still unmeasured)
-  * `DESIGN-intuition-storm.md` — section 27 (§3 = the four findings, §3.3 and
-    §3.4 shape the grader; §5 = the stop and pick rules; §6 = every number in
-    `CONFIG.storm`, and §6.5 is the do-not-reintroduce; §7 = the eval band; §11 =
-    what it must never do; §12 = what was NOT measured; §15 = the performance
-    record, whose §15.2 is the three ways a statistic is wrong and plausible;
-    §16 = win probability replacing centipawns as the grade, whose §16.2 is the
-    calibration against the system it replaced; §28 = the position scope, whose
-    §28.2 is the castling normalisation that fails totally and silently)
-  * `DESIGN-storm-puzzles.md` — section 29 (§2 = why a puzzle is ANSWERED and
-    never graded, and the four edits section 18 needed; §3 = the anchor band,
-    which is the measurement the whole feature rests on and the thing the first
-    draft got wrong; §4 = the two gather stages and why they are split; §8 =
-    what it must never do; §10 = the two lessons about controls; §11 = what is
-    still open)
+  elsewhere can break. Each section's own READ gate says which § covers what;
+  this is the reverse lookup.
+
+  | doc | sections |
+  |---|---|
+  | `DESIGN-autoplay.md` | 13 |
+  | `DESIGN-difficult-moves.md` | 13b, 13c, 13d |
+  | `DESIGN-quick-edit.md` | 12, 12c |
+  | `DESIGN-quick-edit-arrows.md` | 12b only |
+  | `DESIGN-retry-mistakes.md` | 16, 17 |
+  | `DESIGN-pinned-mistakes.md` | 16b-16d, and the pinned arms of 17's popup and 20's launcher |
+  | `DESIGN-chessable-sync.md` | 16e |
+  | `DESIGN-continuation-review.md` | 18, and 18b at §8 |
+  | `DESIGN-add-as-variation.md` | 19c |
+  | `DESIGN-add-as-puzzle.md` | 19d, 19e |
+  | `DESIGN-repertoire-coverage.md` | 21 |
+  | `DESIGN-show-and-grade.md` | 23, 23b |
+  | `DESIGN-key-move-leadin.md` | 23c |
+  | `DESIGN-course-tree.md` | 24, 24b-24h |
+  | `DESIGN-key-moves.md` | 25, 25b-25d |
+  | `DESIGN-chessdb.md` | 26 |
+  | `DESIGN-intuition-storm.md` | 27 |
+  | `DESIGN-storm-puzzles.md` | 29, 29.2-29.5 |
+
+  THREE OF THEM CARRY A WARNING ABOUT THEIR OWN EARLIER TEXT, and a rule quoted
+  out of one without reading the later § is a rule quoted wrong:
+  `DESIGN-course-tree.md` §12 overrides §3.5, §5.1 and §8, and §15.1 LIFTS §7's
+  "no fetch per column"; `DESIGN-storm-puzzles.md` §3.1 is superseded by §12.1;
+  `DESIGN-intuition-storm.md` §16 replaces centipawns with win probability
+  throughout, and §23.8, §26 and §30a each reverse a rule stated earlier in it.
+
 - `DESIGN-ui-inventory.md` — every control by host and state, what competes with
   what, the agreed visual hierarchy, and the remaining change list. Read it
   before adding a control to the overstudy row or picking a colour for one; §3
