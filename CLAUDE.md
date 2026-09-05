@@ -714,11 +714,12 @@ Currently working (v0.18.x).
   ALTERNATIVE MOVES the trainer should also accept ('alt', a LIST added in one
   visit). Two hosts behind a `HOSTS` adapter: the review browse state and the
   standalone `/variation/<oid>/` page.
-  **READ `DESIGN-quick-edit.md` BEFORE CHANGING ANYTHING HERE** — the driver, the
-  host adapter, the two-visit edit flow, the alt-move recipe, rights probing and §6
-  refreshing the host after a save. Arrows have their own doc,
-  `DESIGN-quick-edit-arrows.md`. What follows is only what an edit ELSEWHERE can
-  break.
+  **READ `DESIGN-quick-edit.md` BEFORE CHANGING ANYTHING INSIDE THIS MODULE** —
+  the driver, the host adapter, the two-visit edit flow, the alt-move recipe,
+  rights probing, and §6 refreshing the host after a save. Arrows have their own
+  doc, `DESIGN-quick-edit-arrows.md`. THE DRIVER IS SHARED: sections 15, 19, 19b
+  and 25 all send jobs through it, so what follows is only what an edit
+  ELSEWHERE can break.
   * THERE IS NO JSON API. Several of the edit form's POST fields are session/CSRF
     bound and opaque, so the ONLY safe path is to DRIVE Chessable's own edit page in
     a SMALL FOCUSED POPUP WINDOW — never a background tab, which clamps every timer
@@ -731,16 +732,14 @@ Currently working (v0.18.x).
     about HIDDEN pages, and a FOREGROUND tab is not one — do not "restore" the
     window-only path, and above all do not make the fallback `active: false`, which
     would reintroduce the exact ~1 s clamp the popup window exists to escape.
-    Ground-truthed 2026-08-10 on Lemur Browser, where the panel and the overstudy
-    tab work and `chrome.windows` alone is missing. The unavoidable cost on a
-    single-window browser: the requester tab is backgrounded while the driver runs,
-    and Android may evict it, taking the waiting popup with it.
+    Ground-truthed on Lemur Browser, where the panel and the overstudy tab work and
+    `chrome.windows` alone is missing.
   * EVERY FAILURE RELAY FROM THE WORKER MUST CARRY `plyIndex`. The 'load' handler
     keys its state machine on `"<oid>#<plyIndex>"` and DROPS a result that does not
     match, so an error sent without it is an error the popup never hears — Edit and
     Arrows then hang on "Reading the current comment from Chessable…" over a failure
     they were already told about. Bitten twice: the concurrency refusal, then the
-    could-not-open-a-window branch (2026-08-10).
+    could-not-open-a-window branch.
   * MATCH THE MOVE BY ITS 0-BASED PLY INDEX, NEVER BY ABSOLUTE NUMBER. The edit page
     renumbers every variation from move 1 — a tactics puzzle shown as "25. Qc2!" in
     review is `Qc2_w_1` there — while review keeps the source game's numbering.
@@ -773,13 +772,10 @@ Currently working (v0.18.x).
     bridge — otherwise both popups sit on "Checking edit rights…" for the session.
     …AND A FAILED PROBE MAY NOT START ANOTHER. A failure is deliberately NOT cached
     in `rightsByBid` (that would lock the course out for the session), so "unknown"
-    is also what a failure leaves behind — and `applyRightsToPopup` answered unknown
-    by probing again, which re-armed the watchdog, which called it again, for ever:
-    a driver window every `probeTimeoutMs` and a popup pinned on "Checking edit
-    rights…" with the explanation permanently one tick away. `qe.probeFailed` is the
+    is also what a failure leaves behind — and answering unknown by probing again
+    re-arms the watchdog, which calls it again, for ever. `qe.probeFailed` is the
     latch, per popup-OPEN (reopening is the retry), mirroring section 15's
-    `ac.probeFailed` — that module was fixed for this loop; this half of the shared
-    cache was left in it until v0.96.0.
+    `ac.probeFailed`.
     `variationEditRights()` is top-level and shared with 19b: that page renders its
     "Edit Variation" link only for an editable course, so the answer is never null and
     no probe is needed — load-bearing, since the variation host reports NO `bid`.
@@ -796,17 +792,13 @@ Currently working (v0.18.x).
     (`placeFixedPopup` + `visualViewportBox`, both top level, both shared with the
     pencil). A phone's keyboard shrinks what is VISIBLE and leaves the layout
     viewport exactly as it was, and Chrome's "Desktop site" lays the page out a
-    couple of thousand CSS pixels tall — so the old innerHeight clamp parked the
-    popup below anything on screen, and the popup's own autofocus then raised a
-    keyboard over what was left of it. It also FOLLOWS that box for as long as it
+    couple of thousand CSS pixels tall. It also FOLLOWS that box for as long as it
     is open (visualViewport `resize` + `scroll`, rAF-throttled, bound ONCE per
     document — buildPopup runs again on every detach, visualViewport does not).
     Both caps are written INLINE by `placePopup` and outrank the stylesheet's
-    `100vh`/fixed widths, which are the layout viewport again; the edit box keeps
-    its own 40vh wherever that is the smaller of the two, so a desktop window is
-    unchanged. `dev/check-popup-placement.js` executes the real helpers against
-    those viewport shapes — no desktop browser and no harness page can be put
-    into them.
+    `100vh`/fixed widths, which are the layout viewport again.
+    `dev/check-popup-placement.js` executes the real helpers against those viewport
+    shapes — no desktop browser and no harness page can be put into them.
   * THE VIEWPORT LOCK IS SHARED AND KEYED BY OWNER (`lockViewport(owner)` /
     `unlockViewport(owner)` / `viewportLocked(owner)`, hoisted to top level out of
     section 22 in v0.109.0): this popup takes one while any of its fields has
@@ -819,24 +811,34 @@ Currently working (v0.18.x).
   * PROMOTION ALTERNATIVES ARE REFUSED in popup and driver — the edit board's picker
     markup is UNVERIFIED, the same reason auto-play (13), section 22 and section 23
     refuse them.
-  * REFRESHING THE HOST AFTER A SAVE (12c): the variation page CAN re-read in place
-    and does; THE TRAINER CANNOT (`HOSTS.review.refresh` is null) and the status line
-    says so instead. The page round trip is the riskiest code in this feature — once
-    the pager is clicked we are COMMITTED to a navigation, so `refreshVariationPage`
-    is a try/**finally** whose finally is the one unconditional step, and FALSE MEANS
-    "not refreshed", NEVER "not where you were". The popup holds its SAVING ui
-    (`qe.refreshing`) only until the `render` mark — `host.refresh(onVisible)` fires
-    there, which is the moment the saved text is on screen — and `restore` runs
-    behind it. NEVER TIE THE POPUP TO A LATER PHASE AGAIN: `restore`'s ceiling is
-    9.5 s and the gate's is 12 s, and v0.99.1's "the post-visible tail is 0.7 s" was
-    a measurement of one variation in a fresh tab (13.8 s on the next one tried).
-    THE `render` GATE IS `variationPageSig()` (title + every move's id and SAN) PLUS
-    one proof it is the fresh render — the sibling's list seen and replaced, or a
-    `getGame` landing after the way back started (`fetchWatch.fresh`). It must NOT
-    go back to wanting a `variationMoveShown` marker: that marker is the page
-    navigating itself to move 1, which does not happen when `returnToVariation`
-    comes home by the pager (route 2, no hash) — and route 2 is what EVERY tab gets
-    once `history.length` saturates at 50.
+  * REFRESHING THE HOST AFTER A SAVE (12c, §6): the variation page CAN re-read in
+    place and does; THE TRAINER CANNOT (`HOSTS.review.refresh` is null) and the
+    status line says so instead. The page round trip is the riskiest code in this
+    feature — once the pager is clicked we are COMMITTED to a navigation, so
+    `refreshVariationPage` is a try/**finally** whose finally is the one
+    unconditional step, and FALSE MEANS "not refreshed", NEVER "not where you
+    were". The popup holds its SAVING ui (`qe.refreshing`) only until the `render`
+    mark, which is the moment the saved text is on screen; NEVER TIE THE POPUP TO A
+    LATER PHASE AGAIN. And THE `render` GATE MUST NOT go back to wanting a
+    `variationMoveShown` marker: that marker is the page navigating itself to move
+    1, which does not happen when `returnToVariation` comes home by the pager
+    (route 2, no hash) — and route 2 is what EVERY tab gets once `history.length`
+    saturates at 50.
+  * SECTION 25 CHANGED TWO THINGS IN THIS DRIVER, and both fixes apply to the
+    comment, alternative-move and arrows jobs as well (`quickEditSelectMoveEl`,
+    hoisted out of `quickEditSelectMove` — which now just calls it and returns the
+    textarea). THE MOVE IS SELECTED BY ID AND THE CLICK IS RETRIED: Chessable
+    rebuilds `#interactivePGN` shortly after the page boots, so a click on the node
+    the driver was handed can land on one already DETACHED and do nothing at all;
+    `moveClickTries` / `moveClickRetryMs` bound the retry, and a click that keeps
+    not taking is a failure to report rather than a thing to keep doing. And THE
+    SIDE-TO-MOVE CHECK CANNOT PROVE A SELECTION, which was the only check there
+    was: the position a click STARTS from usually already has the side the target
+    move would leave behind, so it passed for a click that never happened, and the
+    driver then read the fields of whatever move was selected before. The proof is
+    Chessable's own `moveActive` class on the target
+    (`SELECTORS.editMoveActiveClass`); the side check stays as a SECOND condition,
+    being what says the BOARD followed rather than merely the list.
 - THE CORNER DOCK (v0.183.0) is the ONE home for every floating launcher in the
   bottom-right of a chessable.com page: `cornerDock()` (top level, beside
   `blurButton`) body-mounts `.clo-dock`, a flex column, and five modules append
@@ -3294,22 +3296,6 @@ Currently working (v0.18.x).
   FILTER, so older shards keep working — branch on field PRESENCE, never on a
   schema version, there isn't one. Themes are the single exception: `undefined`
   PASSES and `[]` DROPS, and collapsing them is wrong in both directions at once.
-- SECTION 25 CHANGED TWO THINGS IN THE SHARED QUICK-EDIT DRIVER, and both fixes
-  apply to the comment, alternative-move and arrows jobs as well
-  (`quickEditSelectMoveEl`, hoisted out of `quickEditSelectMove` — which now just
-  calls it and returns the textarea):
-  * THE MOVE IS SELECTED BY ID AND THE CLICK IS RETRIED. Chessable rebuilds
-    `#interactivePGN` shortly after the page boots, so a click on the node the
-    driver was handed can land on one already DETACHED and do nothing at all.
-    `moveClickTries` / `moveClickRetryMs` bound the retry; a click that keeps not
-    taking is a failure to report, not a thing to keep doing.
-  * THE SIDE-TO-MOVE CHECK CANNOT PROVE A SELECTION, and it was the only check
-    there was. The position a click STARTS from usually already has the side the
-    target move would leave behind, so it passed for a click that never happened —
-    and the driver then read the fields of whatever move was selected before.
-    The proof is Chessable's own `moveActive` class on the target
-    (`SELECTORS.editMoveActiveClass`); the side check stays as a SECOND condition,
-    being what says the BOARD followed rather than merely the list.
 
 ## Verification (no automated tests)
 
