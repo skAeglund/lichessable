@@ -1911,11 +1911,8 @@ read first.
   shortcuts back until the next move, and the field is still there.
   Almost NOTHING here is new — that is the point of where it was put:
   * THE POSITION IS THE TRAINER'S OWN `ctx.fen`, through `readLessonLine()` —
-    section 18b's ply clock source, for section 18b's reason. NEVER a placement
-    read off the board: after a rolled-back wrong answer that board can hold a
-    stale DUPLICATE piece for far longer than an animation (ground-truthed
-    2026-07-27), which no one-king-per-side check catches, and a FEN derived from
-    it then matches nothing. It is also EXACT — castling rights and en passant
+    section 18b's ply clock source, and NEVER a placement read off the board —
+    18b's rule, for 18b's reason, which is stated there. It is also EXACT — castling rights and en passant
     included — so "O-O" and "exd6" resolve without any of `readReviewFen`'s
     heuristics. Re-read every tick; a changed FEN CLEARS the field, deliberately:
     a move typed in full for the previous position must never be carried over and
@@ -2120,13 +2117,12 @@ read first.
   for blindfold practice (23b: the browser's own speech engine, and a board with
   the pieces taken off). While it runs it OWNS Chessable's board and is the only
   writer of it. `cloShowGrade` is OPT-OUT (absent = ON; only an explicit `false`
-  is stored, the `cloLineHeadsUp` shape) — nothing happens until the row's button
-  or the `next` key starts it, so the preference only decides whether that is
-  offered.
+  is stored, the `cloLineHeadsUp` shape).
   **READ `DESIGN-show-and-grade.md` BEFORE CHANGING ANYTHING INSIDE THIS MODE.**
-  The loop, the pacing and its measurements, the auto-play prefix, the
-  alternatives fetch, the audio, §15 "what must never happen" and §18 "still
-  open" are all there. What follows is only what an edit ELSEWHERE can break.
+  The loop, the pacing and its measurements, §2g the press queue, §4 the
+  auto-play prefix, the alternatives fetch, the audio, §15 "what must never
+  happen" and §18 "still open" are all there. What follows is only what an edit
+  ELSEWHERE can break.
   * NO WRONG-MOVE INJECTION, EVER — do not reintroduce it. A legal wrong move
     Chessable happens to ACCEPT would grade a failure as a PASS. Failure goes
     through Chessable's OWN "I don't know" (one footer button that MUTATES after
@@ -2157,35 +2153,31 @@ read first.
     `continuationReviewNow` — SPACE is shared with the heads-up's "Review now",
     and the two DO overlap; resolved by PRIORITY (inside 'shown' the press means
     alternatives, everywhere else it goes here), never by assuming they cannot.
-  * A `next` PRESS THE MODE CANNOT ACT ON YET IS QUEUED, NOT DROPPED (§2g) —
-    four quick taps move the line four moves on. It exists because ~950ms after
-    every grade (`settleMs`, then Chessable's own round trip) the phase is
-    'acting' and then 'think' with `cardReady()` false, and every press landing
-    there used to vanish. Both queue points are INSIDE `doNext`, the one body a
-    live press and a queued press share. Only `next` is ever queued (`wrong` is a
-    verdict on the card ON SCREEN and CLEARS the queue); a queued press may never
-    ask for the next variation (`queueActionable` omits the browse state, and the
-    queue is dropped there and at a variation change), so a tap can never answer
-    a line the user had not seen.
+  * A `next` PRESS THE MODE CANNOT ACT ON YET IS QUEUED, NOT DROPPED (§2g). Both
+    queue points are INSIDE `doNext`, the one body a live press and a queued
+    press share. Only `next` is ever queued (`wrong` is a verdict on the card ON
+    SCREEN and CLEARS the queue); a queued press may never ask for the next
+    variation (`queueActionable` omits the browse state, and the queue is dropped
+    there and at a variation change), so a tap can never answer a line the user
+    had not seen.
     `onKey` IS WRAPPED IN A TRY/CATCH like `tick`'s, and for the same reason: a
     key handler that throws is SILENT — no status, no board change, nothing the
     user sees but "the mode stopped working". v0.100.0 shipped a `ReferenceError`
-    on every reveal (`isNext`, left behind by lifting the body into `doNext`),
-    which `node --check` cannot see and a transcription-based simulation cannot
-    execute. AN EXTRACTION IN THIS FILE IS NOT SHIPPABLE ON STATIC CHECKS ALONE.
+    on every reveal, left behind by lifting a body into `doNext`; see ##
+    Verification's rule that an extraction in this file is not shippable on
+    static checks alone.
     THE RING SENDS ONE EVENT PER TAP, ON RELEASE, NEVER WHILE HELD AND NEVER
-    FASTER THAN ~200ms APART (ground-truthed 2026-08-11). So no hold, long-press
-    or auto-repeat gesture is buildable on the device this mode exists for — a
-    hold version was built, verified live and withdrawn. NEVER act on `e.repeat`:
-    v0.81.0's rule stands unqualified.
+    FASTER THAN ~200ms APART. So no hold, long-press or auto-repeat gesture is
+    buildable on the device this mode exists for — a hold version was built,
+    verified live and withdrawn. NEVER act on `e.repeat`.
   * TWO PRESSES PER CARD, AND EVERY PRESS SHOWS A MOVE — the governing rule, and
-    the one a "tidier" state machine breaks. The first press plays YOUR move on our
-    board; the second shows the OPPONENT'S REPLY and is also what GRADES the card,
-    so the grade rides on a press that was going to happen anyway. v0.69.0 had a
-    THIRD press (grade, then reply) and that is the wasted press this replaced: DO
-    NOT REINTRODUCE IT. "Wrong" pressed at the think stage costs no press of its
-    own — the verdict is remembered (`sg.markedUnknown`) and applied by the press
-    that advances.
+    the one a "tidier" state machine breaks. The first press plays YOUR move on
+    our board; the second shows the OPPONENT'S REPLY and is also what GRADES the
+    card, so the grade rides on a press that was going to happen anyway. v0.69.0
+    had a THIRD press (grade, then reply) and that is the wasted press this
+    replaced: DO NOT REINTRODUCE IT. "Wrong" pressed at the think stage costs no
+    press of its own — the verdict is remembered (`sg.markedUnknown`) and applied
+    by the press that advances.
   * `stop()` FAILS OPEN, TIMER FIRST, on every exit path. The mode PAUSES
     Chessable's per-move clock while the user thinks — a card that runs out
     records `["timeUp"]` and plays the move, so a move the user KNEW is graded
@@ -2202,70 +2194,58 @@ read first.
   * It appends `.clo-sg` to the trainer row at `order: 2` (see the TRAINER ROW
     rules above; green outline idle, `.clo-rowprimary` while running, and a
     fourth collapsed-mid-quiz exception at (0,4,0)).
-
 - The key-move lead-in (section 23c, v0.113.0): under Study **Key Moves** the
   trainer plays the whole non-key prefix ITSELF at variation load and quizzes
   only from the first key move on — so you arrive at a position with no memory of
   how you got there. This replays those plies on OUR board, at a pace a human can
   follow, with Chessable's covered, and hands over standing on the card the
-  trainer is asking. OPT-OUT since v0.160.0 (`cloKeyLeadIn`, absent = ON; the
-  `cloShowGrade` shape, and exact rather than a guess about absence because the
-  cog writes the boolean either way), at the FASTEST of its three speeds
-  (`cloKeyLeadInSpeed`, default `brisk`), both in section 23's cog. Defaulting
-  it on costs a user who does not study Key Moves nothing at all: §2's gate is a
-  property of the lesson plan and is false on every variation of an All Moves
-  session by construction.
-  **READ `DESIGN-key-move-leadin.md` BEFORE CHANGING ANYTHING HERE** — §2 is the
-  gate and the live ground truth it rests on; §5.1 is which plies get replayed
-  (a run-up shared with the one just watched is not shown twice, and only a
-  SHALLOWER branch point restarts from the beginning). What follows is only what an edit
-  ELSEWHERE can break.
-  * IT LIVES ON SECTION 23'S BOARD AND NOWHERE ELSE (§4). With
-    show-and-grade running there is nothing to hand back to — the same board
-    stops replaying and starts asking — and a board of our own (a fourth
-    `cr.mode` on section 18's overlays) would put a swap at exactly the moment
-    the feature exists to make smooth. If the coupling ever gets worse than
-    §4's measurement, HOIST THE BOARD LAYER OUT; do not move the lead-in.
+  trainer is asking. OPT-OUT (`cloKeyLeadIn`, absent = ON), at the FASTEST of its
+  three speeds (`cloKeyLeadInSpeed`, default `brisk`), both in section 23's cog.
+  **READ `DESIGN-key-move-leadin.md` BEFORE CHANGING ANYTHING INSIDE THIS
+  MODULE** — §2 is the gate and the live ground truth it rests on, §3 the loop,
+  §5.1 which plies get replayed (a run-up shared with the one just watched is not
+  shown twice, and only a SHALLOWER branch point restarts from the beginning).
+  What follows is only what an edit ELSEWHERE can break.
+  * IT LIVES ON SECTION 23'S BOARD AND NOWHERE ELSE (§4). With show-and-grade
+    running there is nothing to hand back to — the same board stops replaying and
+    starts asking — and a board of our own (a fourth `cr.mode` on section 18's
+    overlays) would put a swap at exactly the moment the feature exists to make
+    smooth. If the coupling ever gets worse than §4's measurement, HOIST THE
+    BOARD LAYER OUT; do not move the lead-in.
   * THE GATE IS ONE COMPARISON ON THE LESSON PLAN, and it is none of the three
-    candidates the design argues from. Ground-truthed live 2026-08-19: under Key
-    Moves **Chessable itself clears `isUserMove` on every ply before the first
-    key move**, including plies of the user's own colour. So "a ply of the study
-    colour sitting before the first `isUserMove` ply" IS the mode, known at
-    plan-read time, with no settings key, no latch and no observation window —
-    and false on every variation of an All Moves session for ever, which closes
-    §7.1's dangerous direction by construction. THERE IS NO SETTINGS KEY
+    candidates the design argues from: under Key Moves **Chessable itself clears
+    `isUserMove` on every ply before the first key move**, including plies of the
+    user's own colour. So "a ply of the study colour sitting before the first
+    `isUserMove` ply" IS the mode, known at plan-read time, with no settings key,
+    no latch and no observation window — and false on every variation of an All
+    Moves session for ever, which is also why defaulting the feature ON costs a
+    user who does not study Key Moves nothing. THERE IS NO SETTINGS KEY
     (`simpleSettingsApiData` is byte-identical between the modes; `eq_<bid>_key`
     means the course HAS key moves BUILT), and `isKey` is a course-level
     designation identical in both — it can never be the test.
-  * THE COVER IS RAISED OFF A MUTATION, NOT OFF THE POLL (v0.114.0). Their board
-    first moves 81 ms after the plan swaps, and a 500 ms tick plus an async
-    MAIN-world read is nowhere near that — so the next variation's first card
-    flashed on screen before our board covered it. A MutationObserver on the
-    trainer board AND on the drawer row holding `reviewCurrentMarker` asks for the
-    read at once (`leadNudge`/`leadObserve`) — and on `SELECTORS.trainerRow`,
-    which is the one that has to work: a variation change may REPLACE the board
-    element, and an observer left on the old one is silent rather than wrong.
-    ARMED ONLY around the transition —
-    while `reviewBrowseReady()` and for `leadArmTailMs` after — so a mid-quiz board,
-    which mutates on every move and can never be a variation change, asks for
-    nothing. Rate-limited to `leadNudgeMs`: one animation run is one read.
-  * ITS PANEL PRINTS NO MOVES (v0.114.0). The prompt line is deliberately empty —
-    a move list growing there was reported as distracting, and the board beside
-    it is already the whole feature. The VOICE still says each move, so the step
-    calls `speak` directly rather than `announce`, which is the seam that also
-    writes the panel.
+  * THE COVER IS RAISED OFF A MUTATION, NOT OFF THE POLL. Their board first moves
+    81 ms after the plan swaps, and a 500 ms tick plus an async MAIN-world read
+    is nowhere near that — so the next variation's first card flashed on screen
+    before our board covered it. A MutationObserver on the trainer board AND on
+    the drawer row holding `reviewCurrentMarker` asks for the read at once
+    (`leadNudge`/`leadObserve`) — and on `SELECTORS.trainerRow`, which is the one
+    that HAS to work: a variation change may REPLACE the board element, and an
+    observer left on the old one is silent rather than wrong. ARMED ONLY around
+    the transition (while `reviewBrowseReady()` and for `leadArmTailMs` after), so
+    a mid-quiz board, which mutates on every move and can never be a variation
+    change, asks for nothing.
   * IT NEVER RUNS AHEAD OF THE TRAINER, which is what makes it impossible for it
     to show the user the answer to a card. `leadCeiling()` is `max(k, target)`
     where `target` is the furthest the trainer has been OBSERVED to reach, never
-    lowered. The design first had a PREDICTION there instead (`k'` from the
-    proof record); that is the same number when everything goes right and a
-    spoiler when section 13 then declines those cards. Never reinstate it.
+    lowered. The design first had a PREDICTION there instead (`k'` from the proof
+    record); that is the same number when everything goes right and a spoiler when
+    section 13 then declines those cards. Never reinstate it.
   * IT IS A DISPLAY. Nothing is played on Chessable's board, nothing is graded,
     recorded or rescheduled. Its ONE side effect is stopping the clock, and only
     after the trainer has stood still for `leadPauseAfterMs` — a blanket pause
     would be simpler and is wrong: a paused board takes no input, so section 13
-    could not inject the cards it is answering underneath and §3.1's parallel
-    loop would collapse into a sequential one. Never paused in a hidden tab.
+    could not inject the cards it is answering underneath and §3.1's parallel loop
+    would collapse into a sequential one. Never paused in a hidden tab.
   * SECTION 13 IS DELIBERATELY NOT HELD. `autoPlayHold` means "an outside feature
     owns the board and nothing is really being played on it", and here something
     really is — that is the whole loop. Do not reach for it.
@@ -2283,10 +2263,8 @@ read first.
     where the mode picks the card back up.
   * IT NEEDS `sg.enabled` AS WELL AS ITS OWN PREFERENCE, and that is a decision:
     it renders on this board, in this panel, behind this cog, and `syncUi` hides
-    the whole `.clo-sg` group when show-and-grade is switched off. So turning
-    that off turns the lead-in off with it. (§5 of the design put the two
-    settings in AUTO-PLAY's cog; that would be reachable in states where they do
-    nothing.)
+    the whole `.clo-sg` group when show-and-grade is switched off. So turning that
+    off turns the lead-in off with it.
   * `playPlyOnBoard`'s post-glide reconcile reads `sg.active || leadActive()` —
     without the second half a castling rook, an en passant capture or a promotion
     stays as the glide left it for the whole replay, since the mode is off.
@@ -2294,7 +2272,11 @@ read first.
     `stop()` does it ABOVE its `!sg.active` early return — with the mode off the
     lead-in owns the board AND the pause, and `endLead` is the only thing that
     gives either back. `pagehide` calls it for the same reason.
-
+  * ITS PANEL PRINTS NO MOVES: the prompt line is deliberately empty, since a
+    move list growing there was reported as distracting and the board beside it
+    is already the whole feature. The VOICE still says each move, so the step
+    calls `speak` directly rather than `announce`, which is the seam that also
+    writes the panel.
 - Course tree (sections 24, 24b, 24c, 24d, 24e, 24f, 24g and 24h, v0.127.0): the
   whole course as a POSITION-KEYED graph, browsed as Miller columns on
   `/course/<bid>/`, beside section 21's panel and sharing its `fetchCourse`
@@ -2763,12 +2745,10 @@ read first.
     `st.launchBid` is read off the url every tick and is deliberately NOT
     `st.bid`, which is the course a SESSION is about.
   * **IT MUST NEVER CALL CHESSDB'S `queue` OR `store`, and this is the single
-    most tempting place in the codebase to break that rule.** The walk stops on
-    `unknown` constantly and "ask them to analyse it" is one URL parameter away;
-    those two actions spend a VOLUNTEER NETWORK's compute (DESIGN-chessdb.md
-    §2.4), and a storm would spend it in bursts of hundreds.
-    `handleChessdbFetch`'s allow-list in background.js is what makes them
-    unreachable, and it must stay an allow-list.
+    most tempting place in the codebase to break that rule** — see section 26's
+    allow-list bullet, which is the guard, and why this feature is what it is
+    guarding against. A storm would spend that volunteer compute in bursts of
+    hundreds.
   * IT NEVER WRITES TO THE COURSE (section 24's rule, and this feature has the
     same tempting button one line away — "add this position as a puzzle" from a
     storm card; 19d/19e already do that safely from a BOARD), never touches
@@ -3127,11 +3107,10 @@ read first.
   ANYTHING HERE** — §12.1 is the measurement that reframed it and §12.6 is the
   ordering defect it exposed. What follows is only what an edit ELSEWHERE can
   break.
-  * §4'S PER-FETCH COSTS ARE THE **PARSED** SIZES AND §12.1 REPLACES THEM.
-    Measured live 2026-09-02: an index shard is 330 KB gzipped (not 0.9 MB) and
-    ~10 ms to parse, a body shard 85 KB gzipped (not 331 KB) holding 942 bodies.
-    So a 182-shard course scan at concurrency 8 is SECONDS, and the whole
-    4096-shard body corpus is ~85 s. Do not re-derive a budget from §4.
+  * §4'S PER-FETCH COSTS ARE THE **PARSED** SIZES AND §12.1 REPLACES THEM with
+    the gzipped ones, which are several times smaller. DO NOT RE-DERIVE A BUDGET
+    FROM §4 — a full course scan is seconds, which is the premise this feature
+    and §3.1a's band rest on.
   * THE SHARD NEVER ENTERS THE CONTENT SCRIPT. `clo-puzzle-index` takes a shard
     NAME plus the position keys wanted and the worker answers with only those
     entries; `clo-puzzle-bodies` does the same for ids AND archives what it
