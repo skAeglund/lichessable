@@ -108,6 +108,15 @@
     // subvariation moves work the same way with the commentSubMove testids,
     // grouped per line inside one .commentInMove parent.
     reviewProgress:     '[data-testid="practiceProgress"]', // "Completed" stats block — only present in the browse state
+    // READ MODE (the book icon in the card header, section 11d). The BUTTON is
+    // there in every trainer state, so its presence says nothing — the CLASS is
+    // the state, and it is what the panel's second gate tests. Ground-truthed
+    // live 2026-09-08 on a /learn/ session of course 453453: switching it on
+    // replaces the quiz with the browse state's own markup (commentScrollContainer,
+    // commentMove / commentMove_shownOnBoard, the prev/next position buttons)
+    // and takes the timer bar, the pause control and the hint button away —
+    // everything except practiceProgress, which belongs to completion alone.
+    reviewReadMode:     '[data-testid="readOnlyButton"].read-only-active',
     reviewMoves:        '[data-testid="commentMove"], [data-testid="commentMove_shownOnBoard"]',
     reviewMoveShown:    '[data-testid="commentMove_shownOnBoard"]',
     // Continuation review (section 18) reads these too, and relies on the ID
@@ -7138,7 +7147,7 @@
     // (section 19) covers it too, but there the panel is the point: readFen
     // returns its position, so the panel stays up and follows it.
     const analysing = Boolean(continuationAnalysisFen && continuationAnalysisFen());
-    if (!reviewBrowseReady() || (continuationActive && continuationActive() && !analysing)) {
+    if (!reviewPanelReady() || (continuationActive && continuationActive() && !analysing)) {
       if (state.panel) state.panel.hidden = true;
       resetReviewAnchorHold(); // a fresh show must never fight a stale hold
       state.fen = null; // the next completed variation starts with a fresh fetch
@@ -7162,6 +7171,38 @@
     return Boolean(document.querySelector(SELECTORS.reviewProgress) &&
                    document.querySelector(SELECTORS.reviewMoves) &&
                    getReviewBoard());
+  }
+
+  /**
+   * READ MODE (section 11d): the trainer's own "read this variation instead of
+   * being quizzed on it" state, raised by the book icon in the card header.
+   * There is no card being answered in it — Chessable prints the whole line and
+   * every comment — so the panel's founding rule ("it can never spoil an active
+   * quiz") is satisfied by the state itself, exactly as it is after completion.
+   *
+   * TWO conditions, and the second is not belt-and-braces: the class says the
+   * user asked for read mode, the move list says the comment column has
+   * actually rendered, and between the two there are frames where the class is
+   * on and there is no position to read. Everything downstream of this gate —
+   * readReviewFen's shownOnBoard lookup, syncReviewPlan's oid, the placement's
+   * board rect — is the browse state's own machinery, unchanged, because read
+   * mode renders the browse state's own markup.
+   */
+  function readModeActive() {
+    return Boolean(document.querySelector(SELECTORS.reviewReadMode) &&
+                   document.querySelector(SELECTORS.reviewMoves) &&
+                   getReviewBoard());
+  }
+
+  /**
+   * The PANEL's gate, and deliberately only the panel's: every other caller of
+   * reviewBrowseReady() is about a finished variation (retry, drill, the line
+   * quiz, the row's primary), and read mode finishes nothing — it reschedules
+   * nothing, records nothing and leaves the card exactly as due as it was. So
+   * the launchers stay where they were and only the database follows the board.
+   */
+  function reviewPanelReady() {
+    return reviewBrowseReady() || readModeActive();
   }
 
   /**

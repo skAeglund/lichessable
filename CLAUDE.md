@@ -462,9 +462,12 @@ read first.
   the widget builds that URL and the worker validates it (`OVERSTUDY_URL_RE`)
   and opens it `active: false`. The widget mounts on `document.body` — NEVER
   inside Chessable's React tree (foreign children can crash reconciliation).
-- Review-mode Lichess panel (top document): shows ONLY in the trainer's
-  post-completion browse state — gated on the `practiceProgress` "Completed"
-  block + `commentMove` list, so it can never spoil an active quiz. No
+- Review-mode Lichess panel (top document): shows only in a trainer state
+  where no card is being answered — `reviewPanelReady()`, i.e. the
+  post-completion browse state (`practiceProgress` "Completed" block +
+  `commentMove` list) OR read mode (11d) — so it can never spoil an active
+  quiz. THE PANEL IS THE ONLY CALLER OF THAT FUNCTION; every other
+  `reviewBrowseReady()` in the file is about a FINISHED variation. No
   `#inputFEN` exists there; the FEN is rebuilt from the DOM each 500 ms tick:
   placement from `[data-piece]` divs in the board squares, side to move +
   fullmove parsed from the SAN numbering around the currently shown move
@@ -523,6 +526,30 @@ read first.
   ALL of the explore
   fetch/cache/render machinery via `IS_REVIEW` branches; move rows are not
   clickable in this mode.
+- READ MODE (section 11d, v0.185.0): the book icon in the trainer's card
+  header replaces the quiz with the variation printed out in full, and the
+  panel follows the board there exactly as it does after completion. It cost a
+  selector, a predicate and one word in `reviewPanelTick`, because READ MODE
+  RENDERS THE BROWSE STATE'S OWN MARKUP — ground-truthed live 2026-09-08 on a
+  /learn/ session of course 453453: `commentScrollContainer`, `commentMove` /
+  `commentMove_shownOnBoard` and the prev/next position buttons all appear,
+  the timer bar, the pause control and the hint button all go, and the lesson
+  plan answers as usual, so `readReviewFen`, `syncReviewPlan` and
+  `positionReviewPanel` needed nothing. Both trainer routes, since both render
+  the same markup.
+  * THE BUTTON IS PRESENT IN EVERY TRAINER STATE — the CLASS is the state
+    (`SELECTORS.reviewReadMode`, `.read-only-active`). Testing for the button
+    would show the panel over a live quiz, which is the one thing this gate
+    exists to prevent.
+  * `readModeActive()` ALSO WANTS THE MOVE LIST, and not as belt-and-braces:
+    the class is on for a frame or two before the comment column renders, and
+    in those frames there is no shown move to read a position off.
+  * NOTHING ELSE MOVES. Read mode finishes no variation — nothing is graded,
+    recorded or rescheduled — so the row's launchers, the retry pass, the drill
+    and the clickable-line quiz keep the browse gate they had, and the row
+    stays collapsed (`collapseAuto` is `!reviewBrowseReady()`). Only the
+    database, and with it the engine (whose `IS_REVIEW` arm asks only that the
+    panel is showing), follow the board.
 - Variation-page Lichess panel (section 11b): the standalone
   `/variation/<id>/` page is the panel's THIRD host — also a React top
   document (mountPanel body-mounts it with the `--review` class), but the
