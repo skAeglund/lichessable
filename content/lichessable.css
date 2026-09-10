@@ -3321,6 +3321,7 @@ html.clo-injecting .legal-square-capture-mt2 {
 .clo-cr-list[hidden],
 .clo-cr-anprefix[hidden],
 .clo-cr-andest[hidden],
+.clo-cr-anlabel[hidden],
 .clo-cr-anstatus[hidden],
 .clo-cr-heads[hidden],
 .clo-cr-heads__note[hidden],
@@ -3839,9 +3840,24 @@ html.clo-injecting .legal-square-capture-mt2 {
 
 .clo-cr-anprefix:disabled { opacity: 0.45; }
 
-.clo-cr-anprefix + .clo-cr-actions,
-.clo-cr-anprefix + .clo-cr-andest,
-.clo-cr-andest + .clo-cr-actions { margin-top: 0; }
+/* Exactly ONE member of the bottom cluster may carry that auto margin, and in
+   analysis mode the lead-in field is always the first of them (syncAnalysisUi
+   shows it unconditionally) — so everything after it gives its own margin up.
+   A GENERAL sibling combinator, not the `+` chain this used to be: 19g added a
+   second <select> and two captions between the two, and an adjacency chain has
+   to be rewritten every time something is inserted. */
+.clo-cr-anprefix ~ .clo-cr-anlabel,
+.clo-cr-anprefix ~ .clo-cr-andest,
+.clo-cr-anprefix ~ .clo-cr-actions { margin-top: 0; }
+
+/* The caption above each destination picker (19d's and 19g's). Present only
+   because there are two of them: with one <select> and three "Add as …"
+   buttons the tooltip was enough, with two side by side it is a guess. */
+.clo-cr-anlabel {
+  align-self: stretch;
+  font-size: 11px;
+  color: var(--clo-text-faint);
+}
 
 /* Where "Add as puzzle" writes (section 19d). Sits between the lead-in and the
    controls, and carries the same auto margin as the field above it so that

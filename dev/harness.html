@@ -1896,6 +1896,7 @@ body {
             <button type="button" class="clo-cr-btn">Remove from here</button>
           </div>
           <input type="text" class="clo-cr-anprefix" placeholder="lead-in, e.g. “An example continuation:”" value="An example continuation:">
+          <div class="clo-cr-anlabel">Add as puzzle goes to</div>
           <select class="clo-cr-andest">
             <optgroup label="Testing course">
               <option>Main Level</option>
@@ -2009,6 +2010,7 @@ body {
             </div>
           </div>
           <input type="text" class="clo-cr-anprefix" placeholder="lead-in, e.g. “An example continuation:”">
+          <div class="clo-cr-anlabel">Add as puzzle goes to</div>
           <select class="clo-cr-andest">
             <optgroup label="Testing course">
               <option>Main Level</option>
@@ -2025,6 +2027,59 @@ body {
             <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as line</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as variation</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--armed">Really add it?</button>
+            <button type="button" class="clo-cr-btn">Flip</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hx-card">
+      <h3>“Add as variation” into a course of your own (19g)</h3>
+      <p class="hx-note">The state a bought course puts the panel in: the line cannot go back
+         where it came from, so a second picker appears above the puzzle one and the armed sentence
+         names the course AND the chapter it would go to. This is the only state with TWO
+         &lt;select&gt;s, which is why both carry a caption — and it is the tallest the bottom
+         cluster ever gets. <strong>Measure it at 488px</strong>, the live panel width: the two
+         captions and the extra select cost 4 rows over the ordinary analysis panel, and the action
+         row is unchanged.</p>
+      <div class="hx-stage">
+        <div class="clo-cr-panel hx-pos" style="width:488px">
+          <div class="clo-cr-title">Analysis</div>
+          <div class="clo-cr-prompt">Black to play</div>
+          <div class="clo-cr-progress">Move 2 of 2</div>
+          <div class="clo-cr-list">
+            <div class="clo-cr-mvrow">
+              <span class="clo-cr-mvnum">4.</span>
+              <button type="button" class="clo-cr-mv" data-ply="1">Qxd4</button>
+              <button type="button" class="clo-cr-mv clo-cr-mv--on" data-ply="2">Nf6</button>
+            </div>
+          </div>
+          <input type="text" class="clo-cr-anprefix" placeholder="lead-in, e.g. “An example continuation:”">
+          <div class="clo-cr-anlabel">Add as variation goes to</div>
+          <select class="clo-cr-andest">
+            <option>Testing course › Main Level</option>
+            <option>Testing course › sicil test</option>
+            <option selected>Testing Repertoire › Main Level</option>
+          </select>
+          <div class="clo-cr-anlabel">Add as puzzle goes to</div>
+          <select class="clo-cr-andest">
+            <optgroup label="Testing course">
+              <option>Main Level</option>
+              <option selected>Puzzles</option>
+            </optgroup>
+            <optgroup label="Testing Repertoire">
+              <option>Main Level</option>
+            </optgroup>
+          </select>
+          <div class="clo-cr-anstatus">Creates "Scotch 4...Qh4?! 4...Nf6" in Testing Repertoire
+            › Main Level, with this variation's own moves in front of it — 2 moves after
+            Qxd4. Testing Repertoire is a Black course, so the new card asks for Black's moves.
+            Press again to confirm.</div>
+          <div class="clo-cr-actions">
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as line</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--armed">Really add it?</button>
+            <button type="button" class="clo-cr-btn clo-cr-btn--primary">Add as puzzle</button>
             <button type="button" class="clo-cr-btn">Flip</button>
             <button type="button" class="clo-cr-btn clo-cr-btn--exit">Exit</button>
           </div>

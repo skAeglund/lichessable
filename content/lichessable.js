@@ -504,6 +504,12 @@
       // reverts is worse than one that waits. Nothing lurks: any change to the
       // line disarms, and the write re-checks the line's signature anyway.
       addVarArmMs: 30000,
+      // Where a variation goes when the SOURCE course is not one the user can
+      // write to (19g). A standing preference, exactly like the puzzle one
+      // below and for the same reason — and a SEPARATE key, because "where do
+      // lines lifted out of bought courses go" and "where do my puzzles go" are
+      // two questions with two answers.
+      varDestKey: 'cloVarDest', // chrome.storage.local: "<bid>:<lid>"
 
       // --- "Add as puzzle" (section 19d) ------------------------------------
       // The THIRD write, and the only one whose new variation starts from OUR
@@ -21262,6 +21268,10 @@
         // the status line explaining it does (see anPlay / anRemoveFrom): a way
         // to a variation, with the sentence naming it gone, says nothing.
         created: null,
+        // Which course the source variation is in, read once per board (19g's
+        // picker asks on every sync, and `analysisSource` walks the DOM). `null`
+        // means "not asked yet"; '' means asked and unanswerable.
+        srcBid: null,
       };
     }
 
@@ -21774,14 +21784,16 @@
         }
         // The chapter is read behind the open (24g's resolveChapter) because it
         // costs a call per chapter until the variation turns up, and almost no
-        // board is opened in order to write. A press that beats it is told to
-        // press again rather than sent with a guessed chapter — `lid` 0 is a
-        // real chapter ("Main Level"), so this tests for ABSENCE, never falsity.
-        if (src.lid === null || src.lid === undefined || src.lid === '') {
-          return { why: 'Still working out which chapter that variation is in — press again ' +
-            'in a moment.' };
-        }
-        return { src };
+        // board is opened in order to write. It may also never arrive at all:
+        // `fetchVariationChapter` can only see chapters of courses the user can
+        // import into, so on a BOUGHT course it answers null for ever — which
+        // is exactly the case 19g exists for, and why the refusal for a missing
+        // chapter now lives in `prepareAddVariation`, on the ONE branch that
+        // needs one (the source's own chapter as the destination). `lid` 0 is a
+        // real chapter ("Main Level"), so this normalises ABSENCE, never
+        // falsity.
+        const lid = (src.lid === null || src.lid === undefined) ? '' : String(src.lid);
+        return { src: { oid: src.oid, bid: src.bid, lid, atStart: src.atStart } };
       }
       const oid = isVariationPath()
         ? (VARIATION_PATH_RE.exec(location.pathname) || [])[1]
@@ -21877,6 +21889,179 @@
       return (title ? title + ' ' : '') + move;
     }
 
+    // ------------------------------------------------------------------------
+    // 19g) …AND WHERE IT GOES, when the source course is not yours
+    //
+    // The endpoint has allowed this from the start and our own guard did not:
+    // `importSubvariationFromSource` requires the source course to be OWNED,
+    // never AUTHORED (DESIGN-add-as-variation.md §2.4, test E — a bought course
+    // spliced into an authored one, ground-truthed 2026-08-10), and `target` is
+    // its own `{courseId, chapterId}`. §3.3 recorded the missing destination as
+    // the one case this feature could not serve: "I am studying a bought course
+    // and want this line in what I actually train."
+    //
+    // So: where the source course IS the user's, NOTHING changes — the line
+    // goes into that variation's own chapter with no chooser, which is what was
+    // decided with the user for v1. Where it is not, a picker appears offering
+    // every chapter of every course they created, and the arm sentence names
+    // it. The picker is DELIBERATELY not offered in the first case: a sibling
+    // variation belongs beside its source, a second always-visible <select> is
+    // the panel's scarcest row, and a choice nobody has to make is one more
+    // thing to read before every press.
+    //
+    // Its list is the INTERSECTION of two calls, not either alone. Chapters
+    // only come from `getImportData` (§2.5), and "may I create a variation
+    // here" is `authorUid === uid` from getHomeData — 19d does without the
+    // second because `importGame` names no source and its book list is already
+    // the writable set, but THIS endpoint's behaviour on a target the user did
+    // not author is untested (§5), and an untested 403 is not what a picker
+    // should offer.
+    // ------------------------------------------------------------------------
+
+    // The picker's state, the same shape as 19d's `pz` and read the same way.
+    // `ours` is the set of bids the user CREATED — null while unknown, which is
+    // not the same as empty and must never read as "you wrote nothing".
+    const vd = { state: 'idle', list: [], sel: '', why: '', rev: 0, ours: null };
+
+    /**
+     * Reads the destinations and picks one, once per document.
+     *
+     * Fired on OPEN beside `loadPuzzleTargets`, for its reason: the answer is
+     * half of what the arming press promises, so it has to be settled before
+     * anything is pressed. Two memoised GETs, no window of any kind.
+     */
+    async function loadVarTargets() {
+      if (vd.state === 'loading' || vd.state === 'ready') return;
+      vd.state = 'loading';
+      vd.why = '';
+      const refresh = () => { if (cr.active && cr.mode === 'analysis') syncUi(); };
+      const cr0 = chessableCreds();
+      if (!cr0) {
+        vd.state = 'failed';
+        vd.why = 'No Chessable session found — reload the page.';
+        refresh();
+        return;
+      }
+      let targets, books;
+      try {
+        [targets, books] = await Promise.all([importTargetsOnce(cr0), chessableBooksOnce(cr0)]);
+      } catch (err) {
+        // 'failed' is not memoised anywhere: nothing was stored, so the next
+        // board is the retry.
+        vd.state = 'failed';
+        vd.why = 'Could not read your courses: ' + msgOf(err);
+        refresh();
+        return;
+      }
+      vd.ours = new Set(books.filter((b) => b.ours).map((b) => String(b.bid)));
+      const names = new Map(targets.books.map((b) => [b.bid, b.name]));
+      const order = new Map(targets.books.map((b, i) => [b.bid, i]));
+      const colors = new Map(targets.books.map((b) => [b.bid, b.color]));
+      vd.list = targets.chapters
+        .filter((c) => vd.ours.has(c.bid))
+        .map((c) => ({
+          bid: c.bid, lid: c.lid, name: c.name, key: destKey(c.bid, c.lid),
+          courseName: names.get(c.bid) || ('Course ' + c.bid),
+          // Only for the arm sentence: the TARGET course's colour decides which
+          // side the new card quizzes, whatever the source variation's is
+          // (DESIGN-add-as-variation.md §2.4). Not a refusal — see `sideNote`.
+          courseColor: colors.get(c.bid) || '',
+        }))
+        .sort((a, b) => (order.get(a.bid) - order.get(b.bid)) || (Number(a.lid) - Number(b.lid)));
+      vd.rev++; // every <select> built from the old list rebuilds itself
+      if (!vd.list.length) {
+        // The set can genuinely be empty — an account that has only ever bought
+        // courses. `ours` is still known, so the button says this rather than
+        // "still reading".
+        vd.state = 'failed';
+        vd.why = 'You have no course of your own to add a variation to — create one in ' +
+          'Chessable first.';
+        refresh();
+        return;
+      }
+      vd.state = 'ready';
+      vd.sel = pickVarDest(await readStoredKey(CONFIG.continuation.varDestKey));
+      refresh();
+    }
+
+    /**
+     * Which chapter starts selected, best answer first:
+     *   1. the one last written to, if it still exists — the user has already
+     *      answered this question and the answer does not change per board;
+     *   2. a chapter of a NOMINATED REPERTOIRE (section 6c), which is §3.3's own
+     *      description of what this destination is for: the course they actually
+     *      train. First slot first, and its first chapter;
+     *   3. the first chapter there is.
+     *
+     * Deliberately NOT "a chapter whose name matches something": 19d's
+     * "Puzzles" guess works because puzzles are filed by kind, and a variation
+     * lifted out of a course is filed by opening.
+     */
+    function pickVarDest(stored) {
+      if (stored && vd.list.some((c) => c.key === stored)) return stored;
+      for (const slot of repActive()) {
+        const mine = vd.list.find((c) => String(c.bid) === String(slot.bid));
+        if (mine) return mine.key;
+      }
+      return vd.list[0].key;
+    }
+
+    /** The chosen chapter, or null while the picker is not ready. */
+    function varDest() {
+      return vd.list.find((c) => c.key === vd.sel) || null;
+    }
+
+    /** " in <course> › <chapter>", or '' where the destination was not chosen:
+     *  a sentence about the course you are looking at does not need to name it,
+     *  and the v1 wording ("in this variation's own chapter") is what the user
+     *  reading it has always seen. */
+    function destWhere(dest) {
+      if (!dest || dest.own) return '';
+      return ' in ' + dest.courseName + (dest.name ? ' › ' + dest.name : '');
+    }
+
+    /**
+     * "…and it will be quizzed from Black's side", when the destination course's
+     * colour is not the source variation's.
+     *
+     * STATED, never a refusal — the TARGET course's colour wins whatever we send
+     * (§2.4, verified on both writes), and a line one colour deep in a course of
+     * the other is a perfectly ordinary thing to want. 19d deliberately says
+     * nothing about the same clash, and the difference is the destination: a
+     * puzzle's is always chosen, so the user has just read the course's name,
+     * while this one only appears where the line is leaving the course it came
+     * from. '' whenever either side is unknown or they agree.
+     */
+    function sideNoteFor(dest, srcColor) {
+      if (!dest || dest.own) return '';
+      const to = sideOf(dest.color), from = sideOf(srcColor);
+      if (!to || !from || to === from) return '';
+      return ' ' + dest.courseName + ' is a ' + (to === 'w' ? 'White' : 'Black') +
+        ' course, so the new card asks for ' + (to === 'w' ? 'White' : 'Black') + "'s moves.";
+    }
+
+    /** Which course the source variation is in — asked once per board, because
+     *  the reader below it walks the DOM and this is consulted on every sync. */
+    function analysisSourceBid() {
+      const an = cr.an;
+      if (an.srcBid === null) {
+        const found = analysisSource();
+        an.srcBid = found.src ? String(found.src.bid || '') : '';
+      }
+      return an.srcBid;
+    }
+
+    /**
+     * Whether the destination has to be CHOSEN: the source course is one the
+     * user cannot write to. Unknown (`ours` not read yet, or no source course
+     * at all) answers false — the picker appears when there is something true
+     * to say, and until then the arming press is what reports the wait.
+     */
+    function varDestNeeded() {
+      const bid = analysisSourceBid();
+      return Boolean(bid) && vd.ours !== null && !vd.ours.has(bid);
+    }
+
     /**
      * Everything the confirming press needs, or an `error` sentence. Run by the
      * ARMING press, so no check happens between "press again to confirm" and the
@@ -21905,9 +22090,12 @@
       const cr0 = chessableCreds();
       if (!cr0) return { error: 'No Chessable session found — reload the page.' };
 
-      // Only a course the user CREATED can be written to (section 21's guard,
+      // Only a course the user CREATED can be written TO (section 21's guard,
       // and the same set Chessable's own add flow offers). Not `isRepertoire`,
-      // which was true for a course that was not one.
+      // which was true for a course that was not one. The SOURCE needs only to
+      // be owned — a bought course is a valid source, which is the whole of
+      // 19g — so the library check below is about the source and the `ours`
+      // check about the destination.
       let books;
       try {
         books = await chessableBooksOnce(cr0);
@@ -21916,9 +22104,34 @@
       }
       const book = books.find((b) => String(b.bid) === String(src.bid));
       if (!book) return { error: 'That course is not in your library.' };
-      if (!book.ours) {
-        return { error: 'You did not create "' + book.name + '", so Chessable will not let ' +
-          'you add a variation to it. "Add as line" works on courses you can edit.' };
+      let dest;
+      if (book.ours) {
+        // Unchanged: a sibling variation goes beside its source, in that
+        // variation's own chapter, with no chooser. This is the one branch that
+        // needs the chapter, and the one place that reports it missing — see
+        // `analysisSource`.
+        if (src.lid === '') {
+          return { error: 'Still working out which chapter that variation is in — press again ' +
+            'in a moment.' };
+        }
+        dest = { bid: src.bid, lid: src.lid, courseName: book.name, name: '', own: true };
+      } else {
+        // 19g: the source is a course the user only owns, so the destination is
+        // the picker's. Its list is built from courses they created, but it is
+        // read here again rather than trusted — the board is live and the list
+        // is per document.
+        if (vd.state !== 'ready') {
+          return { error: vd.why ||
+            'Still reading which of your own courses this could go in — press again in a moment.' };
+        }
+        const chosen = varDest();
+        if (!chosen) return { error: 'Choose a course and chapter to add it to.' };
+        if (!vd.ours || !vd.ours.has(String(chosen.bid))) {
+          return { error: 'You did not create "' + chosen.courseName + '", so Chessable will ' +
+            'not let you add a variation to it.' };
+        }
+        dest = { bid: chosen.bid, lid: chosen.lid, courseName: chosen.courseName,
+          name: chosen.name, key: chosen.key, color: chosen.courseColor, own: false };
       }
 
       // The source variation itself: its title names the new one, and its
@@ -21941,12 +22154,15 @@
         if (rel !== null && want !== null && rel === want && rel <= entryVar.sans.length) {
           return {
             plan: {
-              src, plies, courseName: book.name, sig,
+              src, dest, plies, courseName: dest.courseName, sig,
               name: analysisVarName(entryVar.name),
               // What the read-back must find: the source's plies up to the
-              // branch, then ours.
+              // branch, then ours. Unchanged by the destination — the server
+              // splices the source's own prefix whichever course it writes to
+              // (§2.2, test E was a bought source into an authored target).
               expect: entryVar.sans.slice(0, rel).concat(plies.map((p) => p.san)),
               after: src.atStart ? '' : (cr.an.entry ? cr.an.entry.san : ''),
+              sideNote: sideNoteFor(dest, entryVar.color),
             },
           };
         }
@@ -22029,15 +22245,20 @@
         return;
       }
       const src = plan.src;
+      // The destination is the source's own chapter for a course the user
+      // created, and the picker's answer for one they only own (19g). The two
+      // ids are the ONLY thing that differs — the server splices the source's
+      // prefix either way.
+      const dest = plan.dest;
       an.save.state = 'saving';
       setAnStatus('Adding to "' + plan.courseName + '"…', false);
-      log('add as variation:', plan.name, '→ course', src.bid, 'chapter', src.lid,
-        'from variation', src.oid, 'at ply', plan.plies[0].plyNumber);
+      log('add as variation:', plan.name, '→ course', dest.bid, 'chapter', dest.lid,
+        'from variation', src.oid, 'in course', src.bid, 'at ply', plan.plies[0].plyNumber);
       let oid = null;
       try {
         oid = await courseWritePost(cr0, chessableApiUrl(CONFIG.continuation.addVarPath, {}), {
           source: { courseId: Number(src.bid), variationId: Number(src.oid) },
-          target: { courseId: Number(src.bid), chapterId: Number(src.lid) },
+          target: { courseId: Number(dest.bid), chapterId: Number(dest.lid) },
           subvariation: plan.plies,
           name: plan.name,
         }).then((res) => {
@@ -22053,17 +22274,23 @@
           ' — the line is still here, you can retry.', true);
         return;
       }
+      // It worked, so this is where the next one out of an unwritable course
+      // goes too (19g). Only for a CHOSEN destination: the source's own chapter
+      // is not an answer to the picker's question.
+      if (!dest.own) writeStoredKey(CONFIG.continuation.varDestKey, dest.key);
       // Never trust our own model of what landed. The caches that describe this
       // course now lie, so they go first — if the target is also the nominated
       // repertoire, its index would otherwise spend 12 h badging this line as
       // unprepared.
-      await dropCourseCache(src.bid);
+      await dropCourseCache(dest.bid);
       // `rep` is section 6c's own state, populated in every document the panel
-      // runs in — so this reads the live nomination, not a copy of it.
-      if (repUsesCourse(src.bid)) await dropRepertoireIndexCache(src.bid);
+      // runs in — so this reads the live nomination, not a copy of it. And with
+      // 19g the destination is very often exactly the nominated repertoire,
+      // which is the case this drop was written for.
+      if (repUsesCourse(dest.bid)) await dropRepertoireIndexCache(dest.bid);
       let landed = null;
       try {
-        const fresh = await fetchCourse(src.bid, cr0, false);
+        const fresh = await fetchCourse(dest.bid, cr0, false);
         landed = fresh.vars.find((v) => String(v.oid) === String(oid));
       } catch (err) {
         // It IS created — the oid came back — so the way to it is offered even
@@ -22089,8 +22316,9 @@
         noteCreatedVariation(an, oid, landed.name);
         return;
       }
-      log('add as variation: created', oid, '—', got);
-      report('Added as a variation: "' + landed.name + '" (' + got + ').', false);
+      log('add as variation: created', oid, '—', got, 'in', dest.bid + '/' + dest.lid);
+      report('Added as a variation' + destWhere(dest) + ': "' + landed.name +
+        '" (' + got + ').', false);
       noteCreatedVariation(an, oid, landed.name);
     }
 
@@ -22217,10 +22445,17 @@
       cr.an.addVar = { state: 'armed', at: Date.now(), plan: prepared.plan };
       const p = prepared.plan;
       const n = p.plies.length;
-      setAnStatus('Creates "' + p.name + '" in ' + p.courseName + ', in this variation\'s own ' +
-        'chapter — ' + n + (n === 1 ? ' move' : ' moves') +
+      // Where it goes is the half of this sentence the user cannot see anywhere
+      // else, so 19g's chosen destination is named in full — course AND chapter,
+      // plus what the copy will carry — while the source's own chapter keeps the
+      // wording it has always had.
+      const where = p.dest.own
+        ? ' in ' + p.courseName + ', in this variation\'s own chapter'
+        : destWhere(p.dest) + ', with this variation\'s own moves in front of it';
+      setAnStatus('Creates "' + p.name + '"' + where +
+        ' — ' + n + (n === 1 ? ' move' : ' moves') +
         (p.after ? ' after ' + p.after : ' from the start of the variation') +
-        '. Press again to confirm.', false);
+        '.' + (p.sideNote || '') + ' Press again to confirm.', false);
     }
 
     // ------------------------------------------------------------------------
@@ -22319,24 +22554,27 @@
         return;
       }
       pz.state = 'ready';
-      pz.sel = pickPuzzleDest(await readStoredDest());
+      pz.sel = pickPuzzleDest(await readStoredKey(CONFIG.continuation.puzzleDestKey));
       refresh();
     }
 
-    /** The last chapter a puzzle was written to, or '' — a standing preference,
-     *  so storage.local rather than session. Never fails the caller. */
-    async function readStoredDest() {
+    /** The last chapter a write of this kind went to, or '' — a standing
+     *  preference, so storage.local rather than session. Never fails the
+     *  caller. Takes the KEY because there are two of these questions: where
+     *  puzzles go (19d) and where a variation goes when its own course is not
+     *  writable (19g), and one answer would keep overwriting the other. */
+    async function readStoredKey(key) {
       try {
-        const got = await chrome.storage.local.get([CONFIG.continuation.puzzleDestKey]);
-        return String((got && got[CONFIG.continuation.puzzleDestKey]) || '');
+        const got = await chrome.storage.local.get([key]);
+        return String((got && got[key]) || '');
       } catch (err) {
         return ''; // orphaned script, or storage unavailable — the defaults below still work
       }
     }
 
-    function storeDest(key) {
+    function writeStoredKey(key, value) {
       try {
-        chrome.storage.local.set({ [CONFIG.continuation.puzzleDestKey]: key });
+        chrome.storage.local.set({ [key]: value });
       } catch (err) {
         // Not being able to remember it is not a reason to refuse the write.
       }
@@ -22382,9 +22620,60 @@
       const el = cr.ui.anDest;
       const ready = pz.state === 'ready' && pz.list.length > 0;
       el.hidden = !ready;
+      cr.ui.anPzLabel.hidden = !ready;
       if (!ready) return;
       fillDestSelect(el);
       el.disabled = cr.an.save.state === 'saving' || cr.an.save.state === 'checking';
+    }
+
+    /**
+     * The same for 19g's picker, which additionally has to be WANTED: it is
+     * shown only where the destination is a real question, i.e. the source
+     * course is not one the user created. Everywhere else "Add as variation"
+     * writes beside its source with no choice to make, exactly as it always
+     * has.
+     */
+    function syncVarDest() {
+      const el = cr.ui.anVarDest;
+      const ready = vd.state === 'ready' && vd.list.length > 0 && varDestNeeded();
+      el.hidden = !ready;
+      cr.ui.anVarLabel.hidden = !ready;
+      if (!ready) return;
+      fillVarSelect(el);
+      el.disabled = cr.an.save.state === 'saving' || cr.an.save.state === 'checking';
+    }
+
+    /**
+     * Fills 19g's <select> from `vd`, rebuilding only when the list itself
+     * changed (`vd.rev`) — syncUi runs on every move and every tick, and
+     * replacing the options under an open dropdown would shut it in the user's
+     * face.
+     *
+     * A near-copy of `fillDestSelect` rather than a shared one taking a state
+     * object: the two lists differ (this one is the courses the user CREATED,
+     * that one every course they can import into), so do their `sel`s, and so
+     * does the one thing below that is not cosmetic.
+     *
+     * EACH OPTION NAMES ITS COURSE, and this picker has no <optgroup> because
+     * of it. A collapsed <select> shows the option and NOT the group it is in,
+     * so "Main Level" alone would leave the one fact this whole feature is
+     * about — which course the line is leaving for — readable only by opening
+     * the list. 19d's picker keeps its groups: there the question really is
+     * "which chapter", and it is asked in a course the board is already in.
+     */
+    function fillVarSelect(el) {
+      if (el.dataset.cloRev !== String(vd.rev)) {
+        el.dataset.cloRev = String(vd.rev);
+        el.textContent = '';
+        for (const c of vd.list) {
+          const opt = document.createElement('option');
+          opt.value = c.key;
+          // Remote text, so textContent — never innerHTML.
+          opt.textContent = c.courseName + ' › ' + c.name;
+          el.appendChild(opt);
+        }
+      }
+      if (el.value !== vd.sel) el.value = vd.sel;
     }
 
     /**
@@ -22631,7 +22920,8 @@
      */
     async function confirmPuzzle(cr0, plan, oid) {
       const dest = plan.dest;
-      storeDest(dest.key); // it worked, so this is where the next one goes too
+      // It worked, so this is where the next one goes too.
+      writeStoredKey(CONFIG.continuation.puzzleDestKey, dest.key);
       await dropCourseCache(dest.bid);
       // `rep` is section 6c's own state, populated in every document the panel
       // runs in — so this reads the live nomination, not a copy of it.
@@ -23314,6 +23604,10 @@
       // part of the sentence the arming press prints — so it has to be on screen
       // and settled before anything is pressed.
       loadPuzzleTargets().catch(() => {});
+      // …and where a VARIATION would go when this course is not one the user can
+      // write to (19g). Same argument, and the two share their reads: both are
+      // memoised for the document, so a second board costs nothing at all.
+      loadVarTargets().catch(() => {});
       log('analysis board opened on', fen);
     }
 
@@ -23452,13 +23746,18 @@
       // what the arming press is for. A press that cannot act says why.
       const armed = addVarArmed();
       if (cr.an.addVar.state === 'armed' && !armed) disarmAddVar(true);
+      // 19g's picker, shown only where the destination is a real question.
+      syncVarDest();
       ui.anAddVar.disabled = busy || !cr.an.moves.length;
       ui.anAddVar.textContent = armed ? 'Really add it?' : 'Add as variation';
       ui.anAddVar.classList.toggle('clo-cr-btn--armed', armed);
-      ui.anAddVar.title = 'Add this line to the course as its own variation, with the ' +
+      ui.anAddVar.title = 'Add this line to your course as its own variation, with the ' +
         'moves of this variation (and their comments and arrows) in front of it. ' +
         'Two presses: the first says exactly what it would create. ' +
-        'Only for courses you created.';
+        (varDestNeeded()
+          ? 'This line comes from a course you cannot edit, so it goes to the course ' +
+            'and chapter chosen above.'
+          : 'It goes beside its source, in this variation\'s own chapter.');
 
       // "Add as puzzle" (19d) and its destination picker. Enabled whenever there
       // is a line and somewhere to put it — it needs no entry move (nothing is
@@ -23976,6 +24275,40 @@
         else syncUi(); // the preview follows every keystroke
       });
 
+      // Where a variation goes when the source course is not one the user can
+      // write to (19g). Hidden in every other case, which is the ordinary one —
+      // see `varDestNeeded`.
+      //
+      // BOTH pickers carry a CAPTION, and only because there are two: a lone
+      // <select> in a panel with three "Add as …" buttons was already mildly
+      // ambiguous, and two of them side by side with nothing but a tooltip
+      // between them would be a guess. The captions live and die with their own
+      // select (syncVarDest / syncPuzzleDest), so the panel never shows a label
+      // for a control that is not there.
+      const anVarLabel = document.createElement('div');
+      anVarLabel.className = 'clo-cr-anlabel';
+      anVarLabel.textContent = 'Add as variation goes to';
+      anVarLabel.hidden = true;
+
+      const anVarDest = document.createElement('select');
+      anVarDest.className = 'clo-cr-andest';
+      swallowKeysOn(anVarDest);   // §28c, exactly as for the lead-in below
+      anVarDest.title = 'Which course and chapter "Add as variation" writes to. Shown ' +
+        'because this line comes from a course you cannot edit. Remembered for next time.';
+      anVarDest.hidden = true;
+      anVarDest.addEventListener('change', () => {
+        vd.sel = anVarDest.value;
+        // The destination is half of what the armed sentence promised, so
+        // changing it must drop the confirm exactly as changing the line does.
+        disarmAddVar(true);
+        syncUi();
+      });
+
+      const anPzLabel = document.createElement('div');
+      anPzLabel.className = 'clo-cr-anlabel';
+      anPzLabel.textContent = 'Add as puzzle goes to';
+      anPzLabel.hidden = true;
+
       // Where a puzzle goes (19d): every chapter of every course the user can
       // import into, grouped by course. A <select> rather than a popover like
       // the row's menus, because this one sits inside a panel that is already an
@@ -24032,7 +24365,7 @@
       // `margin-top: auto`, so the panel's free space collects above them — put
       // earlier, they would float far from the button they belong to.
       panel.append(title, prompt, progress, list, nav, chooser, actions,
-        anPrefix, anDest, anActions, anStatus);
+        anPrefix, anVarLabel, anVarDest, anPzLabel, anDest, anActions, anStatus);
 
       document.body.append(boardEl, panel);
       cr.boardEl = boardEl;
@@ -24043,7 +24376,7 @@
         browseBtn, nav, navStart, navBack, navFwd, navEnd,
         list, anActions, anStart, anBack, anFwd, anCut, anAdd, anAddCur, anAddNext,
         anAddVar, anAddPuzzle, anOpen,
-        anPrefix, anDest, anStatus,
+        anPrefix, anVarLabel, anVarDest, anPzLabel, anDest, anStatus,
       };
       cr.orientation = null; // the grid is built on the first startLine
     }
@@ -24183,6 +24516,9 @@
         cr.ui.anStatus.hidden = true;
         cr.ui.anPrefix.hidden = true;
         cr.ui.anDest.hidden = true;
+        cr.ui.anPzLabel.hidden = true;
+        cr.ui.anVarDest.hidden = true;
+        cr.ui.anVarLabel.hidden = true;
       }
       if (analysing) {
         cr.ui.actions.hidden = true;

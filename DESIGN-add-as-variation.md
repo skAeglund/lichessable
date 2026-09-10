@@ -1,7 +1,10 @@
 # DESIGN — "Add as variation" (section 19c)
 
 Status: **built in v0.95.0** as section 19c of `content/lichessable.js`, one
-destination (§3.3). Everything under "Findings" was ground-truthed live
+destination (§3.3) — and extended in **v0.188.0** (section 19g, **§7**) with a
+destination PICKER for the case §3.3 could not serve: a line analysed in a course
+the user cannot edit, added to a course they can. §7 overrides §3.3's refusal and
+nothing else. Everything under "Findings" was ground-truthed live
 on the test account 2026-08-10 (source courses **453453** "Testing course" and
 **291847** "Intermediate Starter Kit" — a *bought* course, authorUid 5049 — into
 target **455941** "Testing Repertoire"). Eight variations were created through the
@@ -233,6 +236,11 @@ the arm sentence already names the destination in full, so adding one later chan
 that sentence and nothing else. Until then, a course the user did not create refuses
 with a sentence saying so and pointing at "Add as line".
 
+> **§7 (v0.188.0) builds exactly that**, and this paragraph is now the record of
+> why it was left out rather than of what happens. The refusal is gone; what is
+> unchanged is the *other* half of this section — a course the user created still
+> writes into that variation's own chapter, with no chooser.
+
 ### 3.4 The name
 
 Chessable's own convention, which its context menu builds with the branch move:
@@ -437,3 +445,138 @@ refuses and says so — it does not write.
   would do it; different feature, and the analysis board is what the note asked for.
 * Touching "Add as line". Both writes stay: a comment line lives *inside* the source
   variation, a variation is a new trainable item, and the user picks which they meant.
+
+---
+
+## 7. The destination picker (section 19g, v0.188.0)
+
+> The user's request, verbatim: *"When analyzing a variation from a course that the
+> user hasn't got editing rights for and trying to 'Add as variation' — let's add
+> the option to select a chapter from any course with editing rights."*
+
+§3.3 is where this was ruled out of v1 and §5's first open question is why it looked
+expensive. Neither survived contact: **the endpoint has allowed it from the
+beginning**, and the whole feature is a `target` that comes from somewhere else.
+
+### 7.1 Nothing about the write changes
+
+`importSubvariationFromSource` requires the source course to be **owned**, never
+authored (§2.4), and test E already exercised the cross-course case — a *bought*
+course (291847) spliced into an authored one (455941), prefix intact. So:
+
+* `subvariation` is byte-for-byte what it was: `analysisVarPlies()` derives every
+  `plyNumber` from `pliesBefore(startFen)`, which is a fact about the SOURCE game
+  and cannot depend on where the copy is filed;
+* the server still splices the source variation's own plies, with their comments and
+  arrows, so `plan.expect` — the prefix plus our line — is unchanged, and so is the
+  read-back that checks it;
+* the ply cross-check of §3.2 is unchanged, and still reads the SOURCE course;
+* only `target: { courseId, chapterId }` moves, and with it every "afterwards"
+  (`dropCourseCache`, `dropRepertoireIndexCache`, the `getList` read-back), which now
+  all take the **destination** bid. Getting one of those wrong is silent: it would
+  drop the cache of a course nothing was written to, and leave the badges of the one
+  that was saying "not prepared" for 12 h — §3.6's own failure, one course over.
+
+### 7.2 Where the list comes from, and why it is an intersection
+
+Chapters can only come from `getImportData` (`DESIGN-add-as-puzzle.md` §2.5), which
+is already memoised per document as `importTargetsOnce`. But its book list is the
+**importable** set, and this endpoint's behaviour on a target the user did not author
+is §5's first open question — untested, and a picker is the wrong place to find out.
+So the list is `getImportData`'s chapters ∩ `chessableBooksOnce`'s `authorUid === uid`,
+i.e. the same guard §3.6 has always applied, applied to a set instead of to one id.
+19d needs no such intersection because `importGame` names no source at all.
+
+Two memoised GETs, fired on **open** beside `loadPuzzleTargets` and for its reason:
+the destination is half of what the arming press promises, so it must be settled
+before anything is pressed, and neither call raises a window (which is why the rights
+probe still may not be started that way).
+
+### 7.3 Shown only when it is a question
+
+`varDestNeeded()` — the source course is not one the user created — decides whether
+the picker exists at all. A course they created keeps §3.3's ruling exactly: the
+variation goes beside its source, in that variation's own chapter, with nothing to
+choose. The reasons are the same ones §3.3 gave, plus one measured: the analysis
+panel's bottom cluster is its scarcest space, and this state is already the tallest
+it gets (measured in `dev/harness.html` at the live 488px panel: 386px against 328px
+for 19d's armed state — the second picker and the two captions cost 45px, which comes
+out of the move list, `flex: 1 1 auto; overflow-y: auto`, and clips nothing).
+
+The source bid is read **once per board** (`cr.an.srcBid`), because `analysisSource()`
+walks the DOM and `syncUi` runs on every move, every tick and every status change.
+
+### 7.4 One refusal had to move
+
+`analysisSource()` used to refuse while 24g's chapter scan was still running. On a
+**bought** course that scan can never finish — `fetchVariationChapter` reads chapters
+through `getImportData`, which does not list courses you cannot import into — so the
+course tree host would have refused this feature for ever, with a sentence about
+waiting. The refusal now lives in `prepareAddVariation`, on the one branch that
+actually needs a chapter (the source's own). Both ends test for the chapter's
+**absence**, never for falsity: `lid` 0 is a real chapter ("Main Level").
+
+### 7.5 What it says
+
+* the caption above each picker ("Add as variation goes to" / "Add as puzzle goes
+  to") — added to **both**, because one bare `<select>` in a panel with three
+  "Add as …" buttons was already mildly ambiguous and two of them would be a guess;
+* every option names its course (`"Testing Repertoire › Main Level"`) and there is no
+  `<optgroup>`, unlike 19d's picker: a collapsed `<select>` shows the option and not
+  the group it sits in, and which course the line is leaving for is the one fact this
+  feature is about;
+* the arm sentence names course **and** chapter, and adds what the copy will carry:
+  *Creates "Scotch 4...Qh4?! 4...Nf6" in Testing Repertoire › Main Level, with this
+  variation's own moves in front of it — 2 moves after Qxd4.*
+* …and a **colour note** when the destination course's colour is not the source
+  variation's: *Testing Repertoire is a Black course, so the new card asks for
+  Black's moves.* Stated, never a refusal — the target course's colour wins whatever
+  we send (§2.4). 19d deliberately says nothing about the same clash, and the
+  difference is real: a puzzle's destination is always chosen, so its course has just
+  been read, whereas this is the only sentence describing a line leaving its course.
+* the result names it too: *Added as a variation in Testing Repertoire › Main Level:
+  "…"*. The own-chapter case keeps its old wording throughout.
+
+### 7.6 The preference
+
+`cloVarDest` in `storage.local` (`"<bid>:<lid>"`), written only after a successful
+write — 19d's `cloPuzzleDest` exactly, and deliberately a **second** key: "where do
+lines out of bought courses go" and "where do my puzzles go" are two questions, and
+one key would have each write silently moving the other's default. The selection
+falls back through: the stored answer if that chapter still exists → a chapter of a
+**nominated repertoire** (section 6c), which is §3.3's own description of what this
+destination is for → the first chapter there is. Deliberately no name-matching rule:
+19d's "Puzzles" guess works because puzzles are filed by kind, and a variation lifted
+out of a course is filed by opening.
+
+### 7.7 What must never happen
+
+* **Never let the picker offer a course the user did not create** (§7.2). The
+  intersection is the guard, and `prepareAddVariation` checks it again on the arming
+  press — the board is live behind two awaits.
+* **Never point the source at the destination.** `source.courseId` is the course the
+  line came out of, `target.courseId` the one it goes to; sending the target as both
+  is a 403 on a bought course and, on a course the user owns, a silently different
+  splice.
+* **Never drop or re-read the SOURCE course's caches after the write.** Nothing about
+  it changed.
+* **Never make the chooser the ordinary case.** §3.3 stands where the user can write
+  to the source course.
+
+### 7.8 Verified
+
+Measured in `dev/harness.html` (§7.3), which has a card of its own for this state
+("Add as variation into a course of your own (19g)") — the only one with two
+`<select>`s. **NOT yet ground-truthed live**: the write is the same call §3b
+exercised end to end, with only `target` differing, and §2.4's test E is that exact
+difference — but the flow itself (picker → arm → write into a course the source is
+not in) has not been run against the live API.
+
+**No `dev/check-*.js` was added, deliberately.** Every check in that directory
+exists for a rule that fails SILENTLY — a reversed comparator, a lost perspective
+flip, a filter that never fires. Every judgement here is one the panel prints
+before anything is written: the picker shows the chosen course and chapter, the
+arm sentence names both again, and a wrong destination is refused by the
+read-back (`getList` on the destination would not find the oid). The one rule
+worth restating instead of executing is §7.7's first: the picker's list is the
+intersection, and `prepareAddVariation` checks it a second time.

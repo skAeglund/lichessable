@@ -175,7 +175,7 @@ read first.
   | `DESIGN-pinned-mistakes.md` | 16b-16d, and the pinned arms of 17's popup and 20's launcher |
   | `DESIGN-chessable-sync.md` | 16e |
   | `DESIGN-continuation-review.md` | 18, and 18b at §8 |
-  | `DESIGN-add-as-variation.md` | 19c |
+  | `DESIGN-add-as-variation.md` | 19c, 19g |
   | `DESIGN-add-as-puzzle.md` | 19d, 19e |
   | `DESIGN-repertoire-coverage.md` | 21 |
   | `DESIGN-show-and-grade.md` | 23, 23b |
@@ -186,12 +186,15 @@ read first.
   | `DESIGN-intuition-storm.md` | 27 |
   | `DESIGN-storm-puzzles.md` | 29, 29.2-29.5 |
 
-  THREE OF THEM CARRY A WARNING ABOUT THEIR OWN EARLIER TEXT, and a rule quoted
+  FOUR OF THEM CARRY A WARNING ABOUT THEIR OWN EARLIER TEXT, and a rule quoted
   out of one without reading the later § is a rule quoted wrong:
   `DESIGN-course-tree.md` §12 overrides §3.5, §5.1 and §8, and §15.1 LIFTS §7's
   "no fetch per column"; `DESIGN-storm-puzzles.md` §3.1 is superseded by §12.1;
   `DESIGN-intuition-storm.md` §16 replaces centipawns with win probability
-  throughout, and §23.8, §26 and §30a each reverse a rule stated earlier in it.
+  throughout, and §23.8, §26 and §30a each reverse a rule stated earlier in it;
+  `DESIGN-add-as-variation.md` §7 lifts §3.3's "one destination, no chooser" for
+  a source course the user cannot edit (§5's first open question is still open,
+  and §7.2 is why the picker is built so that it stays that way).
 
 - `DESIGN-ui-inventory.md` — every control by host and state, what competes with
   what, the agreed visual hierarchy, and the remaining change list. Read it
@@ -1837,14 +1840,16 @@ read first.
     `disarmAddVar` is called by anything that changes what would be written; the
     plan also carries `sig` (the line's own uci string) and is refused at both
     ends if the line moved, since the board is live behind two awaits.
-  * IT WRITES TO THE COURSE THE VARIATION IS IN — nowhere else. Guarded on
-    `authorUid === uid` through `chessableBooksOnce` (section 5c, memoised per
-    document), the same guard section 21's writes use, NOT `isRepertoire`. The
-    nominated repertoire (6c) is deliberately NOT a destination yet.
-  * IT DROPS THE CACHES THAT NOW LIE — `dropCourseCache(bid)` always, and
+  * IT WRITES TO THE COURSE THE VARIATION IS IN whenever that is a course the
+    user CREATED — guarded on `authorUid === uid` through `chessableBooksOnce`
+    (section 5c, memoised per document), the same guard section 21's writes use,
+    NOT `isRepertoire`. Where it is not, the destination is CHOSEN (19g, below).
+  * IT DROPS THE CACHES THAT NOW LIE — `dropCourseCache(dest.bid)` always, and
     `dropRepertoireIndexCache()` when the target IS the nominated repertoire.
     Without the second one section 6c spends up to 12 h badging the line the user
-    just added as unprepared, which reads as the badges being broken.
+    just added as unprepared, which reads as the badges being broken. BOTH TAKE
+    THE DESTINATION, never the source: with 19g they are regularly two different
+    courses, and the repertoire is the likeliest destination of all.
   * `addVarPost` DOES NOT USE `chessableApiFetch`, and must not be "tidied" into
     it: that helper throws a bare "HTTP 400", and this endpoint's refusals are
     its most useful output ("Illegal SAN at subvariation[0]='Qh8' from FEN='…'",
@@ -1863,6 +1868,48 @@ read first.
     write). `cr.an.created` is set AFTER `report()`, since every report goes
     through `resetAnSave`, and is cleared wherever the sentence naming it is:
     the button and its sentence live and die together.
+- …AND WHERE IT GOES, WHEN THE SOURCE COURSE IS NOT YOURS (section 19g,
+  v0.188.0): a picker of every chapter of every course the user CREATED, shown
+  in the analysis panel above 19d's, and the answer to §3.3's one unserved case
+  — "I am studying a bought course and want this line in what I actually train".
+  Same endpoint, same body, same two presses: only `target` moves.
+  `DESIGN-add-as-variation.md` §7. What an edit ELSEWHERE can break:
+  * THE ENDPOINT ALREADY ALLOWED IT AND OUR GUARD DID NOT. The SOURCE need only
+    be OWNED (§2.4, test E: a bought course spliced into an authored one), and
+    the server splices its prefix — comments and arrows included — whichever
+    course it writes to. So `expect`, `analysisVarPlies` and the ply cross-check
+    are all UNCHANGED; nothing about the line depends on the destination.
+  * IT IS SHOWN ONLY WHERE THE DESTINATION IS A REAL QUESTION (`varDestNeeded`
+    → `analysisSourceBid`, memoised per board in `cr.an.srcBid`). A course the
+    user created still writes beside its source with NO chooser, which is what
+    §3.3 decided: a sibling variation belongs next to the variation it branches
+    off, and a choice nobody has to make is one more thing to read before every
+    press.
+  * ITS LIST IS AN INTERSECTION, `getImportData` ∩ `authorUid === uid`. 19d does
+    without the second because `importGame` names no source and its book list is
+    already the writable set; THIS endpoint's behaviour on a target the user did
+    not author is untested (§5), and an untested 403 is not a thing to offer.
+  * `analysisSource()` NO LONGER REFUSES FOR A MISSING CHAPTER, and 24g is why:
+    `fetchVariationChapter` can only see chapters of courses the user can import
+    into, so on a bought course it answers null FOR EVER — which is exactly the
+    case this feature exists for. The refusal moved into `prepareAddVariation`,
+    on the one branch that needs a chapter. `lid` 0 is a real chapter, so both
+    ends test for ABSENCE, never falsity.
+  * ITS `<select>` NAMES THE COURSE IN EVERY OPTION and has no `<optgroup>`,
+    unlike 19d's: a collapsed select shows the option and not its group, and the
+    one fact this feature is about is which course the line is leaving for. Both
+    pickers gained a CAPTION for the same reason — two bare selects in one panel
+    with three "Add as …" buttons is a guess.
+  * THE PREFERENCE IS ITS OWN KEY (`cloVarDest`, storage.local, written only on
+    a successful write). "Where do lines out of bought courses go" and "where do
+    my puzzles go" (`cloPuzzleDest`) are two questions; one key would have each
+    write moving the other's default. `readStoredKey`/`writeStoredKey` are the
+    shared pair.
+  * THE COLOUR CLASH IS STATED, NEVER REFUSED (`sideNoteFor`). The TARGET
+    course's colour wins whatever we send (§2.4), and 19d says nothing about the
+    same clash — the difference is that a puzzle's destination is always chosen,
+    so its course has just been read, while this sentence is the only place a
+    line leaving its course is described.
 - ADD AS PUZZLE (section 19d, v0.97.0): the analysis board's THIRD write — the
   analysed line as a variation that STARTS ON THE BOARD'S OWN POSITION, with none
   of the moves that led there. That is what a puzzle is on Chessable: a variation
