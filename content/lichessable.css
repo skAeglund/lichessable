@@ -29,8 +29,9 @@
 
    Two token sets deliberately live NEXT TO THEIR FEATURE instead of here:
    --clo-rep-* (section 6c) and --clo-cr-important (section 18c). Both carry
-   several paragraphs of argument about why that exact colour and no other, and
-   the argument has to be where the rules are. CLAUDE.md points at both
+   several paragraphs of argument about why that exact colour and no other —
+   6c's now about why exactly TWO of them — and the argument has to be where
+   the rules are. CLAUDE.md points at both
    locations by name. */
 :root {
   --clo-bg:              #262421;  /* panel / widget / popup surface */
@@ -194,7 +195,10 @@
 
 /* Repertoire picker (section 6c). First row of the menu, with a rule under it:
    it is not a database filter, and it must not read as one — least of all as
-   something the filters' "Reset" would put back. */
+   something the filters' "Reset" would put back. TWO pickers since v0.187.0,
+   each with the coloured dot that says which hue its course will wear in the
+   table below — the same legend the panel's own lines carry, in the one place
+   the choice is made. */
 .clo-rep-menu {
   border-bottom: 1px solid #302e2a;
   padding-bottom: 8px;
@@ -204,6 +208,13 @@
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* The second picker only after the first one's note, which is where the
+   spacing goes; an empty note collapses (below) and this margin is what keeps
+   the two rows apart when it does. */
+.clo-rep-menu-note + .clo-rep-menu-pick {
+  margin-top: 6px;
 }
 
 .clo-rep-select {
@@ -246,6 +257,13 @@
   margin-top: 4px;
   color: var(--clo-text-dim);
   font-size: 11px;
+}
+
+/* A slot with nothing to say takes no space: the second one is silent until
+   the first is filled, and a 4px margin under nothing reads as a gap nobody
+   asked for. */
+.clo-rep-menu-note:empty {
+  display: none;
 }
 
 .clo-rep-menu-note--warn {
@@ -306,29 +324,86 @@
    showStatus() hides: a position with no Lichess games at all is exactly where
    this line is the only thing the panel can still answer.
 
-   COLOUR: blue for "in your repertoire", NOT the lichess green the rest of the
-   panel uses for its accents. Green in a move table reads as a verdict — "this
-   is the good move" — and that is exactly what this badge does not mean; it
-   means "this one is yours". Blue is also Chessable's own brand colour, so the
-   panel's two voices stay apart: green = lichess, blue = your course.
-   Transpositions get orange rather than a second blue, because they are a
-   different KIND of answer (you reach this position by another move order), not
-   a weaker version of the same one. */
+   COLOUR IS IDENTITY — WHICH of the two nominated courses — and SHAPE is the
+   kind (filled = plays it here, ring = transposes into it, triangle = nobody
+   answers it). Before v0.187.0 there was one course and colour carried the
+   kind instead; with two, "whose?" is the question a hue has to answer, and
+   the shapes were already drawn to stand on their own ("same outer diameter,
+   so only the fill distinguishes them").
+
+   NEITHER identity hue is the lichess green the rest of the panel accents
+   with: green in a move table reads as a VERDICT — "this is the good move" —
+   which is exactly what these marks do not mean. Blue first, because it is
+   Chessable's own brand colour, so the panel's two voices stay apart
+   (green = lichess, blue = your course); orange second, because blue+orange is
+   the pair that survives a red-green deficiency, and because it is the colour
+   a transposition already wore, so nothing new had to be justified. A THIRD
+   course would need a hue that is neither of those, nor the warning's red, nor
+   green — which is why there are two slots and not N.
+
+   Red belongs to the WARNING ALONE, and that is what the merge in
+   repertoireRowStates buys: it is never "course A has no answer", always
+   "neither of them does", so it names no slot and competes with no identity. */
 
 :root {
-  --clo-rep-in: #4d8ff0;    /* Chessable blue, lifted for a dark panel */
-  --clo-rep-trans: #e0883c; /* transposition — a different answer, not a fainter one */
-  --clo-rep-risk: #e05c5c;  /* an opponent reply you have no answer to */
+  --clo-rep-a: #4d8ff0;     /* repertoire 1 — Chessable blue, lifted for a dark panel */
+  --clo-rep-b: #e0883c;     /* repertoire 2 — the far side of the accessible pair */
+  --clo-rep-risk: #e05c5c;  /* an opponent reply NEITHER of them answers */
 }
 
+/* Every surface below reads the hue through this indirection rather than
+   naming a colour, so one class on a line (or on a badge) re-tints everything
+   inside it with no specificity fight — section 26's `--clo-ev-tone` idiom.
+   The `-soft` half is the same colour at chip-border weight; written out as
+   literal rgba because deriving it would need color-mix(), and the fallback is
+   slot 0's, which is what a mark drawn before any slot is known should be. */
+.clo-rep-line--a,
+.clo-rep-badge--a,
+.clo-rep-menu-pick--a {
+  --clo-rep-hue: var(--clo-rep-a);
+  --clo-rep-hue-soft: rgba(77, 143, 240, 0.45);
+}
+
+.clo-rep-line--b,
+.clo-rep-badge--b,
+.clo-rep-menu-pick--b {
+  --clo-rep-hue: var(--clo-rep-b);
+  --clo-rep-hue-soft: rgba(224, 136, 60, 0.45);
+}
+
+/* One LINE per nominated course, stacked. `.clo-rep` was itself the wrapping
+   flex row until v0.187.0; the row moved down to `.clo-rep-line` unchanged, so
+   everything inside it (including "study from here ↗", which is written to
+   drop to its own line in a narrow panel) still lays out exactly as it did. */
 .clo-rep {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.clo-rep-line {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px;
-  margin-bottom: 6px;
-  font-size: 11px;
-  line-height: 1.5;
+}
+
+/* The legend: this line's course, in this line's colour, so a badge's hue can
+   be read off the panel instead of out of a tooltip. Same 9px geometry as the
+   filled badge, and drawn even when only one course is nominated — with one it
+   is what tells you which hue the marks below will be. */
+.clo-rep-dot {
+  display: inline-block;
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--clo-rep-hue, var(--clo-rep-a));
+  align-self: center;
 }
 
 .clo-rep-name {
@@ -354,10 +429,10 @@
 /* The moves the repertoire answers this position with. Chips, not plain text:
    they are the answer, and on the free-play boards they are clickable. */
 .clo-rep-move {
-  border: 1px solid rgba(77, 143, 240, 0.45);
+  border: 1px solid var(--clo-rep-hue-soft, rgba(77, 143, 240, 0.45));
   border-radius: 3px;
   padding: 0 5px;
-  color: var(--clo-rep-in);
+  color: var(--clo-rep-hue, var(--clo-rep-a));
 }
 
 .clo-rep-move--play {
@@ -366,8 +441,8 @@
 
 .clo-rep-move--play:hover {
   color: #fff;
-  border-color: var(--clo-rep-in);
-  background: var(--clo-rep-in);
+  border-color: var(--clo-rep-hue, var(--clo-rep-a));
+  background: var(--clo-rep-hue, var(--clo-rep-a));
 }
 
 /* "Link a repertoire" — the whole feature is invisible until a course is
@@ -385,14 +460,59 @@
 
 .clo-rep-hint:hover {
   color: #fff;
-  border-color: var(--clo-rep-in);
+  border-color: var(--clo-rep-a);
 }
 
-/* Row badge: filled = your repertoire plays this move here, hollow ring = it
-   does not, but the position after it is one your repertoire reaches by another
-   move order. DRAWN, not a "●"/"○" glyph — those differ in size and baseline
-   from font to font, and this pair has to be told apart at a glance. */
+/* "study from here ↗" (section 6d): Chessable's own "Study from this position"
+   page for the position on the board. It wears the HINT's vocabulary and not
+   the move chip's, deliberately — a solid blue chip in this line means "a move
+   your repertoire plays", and an action dressed as one would read as a seventh
+   move. `.clo-rep` is a wrapping flex row, so this simply goes on the end and
+   drops to its own line in a narrow panel. */
+.clo-rep-open {
+  border: 1px solid var(--clo-line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--clo-text-dim);
+  padding: 0 5px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.clo-rep-open:hover,
+.clo-rep-open:focus-visible {
+  color: #fff;
+  border-color: var(--clo-rep-hue, var(--clo-rep-a));
+}
+
+/* Row badge: filled = THIS course plays this move here, hollow ring = it does
+   not, but the position after it is one it reaches by another move order. The
+   HUE says which course (the `--a`/`--b` class above sets the property both
+   shapes read); the SHAPE says which of the two answers it is. DRAWN, not a
+   "●"/"○" glyph — those differ in size and baseline from font to font, and
+   this pair has to be told apart at a glance, now without the help of a second
+   colour. */
 .clo-rep-badge {
+  /* UA button reset, because the two badges that name lines are BUTTONS
+     (section 6d) and everything below sizes an empty box. It sits HERE, above
+     the modifiers, so `--transposes`'s border and `--in`/`--risk`'s background
+     still win by source order at equal specificity — a reset written after them
+     would flatten the hollow ring into an invisible 9px box. `content-box` is
+     the load-bearing one: Chrome's UA stylesheet makes a button `border-box`,
+     which would quietly shrink the hollow badge's 2px ring inside the 9px it is
+     supposed to surround. */
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: content-box;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  line-height: 1;
+
   display: inline-block;
   width: 9px;
   height: 9px;
@@ -403,21 +523,26 @@
 }
 
 .clo-rep-badge--in {
-  background: var(--clo-rep-in);
+  background: var(--clo-rep-hue, var(--clo-rep-a));
 }
 
 /* Hollow: the ring is the whole shape, so it is a border rather than a smaller
    filled dot — same outer diameter as the filled one, so a column of badges
-   stays aligned and only the fill distinguishes them. */
+   stays aligned and only the fill distinguishes them. Since v0.187.0 the fill
+   is ALL that distinguishes them, the hue having been taken over by identity;
+   2px of ring on a 9px box leaves a 5px hole, and the row tint's strength says
+   the same thing a second time. */
 .clo-rep-badge--transposes {
-  border: 2px solid var(--clo-rep-trans);
+  border: 2px solid var(--clo-rep-hue, var(--clo-rep-a));
 }
 
-/* Warning triangle: a DIFFERENT SHAPE, not just a third colour. This is the
-   only badge that means "act on this", and shape survives what colour does not
-   — a red/blue pair is exactly the confusion the ~8% of men with a red-green or
-   red-blue deficiency get least help from, and the panel is often glanced at
-   rather than read. Cut from the same box with clip-path rather than the
+/* Warning triangle: a DIFFERENT SHAPE, not just a third colour — and since
+   v0.187.0 that is load-bearing rather than belt-and-braces, both identity
+   hues being circles. It is the only badge that means "act on this", it names
+   no course (it is the merged "neither of them answers this"), and shape
+   survives what colour does not — a red/blue pair is exactly the confusion the
+   ~8% of men with a red-green or red-blue deficiency get least help from, and
+   the panel is often glanced at rather than read. Cut from the same box with clip-path rather than the
    border-triangle trick, so the sizing rules above (and the touch override
    below) keep working on it unchanged. Slightly wider and shorter than the
    circles: a triangle in an identical box reads smaller than one. */
@@ -430,26 +555,101 @@
   vertical-align: 0;
 }
 
-/* Row tint. A 9px dot is still easy to miss in a twelve-row table, so the whole
-   row carries the answer. Set on the CELLS, not the row: the generic
+/* A move cell carrying BOTH courses' marks tightens them, and this is the one
+   measurement a second repertoire actually cost. Section 26 left this table at
+   its edge on purpose (its own note: "anything added to this table has to
+   re-measure"), and a second mark is 15-22px of intrinsic move-column width
+   under html.clo-touch. Measured in dev/harness.html at the panel's 300px
+   minimum with the eval column on, as slack = body.clientWidth - table
+   scrollWidth, one badge -> two:
+     touch   (Games hidden, 4 cols): Bb5+ 24->23 · Raxe1+ 12->4 · exd8=Q+ 2->-6
+     desktop (Games shown,  5 cols): Bb5+ 14->4  · Raxe1+  0->-10 · exd8=Q+ -8->-18
+   At 330px every case fits with 20px to spare. Where it does not fit,
+   `.clo-body` is `overflow: auto`, so the table SCROLLS sideways rather than
+   being clipped — and the one-badge case was already at 0 and -8 there, so
+   this is the same failure the eval column already had, not a new kind.
+
+   The ring goes `border-box` HERE and nowhere else: doubled, the two marks
+   differ by HUE, which is the case hue exists for, so shape can afford to give
+   up the 13px-vs-9px size cue it leans on when a mark is alone. */
+.clo-move:has(.clo-rep-badge + .clo-rep-badge) .clo-rep-badge {
+  margin-left: 3px;
+}
+
+.clo-move:has(.clo-rep-badge + .clo-rep-badge) .clo-rep-badge--transposes {
+  box-sizing: border-box;
+}
+
+/* (0,5,1), which is what outranks the touch sizing rule at the end of the
+   file — the doubled cell is the one place a tap target yields to a column. */
+html.clo-touch .clo-move:has(.clo-rep-badge + .clo-rep-badge) .clo-rep-badge {
+  width: 9px;
+  height: 9px;
+  margin-left: 4px;
+}
+
+/* Pressable: this badge opens the lines behind it (section 6d). The warning
+   triangle never gets it — a move the repertoire has no answer to has no lines
+   to open. Below `--risk` so the cursor beats the base rule's `help`; the ring
+   is drawn OUTSIDE the box (outline, not border) so a mark whose exact geometry
+   is the whole point of drawing it is not resized by being hovered. */
+.clo-rep-badge--open {
+  cursor: pointer;
+}
+
+.clo-rep-badge--open:hover,
+.clo-rep-badge--open:focus-visible {
+  outline: 1px solid var(--clo-text);
+  outline-offset: 2px;
+}
+
+/* Row tint. A 9px mark is still easy to miss in a twelve-row table, so the
+   whole row carries the answer. Set on the CELLS, not the row: the generic
    `.clo-table tr:hover td` rule paints a background on the td, which would
-   cover a background sitting on the tr. Both selectors below therefore
-   outrank it (2 classes + 3 types, and 3 + 3 for the hover). */
-.clo-table tbody tr.clo-rep-row--in td {
+   cover a background sitting on the tr. Every selector below therefore
+   outranks it (2 classes + 3 types, and 3 + 3 for the hover).
+
+   ONE TINT, TWO QUESTIONS. A row can be answered by both courses, and a
+   background can only say one thing — so HUE is identity (the first slot with
+   something to say, see repRowTint) and STRENGTH is the kind: `--weak` is a
+   row whose best answer anywhere is a transposition, which is a hint rather
+   than the answer. That is the distinction this tint was already drawn with
+   back when colour carried the kind; only the class it hangs off changed.
+
+   The four combinations resolve by SPECIFICITY alone, so their order here is
+   free: `--a td` (0,2,3) loses to `--a.--weak td` and to `--a:hover td` (both
+   0,3,3, and they never both apply — a hovered weak row also matches the
+   (0,4,3) rule that beats them). */
+.clo-table tbody tr.clo-rep-row--a td {
   background: rgba(77, 143, 240, 0.13);
 }
 
-.clo-table tbody tr.clo-rep-row--in:hover td {
+.clo-table tbody tr.clo-rep-row--a:hover td {
   background: rgba(77, 143, 240, 0.22);
 }
 
-/* Fainter: a transposition is a hint, not the answer. */
-.clo-table tbody tr.clo-rep-row--transposes td {
-  background: rgba(224, 136, 60, 0.09);
+.clo-table tbody tr.clo-rep-row--a.clo-rep-row--weak td {
+  background: rgba(77, 143, 240, 0.06);
 }
 
-.clo-table tbody tr.clo-rep-row--transposes:hover td {
-  background: rgba(224, 136, 60, 0.17);
+.clo-table tbody tr.clo-rep-row--a.clo-rep-row--weak:hover td {
+  background: rgba(77, 143, 240, 0.13);
+}
+
+.clo-table tbody tr.clo-rep-row--b td {
+  background: rgba(224, 136, 60, 0.12);
+}
+
+.clo-table tbody tr.clo-rep-row--b:hover td {
+  background: rgba(224, 136, 60, 0.2);
+}
+
+.clo-table tbody tr.clo-rep-row--b.clo-rep-row--weak td {
+  background: rgba(224, 136, 60, 0.06);
+}
+
+.clo-table tbody tr.clo-rep-row--b.clo-rep-row--weak:hover td {
+  background: rgba(224, 136, 60, 0.12);
 }
 
 /* The warning is the one row you are meant to notice, so it is the strongest
@@ -463,9 +663,11 @@
   background: rgba(224, 92, 92, 0.24);
 }
 
-/* The move itself reads brighter on a tinted row — the tint alone dulls it. */
-.clo-rep-row--in .clo-move,
-.clo-rep-row--risk .clo-move {
+/* The move itself reads brighter on a tinted row — the tint alone dulls it.
+   Not on a `--weak` one: that tint is deliberately at the threshold of
+   visible, and brightening the move on it would make a transposition-only row
+   shout as loudly as a covered one. */
+.clo-rep-row:not(.clo-rep-row--weak) .clo-move {
   color: #e8e8e8;
 }
 
@@ -5306,13 +5508,14 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
 
 .clo-ct-link:hover { color: var(--clo-accent-text); text-decoration: underline; }
 
-/* Section 6c's two positive answers, drawn the same way and in the same two
-   colours — blue for "your repertoire plays this", orange for "it reaches the
-   position after it another way". DRAWN, never a glyph, for 6c's reason: two
-   marks that must be told apart at a glance need exact geometry, and the hollow
-   one is a BORDER so both share an outer diameter. The unprepared-reply warning
-   is deliberately absent here: it is comparative on Lichess popularity, which
-   §7 forbids fetching per column. */
+/* Section 6c's two positive answers, drawn the same way and reading the same
+   two vocabularies — HUE for which nominated course, SHAPE for which answer
+   (filled = it plays this here, ring = it reaches the position after it
+   another way). DRAWN, never a glyph, for 6c's reason: marks that must be told
+   apart at a glance need exact geometry, and the hollow one is a BORDER so
+   both share an outer diameter. A row can carry one mark per course. The
+   unprepared-reply warning is deliberately absent here: it is comparative on
+   Lichess popularity, which §7 forbids fetching per column. */
 .clo-ct-badge {
   display: inline-block;
   width: 8px;
@@ -5321,8 +5524,13 @@ html.clo-touch .clo-cl-dest { font-size: 16px; } /* 16px: anything smaller zooms
   flex: none;
 }
 
-.clo-ct-badge--in { background: var(--clo-rep-in); }
-.clo-ct-badge--trans { border: 2px solid var(--clo-rep-trans); box-sizing: border-box; }
+.clo-ct-badge--a { --clo-rep-hue: var(--clo-rep-a); }
+.clo-ct-badge--b { --clo-rep-hue: var(--clo-rep-b); }
+.clo-ct-badge--in { background: var(--clo-rep-hue, var(--clo-rep-a)); }
+.clo-ct-badge--trans {
+  border: 2px solid var(--clo-rep-hue, var(--clo-rep-a));
+  box-sizing: border-box;
+}
 
 .clo-ct-empty {
   padding: 10px 4px;
@@ -5659,7 +5867,8 @@ html.clo-touch .clo-rep-reload {
 }
 
 html.clo-touch .clo-rep-move,
-html.clo-touch .clo-rep-hint {
+html.clo-touch .clo-rep-hint,
+html.clo-touch .clo-rep-open {
   padding: 4px 8px;
   font-size: 13px;
 }
@@ -5668,11 +5877,18 @@ html.clo-touch .clo-rep-reload {
   padding: 6px 10px;
 }
 
-/* The shapes are drawn, not typed — they scale by size, not font-size. */
-html.clo-touch .clo-rep-badge {
+/* The shapes are drawn, not typed — they scale by size, not font-size. The
+   legend dot is the same shape as the filled badge and scales with it, or the
+   line above the table would stop matching the marks in it. */
+html.clo-touch .clo-rep-badge,
+html.clo-touch .clo-rep-dot {
   width: 11px;
   height: 11px;
   margin-left: 7px;
+}
+
+html.clo-touch .clo-rep-dot {
+  margin-left: 0;
 }
 
 html.clo-touch .clo-rep-badge--risk {

@@ -1347,8 +1347,16 @@
     // every panel move that the repertoire plays from the current position gets
     // a badge. Read-only: nothing here ever writes to a course.
     repertoire: {
-      prefKey:  'cloRepertoire',       // chrome.storage.local: { bid, name }
-      indexKey: 'cloRepertoireIndex',  // chrome.storage.session: the built index
+      // chrome.storage.local. UP TO TWO SLOTS since v0.187.0:
+      // [{ bid, name } | null, { bid, name } | null]. The single { bid, name }
+      // every earlier build wrote is still READ (applyRepertoirePref takes
+      // both shapes) and is rewritten as the array on the first change.
+      prefKey:  'cloRepertoire',
+      // chrome.storage.session: the built indexes, ONE OBJECT KEYED BY BID.
+      // The key moved with the shape rather than growing a migration — this
+      // area dies with the browsing session, so an entry from an older build
+      // costs one rebuild, once.
+      indexKey: 'cloRepertoireIndex2',
       // Bumped whenever the index gains a FIELD. A cached index from an older
       // build parses fine and is quietly missing the new one — v2 added `side`,
       // without which the unprepared-reply warning simply never fires and there
@@ -1371,6 +1379,26 @@
       // triangle on that is a false alarm — the same reason section 21 stops
       // multiplying shares below its own floor. Same number, deliberately.
       riskMinGames: 50,
+      // --- "study from here" (section 6d) ----------------------------------
+      // Chessable's own "Study from this position" link — on the variation page
+      // it is an `href="#popup"` that navigates here, so there is no popup and
+      // no endpoint to call: the destination is a plain URL, and it is the
+      // COURSE page filtered to the variations that pass through one position,
+      // each with its title, its moves and its own Review button. So it is both
+      // "which of my lines play this?" and the way into any one of them, which
+      // is why this feature needs nothing added to the index.
+      // Ground-truthed 2026-09-08 on course 453453:
+      //   /course/<bid>/fen/<placement, "/" → ";">%20<stm>%20<castling>%20<ep>/
+      // The move counters may be DROPPED, castling and en passant are IGNORED
+      // (KQkq and "-" both answered the same 50 variations) and the side to move
+      // IS matched ("b" for a white-to-move position answered none) — the same
+      // tolerances the getList position search has (section 18's
+      // `courseSearchUrl`), and the reason a REVIEW-mode FEN, whose castling is
+      // a home-square guess and whose en passant is always "-", still names the
+      // right page. A position the course never reaches renders "Oops! No
+      // variations found", which is why nothing links there unless the index
+      // says the position is reached.
+      studyPath: '/course/',
     },
 
     // --- Repertoire coverage (section 21) ----------------------------------
@@ -3038,7 +3066,7 @@
         renderRepertoireUi();
         renderRepertoireLine();
         if (state.lastData) present(state.lastData); // drop the old badges now
-        if (rep.bid) ensureRepertoireIndex(false);
+        ensureRepertoireIndexes(false);
       }
     }
     // The eval column (DESIGN-chessdb.md) — flipped here, in the other document
@@ -3220,7 +3248,7 @@
     // The repertoire's answer for this position needs no network and no Lichess
     // data, so it is drawn immediately rather than with the move table.
     renderRepertoireLine();
-    ensureRepertoireIndex(false); // no-op once the index is in
+    ensureRepertoireIndexes(false); // no-op once every nominated index is in
 
     const seq = ++state.requestSeq;
     log('position:', fen);
@@ -4444,8 +4472,15 @@
             <span class="clo-cdb-note">Sends the position to chessdb.cn</span>
           </div>
           <div class="clo-filters-row clo-rep-menu">
-            <span class="clo-filters-label">Repertoire</span>
-            <span class="clo-rep-menu-pick">
+            <span class="clo-filters-label">Repertoires</span>
+            <span class="clo-rep-menu-pick clo-rep-menu-pick--a">
+              <span class="clo-rep-dot"></span>
+              <select class="clo-rep-select"></select>
+              <button type="button" class="clo-rep-reload" title="Re-read the course (after editing it)">↻</button>
+            </span>
+            <span class="clo-rep-menu-note"></span>
+            <span class="clo-rep-menu-pick clo-rep-menu-pick--b">
+              <span class="clo-rep-dot"></span>
               <select class="clo-rep-select"></select>
               <button type="button" class="clo-rep-reload" title="Re-read the course (after editing it)">↻</button>
             </span>
@@ -4534,9 +4569,10 @@
       filtersNote:  panel.querySelector('.clo-filters-note'),
       filtersReset: panel.querySelector('.clo-filters-reset'),
       repLine:      panel.querySelector('.clo-rep'),
-      repSelect:    panel.querySelector('.clo-rep-select'),
-      repReload:    panel.querySelector('.clo-rep-reload'),
-      repNote:      panel.querySelector('.clo-rep-menu-note'),
+      // One entry per slot, in document order = slot order (section 6c).
+      repSelects:   [...panel.querySelectorAll('.clo-rep-select')],
+      repReloads:   [...panel.querySelectorAll('.clo-rep-reload')],
+      repNotes:     [...panel.querySelectorAll('.clo-rep-menu-note')],
       engine:       panel.querySelector('.clo-engine'),
       engineToggle: panel.querySelector('.clo-engine-toggle'),
       engineEval:   panel.querySelector('.clo-engine-eval'),
@@ -4558,8 +4594,10 @@
     state.ui.cog.addEventListener('click', onCogToggle);
     state.ui.filtersReset.addEventListener('click', onFiltersReset);
     state.ui.cdbCheck.addEventListener('change', onCdbToggle);
-    state.ui.repSelect.addEventListener('change', onRepertoireSelect);
-    state.ui.repReload.addEventListener('click', onRepertoireReload);
+    state.ui.repSelects.forEach((sel, i) =>
+      sel.addEventListener('change', () => onRepertoireSelect(i)));
+    state.ui.repReloads.forEach((btn, i) =>
+      btn.addEventListener('click', () => onRepertoireReload(i)));
     buildFilterChips();
     renderRepertoireUi();
     renderRepertoireLine();
@@ -5197,11 +5235,19 @@
   // ==========================================================================
   // 6c) Repertoire badges — "which of these moves have I actually prepared?"
   //
-  // One of the user's Chessable courses is nominated as THE repertoire (picked
-  // in the settings menu, section 6b, so the panel's own preference lives with
-  // the panel's other preferences). It is read once through the shared getList
-  // of section 5c, walked into a position → moves index, and from then on every
-  // move row the repertoire plays from the current position carries a badge.
+  // UP TO TWO of the user's Chessable courses are nominated as repertoires
+  // (picked in the settings menu, section 6b, so the panel's own preferences
+  // live with the panel's other preferences). Each is read once through the
+  // shared getList of section 5c, walked into a position → moves index, and
+  // from then on every move row either of them plays from the current position
+  // carries a badge.
+  //
+  // TWO SLOTS, not N (v0.187.0). The asked-for case is a White course and a
+  // Black one, where the two are silent on each other's positions by
+  // construction — see the warning's rule below — and a third would need a
+  // third hue that is neither of the identity pair, nor the warning's red, nor
+  // the lichess green the rest of the panel accents with. There is no such hue
+  // left that survives being a 9px mark.
   //
   // Read-only, and deliberately a SEPARATE question from section 21's coverage
   // report: that one asks "which lines of the course I am looking at are
@@ -5220,34 +5266,78 @@
   // castling rights or an en-passant chance collapse into one, which at worst
   // badges a move that is in the repertoire one board-state away.
   //
-  // Three states are worth telling apart, and the summary line carries the two
-  // the badges cannot:
-  //   * the repertoire plays this move here            → badge on the row
-  //   * the repertoire plays something ELSE here       → the summary line names it
-  //     (its move is regularly outside Lichess's top 12, so there would be no
-  //     row to badge at all)
-  //   * the repertoire never reaches this position     → the summary line says so
-  // A move that merely TRANSPOSES into the repertoire (the position after it is
-  // one the repertoire reaches, by another move order) gets the hollow badge —
-  // free from the same walk, and the one thing an exact-line answer gets wrong.
+  // COLOUR IS IDENTITY AND SHAPE IS THE KIND — the one thing a second
+  // repertoire changed here, and a swap rather than a fight because the shapes
+  // were already drawn to be told apart on their own ("same outer diameter, so
+  // only the fill distinguishes them"). Before v0.187.0 colour carried the kind
+  // (blue = in, orange = transposes) and shape reinforced it; with two courses
+  // colour has to answer "whose?", so:
+  //   * filled circle = this repertoire plays this move here
+  //   * hollow ring   = it does not, but the position after it is one it
+  //                     reaches by another move order (a transposition — free
+  //                     from the same walk, and the one thing an exact-line
+  //                     comparison always gets wrong)
+  //   * triangle      = the unprepared-reply warning, which belongs to NO slot
+  //                     (see repertoireRowStates) and so keeps red to itself.
+  // The cost falls on the single-repertoire user, whose transposition ring used
+  // to be a different HUE from the filled dot and is now the same one: a 2px
+  // ring on a 9px box leaves a 5px hole, and the row tint's STRENGTH says it a
+  // second time.
+  //
+  // Three states are worth telling apart, and the summary lines carry the two
+  // the badges cannot — per repertoire, one line each:
+  //   * it plays this move here            → badge on the row
+  //   * it plays something ELSE here       → its line names the move
+  //     (regularly outside Lichess's top 12, so there would be no row to badge)
+  //   * it never reaches this position     → its line says so
   // ==========================================================================
 
   const REP = CONFIG.repertoire;
 
-  const rep = {
-    bid: null,        // chosen course id, or null for "no repertoire"
+  const REP_SLOTS = 2;
+  /** Slot index → the identity suffix its hue, dot, badge and line all wear. */
+  const REP_HUE = ['a', 'b'];
+
+  const makeRepSlot = (i) => ({
+    i,
+    bid: null,        // chosen course id, or null for "nothing in this slot"
     name: '',         // its title, remembered so the line can be drawn before the index is in
-    prefLoaded: false,
-    index: null,      // built index (see buildRepertoireIndex), for rep.bid
+    index: null,      // built index (see buildRepertoireIndex), for this slot's bid
     loading: false,
-    error: '',        // one-line failure, shown in the settings menu
-    linePlayable: false, // what the summary line's chips were last drawn assuming
-    books: null,      // [{bid,name,ours}] once listed, null until then
+    error: '',        // one-line failure, shown under this slot's dropdown
+  });
+
+  const reps = [];
+  for (let i = 0; i < REP_SLOTS; i++) reps.push(makeRepSlot(i));
+
+  /**
+   * What the slots SHARE: one preference load, one listing of the user's
+   * courses (both dropdowns offer the same library), and one answer to "can a
+   * chip in a summary line be pressed to play its move".
+   */
+  const repUi = {
+    prefLoaded: false,
+    linePlayable: false, // what the summary lines' chips were last drawn assuming
+    books: null,         // [{bid,name,ours}] once listed, null until then
     booksLoading: false,
-    // Kept apart from `error`: failing to LIST the user's courses says nothing
-    // about the repertoire already loaded, and reporting it on the summary line
-    // as "could not be read" would be a lie about working badges.
+    // Kept apart from a slot's `error`: failing to LIST the user's courses says
+    // nothing about a repertoire already loaded, and reporting it as "could not
+    // be read" would be a lie about working badges.
     booksError: '',
+  };
+
+  /** The nominated slots, in slot order. Everything outside 6c asks in these terms. */
+  const repActive = () => reps.filter((s) => s.bid);
+  const repAnyBid = () => reps.some((s) => s.bid);
+  /** A nominated slot whose index has not landed yet — the tree's "still loading". */
+  const repAnyPending = () => reps.some((s) => s.bid && !s.index);
+  /** True when `bid` is one of the nominated courses (sections 19c/19d ask this). */
+  const repUsesCourse = (bid) => Boolean(bid) && reps.some((s) => String(s.bid) === String(bid));
+  /** How to name the pair in a sentence that is about both of them. */
+  const repCoverNoun = () => {
+    const live = repActive();
+    return live.length > 1 ? 'your repertoires'
+      : `"${(live[0] && live[0].name) || 'your repertoire'}"`;
   };
 
   /**
@@ -5345,16 +5435,21 @@
   }
 
   /**
-   * The built index in chrome.storage.session, so the second document (and
+   * The built indexes in chrome.storage.session, so the second document (and
    * every later mt1 iframe — Chessable makes a new one per explore page) pays
-   * nothing. Only ONE repertoire is cached: there is only one selected.
+   * nothing. ONE OBJECT KEYED BY BID, one entry per nominated course; it used
+   * to be a single index with its bid checked on read, which two slots cannot
+   * share. The KEY moved with the shape (`…Index` → `…Index2`) rather than
+   * growing a migration: this area dies with the browsing session anyway, so
+   * the worst an entry from an older build costs is one rebuild, once.
    */
   async function readRepertoireIndexCache(bid) {
     try {
       await sessionStorageReady();
       const got = await chrome.storage.session.get([REP.indexKey]);
-      const raw = got && got[REP.indexKey];
-      if (!raw || String(raw.bid) !== String(bid)) return null;
+      const all = (got && got[REP.indexKey]) || null;
+      const raw = all && all[String(bid)];
+      if (!raw) return null;
       if (raw.v !== REP.indexVersion) return null; // written by an older build
       if (Date.now() - (raw.t || 0) > REP.indexTtlMs) return null;
       return deserializeRepertoireIndex(raw);
@@ -5363,21 +5458,48 @@
     }
   }
 
+  /**
+   * READ-MODIFY-WRITE, AND IT PRUNES. Section 24b's `flushDbCache` hazard in a
+   * smaller pond: a plain `set` of one slot's index would silently delete the
+   * other slot's. It also drops entries for courses no longer nominated, which
+   * is what caps the object at two — `maxIndexPositions` is a PER-INDEX guard
+   * and was written when there could only be one index.
+   *
+   * Two DOCUMENTS finishing a walk at the same moment can still lose a lap (the
+   * panel lives in the mt1 iframe and in the top document); that costs one
+   * rebuild, which is what this cache exists to avoid rather than to guarantee.
+   */
   async function writeRepertoireIndexCache(ix) {
     if (ix.answers.size > REP.maxIndexPositions) {
       log('repertoire index too large to cache (', ix.answers.size, 'positions ) — rebuilt per document');
       return;
     }
     try {
-      await chrome.storage.session.set({ [REP.indexKey]: serializeRepertoireIndex(ix) });
+      await sessionStorageReady();
+      const got = await chrome.storage.session.get([REP.indexKey]);
+      const all = (got && got[REP.indexKey]) || {};
+      const next = {};
+      for (const s of reps) {
+        const keep = s.bid && all[String(s.bid)];
+        if (keep) next[String(s.bid)] = keep;
+      }
+      next[String(ix.bid)] = serializeRepertoireIndex(ix);
+      await chrome.storage.session.set({ [REP.indexKey]: next });
     } catch (err) {
       // Not being able to cache costs a rebuild, nothing else.
     }
   }
 
-  async function dropRepertoireIndexCache() {
+  /** One course's entry, or — with no argument — the whole object. */
+  async function dropRepertoireIndexCache(bid) {
     try {
-      await chrome.storage.session.remove(REP.indexKey);
+      if (!bid) { await chrome.storage.session.remove(REP.indexKey); return; }
+      await sessionStorageReady();
+      const got = await chrome.storage.session.get([REP.indexKey]);
+      const all = (got && got[REP.indexKey]) || null;
+      if (!all || !all[String(bid)]) return;
+      delete all[String(bid)];
+      await chrome.storage.session.set({ [REP.indexKey]: all });
     } catch (err) { /* nothing cached, or no session area — either way, fine */ }
   }
 
@@ -5390,33 +5512,46 @@
     } catch (err) {
       warn('repertoire preference unreadable:', err);
     }
-    rep.prefLoaded = true;
+    repUi.prefLoaded = true;
   }
 
-  /** Adopt a stored `{ bid, name }` (or a cleared one). Idempotent. */
+  /**
+   * Adopt a stored preference (or a cleared one). Idempotent, and it accepts
+   * BOTH shapes: the single `{ bid, name }` every build before v0.187.0 wrote,
+   * and the array of up to two this one does. A write always produces the
+   * array, so the old shape is read exactly once per profile — and a downgrade
+   * finds an array it does not recognise, keeps no repertoire, and says so in
+   * the panel rather than misreading one.
+   */
   function applyRepertoirePref(pref) {
-    const bid = pref && pref.bid ? String(pref.bid) : null;
-    const changed = bid !== rep.bid;
-    rep.bid = bid;
-    rep.name = (pref && pref.name) || '';
-    if (changed) {
-      rep.index = null;
-      rep.error = '';
+    const list = Array.isArray(pref) ? pref : (pref && pref.bid ? [pref] : []);
+    let changed = false;
+    for (let i = 0; i < REP_SLOTS; i++) {
+      const p = list[i] || null;
+      const bid = p && p.bid ? String(p.bid) : null;
+      const s = reps[i];
+      if (bid !== s.bid) {
+        changed = true;
+        s.index = null;
+        s.error = '';
+      }
+      s.bid = bid;
+      s.name = bid ? ((p && p.name) || s.name || '') : '';
     }
     return changed;
   }
 
   /**
-   * Loads the index for the selected repertoire if it is not in already. Safe
-   * to call on every render: it is a no-op once loaded, and one flight at a
-   * time. `force` skips both caches (the ↻ beside the picker).
+   * Loads ONE slot's index if it is not in already. Safe to call on every
+   * render: a no-op once loaded, and one flight at a time per slot. `force`
+   * skips both caches (the ↻ beside that slot's dropdown).
    */
-  async function ensureRepertoireIndex(force) {
-    if (!rep.bid || rep.loading) return;
-    if (rep.index && !force) return;
-    const bid = rep.bid;
-    rep.loading = true;
-    rep.error = '';
+  async function ensureRepertoireIndex(slot, force) {
+    if (!slot || !slot.bid || slot.loading) return;
+    if (slot.index && !force) return;
+    const bid = slot.bid;
+    slot.loading = true;
+    slot.error = '';
     renderRepertoireUi();
     try {
       let ix = force ? null : await readRepertoireIndexCache(bid);
@@ -5429,65 +5564,92 @@
         log('repertoire indexed:', ix.name, '—', ix.indexed, 'line(s),',
           ix.answers.size, 'positions' + (ix.unplayable ? `, ${ix.unplayable} unplayable` : ''));
       }
-      if (rep.bid !== bid) return; // the user changed their mind mid-flight
-      rep.index = ix;
-      if (ix.name && ix.name !== rep.name) {
-        rep.name = ix.name;
+      if (slot.bid !== bid) return; // the user changed their mind mid-flight
+      slot.index = ix;
+      if (ix.name && ix.name !== slot.name) {
+        slot.name = ix.name;
         saveRepertoirePref(); // getList's own title beats whatever the picker said
       }
     } catch (err) {
-      rep.error = String((err && err.message) || err);
+      slot.error = String((err && err.message) || err);
       warn('could not read the repertoire:', err);
     } finally {
-      rep.loading = false;
+      slot.loading = false;
       renderRepertoireUi();
-      // The move rows were drawn without badges while this was in flight.
+      // The move rows were drawn without this slot's badges while it was in flight.
       if (state.lastData) present(state.lastData);
       renderRepertoireLine();
     }
   }
 
+  /**
+   * Every nominated slot, SEQUENTIALLY and never Promise.all. Each one is a
+   * course fetch plus a walk of a few hundred thousand CloSan calls, and two of
+   * those interleaved on the main thread make both slower than either alone —
+   * and the index cache is read-modify-write, which two flights landing
+   * together can lose a lap of.
+   */
+  async function ensureRepertoireIndexes(force) {
+    for (const s of reps) {
+      if (s.bid) await ensureRepertoireIndex(s, force);
+    }
+  }
+
   function saveRepertoirePref() {
+    const list = reps.map((s) => (s.bid ? { bid: s.bid, name: s.name } : null));
     try {
       chrome.storage.local.set({
-        [REP.prefKey]: rep.bid ? { bid: rep.bid, name: rep.name } : null,
+        [REP.prefKey]: list.some(Boolean) ? list : null,
       }).catch(() => {});
     } catch (err) { /* orphaned script — the choice just isn't remembered */ }
   }
 
-  /** The picker's answer: adopt, persist, rebuild, redraw. */
-  function setRepertoire(bid, name) {
-    rep.bid = bid || null;
-    rep.name = name || '';
-    rep.index = null;
-    rep.error = '';
+  /** The picker's answer for ONE slot: adopt, persist, rebuild, redraw. */
+  function setRepertoire(i, bid, name) {
+    const slot = reps[i];
+    if (!slot) return;
+    const prev = slot.bid;
+    slot.bid = bid || null;
+    slot.name = name || '';
+    slot.index = null;
+    slot.error = '';
     saveRepertoirePref();
-    dropRepertoireIndexCache(); // the cache holds exactly one index — this one is stale
+    // The course this slot just let go of is no longer nominated by anyone, so
+    // its cached index is dead weight in the session area.
+    if (prev && !repUsesCourse(prev)) dropRepertoireIndexCache(prev);
     renderRepertoireUi();
     renderRepertoireLine();
     if (state.lastData) present(state.lastData);
-    if (rep.bid) ensureRepertoireIndex(false);
+    if (slot.bid) ensureRepertoireIndex(slot, false);
   }
 
   // --- queries ---------------------------------------------------------------
 
-  /** Map(uci → entry) the repertoire answers `fen` with, or null. */
-  function repertoireMovesAt(fen) {
-    if (!rep.index || !fen) return null;
-    return rep.index.answers.get(repKey(fen)) || null;
-  }
-
-  /** True when the repertoire passes through this position at all. */
-  function repertoireReaches(fen) {
-    return Boolean(rep.index && fen && rep.index.seen.has(repKey(fen)));
+  /** Map(uci → entry) `slot` answers `fen` with, or null. */
+  function repertoireMovesAt(slot, fen) {
+    if (!slot || !slot.index || !fen) return null;
+    return slot.index.answers.get(repKey(fen)) || null;
   }
 
   /**
-   * The repertoire's verdict on ONE move, plus the index key it was matched by.
-   * 'in' when the repertoire plays this move here, 'transposes' when it does
+   * One answer map per slot, in slot order — what a caller holding a whole move
+   * list for one position wants, and what the course tree caches per column.
+   */
+  function repertoireAnswersAt(fen) {
+    return reps.map((s) => repertoireMovesAt(s, fen));
+  }
+
+  /** True when `slot` passes through this position at all. */
+  function repertoireReaches(slot, fen) {
+    return Boolean(slot && slot.index && fen && slot.index.seen.has(repKey(fen)));
+  }
+
+  /**
+   * ONE SLOT's verdict on ONE move, plus the index key it was matched by.
+   * 'in' when that repertoire plays this move here, 'transposes' when it does
    * not but the position AFTER it is one the repertoire reaches by some other
    * move order, null otherwise. The transposition arm is what an exact-line
-   * comparison always gets wrong, and it costs one makeMove per row.
+   * comparison always gets wrong, and it costs one makeMove per row per slot.
    *
    * THE INCOMING UCI IS RESOLVED, NEVER COMPARED RAW. Lichess's explorer writes
    * castling as KING TAKES ROOK ("e1h1"); CloSan's move generator — and so the
@@ -5496,138 +5658,272 @@
    * because CloSan.uciToMove normalizes the pair internally; a string lookup in
    * `answers` does not, so before this every castling move in the panel fell
    * through to the transposition arm, which then SUCCEEDED (the repertoire does
-   * reach the position after its own castling move) and painted "O-O" orange
-   * while the summary line above it said the repertoire plays O-O. It also kept
-   * a covered castling move from counting towards the unprepared-reply
-   * threshold, which could invent a red row. Ground-truthed 2026-08-01: the
-   * explorer really does answer `uci: "e1h1"`.
+   * reach the position after its own castling move) and drew "O-O" as a
+   * transposition while the summary line above it said the repertoire plays
+   * O-O. It also kept a covered castling move from counting towards the
+   * unprepared-reply threshold, which could invent a warning. Ground-truthed
+   * 2026-08-01: the explorer really does answer `uci: "e1h1"`.
    *
    * `pos` and `answers` are passed in because the caller has a whole move list
    * for one position — parsing the FEN and looking the position up per row was
-   * pure waste.
+   * pure waste, and with two slots it would be twice the waste.
    */
-  function repertoireMoveState(pos, answers, uci) {
-    if (!rep.index || !pos || !uci || typeof CloSan === 'undefined') return null;
+  function repertoireMoveState(slot, pos, answers, uci) {
+    if (!slot || !slot.index || !pos || !uci || typeof CloSan === 'undefined') return null;
     const mv = CloSan.uciToMove(pos, uci);
     if (!mv) return null; // not legal here — the explorer and our board disagree
     const key = squareName(mv.from) + squareName(mv.to) + (mv.promo || '');
-    if (answers && answers.has(key)) return { kind: 'in', uci: key };
     // The halfmove clock is irrelevant: repKey reads placement + side to move
     // only, so there is no need to go through fenAfterUci to recompute it.
+    // Computed for the 'in' arm as well, which the transposition test used to
+    // be the only caller of: it is what section 6d's badge opens — "the lines
+    // that play this move from here" is the position AFTER it — and one extra
+    // makeMove on the handful of badged rows in a move table is nothing.
     const after = CloSan.fenFromPos(CloSan.makeMove(pos, mv), 0);
-    return (after && rep.index.seen.has(repKey(after)))
-      ? { kind: 'transposes', uci: key }
+    if (answers && answers.has(key)) return { slot: slot.i, kind: 'in', uci: key, after };
+    return (after && slot.index.seen.has(repKey(after)))
+      ? { slot: slot.i, kind: 'transposes', uci: key, after }
       : null;
   }
 
-  /** True when the side to move in `fen` is NOT the side the repertoire is for. */
-  function repertoireOpponentToMove(fen) {
-    const side = rep.index && rep.index.side;
+  /** True when the side to move in `fen` is NOT the side `slot` is written for. */
+  function repertoireOpponentToMove(slot, fen) {
+    const side = slot && slot.index && slot.index.side;
     if (!side || !fen) return false; // course does not say which side it is for
     const stm = fen.split(' ')[1];
     return (stm === 'w' || stm === 'b') && stm !== side;
   }
 
   /**
-   * The repertoire's verdict on every move of one explorer response, in order.
-   * Decided for the WHOLE list at once rather than per row, because the fourth
-   * verdict is comparative:
+   * Every slot's verdict on every move of one explorer response, in order, as
+   * `{ marks: [state|null per slot], risk: state|null }`. Decided for the WHOLE
+   * list at once rather than per row, because the warning is comparative:
    *
-   *   'in'         — the repertoire plays this move here.
+   *   'in'         — that repertoire plays this move here.
    *   'transposes' — it does not, but the position after it is one it reaches
    *                  by another move order.
-   *   'risk'       — ON THE OPPONENT'S MOVE ONLY: neither of the above, and
-   *                  played MORE OFTEN than the most popular move the
-   *                  repertoire does cover here. That is the "you prepared a
-   *                  sideline and the main line is still open" warning, and it
-   *                  is the one thing a per-move check cannot see.
-   *   null         — nothing to say.
+   *   risk         — neither of the above from ANY slot, and played MORE OFTEN
+   *                  than the most popular move any of them covers here. That
+   *                  is the "you prepared a sideline and the main line is still
+   *                  open" warning, and it is the one thing a per-move check
+   *                  cannot see.
    *
-   * Three deliberate silences, all of which would otherwise turn the table red:
+   * THE WARNING IS MERGED AND BELONGS TO NO SLOT — which is the whole reason it
+   * keeps red to itself while the badges took the identity hues. "You have no
+   * answer to this" is false if EITHER course answers it, so the threshold is
+   * the most popular move covered by any of them and a move marked by any of
+   * them is silenced. Four silences, each of which would otherwise turn the
+   * table red:
    *  * OUR move — choosing one line over a more popular one is a repertoire
    *    DECISION, not a gap; only what the opponent can throw at us is a risk.
+   *    Asked of every slot that COVERS this position, and one saying "mine" is
+   *    enough: with a White course and a Black one — the case two slots exist
+   *    for — every position belongs to one of them, and the other has no
+   *    standing to call it the opponent's.
    *  * nothing covered here at all — with no covered move there is no threshold
-   *    to be "more popular than", and the summary line already says the
-   *    repertoire does not reach (or stops at) this position.
+   *    to be "more popular than", and the lines already say so in words.
    *  * a move already badged: a transposition is answered, so it is not a gap
    *    however popular it is.
-   *
-   * …and a fourth, on sample size: below `riskMinGames` for the position the
-   * ordering is noise (3 games against 2), so nothing is flagged.
+   *  * sample size: below `riskMinGames` for the position the ordering is noise
+   *    (3 games against 2), so nothing is flagged.
    */
   function repertoireRowStates(fen, moves, positionGames) {
-    const out = moves.map(() => null);
-    if (!rep.index || !fen) return out;
+    const out = moves.map(() => ({ marks: reps.map(() => null), risk: null }));
+    const live = repActive().filter((s) => s.index);
+    if (!live.length || !fen) return out;
 
-    // One parse and one position lookup for the whole list, not one per row.
+    // One parse, and one position lookup per slot, for the whole list — not one
+    // of each per row.
     const pos = typeof CloSan !== 'undefined' ? CloSan.parseFen(fen) : null;
-    const answers = repertoireMovesAt(fen);
+    const answers = reps.map((s) => repertoireMovesAt(s, fen));
     const totals = moves.map((m) => (m.white || 0) + (m.draws || 0) + (m.black || 0));
+
+    let covering = 0, ourMove = false;
+    for (const s of live) {
+      const a = answers[s.i];
+      if (!a || !a.size) continue;
+      covering++;
+      if (!repertoireOpponentToMove(s, fen)) ourMove = true;
+    }
+
     let topCovered = -1, topCoveredSan = '';
     for (let i = 0; i < moves.length; i++) {
-      const state = repertoireMoveState(pos, answers, moves[i].uci);
-      if (state) out[i] = state;
-      if (state && state.kind === 'in' && totals[i] > topCovered) {
+      let covered = false;
+      for (const s of live) {
+        const st = repertoireMoveState(s, pos, answers[s.i], moves[i].uci);
+        if (!st) continue;
+        out[i].marks[s.i] = st;
+        if (st.kind === 'in') covered = true;
+      }
+      if (covered && totals[i] > topCovered) {
         topCovered = totals[i];
         topCoveredSan = moves[i].san || moves[i].uci;
       }
     }
-    if (topCovered < 0 || !repertoireOpponentToMove(fen)) return out;
+    if (!covering || ourMove || topCovered < 0) return out;
     if (!(positionGames >= REP.riskMinGames)) return out; // too few games to rank
     for (let i = 0; i < moves.length; i++) {
-      if (out[i] || totals[i] <= topCovered) continue;
-      out[i] = { kind: 'risk', games: totals[i], overSan: topCoveredSan, overGames: topCovered };
+      if (out[i].marks.some(Boolean) || totals[i] <= topCovered) continue;
+      out[i].risk = { kind: 'risk', games: totals[i], overSan: topCoveredSan, overGames: topCovered };
     }
     return out;
   }
 
+  // --- section 6d: opening the lines themselves ------------------------------
+  //
+  // A badge says a repertoire plays this, and its summary line says what it
+  // plays — neither says WHICH LINE, and until v0.186.0 the panel could not take
+  // the user to one. Chessable's own "Study from this position" is a plain URL
+  // (the ground truth is in CONFIG.repertoire.studyPath), so this is one link
+  // builder and two press handlers: no endpoint, no index field, no version
+  // bump, and nothing new is written anywhere.
+
   /**
-   * The badge for one move row, or null when the repertoire says nothing. The
-   * shapes are DRAWN in CSS (an empty span), not "●"/"○"/"▲" glyphs: those
-   * differ in size and baseline from font to font, and three marks that have to
-   * be told apart at a glance need their geometry set exactly.
+   * Chessable's "Study from this position" page for one position of ONE
+   * nominated course, or null when that slot is empty.
+   *
+   * The four-field FEN is escaped BY HAND rather than with encodeURIComponent:
+   * the only character in it a path must escape is the SPACE — placement is
+   * alphanumeric plus the "/" that becomes ";", and the other three fields are
+   * letters, digits and "-" — while encodeURIComponent would also turn the ";"
+   * separators into "%3B", a shape Chessable has never been sent.
    */
-  function repertoireBadge(fen, state, san) {
-    if (!state) return null;
+  function repertoireStudyUrl(slot, fen) {
+    if (!slot || !slot.bid || !fen) return null;
+    const pos = cacheKey(fen).replace(/\//g, ';').replace(/ /g, '%20');
+    return location.origin + REP.studyPath + slot.bid + '/fen/' + pos + '/';
+  }
+
+  /**
+   * …opened in a NEW TAB, never this one. Every host of this panel is something
+   * the user is in the middle of: a trainer session (leaving abandons it, and
+   * MoveTrainer2 puts its own "Leave site?" dialog in front of the attempt —
+   * section 19c's rule, for section 19c's reason), an analysis board, a
+   * variation page being read. Plain window.open from a click handler: a
+   * gesture, so no popup blocker, and no chrome.* call, so an orphaned content
+   * script can still do it.
+   *
+   * It works from inside the mt1 IFRAME, which is where the panel lives on
+   * Explore and Analysis, because Chessable's own sandbox attribute there grants
+   * `allow-popups` AND `allow-popups-to-escape-sandbox` (read off the live page
+   * 2026-09-08) — so the new tab is an ordinary one rather than a sandboxed
+   * child. If they ever drop either, this press silently does nothing; that is
+   * their markup, and the summary line's chip in the top document is the way
+   * back.
+   */
+  function openRepertoireStudy(slot, fen) {
+    const url = repertoireStudyUrl(slot, fen);
+    if (url) window.open(url, '_blank', 'noopener');
+  }
+
+  /**
+   * The badge ONE slot puts on one move row, or null when it says nothing. The
+   * shapes are DRAWN in CSS (an empty element), not "●"/"○"/"▲" glyphs: those
+   * differ in size and baseline from font to font, and marks that have to be
+   * told apart at a glance need their geometry set exactly.
+   *
+   * Both of these name lines, so both are BUTTONS (section 6d) — which is safe
+   * only because .clo-rep-badge's base rule resets the UA border/background/
+   * padding BEFORE the modifiers set theirs: the hollow badge IS a border, and
+   * a reset written after it would silently flatten the ring into an invisible
+   * 9px box. The slot's hue rides in as a CLASS rather than an inline style,
+   * because it sets a custom property the shapes read (section 26's
+   * `--clo-ev-tone` idiom) and so never enters a specificity fight with them.
+   */
+  function repertoireBadge(fen, slot, state, san) {
+    if (!state || !slot) return null;
     const kind = state.kind;
-    const badge = document.createElement('span');
-    badge.className = 'clo-rep-badge clo-rep-badge--' + kind;
+    const openable = Boolean(state.after && slot.bid);
+    const badge = document.createElement(openable ? 'button' : 'span');
+    badge.className = 'clo-rep-badge clo-rep-badge--' + kind +
+      ' clo-rep-badge--' + REP_HUE[slot.i] + (openable ? ' clo-rep-badge--open' : '');
     badge.dataset.kind = kind; // the row reads this back to tint itself
-    badge.setAttribute('role', 'img'); // it carries meaning, and has no text to read
-    const repName = rep.name || 'your repertoire';
+    badge.dataset.slot = String(slot.i);
+    if (openable) {
+      badge.type = 'button';
+      badge.addEventListener('click', (event) => {
+        // Outside review the whole ROW plays its move (onMoveRowClick) and this
+        // mark sits inside the move cell, so a press meant for the badge must
+        // not also drive the board.
+        event.stopPropagation();
+        openRepertoireStudy(slot, state.after);
+      });
+    } else {
+      badge.setAttribute('role', 'img'); // carries meaning, and has no text to read
+    }
+    const openNote = openable ? ' · click to open those lines' : '';
+    const repName = slot.name || 'your repertoire';
     if (kind === 'in') {
       // state.uci is the CANONICAL key the state was matched by, not the raw
       // one the explorer sent — see repertoireMoveState.
-      const answers = repertoireMovesAt(fen);
+      const answers = repertoireMovesAt(slot, fen);
       const entry = answers && answers.get(state.uci);
       const names = (entry && entry.names) || [];
       badge.title = `${san} is in "${repName}"` +
-        (names.length ? ' — ' + names.join(', ') + (entry.n > names.length ? ', …' : '') : '');
-      badge.setAttribute('aria-label', 'in your repertoire');
-    } else if (kind === 'transposes') {
-      badge.title = `Your repertoire does not play ${san} here, but the position after it ` +
-        `appears in "${repName}" — this transposes.`;
-      badge.setAttribute('aria-label', 'transposes into your repertoire');
+        (names.length ? ' — ' + names.join(', ') + (entry.n > names.length ? ', …' : '') : '') +
+        openNote;
+      badge.setAttribute('aria-label', openable
+        ? `in ${repName} — open the ${san} lines`
+        : `in ${repName}`);
     } else {
-      badge.title = `${san} is played more often than anything "${repName}" covers here ` +
-        `(${state.games.toLocaleString('en-US')} games, against ` +
-        `${state.overGames.toLocaleString('en-US')} for ${state.overSan}) — and you have no ` +
-        'answer to it.';
-      badge.setAttribute('aria-label', 'more popular than anything your repertoire covers here');
+      badge.title = `"${repName}" does not play ${san} here, but the position after it ` +
+        'appears in it — this transposes.' + openNote;
+      badge.setAttribute('aria-label', openable
+        ? `transposes into ${repName} — open the lines that reach it`
+        : `transposes into ${repName}`);
     }
     return badge;
   }
 
-  // --- the summary line ------------------------------------------------------
+  /**
+   * The unprepared-reply warning: a DIFFERENT SHAPE, not a third hue, and it
+   * belongs to no slot — it is the merged "neither of them answers this" (see
+   * repertoireRowStates), which is what leaves red free to mean only this. It
+   * opens nothing: a move no repertoire has an answer to has no lines to open.
+   */
+  function repertoireRiskBadge(state, san) {
+    if (!state) return null;
+    const badge = document.createElement('span');
+    badge.className = 'clo-rep-badge clo-rep-badge--risk';
+    badge.dataset.kind = 'risk';
+    badge.setAttribute('role', 'img');
+    badge.title = `${san} is played more often than anything ${repCoverNoun()} covers here ` +
+      `(${state.games.toLocaleString('en-US')} games, against ` +
+      `${state.overGames.toLocaleString('en-US')} for ${state.overSan}) — and you have no ` +
+      'answer to it.';
+    badge.setAttribute('aria-label', 'more popular than anything your repertoire covers here');
+    return badge;
+  }
 
   /**
-   * One line above the move table saying what the repertoire does HERE. It sits
-   * outside everything showStatus() hides, on purpose: a position with no
-   * Lichess games at all is exactly where "your repertoire plays 14.Nb3" is the
-   * only thing the panel can still tell you.
+   * The row's ONE tint. A 9px mark is easy to miss in a twelve-row table, so
+   * the row carries the answer as well — but a row can now be answered by both
+   * slots, and a background can only say one thing.
+   *
+   * HUE IS IDENTITY (the first slot with something to say, so a two-repertoire
+   * panel still reads left to right) and STRENGTH IS THE KIND: a row where the
+   * best anyone can offer is a transposition is fainter — which is the very
+   * distinction the tint was already drawn with back when colour carried the
+   * kind ("a transposition is a hint, not the answer"). An 'in' from either
+   * slot outranks a 'transposes' from either, because "you play this" is the
+   * stronger answer whoever it comes from.
    */
+  function repRowTint(entry) {
+    if (!entry) return null;
+    for (const s of reps) {
+      const st = entry.marks[s.i];
+      if (st && st.kind === 'in') return { hue: REP_HUE[s.i], weak: false };
+    }
+    for (const s of reps) {
+      if (entry.marks[s.i]) return { hue: REP_HUE[s.i], weak: true };
+    }
+    return entry.risk ? { hue: 'risk', weak: false } : null;
+  }
+
+  // --- the summary lines -----------------------------------------------------
+
   /**
-   * Whether a chip in that line can be pressed to PLAY its move: Chessable's
+   * Whether a chip in those lines can be pressed to PLAY its move: Chessable's
    * own board accepts injected moves outside review, and inside review only our
    * analysis board (section 19) does.
    */
@@ -5638,46 +5934,70 @@
   /**
    * That answer flips WITHOUT the position changing: opening the analysis board
    * keeps the board on the position the browse state was showing, so refresh()
-   * short-circuits on `fen === state.fen` and the line would keep the chips it
-   * was drawn with — dead ones on a board that now accepts moves. One cheap
-   * comparison per top-panel tick instead of redrawing the line every 500 ms,
+   * short-circuits on `fen === state.fen` and the lines would keep the chips
+   * they were drawn with — dead ones on a board that now accepts moves. One
+   * cheap comparison per top-panel tick instead of redrawing every 500 ms,
    * which would also kill a tooltip mid-hover.
    */
   function syncRepertoireLine() {
     if (!state.ui || !state.ui.repLine) return;
-    if (repertoireLinePlayable() === rep.linePlayable) return;
+    if (repertoireLinePlayable() === repUi.linePlayable) return;
     renderRepertoireLine();
   }
 
+  /**
+   * ONE LINE PER NOMINATED COURSE, above the move table, each saying what that
+   * repertoire does HERE. They sit outside everything showStatus() hides, on
+   * purpose: a position with no Lichess games at all is exactly where "your
+   * repertoire plays 14.Nb3" is the only thing the panel can still tell you.
+   */
   function renderRepertoireLine() {
     const ui = state.ui;
     if (!ui || !ui.repLine) return;
-    rep.linePlayable = repertoireLinePlayable(); // what this draw is about to assume
+    repUi.linePlayable = repertoireLinePlayable(); // what this draw is about to assume
     const host = ui.repLine;
     host.textContent = '';
     host.className = 'clo-rep';
 
-    if (!rep.prefLoaded) { host.hidden = true; return; }
+    if (!repUi.prefLoaded) { host.hidden = true; return; }
     host.hidden = false;
 
-    if (!rep.bid) {
+    if (!repAnyBid()) {
       // Discoverability: the feature is invisible until a course is nominated,
       // and the cogwheel is not an obvious place to look for "my repertoire".
+      const line = document.createElement('div');
+      line.className = 'clo-rep-line';
       const hint = document.createElement('button');
       hint.type = 'button';
       hint.className = 'clo-rep-hint';
       hint.textContent = '+ link a repertoire';
       hint.title = 'Pick one of your Chessable courses and this panel will mark the moves ' +
-        'you have already prepared.';
+        'you have already prepared. A second course can be linked beside it.';
       hint.addEventListener('click', openRepertoirePicker);
-      host.appendChild(hint);
+      line.appendChild(hint);
+      host.appendChild(line);
       return;
     }
 
+    for (const slot of repActive()) host.appendChild(buildRepertoireLine(slot));
+  }
+
+  /** One slot's line: its dot, its name, and what it does here. */
+  function buildRepertoireLine(slot) {
+    const host = document.createElement('div');
+    host.className = 'clo-rep-line clo-rep-line--' + REP_HUE[slot.i];
+
+    // The legend for the badges below, and drawn even with ONE course
+    // nominated: it is what says "this hue means THIS course", which is the
+    // only way a badge's colour can be read without hovering it.
+    const dot = document.createElement('span');
+    dot.className = 'clo-rep-dot';
+    host.appendChild(dot);
+
     const label = document.createElement('span');
     label.className = 'clo-rep-name';
-    label.textContent = rep.name || ('course ' + rep.bid);
-    label.title = 'The repertoire these badges are measured against (change it in ⚙).';
+    label.textContent = slot.name || ('course ' + slot.bid);
+    label.title = 'A repertoire these badges are measured against (change it in ⚙).';
     host.appendChild(label);
 
     const say = (text, cls) => {
@@ -5688,18 +6008,39 @@
       return span;
     };
 
-    if (rep.loading) { say('reading…'); return; }
-    if (rep.error)   { say('could not be read', 'clo-rep-note--warn').title = rep.error; return; }
-    if (!rep.index)  { say('not loaded'); return; }
+    if (slot.loading) { say('reading…'); return host; }
+    if (slot.error)   { say('could not be read', 'clo-rep-note--warn').title = slot.error; return host; }
+    if (!slot.index)  { say('not loaded'); return host; }
 
     const fen = state.fen;
-    if (!fen) return;
-    const moves = repertoireMovesAt(fen);
+    if (!fen) return host;
+
+    /**
+     * "study from here" (section 6d) — Chessable's own page for the position on
+     * the board, listing every variation of THIS course that passes through it.
+     * Only offered where its index says it REACHES the position: anywhere else
+     * the destination is Chessable's "Oops! No variations found", and a link
+     * whose only possible answer is "nothing" is worse than no link.
+     */
+    const addStudyLink = () => {
+      if (!repertoireReaches(slot, fen)) return;
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'clo-rep-open';
+      open.textContent = 'study from here ↗';
+      open.title = `Open "${slot.name || 'your repertoire'}" filtered to the variations that ` +
+        'pass through this position, in a new tab.';
+      open.addEventListener('click', () => openRepertoireStudy(slot, fen));
+      host.appendChild(open);
+    };
+
+    const moves = repertoireMovesAt(slot, fen);
     if (!moves || !moves.size) {
-      say(repertoireReaches(fen)
+      say(repertoireReaches(slot, fen)
         ? 'reaches this position but stops here'
         : 'does not reach this position', 'clo-rep-note--out');
-      return;
+      addStudyLink();
+      return host;
     }
 
     say('plays');
@@ -5711,7 +6052,7 @@
       const names = entry.names || [];
       // The trainer's browse board and the variation page accept no injected
       // move at all, so there the chip is a label (see repertoireLinePlayable).
-      const playable = rep.linePlayable;
+      const playable = repUi.linePlayable;
       chip.title = `${entry.n} line(s)` + (names.length ? ': ' + names.join(', ') : '') +
         (playable ? ' · click to play it' : '');
       if (playable) {
@@ -5724,6 +6065,8 @@
       host.appendChild(chip);
     }
     if (entries.length > REP.maxLineMoves) say(`+${entries.length - REP.maxLineMoves} more`);
+    addStudyLink();
+    return host;
   }
 
   // --- the picker (inside the settings menu, section 6b) ---------------------
@@ -5731,38 +6074,46 @@
   function openRepertoirePicker() {
     if (!state.filtersOpen) onCogToggle();
     loadRepertoireBooks();
-    if (state.ui && state.ui.repSelect) state.ui.repSelect.focus();
+    const sel = state.ui && state.ui.repSelects && state.ui.repSelects[0];
+    if (sel) sel.focus();
   }
 
   /**
-   * The user's course list, for the dropdown. Lazy — one call, only once the
-   * menu is actually opened, so a panel nobody configures makes no request.
+   * The user's course list, for BOTH dropdowns. Lazy and shared — one call,
+   * only once the menu is actually opened, so a panel nobody configures makes
+   * no request.
    */
   async function loadRepertoireBooks() {
-    if (rep.books || rep.booksLoading) return;
+    if (repUi.books || repUi.booksLoading) return;
     const cr = chessableCreds();
     if (!cr) {
-      rep.booksError = 'no Chessable session found — reload the page';
+      repUi.booksError = 'no Chessable session found — reload the page';
       renderRepertoireUi();
       return;
     }
-    rep.booksLoading = true;
-    rep.booksError = '';
+    repUi.booksLoading = true;
+    repUi.booksError = '';
     renderRepertoireUi();
     try {
-      rep.books = await fetchChessableBooks(cr);
+      repUi.books = await fetchChessableBooks(cr);
     } catch (err) {
-      rep.booksError = 'could not list your courses: ' + String((err && err.message) || err);
+      repUi.booksError = 'could not list your courses: ' + String((err && err.message) || err);
       warn('could not list your courses:', err);
     } finally {
-      rep.booksLoading = false;
+      repUi.booksLoading = false;
       renderRepertoireUi();
     }
   }
 
-  /** Rebuilds the dropdown's options; keeps the current selection selected. */
-  function fillRepertoireOptions() {
-    const sel = state.ui && state.ui.repSelect;
+  /**
+   * Rebuilds ONE dropdown's options; keeps that slot's selection selected.
+   * THE OTHER SLOT'S COURSE IS NOT OFFERED — one course in both slots would
+   * badge every row twice and make the two hues say the same thing, and
+   * refusing the choice is quieter than silently rearranging the other slot
+   * behind the user's back.
+   */
+  function fillRepertoireOptions(slot) {
+    const sel = state.ui && state.ui.repSelects && state.ui.repSelects[slot.i];
     if (!sel) return;
     sel.textContent = '';
     const none = document.createElement('option');
@@ -5770,12 +6121,15 @@
     none.textContent = 'none';
     sel.appendChild(none);
 
-    const books = (rep.books || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+    const taken = new Set(reps.filter((s) => s !== slot && s.bid).map((s) => String(s.bid)));
+    const books = (repUi.books || [])
+      .filter((b) => !taken.has(String(b.bid)))
+      .sort((a, b) => a.name.localeCompare(b.name));
     // The chosen course may not be in the list yet (books not loaded, or it was
     // removed from the library) — keep it selectable rather than silently
     // resetting a preference the user set.
-    if (rep.bid && !books.some((b) => b.bid === rep.bid)) {
-      books.unshift({ bid: rep.bid, name: rep.name || ('course ' + rep.bid) });
+    if (slot.bid && !books.some((b) => b.bid === slot.bid)) {
+      books.unshift({ bid: slot.bid, name: slot.name || ('course ' + slot.bid) });
     }
     for (const b of books) {
       const opt = document.createElement('option');
@@ -5783,50 +6137,63 @@
       opt.textContent = b.name;
       sel.appendChild(opt);
     }
-    sel.value = rep.bid || '';
+    sel.value = slot.bid || '';
   }
 
-  /** Dropdown + note + ↻ state. Cheap; called on every menu render. */
+  /** Dropdowns + notes + ↻ state, one row per slot. Cheap; called on every menu render. */
   function renderRepertoireUi() {
     const ui = state.ui;
-    if (!ui || !ui.repSelect) return;
-    fillRepertoireOptions();
-    ui.repSelect.disabled = rep.booksLoading;
-    ui.repReload.hidden = !rep.bid;
-    ui.repReload.disabled = rep.loading;
+    if (!ui || !ui.repSelects || !ui.repSelects.length) return;
+    for (const slot of reps) {
+      const sel = ui.repSelects[slot.i];
+      const reload = ui.repReloads[slot.i];
+      const noteEl = ui.repNotes[slot.i];
+      if (!sel || !reload || !noteEl) continue;
+      fillRepertoireOptions(slot);
+      sel.disabled = repUi.booksLoading;
+      reload.hidden = !slot.bid;
+      reload.disabled = slot.loading;
 
-    let note = '';
-    if (rep.booksLoading) note = 'listing your courses…';
-    else if (rep.loading) note = 'reading the repertoire…';
-    else if (rep.error) note = rep.error;
-    else if (rep.booksError) note = rep.booksError;
-    else if (rep.index) {
-      note = `${rep.index.indexed} line(s), ${rep.index.answers.size} positions` +
-        (rep.index.unplayable ? ` · ${rep.index.unplayable} could not be replayed` : '');
-    } else if (!rep.bid) {
-      note = 'Marks every move your own course already plays.';
+      let note = '';
+      if (repUi.booksLoading) note = 'listing your courses…';
+      else if (slot.loading) note = 'reading the repertoire…';
+      else if (slot.error) note = slot.error;
+      else if (repUi.booksError) note = repUi.booksError;
+      else if (slot.index) {
+        note = `${slot.index.indexed} line(s), ${slot.index.answers.size} positions` +
+          (slot.index.unplayable ? ` · ${slot.index.unplayable} could not be replayed` : '');
+      } else if (!slot.bid) {
+        // The empty second slot explains itself only once the first is filled:
+        // two sentences about nothing, in one menu, is noise.
+        note = slot.i === 0
+          ? 'Marks every move your own course already plays.'
+          : (repAnyBid() ? 'Optional: a second course, badged in its own colour.' : '');
+      }
+      noteEl.textContent = note;
+      noteEl.classList.toggle('clo-rep-menu-note--warn',
+        Boolean(slot.error || repUi.booksError));
     }
-    ui.repNote.textContent = note;
-    ui.repNote.classList.toggle('clo-rep-menu-note--warn', Boolean(rep.error || rep.booksError));
   }
 
-  function onRepertoireSelect() {
-    const sel = state.ui && state.ui.repSelect;
-    if (!sel) return;
+  function onRepertoireSelect(i) {
+    const slot = reps[i];
+    const sel = state.ui && state.ui.repSelects && state.ui.repSelects[i];
+    if (!slot || !sel) return;
     const bid = sel.value || null;
     const name = bid ? sel.options[sel.selectedIndex].textContent : '';
-    if (bid === rep.bid) return;
-    log('repertoire:', bid ? `${name} (${bid})` : 'none');
-    setRepertoire(bid, name);
+    if (bid === slot.bid) return;
+    log(`repertoire ${i + 1}:`, bid ? `${name} (${bid})` : 'none');
+    setRepertoire(i, bid, name);
   }
 
-  function onRepertoireReload() {
-    if (!rep.bid || rep.loading) return;
-    rep.books = null; // the library may have changed too
-    rep.booksError = '';
-    dropRepertoireIndexCache();
-    dropCourseCache(rep.bid);
-    ensureRepertoireIndex(true);
+  function onRepertoireReload(i) {
+    const slot = reps[i];
+    if (!slot || !slot.bid || slot.loading) return;
+    repUi.books = null; // the library may have changed too
+    repUi.booksError = '';
+    dropRepertoireIndexCache(slot.bid);
+    dropCourseCache(slot.bid);
+    ensureRepertoireIndex(slot, true);
     loadRepertoireBooks();
   }
 
@@ -5932,14 +6299,26 @@
       if (move.averageRating) hints.push(`Avg rating ${move.averageRating}`);
       if (!IS_REVIEW) hints.push(`Click to play ${move.san || move.uci}`);
       if (hints.length) tdMove.title = hints.join(' · ');
-      // "Do I already play this?" — the badge carries its own tooltip, so it is
-      // appended rather than folded into the row's hints (section 6c). The
-      // WHOLE ROW is tinted from the same answer: a dot alone is easy to miss
-      // in a twelve-row table, and the tint is what makes the panel scannable.
-      const badge = repertoireBadge(repFen, repStates[mi], move.san || move.uci);
-      if (badge) {
-        tdMove.appendChild(badge);
-        tr.classList.add('clo-rep-row', 'clo-rep-row--' + badge.dataset.kind);
+      // "Do I already play this?" — up to one mark per nominated course, in
+      // slot order, each carrying its own tooltip, so they are appended rather
+      // than folded into the row's hints (section 6c). The WHOLE ROW is tinted
+      // from the same answer: a 9px mark alone is easy to miss in a twelve-row
+      // table, and the tint is what makes the panel scannable — see repRowTint
+      // for which of two answers a single background gets to say.
+      const repRow = repStates[mi] || null;
+      const moveName = move.san || move.uci;
+      if (repRow) {
+        for (const slot of reps) {
+          const badge = repertoireBadge(repFen, slot, repRow.marks[slot.i], moveName);
+          if (badge) tdMove.appendChild(badge);
+        }
+        const riskBadge = repertoireRiskBadge(repRow.risk, moveName);
+        if (riskBadge) tdMove.appendChild(riskBadge);
+        const tint = repRowTint(repRow);
+        if (tint) {
+          tr.classList.add('clo-rep-row', 'clo-rep-row--' + tint.hue);
+          if (tint.weak) tr.classList.add('clo-rep-row--weak');
+        }
       }
 
       // ChessDB eval — the cell is created empty and filled by fillCdbEvals(),
@@ -21681,7 +22060,7 @@
       await dropCourseCache(src.bid);
       // `rep` is section 6c's own state, populated in every document the panel
       // runs in — so this reads the live nomination, not a copy of it.
-      if (rep.bid && String(rep.bid) === String(src.bid)) await dropRepertoireIndexCache();
+      if (repUsesCourse(src.bid)) await dropRepertoireIndexCache(src.bid);
       let landed = null;
       try {
         const fresh = await fetchCourse(src.bid, cr0, false);
@@ -22256,7 +22635,7 @@
       await dropCourseCache(dest.bid);
       // `rep` is section 6c's own state, populated in every document the panel
       // runs in — so this reads the live nomination, not a copy of it.
-      if (rep.bid && String(rep.bid) === String(dest.bid)) await dropRepertoireIndexCache();
+      if (repUsesCourse(dest.bid)) await dropRepertoireIndexCache(dest.bid);
       let landed = null;
       try {
         const fresh = await fetchCourse(dest.bid, cr0, false);
@@ -33683,17 +34062,22 @@
      * reply WARNING is deliberately absent: it is comparative on Lichess
      * popularity, and §7 forbids fetching that per column.
      */
-    function badgeFor(pos, answers, uci) {
-      if (!pos) return null;
-      const state = repertoireMoveState(pos, answers, uci);
-      if (!state) return null;
-      const mark = el('span', 'clo-ct-badge clo-ct-badge--' +
-        (state.kind === 'in' ? 'in' : 'trans'));
-      mark.title = state.kind === 'in'
-        ? 'Your repertoire plays this move here.'
-        : 'Your repertoire does not play this move here, but it does reach the position ' +
-          'after it by another move order.';
-      return mark;
+    function badgesFor(pos, answersPerSlot, uci) {
+      if (!pos || !answersPerSlot) return null;
+      let out = null;
+      for (const slot of repActive()) {
+        const state = repertoireMoveState(slot, pos, answersPerSlot[slot.i], uci);
+        if (!state) continue;
+        const name = slot.name || 'your repertoire';
+        const mark = el('span', 'clo-ct-badge clo-ct-badge--' +
+          (state.kind === 'in' ? 'in' : 'trans') + ' clo-ct-badge--' + REP_HUE[slot.i]);
+        mark.title = state.kind === 'in'
+          ? `"${name}" plays this move here.`
+          : `"${name}" does not play this move here, but it does reach the position ` +
+            'after it by another move order.';
+        (out || (out = document.createDocumentFragment())).append(mark);
+      }
+      return out;
     }
 
     /**
@@ -33927,8 +34311,8 @@
         if (games !== undefined) meta.append(shareChip(games, db.total));
       }
 
-      const badge = badgeFor(col.pos, col.repAnswers, row.uci);
-      if (badge) meta.append(badge);
+      const badges = badgesFor(col.pos, col.repAnswers, row.uci);
+      if (badges) meta.append(badges);
 
       // ALWAYS tagged when a variation finishes here, even where the course
       // also plays on — because that is exactly what STOPPED the fold, and a
@@ -34101,7 +34485,7 @@
       for (const col of shown) {
         const fen = ct.tree.fens.get(col.ck) || '';
         col.pos = fen ? CloSan.parseFen(fen) : null;
-        col.repAnswers = repertoireMovesAt(fen);
+        col.repAnswers = repertoireAnswersAt(fen);
         // 24b: THE ONLY PLACE ANY EXPLORER REQUEST IS EVER ASKED FOR, and it is
         // here rather than in `columnsFor` on purpose — the columns walk past
         // auto-taken and off-screen ones, and asking about those would turn one
@@ -34763,10 +35147,10 @@
       if (t.unplayable) {
         notes.push(`${t.unplayable} line(s) could not be replayed (named in the console)`);
       }
-      if (!rep.bid) {
+      if (!repAnyBid()) {
         notes.push('nominate a repertoire in the Lichess panel’s cogwheel menu to badge ' +
           'the moves you already play');
-      } else if (ct.repWanted && !rep.index) {
+      } else if (ct.repWanted && repAnyPending()) {
         notes.push('repertoire badges are still loading');
       }
       if (notes.length) host.append(el('div', 'clo-ct-note', notes.join('. ') + '.'));
@@ -35001,8 +35385,8 @@
         // Optional and additive: with no repertoire nominated this does nothing
         // and the rows simply carry no badge. It is also the ONE thing here that
         // can arrive after the first draw, hence the redraw behind it.
-        if (rep.bid && !rep.index) {
-          Promise.resolve(ensureRepertoireIndex())
+        if (repAnyPending()) {
+          Promise.resolve(ensureRepertoireIndexes())
             .then(() => { if (ct.tree === tree) renderTree(); })
             .catch(() => {});
         }

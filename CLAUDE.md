@@ -20,7 +20,7 @@ read first.
 | § | |
 |---|---|
 | 5b, 5c | local Stockfish (offscreen doc, worker is the hub); the shared Chessable JWT calls |
-| 6, 6b, 6c | the panel's fetch/cache; its filters and cogwheel; repertoire badges on every move row |
+| 6, 6b, 6c, 6d | the panel's fetch/cache; its filters and cogwheel; repertoire badges on every move row, and opening the lines behind them |
 | 9 | the Overstudy widget on the trainer row |
 | 11, 11b, 11c | the panel's hosts — review, `/variation/`, and the shared static board layer |
 | 12, 12b, 12c | quick-edit: the pencil, its four tabs, the driver, arrows, refreshing the host |
@@ -283,14 +283,43 @@ read first.
   `.clo-body`, NOT a floating popover: `.clo-panel` is `overflow: hidden` and
   the analysis/review panel is a sized overlay whose body is the scroll
   container.
-- Repertoire badges (section 6c): one of the user's Chessable courses is
-  nominated as THE repertoire (picker in the SETTINGS MENU, 6b — the panel's
-  preference belongs with the panel's other preferences), read through the
+- Repertoire badges (section 6c): UP TO TWO of the user's Chessable courses are
+  nominated as repertoires (two pickers in the SETTINGS MENU, 6b — the panel's
+  preferences belong with the panel's other preferences), each read through the
   shared `getList` and walked into a position → moves index; every panel move
-  row the repertoire plays gets a badge. READ-ONLY, and a different question
+  row either of them plays gets a badge. READ-ONLY, and a different question
   from section 21: that one asks "which lines of the course I am looking at are
   missing from my repertoire" and WRITES them back; this one asks "standing
   here, what do I play".
+  TWO SLOTS, NOT N (v0.187.0), and the number is a COLOUR budget, not a data
+  one: the asked-for case is a White course and a Black one, and a third would
+  need a hue that is neither identity hue, nor the warning's red, nor the
+  lichess green the rest of the panel accents with — there is none left that
+  survives being a 9px mark. `reps` is the array of slot objects (`{ i, bid,
+  name, index, loading, error }`), `repUi` what they share (the ONE course
+  listing, the pref-loaded flag, `linePlayable`). EVERYTHING OUTSIDE 6c ASKS
+  THROUGH FOUR HELPERS and never touches `reps` — `repActive()` (nominated
+  slots, in order), `repAnyBid()`, `repAnyPending()` (a nominated slot whose
+  index has not landed — the tree's "still loading") and `repUsesCourse(bid)`
+  (19c/19d's cache drop). `ensureRepertoireIndexes(force)` is the loader every
+  outside caller wants; `ensureRepertoireIndex(slot, force)` is one slot's, and
+  the plural runs them SEQUENTIALLY — two walks of a few hundred thousand
+  CloSan calls interleaved on the main thread make both slower than either
+  alone, and the index cache is read-modify-write, which two flights landing
+  together can lose a lap of.
+  THE PREF AND THE CACHE BOTH CHANGED SHAPE, and only one of them migrates.
+  `cloRepertoire` is now `[{bid,name}|null, {bid,name}|null]` and
+  `applyRepertoirePref` STILL READS the old single `{bid,name}` — one line,
+  because a profile that has ever set a repertoire has that shape stored. The
+  session cache is ONE OBJECT KEYED BY BID and its key moved with it
+  (`cloRepertoireIndex` → `…Index2`) rather than growing a migration: that area
+  dies with the browsing session, so an entry from an older build costs one
+  rebuild, once. `writeRepertoireIndexCache` READS BEFORE IT WRITES and PRUNES
+  to the nominated slots — 24b's `flushDbCache` hazard in a smaller pond (a
+  plain `set` would delete the other slot's index), and the prune is what caps
+  the object at two, `maxIndexPositions` being a PER-INDEX guard written when
+  there could only be one. `dropRepertoireIndexCache(bid)` drops one entry;
+  with no argument, the lot.
   Section 5c is what makes it possible: `chessableCreds/Headers/ApiFetch/ApiUrl`,
   `fetchChessableBooks`, `reduceCourse`, `fetchCourse` + the course cache and
   `walkVariation` were HOISTED out of `initCoverage`, which only ever runs in
@@ -308,67 +337,116 @@ read first.
   away. It is also what makes the TRANSPOSITION badge work (hollow ring: the
   repertoire does not play this move here, but the position after it is in its
   `seen` set) — the one thing an exact-line answer always gets wrong.
-  The FOURTH verdict is the unprepared-reply WARNING (red triangle), and it is
-  COMPARATIVE — which is why `repertoireRowStates(fen, moves, positionGames)`
-  decides the whole move list at once and `repertoireBadge` takes a
-  pre-computed state instead of a `(fen, uci)` pair. A move is 'risk' when it is
-  played MORE OFTEN than the most popular move the repertoire covers here. FOUR
-  silences, each of which would otherwise turn the table red:
+  The THIRD verdict is the unprepared-reply WARNING (red triangle), and it is
+  both COMPARATIVE and MERGED — which is why `repertoireRowStates(fen, moves,
+  positionGames)` decides the whole move list at once, returning one
+  `{ marks: [state|null per slot], risk }` per row, and why `repertoireBadge`
+  and `repertoireRiskBadge` take pre-computed states instead of a `(fen, uci)`
+  pair. MERGED IS THE WHOLE REASON RED IS STILL FREE: "you have no answer to
+  this" is FALSE if EITHER course answers it, so the threshold is the most
+  popular move covered by ANY slot, a move marked by any slot is silenced, and
+  the triangle names no course. FOUR silences, each of which would otherwise
+  turn the table red:
   * OUR MOVE — only the opponent's options are a risk; preferring a less popular
     line is a repertoire DECISION (1...c5 over 1...e5), not a gap. Whose move it
     is comes from `ix.side` (`courseSide`, hoisted to 5c beside `sideOf`); a
     course that does not say which side it is for NEVER fires the warning rather
-    than risk inverting it.
+    than risk inverting it. Asked of every slot that COVERS this position, and
+    ONE saying "mine" is enough — with a White course and a Black one, every
+    position belongs to one of them and the other has no standing to call it
+    the opponent's.
   * NOTHING COVERED HERE — no covered move means no threshold to beat, and the
-    summary line already says the repertoire does not reach / stops here.
+    lines already say the repertoire does not reach / stops here.
   * ALREADY BADGED — a transposition is answered, so it is not a gap however
-    popular (`if (out[i] || …) continue`): orange beats red, by request.
+    popular (`if (out[i].marks.some(Boolean) || …) continue`): a ring beats red,
+    by request.
   * BELOW `riskMinGames` (50, section 21's floor) for the POSITION — deep in a
     line "more popular" is regularly 3 games against 2.
-  COLOUR IS LOAD-BEARING, not decoration: BLUE (Chessable's own) for "in your
-  repertoire", never the lichess green the rest of the panel accents with —
-  green in a move table reads as a VERDICT ("this is the good move"), which is
-  the one thing the badge does not mean. ORANGE for a transposition, because it
-  is a different KIND of answer, not a weaker version of the same one. RED for
-  the warning. All three are CSS variables (`--clo-rep-in`, `--clo-rep-trans`,
-  `--clo-rep-risk`) at the top of the 6c block.
+  COLOUR IS IDENTITY AND SHAPE IS THE KIND (v0.187.0 inverted this, and it is
+  the one thing a second course actually changed here). Colour used to carry
+  the kind — blue 'in', orange 'transposes' — with shape reinforcing it; two
+  courses make "whose?" the question a hue has to answer, and the swap was safe
+  only because the shapes were already drawn to stand alone ("same outer
+  diameter, so only the fill distinguishes them"). So: FILLED CIRCLE = this
+  course plays it here, HOLLOW RING = it transposes into this course, TRIANGLE
+  = the merged warning. BLUE first (Chessable's own) and ORANGE second — never
+  the lichess green the rest of the panel accents with, since green in a move
+  table reads as a VERDICT ("this is the good move"), which is the one thing
+  these marks do not mean; and blue+orange is the pair that survives a
+  red-green deficiency. RED belongs to the WARNING ALONE, which the merge is
+  what buys. Tokens `--clo-rep-a`, `--clo-rep-b`, `--clo-rep-risk` at the top
+  of the 6c block; every surface reads its hue through `--clo-rep-hue` /
+  `--clo-rep-hue-soft`, set by a `--a`/`--b` class (section 26's
+  `--clo-ev-tone` idiom), so a re-tint never enters a specificity fight and a
+  mark drawn before any slot is known falls back to slot 0's.
+  THE COST FALLS ON THE SINGLE-REPERTOIRE USER, whose transposition ring used to
+  be a different HUE from the filled dot and is now the same one. Three things
+  repay it and none may be quietly removed: 2px of ring on a 9px `content-box`
+  makes the outer diameter 13px against the filled mark's 9px (the CSS comment
+  claiming they match has always been wrong, and the difference is now doing
+  work — do NOT "fix" it to `border-box`), the row tint's STRENGTH says it
+  again, and the summary line above says it in words.
   The marks are DRAWN (an empty span sized in CSS), never "●"/"○"/"▲" glyphs:
-  those differ in size and baseline per font, and three marks that must be told
-  apart at a glance need exact geometry. The hollow one is a BORDER, so both
-  circles share an outer diameter and a column stays aligned; the TRIANGLE is a
-  `clip-path` on the same box, NOT the border-triangle trick, so the width/height
-  sizing rules (and the `html.clo-touch` override) keep working on it. Shape,
-  not just a third colour: the warning is the only badge meaning "act on this",
-  and a red/blue pair is exactly what a colour deficiency helps least with.
-  The WHOLE ROW is tinted from the same answer (a 9px mark is easy to miss in a
-  twelve-row table), set on the `td`s and NOT on the `tr`: `.clo-table tr:hover
-  td` paints a background on the cell, which would cover one sitting on the row,
-  so all six tint rules are written to outrank it. `.clo-move` is
-  `white-space: nowrap` because its `width: 3.5em` is only a suggestion to the
-  auto table layout and the badge otherwise wrapped under the move.
+  those differ in size and baseline per font, and marks that must be told apart
+  at a glance need exact geometry. The TRIANGLE is a `clip-path` on the same
+  box, NOT the border-triangle trick, so the width/height sizing rules (and the
+  `html.clo-touch` override) keep working on it — and its being a different
+  SHAPE is load-bearing now rather than belt-and-braces, both identity hues
+  being circles.
+  THE WHOLE ROW is tinted (a 9px mark is easy to miss in a twelve-row table),
+  set on the `td`s and NOT on the `tr`: `.clo-table tr:hover td` paints a
+  background on the cell, which would cover one sitting on the row, so every
+  tint rule is written to outrank it. A row can be answered by BOTH courses and
+  a background can say only one thing, so `repRowTint` splits it: HUE is
+  identity (the first slot with something to say) and STRENGTH is the kind —
+  `--weak` is a row whose best answer anywhere is a transposition, which is the
+  distinction this tint was already drawn with. An 'in' from either slot
+  outranks a 'transposes' from either. The four `--a`/`--b` × `--weak`
+  combinations resolve by SPECIFICITY alone, so their order in the file is free.
+  `.clo-move` is `white-space: nowrap` because its `width: 3.5em` is only a
+  suggestion to the auto table layout and the badges otherwise wrapped under the
+  move.
+  A SECOND MARK IS 15-22px OF INTRINSIC MOVE-COLUMN WIDTH, which is the one
+  measurement this feature cost — section 26 left this table at its edge on
+  purpose. `.clo-move:has(.clo-rep-badge + .clo-rep-badge)` tightens both marks
+  (margins, and the ring to `border-box` HERE AND NOWHERE ELSE — doubled, the
+  two differ by hue, so shape can give up the size cue). Measured in
+  `dev/harness.html` at the panel's 300px minimum with the eval column on, as
+  `body.clientWidth - table.scrollWidth`, one badge → two: touch (Games hidden)
+  Bb5+ 24→23, Raxe1+ 12→4, exd8=Q+ 2→−6; desktop (Games shown) Bb5+ 14→4,
+  Raxe1+ 0→−10, exd8=Q+ −8→−18. At 330px every case fits with 20px spare, and
+  where it does not fit `.clo-body` is `overflow: auto` so the table SCROLLS
+  rather than clipping — the same failure the eval column already had at 300px,
+  not a new kind. ANYTHING ELSE ADDED TO THIS CELL HAS TO RE-MEASURE.
   `CONFIG.repertoire.indexVersion` is checked on every cache read: an index
   written by an older build parses fine and is quietly missing whatever field
   was added (v2 added `side`, without which the warning silently never fires).
   Bump it whenever the index gains a field.
-  The SUMMARY LINE above the table carries the two answers a badge cannot: the
-  move the repertoire plays INSTEAD (regularly outside Lichess's top dozen, so
-  there is no row to badge at all) and "reaches this position but stops here" vs
-  "does not reach this position". It sits OUTSIDE everything `showStatus()`
-  hides, deliberately: a position with no Lichess games is exactly where it is
-  the only thing the panel can still answer. Its move chips PLAY the move where
+  ONE SUMMARY LINE PER NOMINATED COURSE above the table, each carrying the two
+  answers a badge cannot: the move that repertoire plays INSTEAD (regularly
+  outside Lichess's top dozen, so there is no row to badge at all) and "reaches
+  this position but stops here" vs "does not reach this position". `.clo-rep`
+  is now the COLUMN and `.clo-rep-line` is the wrapping flex row it used to be,
+  so everything inside a line (including "study from here ↗", written to drop
+  to its own line in a narrow panel) lays out exactly as before. Each line
+  opens with a `.clo-rep-dot` in its own hue — the LEGEND, drawn even with one
+  course nominated, because it is the only way a badge's colour can be read
+  without hovering it. They sit OUTSIDE everything `showStatus()` hides,
+  deliberately: a position with no Lichess games is exactly where they are the
+  only thing the panel can still answer. Its move chips PLAY the move where
   a board accepts one — Chessable's own board outside review, and inside review
   only OUR analysis board (section 19, through the `continuationAnalysisPlay`
   bridge); the trainer's browse board and the variation page accept nothing.
   That answer flips WITHOUT the position changing (opening the analysis board
   keeps the board where it was, so `refresh()` short-circuits on
   `fen === state.fen`), so `syncRepertoireLine()` on the top-panel tick compares
-  `rep.linePlayable` and redraws only on a flip — redrawing every 500 ms would
+  `repUi.linePlayable` and redraws only on a flip — redrawing every 500 ms would
   kill a tooltip mid-hover.
   The walk YIELDS every `chunkVars` variations (a 500-line repertoire is a few
   hundred thousand CloSan calls and must not freeze the page) and the built
-  index is cached in `chrome.storage.session` (12 h, ONE repertoire — there is
-  only one selected). `seen` is not stored: it is the answers' own keys plus the
-  line-END positions, so only those go in. `state.lastData` exists so the rows
+  index is cached in `chrome.storage.session` (12 h, one entry per nominated
+  course). `seen` is not stored: it is the answers' own keys plus the line-END
+  positions, so only those go in. `state.lastData` exists so the rows
   drawn before the index landed can be re-badged.
   THE EXPLORER'S UCI IS RESOLVED THROUGH CloSan, NEVER COMPARED RAW
   (`repertoireMoveState`, v0.48.1). Lichess writes castling as KING TAKES ROOK
@@ -376,18 +454,68 @@ read first.
   that consumes a uci copes because `CloSan.uciToMove` normalizes the pair
   internally, but a string lookup in `answers` does not: every castling move
   fell through to the transposition arm, which then SUCCEEDED (the repertoire
-  does reach the position after its own castling move), so "O-O" was painted
-  orange while the summary line above it said the repertoire plays O-O. It also
+  does reach the position after its own castling move), so "O-O" was drawn as a
+  ring while the summary line above it said the repertoire plays O-O. It also
   kept a covered castling move out of the red threshold, which can invent a
   warning. Section 21 is unaffected — it compares walk output against walk
   output, both canonical; the mismatch only exists where Lichess's uci meets our
   index. Ground-truthed 2026-08-01.
-  THE MOVE CELL IS NO LONGER ONLY SAN — the badge is a child of it, so both
+  THE MOVE CELL IS NO LONGER ONLY SAN — the badges are children of it, so both
   existing readers (the analysis board's `onPanelMoveClick` and the quick-edit
   popup's alt-move prefill) read `tdMove.dataset.san`, never `textContent`,
-  which now says "Nf3●".
-  Everything fails soft: no session, an HTTP error, an unreadable course — the
-  badges simply do not appear and the menu says why.
+  which now says "Nf3●●".
+  THE TWO SLOTS NEVER OFFER THE SAME COURSE: `fillRepertoireOptions` filters
+  the other slot's bid out of each dropdown. One course in both would badge
+  every row twice and make the two hues say the same thing, and refusing the
+  choice is quieter than rearranging the other slot behind the user.
+  Everything fails soft, PER SLOT: no session, an HTTP error, an unreadable
+  course — that slot's badges simply do not appear, its own note under its own
+  dropdown says why, and the other slot is unaffected.
+- OPENING THE LINES BEHIND A BADGE (section 6d, v0.186.0): a badge says one of
+  the repertoires plays this and its summary line says what it plays; neither
+  says WHICH LINE, and until now the panel could not take the user to one. Chessable's
+  own "Study from this position" is a plain URL —
+  `/course/<bid>/fen/<four-field FEN, "/" → ";">/`, ground-truthed 2026-09-08 and
+  recorded at `CONFIG.repertoire.studyPath` — answering the COURSE page filtered
+  to the variations that pass through one position, each with its title, its
+  moves and its own Review button. So this is one link builder and two press
+  handlers: NO endpoint, NO index field, NO `indexVersion` bump, and nothing
+  written anywhere.
+  * IT IS TOLERANT OF EXACTLY WHAT `repKey` IS. The server IGNORES castling and
+    en passant and MATCHES the side to move (measured: `KQkq` and `-` both
+    answered the same 50 variations, `b` for a white-to-move position answered
+    none) — which is why a REVIEW-mode FEN, whose castling is a home-square guess
+    and whose en passant is always "-", still names the right page. The FEN is
+    escaped BY HAND: `encodeURIComponent` would turn the ";" separators into
+    "%3B", a shape Chessable has never been sent.
+  * A BADGE OPENS THE POSITION **AFTER** ITS MOVE, which is what makes it "the
+    lines that play this from here" — and is the only way to ask the TRANSPOSITION
+    badge its own question, "which of my lines reach this?". So
+    `repertoireMoveState(slot, pos, answers, uci)` returns `after`, computed for
+    the 'in' arm as well as the transposition test that used to be its only
+    caller. It also carries `slot`, since the link is to THAT course's page
+    (`repertoireStudyUrl(slot, fen)`). The warning triangle is deliberately NOT
+    openable — and cannot be, being the merged verdict of both: a move NEITHER
+    repertoire answers has no lines to open, and no one course to open them in.
+  * THE TWO OPENABLE BADGES ARE `<button>`s, and the UA reset that allows that
+    sits at the TOP of `.clo-rep-badge` — ABOVE the modifiers, so `--transposes`'s
+    border and `--in`/`--risk`'s background still win by source order at equal
+    specificity, a reset written after them flattening the hollow ring into an
+    invisible 9px box. `box-sizing: content-box` is the load-bearing line: Chrome
+    makes a button `border-box`, which would quietly shrink that 2px ring inside
+    the 9px it exists to surround. The click `stopPropagation`s — outside review
+    the whole ROW plays its move (`onMoveRowClick`) and this mark is inside it.
+  * NEW TAB, ALWAYS. `window.open` from the click handler (a gesture, so no popup
+    blocker, and no `chrome.*`, so an orphaned script can still do it — section
+    19c's "Open it" precedent). Every host of this panel is something the user is
+    in the middle of, and in the trainer leaving abandons the session behind
+    MoveTrainer2's own "Leave site?" dialog.
+  * THE SUMMARY LINE'S "study from here ↗" IS DRAWN ONLY WHERE THE REPERTOIRE
+    REACHES THE POSITION. Anywhere else the destination is Chessable's own "Oops!
+    No variations found", and a link whose only possible answer is "nothing" is
+    worse than no link. It wears the `.clo-rep-hint` vocabulary, never the move
+    chip's: a blue chip in that line means "a move your repertoire plays", and an
+    action dressed as one reads as a seventh move.
 - `sanToUci` HAS A SECOND PASS (`sanToUciRelaxed`, v0.115.0), and it is shared
   by everything here that turns a written SAN into a move — sections 13, 18,
   19, 20, 21, 22, 23 and 24. CHESSABLE OVER-DISAMBIGUATES: course 291847 writes
@@ -2424,9 +2552,12 @@ read first.
     is the only place that can be read. And `courseTreePanelSlot`, the panel's
     fourth host (see the Key mechanics entry; section 27's `stormPanelSlot` is
     the fifth, and both are read through `inHostPanelSlot()`).
-  * IT READS, all optional and additive: section 6c's `ensureRepertoireIndex` /
-    `repertoireMovesAt` / `repertoireMoveState` for the badges — with no
-    repertoire nominated the rows simply carry no mark — and the shared explorer
+  * IT READS, all optional and additive: section 6c's `ensureRepertoireIndexes`
+    / `repertoireAnswersAt` / `repertoireMoveState` for the badges — with no
+    repertoire nominated the rows simply carry no mark. `col.repAnswers` is now
+    ONE ANSWER MAP PER SLOT and `badgesFor` returns a fragment of up to two
+    marks, wearing 6c's own hue-and-shape vocabulary (`.clo-ct-badge--a/--b`
+    set the same `--clo-rep-hue` the panel's do) — and the shared explorer
     machinery `fetchPopularityCounts` / `popCacheTag` / `loadPopCache` /
     `savePopCache` / `sanToUci` / `fenAfterUci`, all unchanged. 6c's
     unprepared-reply WARNING is still deliberately absent even now that the
@@ -3293,6 +3424,23 @@ Black-to-move position into a tidy column of backwards numbers, and losing the
 `learn=0` half presents on-the-fly guesses as book evals. It also asserts the
 WORKER's action allow-list out of `background.js` — `queue` and `store` must
 stay unreachable — which a hidden automated tab cannot exercise at all.
+
+After touching section 6c's two slots — `repertoireRowStates`, `repRowTint`,
+`repertoireMoveState`, `repertoireOpponentToMove` or `applyRepertoirePref`:
+
+```
+node dev/check-repertoire.js
+```
+
+Every judgement the SECOND slot added is silent when it is wrong, and three of
+them produce a perfectly plausible table. The MERGE above all: the warning means
+"neither of them answers this", so computed per slot a White course and a Black
+one flag each other's positions — a red triangle on the main line of a course
+that answers it perfectly well. Its subtle half is which slots get a vote on
+whose move it is (only those that COVER the position, and one saying "mine" is
+enough), which is the difference between a quiet table and one that flags the
+user's own repertoire decisions. The file's header records all seven controls;
+each was run and each fails it.
 
 After touching `content/puzzles.js` — the position key, the shard hash, the
 theme vocabulary or the filters:

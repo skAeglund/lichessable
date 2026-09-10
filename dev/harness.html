@@ -228,10 +228,19 @@ body {
             </div>
             <div class="clo-opening">B22 · Sicilian Defence, Alapin Variation</div>
             <div class="clo-rep">
-              <span class="clo-rep-name">My White Repertoire</span>
-              <span class="clo-rep-note">plays</span>
-              <span class="clo-rep-move">c3</span>
-              <span class="clo-rep-move">Nf3</span>
+              <div class="clo-rep-line clo-rep-line--a">
+                <span class="clo-rep-dot"></span>
+                <span class="clo-rep-name">My White Repertoire</span>
+                <span class="clo-rep-note">plays</span>
+                <span class="clo-rep-move">c3</span>
+                <span class="clo-rep-move">Nf3</span>
+                <button type="button" class="clo-rep-open">study from here ↗</button>
+              </div>
+              <div class="clo-rep-line clo-rep-line--b">
+                <span class="clo-rep-dot"></span>
+                <span class="clo-rep-name">Black vs 1.e4</span>
+                <span class="clo-rep-note clo-rep-note--out">does not reach this position</span>
+              </div>
             </div>
             <div class="clo-summary">
               <span class="clo-total">1,204,556 games</span>
@@ -243,13 +252,13 @@ body {
                 <th class="clo-th-games">Games</th><th class="clo-th-wdb">White / Draw / Black</th>
               </tr></thead>
               <tbody>
-                <tr class="clo-rep-row clo-rep-row--in">
-                  <td class="clo-move" data-san="Nf3">Nf3<span class="clo-rep-badge clo-rep-badge--in" data-kind="in"></span></td>
+                <tr class="clo-rep-row clo-rep-row--a">
+                  <td class="clo-move" data-san="Nf3">Nf3<button type="button" class="clo-rep-badge clo-rep-badge--in clo-rep-badge--a clo-rep-badge--open" data-kind="in" data-slot="0"></button></td>
                   <td class="clo-cdb clo-ev--w1">+0.3</td><td class="clo-pct">41%</td><td class="clo-games">498k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="39,33,28"></div></td>
                 </tr>
-                <tr class="clo-rep-row clo-rep-row--transposes">
-                  <td class="clo-move" data-san="c3">c3<span class="clo-rep-badge clo-rep-badge--transposes" data-kind="transposes"></span></td>
+                <tr class="clo-rep-row clo-rep-row--a clo-rep-row--weak">
+                  <td class="clo-move" data-san="c3">c3<button type="button" class="clo-rep-badge clo-rep-badge--transposes clo-rep-badge--a clo-rep-badge--open" data-kind="transposes" data-slot="0"></button></td>
                   <td class="clo-cdb clo-ev--eq">+0.2</td><td class="clo-pct">22%</td><td class="clo-games">266k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="42,31,27"></div></td>
                 </tr>
@@ -258,13 +267,18 @@ body {
                   <td class="clo-cdb clo-ev--eq">+0.1</td><td class="clo-pct">18%</td><td class="clo-games">217k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="37,30,33"></div></td>
                 </tr>
-                <tr>
-                  <td class="clo-move" data-san="d4">d4</td>
+                <!-- THE WIDEST MOVE CELL THIS TABLE CAN PRODUCE: both courses
+                     answer, so two 9px marks ride in it. This is the row to
+                     measure `.clo-move` against under html.clo-touch with the
+                     eval column on — the four-column touch table was already
+                     at the edge before a second badge existed. -->
+                <tr class="clo-rep-row clo-rep-row--a">
+                  <td class="clo-move" data-san="Bb5+">Bb5+<button type="button" class="clo-rep-badge clo-rep-badge--in clo-rep-badge--a clo-rep-badge--open" data-kind="in" data-slot="0"></button><button type="button" class="clo-rep-badge clo-rep-badge--transposes clo-rep-badge--b clo-rep-badge--open" data-kind="transposes" data-slot="1"></button></td>
                   <td class="clo-cdb clo-ev--w1">+0.4</td><td class="clo-pct">9.4%</td><td class="clo-games">113k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="35,34,31"></div></td>
                 </tr>
                 <tr>
-                  <td class="clo-move" data-san="Bb5+">Bb5+</td>
+                  <td class="clo-move" data-san="d4">d4</td>
                   <td class="clo-cdb clo-cdb--est clo-ev--eq">-0.2</td><td class="clo-pct">4.1%</td><td class="clo-games">49k</td>
                   <td class="clo-wdb"><div class="clo-bar" data-hx-bar="33,38,29"></div></td>
                 </tr>
@@ -300,14 +314,23 @@ body {
                 <span class="clo-cdb-note">Sends the position to chessdb.cn</span>
               </div>
               <div class="clo-filters-row clo-rep-menu">
-                <span class="clo-filters-label">Repertoire</span>
-                <span class="clo-rep-menu-pick">
+                <span class="clo-filters-label">Repertoires</span>
+                <span class="clo-rep-menu-pick clo-rep-menu-pick--a">
+                  <span class="clo-rep-dot"></span>
                   <select class="clo-rep-select">
                     <option>My White Repertoire</option>
                   </select>
                   <button type="button" class="clo-rep-reload" title="Re-read the course">↻</button>
                 </span>
-                <span class="clo-rep-menu-note">312 lines · read 4 min ago</span>
+                <span class="clo-rep-menu-note">312 line(s), 9,140 positions</span>
+                <span class="clo-rep-menu-pick clo-rep-menu-pick--b">
+                  <span class="clo-rep-dot"></span>
+                  <select class="clo-rep-select">
+                    <option>Black vs 1.e4</option>
+                  </select>
+                  <button type="button" class="clo-rep-reload" title="Re-read the course">↻</button>
+                </span>
+                <span class="clo-rep-menu-note">188 line(s), 5,302 positions</span>
               </div>
               <div class="clo-filters-row">
                 <span class="clo-filters-label">Time control</span>
@@ -379,8 +402,12 @@ body {
           </div>
           <div class="clo-body">
             <div class="clo-rep">
-              <span class="clo-rep-name">My White Repertoire</span>
-              <span class="clo-rep-note clo-rep-note--out">reaches this position but stops here</span>
+              <div class="clo-rep-line clo-rep-line--a">
+                <span class="clo-rep-dot"></span>
+                <span class="clo-rep-name">My White Repertoire</span>
+                <span class="clo-rep-note clo-rep-note--out">reaches this position but stops here</span>
+                <button type="button" class="clo-rep-open">study from here ↗</button>
+              </div>
             </div>
             <div class="clo-status">No games in the database for this position.</div>
           </div>
@@ -394,7 +421,9 @@ body {
           </div>
           <div class="clo-body">
             <div class="clo-rep">
-              <button type="button" class="clo-rep-hint">+ link a repertoire</button>
+              <div class="clo-rep-line">
+                <button type="button" class="clo-rep-hint">+ link a repertoire</button>
+              </div>
             </div>
             <div class="clo-status clo-error">Lichess needs an API token — open settings to add one.
               <button type="button" class="clo-settings-btn">Open settings</button>
@@ -410,8 +439,11 @@ body {
           </div>
           <div class="clo-body">
             <div class="clo-rep">
-              <span class="clo-rep-name">My White Repertoire</span>
-              <span class="clo-rep-note">reading…</span>
+              <div class="clo-rep-line clo-rep-line--a">
+                <span class="clo-rep-dot"></span>
+                <span class="clo-rep-name">My White Repertoire</span>
+                <span class="clo-rep-note">reading…</span>
+              </div>
             </div>
             <div class="clo-status">Loading…</div>
           </div>
