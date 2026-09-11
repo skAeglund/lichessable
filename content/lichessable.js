@@ -589,13 +589,32 @@
       // intention (a ring that sends MediaTrackNext rather than "2") is one
       // entry rather than a code change. Matched on KeyboardEvent.key.
       //
-      // Media keys are NOT wired yet: on most platforms they never reach a page
-      // as key events at all — the OS routes them to the media session, which a
-      // page can only claim by playing audio. Until a real ring has been
-      // captured, only the digits are bound.
+      // MEDIA KEYS ARE BOUND HERE AND CLAIMED IN SECTION 23d, and the two are
+      // one binding seen from two sides. A ring that sends "Media next" is on
+      // its platform's media transport, not its keyboard: SOME platforms also
+      // deliver it to a focused page as a `key` event (which is what these
+      // spellings catch, for free), and most route it to the media session
+      // instead — which a page can only be handed by playing audio. 23d does
+      // that, and delivers what it receives as a key event carrying THESE VERY
+      // NAMES, so there is exactly one decision path however the press arrived.
+      //
+      // Both spellings of each: `MediaTrackNext` is the current name and
+      // `MediaNextTrack` the legacy one, and which of them a given engine sends
+      // is not worth finding out when an extra array entry settles it.
+      //
+      // THE TWO TRACK BUTTONS ARE CROSSED, AND THAT IS NOT A SLIP: asked for
+      // after the transport was verified live on the ring, 2026-09-11. PREVIOUS
+      // is `next` (the press every card takes) and NEXT is `wrong`. These names
+      // are the PLATFORM's and they describe a music player, so reading them as
+      // though they meant something about this mode is exactly the mistake —
+      // which button suits which press is a fact about the hardware in the
+      // user's hand, and it is the one thing here that was decided by holding
+      // it. Do not "correct" this to read tidily.
       keys: {
-        next:   ['2'],   // reveal, then "I knew it", then "next variation"
-        wrong:  ['4'],   // "I didn't know it"
+        next:   ['2', 'MediaTrackPrevious', 'MediaPreviousTrack'],
+        // reveal, then "I knew it", then "next variation"
+        wrong:  ['4', 'MediaTrackNext', 'MediaNextTrack'],
+        // "I didn't know it"
         // "Was the move I thought of also accepted?" — asked AFTER the move has
         // been shown, never before: at the think stage a set of arrows would be
         // a list of candidate answers, i.e. the quiz given away. It is the one
@@ -610,7 +629,12 @@
         // anything else sees them. So space cannot scroll the page, re-fire a
         // focused button, or reach MoveTrainer2's own shortcuts while the mode
         // is running — and outside the mode it is not bound at all.
-        alts:   ['3', ' '],
+        //
+        // …AND THE RING'S PLAY/PAUSE IS ONE BUTTON WITH THREE NAMES. A media
+        // transport's toggle reports whichever of `play`/`pause` the platform
+        // thinks comes next, so all three spellings mean the same press here
+        // and `mediaPress` collapses a pair fired for one tap.
+        alts:   ['3', ' ', 'MediaPlayPause', 'MediaPlay', 'MediaPause'],
         // "Say that again" — re-reads the last MOVE that was spoken, which is
         // what a ring user reaches for when they lost it (section 23b). It was
         // earmarked for exactly this before there was anything to speak, and it
@@ -620,6 +644,32 @@
         // MoveTrainer2's, and swallowing a key we are not going to act on is
         // what the whole capture-phase listener has to be careful about.
         repeat: ['1'],
+      },
+      // --- the media-key ring (section 23d) ------------------------------
+      //
+      // chrome.storage.local; opt-IN, and it has to be: claiming the media
+      // session takes the platform's media keys away from whatever else the
+      // user is playing for as long as a trainer session is open, and it makes
+      // this page a media source. Neither is a thing to do to someone who has
+      // not asked — section 26's gate, for section 26's reason.
+      mediaKey: 'cloShowGradeMediaKeys',
+      media: {
+        // THE SILENCE IS NOT SILENT, and that is the whole of why these two
+        // numbers exist. A page is handed the media session only while it is
+        // actually playing something, and a track of digital zeroes can be
+        // classified as inaudible and dropped — so this is a tone below the
+        // bottom of a small speaker's range at an amplitude three orders of
+        // magnitude down, which is samples rather than zeroes. UNMEASURED on
+        // real hardware: if a hum is ever audible, `gain` is the dial.
+        hz: 30,
+        gain: 0.0015,
+        // ONE PHYSICAL PRESS IS ONE ACTION. A platform that keeps its own idea
+        // of playback state can answer a single toggle tap with `pause` AND
+        // `play`, microseconds apart. Deliberately BELOW the ring's own floor:
+        // the hardware sends one event per tap on release and never faster than
+        // ~200ms apart (DESIGN-show-and-grade.md §8), so this cannot swallow a
+        // real double tap.
+        repeatMs: 150,
       },
       // Set false to draw NOTHING — no board, no panel. The escape hatch, not
       // the blindfold switch: `blindfoldKey` below is that, and it is a different
@@ -29116,6 +29166,7 @@
     const SG_BOARD_ID = 'lichessable-sg-board';
     const SG_PANEL_ID = 'lichessable-sg-panel';
     const SG_MENU_ID = 'lichessable-sg-menu';
+    const SG_AUDIO_ID = 'lichessable-sg-audio';   // section 23d's silence
 
     const sg = {
       // The PREFERENCE is opt-OUT (see CONFIG.showGrade.key), but this starts
@@ -29149,6 +29200,19 @@
       lastSpeech: '',
       lastMoveSpeech: '',
       speechDead: false, // the API threw once; do not try again this session
+      // --- the media-key ring (section 23d) ---
+      //
+      // `on` is the preference; everything else is the claim itself. `dead` is
+      // the same latch `speechDead` is — an API that is not there, or refused
+      // once, is not going to be there on the next tick, and this is polled.
+      media: {
+        on: false, claimed: false, dead: false,
+        ctx: null, osc: null, el: null,
+        lastAt: 0, lastKind: '',
+        logged: false, keyLogged: false,   // …which transport carried a press
+        gestureArmed: false,
+        note: '',        // …why it is not claimed, for the cog's tooltip
+      },
       speechErr: '',     // …and the last REFUSAL, reported once per kind
       runUpSaid: false,  // …and the line's opening plies, once per variation
       completionSaid: false, // …and its verdict, likewise once
@@ -30563,10 +30627,24 @@
      * which key does what is the whole message lost. Anything not in the map
      * prints as itself, so a new digit needs no entry.
      */
-    const KEY_LABEL = { ' ': 'Space', Enter: 'Enter', Escape: 'Esc' };
+    const KEY_LABEL = {
+      ' ': 'Space', Enter: 'Enter', Escape: 'Esc',
+      // ONE BUTTON, HOWEVER MANY SPELLINGS (23d). Each binding carries two or
+      // three names for one physical key, so they share one label and the
+      // dedupe below is what stops the panel reading "⏯ / ⏯ / ⏯". A transport
+      // symbol rather than the word: it is what is printed on the ring.
+      MediaTrackNext: '⏭', MediaNextTrack: '⏭',
+      MediaTrackPrevious: '⏮', MediaPreviousTrack: '⏮',
+      MediaPlayPause: '⏯', MediaPlay: '⏯', MediaPause: '⏯',
+    };
     function keyName(list) {
       if (!list || !list.length) return '—';
-      return list.map((k) => KEY_LABEL[k] || k).join(' / ');
+      const out = [];
+      for (const k of list) {
+        const label = KEY_LABEL[k] || k;
+        if (!out.includes(label)) out.push(label);
+      }
+      return out.join(' / ');
     }
 
     function syncPanel() {
@@ -31418,6 +31496,251 @@
       syncPanel();
     }
 
+    // --- 23d) the media-key ring ---------------------------------------------
+    //
+    // A Bluetooth ring that sends "Media next / Media previous / Media play
+    // pause" is not on the keyboard transport at all, so §10's bindings alone
+    // reach it only on the platforms that ALSO deliver a media key to a focused
+    // page as a `key` event. Everywhere else the OS routes it to the MEDIA
+    // SESSION, which a page is handed only while it is playing audio.
+    //
+    // So this claims that session and hands what it receives straight back to
+    // `onKey` as a KeyboardEvent carrying the very names §10 binds. That is the
+    // whole design: ONE DECISION PATH, whichever transport the press arrived on
+    // — and it is section 22's and `advance()`'s own idiom, a synthetic key
+    // dispatched on `document`, so section 18's drill and clickable-line hosts
+    // (which read `CONFIG.showGrade.keys` off the same object) are served with
+    // no bridge and no second binding.
+    //
+    // THE CLAIM IS NOT SCOPED TO A RUNNING MODE, deliberately: §10's `next` key
+    // also STARTS the mode, and a ring with no digits could never press it if
+    // the session were only claimed once the mode was already running. It is
+    // held exactly where the keys are bound — the preference on, in a trainer
+    // session, or over one of our own boards.
+    //
+    // …BUT NEVER IN A HIDDEN DOCUMENT, and that is not tidiness: a background
+    // OVERSTUDY TAB is on `/learn/`, so it passes every other term here, and
+    // the platform hands the media keys to whichever page claimed them LAST.
+    // A tab the user cannot see would take the ring off the one they are
+    // playing — silently, and at whatever moment the background tab happened to
+    // boot. Releasing when hidden also hands them straight back.
+
+    const mediaWanted = () => Boolean(
+      sg.media.on && sg.enabled && !sg.media.dead && !document.hidden &&
+      (inSession() || (continuationActive && continuationActive())));
+
+    /** …why the claim is not up, for the cog's tooltip. Logged once per reason. */
+    function mediaNote(text) {
+      if (sg.media.note === text) return;
+      sg.media.note = text;
+      if (text) warn('show-and-grade: media keys — ' + text);
+      syncAutoUi();
+    }
+
+    /**
+     * A press, delivered as the key event §10 already binds.
+     *
+     * On `document`, and NOT on `document.activeElement`: a media key types no
+     * character, so a focused text field has no claim on it — which is exactly
+     * the reading `onKeyInner`'s own tag test gives a REAL media key that
+     * arrives while something else is focused, and the two must not disagree.
+     */
+    function ringKey(name) {
+      const base = { key: name, code: name, bubbles: true, cancelable: true };
+      document.dispatchEvent(new KeyboardEvent('keydown', base));
+      document.dispatchEvent(new KeyboardEvent('keyup', base));
+    }
+
+    /**
+     * One media-session action, as one press.
+     *
+     * The SPELLING is picked out of the binding rather than written down again,
+     * so §10's arrays stay the one place a name lives; the digit is the
+     * fallback, which keeps this working even if the media names were ever
+     * taken back out of a binding.
+     */
+    function mediaPress(kind) {
+      const md = sg.media;
+      const now = Date.now();
+      // ONE PHYSICAL PRESS IS ONE ACTION — see CONFIG.showGrade.media.repeatMs.
+      // Scoped to the same KIND, so `play` and `pause` fired for one toggle tap
+      // collapse while two different buttons never can.
+      if (kind === md.lastKind && now - md.lastAt < C.media.repeatMs) return;
+      md.lastAt = now;
+      md.lastKind = kind;
+      // WHICH TRANSPORT CARRIED IT is the one thing about this feature that
+      // cannot be known without the hardware in the room, and it decides
+      // whether the claim is needed on this device at all. Once per session per
+      // transport, so it answers the question and then stops.
+      if (!md.logged) {
+        md.logged = true;
+        log('show-and-grade: a ring press arrived on the MEDIA SESSION');
+      }
+      // RE-ASSERT IT, EVERY TIME. If the UA is allowed to believe the page has
+      // paused, the ring's one toggle button starts alternating between two
+      // actions — and the next `play` may be answered by the UA itself rather
+      // than reaching our handler at all.
+      try { navigator.mediaSession.playbackState = 'playing'; } catch (err) { /* not fatal */ }
+      const list = C.keys[kind] || [];
+      const name = list.find((k) => k.indexOf('Media') === 0) || list[0];
+      if (name) ringKey(name);
+    }
+
+    /**
+     * The audio that makes the claim possible.
+     *
+     * An AudioContext into a MediaStream into an `<audio>`, and NOT a `data:`
+     * URI: chessable.com's CSP governs what a content script's elements may
+     * LOAD, and `srcObject` loads nothing. No vendored asset, no remote
+     * resource, no permission.
+     *
+     * Returns false when it could not start, having armed its own retry.
+     */
+    function startMediaSilence() {
+      const md = sg.media;
+      if (md.ctx) {
+        if (md.ctx.state === 'running') return true;
+        md.ctx.resume().catch(() => {});
+        armMediaGesture();
+        return md.ctx.state === 'running';
+      }
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) { md.dead = true; mediaNote('this browser has no Web Audio'); return false; }
+      try {
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const dest = ctx.createMediaStreamDestination();
+        osc.frequency.value = C.media.hz;
+        gain.gain.value = C.media.gain;
+        osc.connect(gain);
+        gain.connect(dest);
+        osc.start();
+        const stale = document.getElementById(SG_AUDIO_ID);
+        if (stale) stale.remove();   // buildMenu's idiom: one of these, ever
+        const el = document.createElement('audio');
+        el.id = SG_AUDIO_ID;
+        el.srcObject = dest.stream;
+        el.loop = true;
+        // `hidden` as well as no `controls`: the UA stylesheet already draws
+        // nothing for a controls-less media element, but that is a rule a host
+        // page's own CSS can outrank, and this one is on THEIR page.
+        el.hidden = true;
+        // ON `document.body`, NEVER in Chessable's React tree — the widget's own
+        // rule, and for its reason.
+        document.body.appendChild(el);
+        md.ctx = ctx;
+        md.osc = osc;
+        md.el = el;
+        const p = el.play();
+        if (p && p.catch) {
+          p.catch(() => {
+            // AUTOPLAY NEEDS A GESTURE and a poll is not one. The mode's own
+            // start press is, and so is anything else the user does on the
+            // page, so the retry is armed rather than the claim abandoned.
+            mediaNote('waiting for a click or a key press before it can start');
+            armMediaGesture();
+          });
+        }
+      } catch (err) {
+        md.dead = true;
+        mediaNote('the audio would not start (' + ((err && err.message) || err) + ')');
+        return false;
+      }
+      if (md.ctx.state !== 'running') { md.ctx.resume().catch(() => {}); armMediaGesture(); }
+      return true;
+    }
+
+    /** One-shot: the next thing the user does on this page is the gesture. */
+    function armMediaGesture() {
+      const md = sg.media;
+      if (md.gestureArmed) return;
+      md.gestureArmed = true;
+      const go = () => {
+        md.gestureArmed = false;
+        for (const t of ['pointerdown', 'keydown']) document.removeEventListener(t, go, true);
+        if (mediaWanted()) claimMediaKeys();
+      };
+      // Capture phase to be sure of seeing it, and it neither swallows nor
+      // preventDefaults: the page underneath is entitled to its own event.
+      for (const t of ['pointerdown', 'keydown']) document.addEventListener(t, go, true);
+    }
+
+    function claimMediaKeys() {
+      const md = sg.media;
+      if (md.dead) return;
+      const ms = navigator.mediaSession;
+      if (!ms || typeof ms.setActionHandler !== 'function') {
+        md.dead = true;
+        mediaNote('this browser has no Media Session API');
+        return;
+      }
+      if (!startMediaSilence()) return;
+      // Re-set on every pass: the handlers are cheap, and an engine that clears
+      // them when playback stutters would otherwise leave the ring dead with
+      // the audio still running and nothing saying so.
+      try {
+        // CROSSED, to agree with the bindings above — see the note on
+        // `CONFIG.showGrade.keys`. An action name here is a PHYSICAL BUTTON,
+        // and `mediaPress` fires that binding's own media spelling, so the two
+        // halves stay one statement of the same fact.
+        ms.setActionHandler('nexttrack', () => mediaPress('wrong'));
+        ms.setActionHandler('previoustrack', () => mediaPress('next'));
+        // ONE BUTTON, TWO ACTIONS. Which of the pair a toggle sends depends on
+        // what the platform believes about playback, so both are ours and both
+        // mean the same press.
+        ms.setActionHandler('play', () => mediaPress('alts'));
+        ms.setActionHandler('pause', () => mediaPress('alts'));
+      } catch (err) {
+        md.dead = true;
+        mediaNote('the media keys were refused (' + ((err && err.message) || err) + ')');
+        return;
+      }
+      try { ms.playbackState = 'playing'; } catch (err) { /* not fatal */ }
+      if (md.claimed) return;
+      md.claimed = true;
+      mediaNote('');
+      log('show-and-grade: media keys claimed');
+    }
+
+    /**
+     * Fails OPEN, every step guarded: this gives the platform's media keys back
+     * to whatever the user was really playing, and a page left holding them
+     * with nothing to do with them is the worst thing this transport can leave
+     * behind — `stop()`'s rule, for `stop()`'s reason.
+     */
+    function releaseMediaKeys(why) {
+      const md = sg.media;
+      const ms = navigator.mediaSession;
+      if (ms && typeof ms.setActionHandler === 'function') {
+        for (const a of ['nexttrack', 'previoustrack', 'play', 'pause']) {
+          try { ms.setActionHandler(a, null); } catch (err) { /* already gone */ }
+        }
+        try { ms.playbackState = 'none'; } catch (err) { /* not fatal */ }
+      }
+      if (md.el) {
+        try { md.el.pause(); md.el.srcObject = null; md.el.remove(); } catch (err) { /* detached */ }
+      }
+      if (md.osc) { try { md.osc.stop(); } catch (err) { /* already stopped */ } }
+      if (md.ctx) { try { md.ctx.close(); } catch (err) { /* already closed */ } }
+      md.el = null;
+      md.osc = null;
+      md.ctx = null;
+      if (md.claimed) log('show-and-grade: media keys released (' + why + ')');
+      md.claimed = false;
+    }
+
+    /**
+     * Polled from the TOP of `tick`, ABOVE its own gate: the claim outlives a
+     * running mode in both directions — it is up before the mode starts (that
+     * is how a ring starts it) and it has to come down when the session ends,
+     * which is a state `tick` returns from early.
+     */
+    function syncMediaKeys() {
+      if (mediaWanted()) claimMediaKeys();
+      else if (sg.media.claimed || sg.media.ctx) releaseMediaKeys('not wanted here');
+    }
+
     // --- keys ----------------------------------------------------------------
     //
     // CAPTURE phase on `document`, which is section 18's discipline and for its
@@ -31450,6 +31773,17 @@
       if (e.altKey || e.ctrlKey || e.metaKey) return;
       const tag = e.target && e.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+      // …AND THE OTHER HALF OF THAT ANSWER (23d): this platform delivered a
+      // media key to the page as an ordinary key event, so the media-session
+      // claim is not what is carrying it here. ABOVE every branch below, since
+      // a press that starts the mode or drives a lead-in is still evidence.
+      // `isTrusted` is the whole point — `ringKey`'s own dispatch must never
+      // report itself as a key event.
+      if (e.isTrusted && e.type === 'keydown' && typeof e.key === 'string' &&
+          e.key.indexOf('Media') === 0 && !sg.media.keyLogged) {
+        sg.media.keyLogged = true;
+        log('show-and-grade: a ring press arrived as a KEY EVENT (' + e.key + ')');
+      }
       // THE LEAD-IN TAKES THE KEYS WHILE IT IS UP (23c), including with the mode
       // off — where `next` would otherwise START the mode over a board the user
       // is still being shown the run-up on.
@@ -31823,6 +32157,22 @@
       rate.addEventListener('change', () => setRate(rate.value));
       rateRow.appendChild(rate);
 
+      // --- the media-key ring (23d) ---
+      //
+      // Here rather than on the options page for the audio row's reason: it is
+      // a persistent preference belonging to this mode, and this is the cog
+      // that already holds every other one. The tooltip is where it says what
+      // it costs, which is the platform's media keys for as long as a trainer
+      // session is open.
+      const mediaRow = document.createElement('label');
+      mediaRow.className = 'clo-sg-menu-row';
+      mediaRow.textContent = 'Media-key ring';
+      const mediaOn = document.createElement('input');
+      mediaOn.type = 'checkbox';
+      mediaOn.className = 'clo-sg-media';
+      mediaOn.addEventListener('change', () => setMediaKeys(mediaOn.checked));
+      mediaRow.appendChild(mediaOn);
+
       const boardRow = document.createElement('label');
       boardRow.className = 'clo-sg-menu-row';
       boardRow.textContent = 'Board';
@@ -31866,7 +32216,8 @@
       leadPace.addEventListener('change', () => setLeadPace(leadPace.value));
       leadPaceRow.appendChild(leadPace);
 
-      menu.append(paceRow, animRow, audioRow, rateRow, boardRow, leadRow, leadPaceRow);
+      menu.append(paceRow, animRow, audioRow, rateRow, mediaRow, boardRow,
+        leadRow, leadPaceRow);
       // MoveTrainer2 binds single-key shortcuts on `document` and does not skip
       // them while a control has focus — so with a select focused, "n" would
       // jump to the next variation. Same swallow as every other popup here.
@@ -31946,6 +32297,22 @@
       }
       try {
         chrome.storage.local.set({ [C.audioKey]: sg.audio });
+      } catch (err) { /* orphaned context — the in-memory flag still applies */ }
+    }
+
+    /**
+     * The media-key ring (23d). Turning it ON from here is a CLICK, which is
+     * also the gesture the audio needs — so the claim goes up on the press that
+     * asked for it rather than waiting for the next thing the user does.
+     */
+    function setMediaKeys(on) {
+      sg.media.on = Boolean(on);
+      sg.media.dead = false;   // a fresh answer deserves a fresh attempt…
+      sg.media.note = '';      // …and a fresh diagnosis
+      syncMediaKeys();
+      syncAutoUi();
+      try {
+        chrome.storage.local.set({ [C.mediaKey]: sg.media.on });
       } catch (err) { /* orphaned context — the in-memory flag still applies */ }
     }
 
@@ -32049,6 +32416,7 @@
       sg.ui.menu.querySelector('.clo-sg-anim').value = sg.anim || C.defaultAnim;
       sg.ui.menu.querySelector('.clo-sg-audio').checked = sg.audio;
       sg.ui.menu.querySelector('.clo-sg-rate').value = sg.rate || C.defaultRate;
+      sg.ui.menu.querySelector('.clo-sg-media').checked = sg.media.on;
       sg.ui.menu.querySelector('.clo-sg-board-sel').value = sg.blindfold ? 'off' : 'on';
       sg.ui.menu.querySelector('.clo-sg-lead-on').checked = sg.leadOn;
       sg.ui.menu.querySelector('.clo-sg-lead-pace').value = sg.leadPace || C.defaultLeadPace;
@@ -32065,6 +32433,14 @@
         (sg.blindfold
           ? 'Blindfold: the board is empty — the moves are all you get.'
           : 'The pieces are shown.') + '\n' +
+        (sg.media.on
+          ? 'Media-key ring ON: ' + (sg.media.claimed
+              ? 'this page holds the media keys — next / previous / play-pause ' +
+                'are ' + keyName(C.keys.next) + ', ' + keyName(C.keys.wrong) +
+                ' and ' + keyName(C.keys.alts) + '.'
+              : 'not holding the media keys yet' +
+                (sg.media.note ? ' — ' + sg.media.note : '') + '.')
+          : 'Media-key ring OFF: a ring that sends media keys does nothing here.') + '\n' +
         (sg.leadOn
           ? 'Key-move lead-in ON (' + (sg.leadPace || C.defaultLeadPace) + '): in a ' +
             'Key Moves session the moves the trainer plays for you are replayed ' +
@@ -32811,6 +33187,12 @@
     }
 
     function tick() {
+      // ABOVE THE GATE BELOW, deliberately (23d): two of the three states that
+      // gate returns on are states the media keys must still be HELD in (one of
+      // our own boards is up, and the keys are bound there too), and the third
+      // is the one they must be RELEASED in. So the claim cannot hang off this
+      // gate and is asked its own question instead.
+      syncMediaKeys();
       if (!sg.enabled || !inSession() || (continuationActive && continuationActive())) {
         // Name the ACTUAL reason. These three used to collapse into one message
         // ("another board opened") that was simply wrong for two of them, which
@@ -32967,13 +33349,15 @@
     (async () => {
       try {
         const stored = await chrome.storage.local.get([C.key, C.autoKey, C.paceKey,
-          C.animKey, C.audioKey, C.blindfoldKey, C.rateKey, C.leadKey, C.leadSpeedKey]);
+          C.animKey, C.audioKey, C.blindfoldKey, C.rateKey, C.leadKey, C.leadSpeedKey,
+          C.mediaKey]);
         sg.enabled = stored[C.key] !== false;
         sg.autoPlay = stored[C.autoKey] !== false;
         sg.pace = C.paces[stored[C.paceKey]] ? stored[C.paceKey] : C.defaultPace;
         sg.anim = typeof C.anims[stored[C.animKey]] === 'number'
           ? stored[C.animKey] : C.defaultAnim;
         sg.audio = stored[C.audioKey] === true;              // both opt-IN
+        sg.media.on = stored[C.mediaKey] === true;           // …and so is this
         sg.blindfold = stored[C.blindfoldKey] === true;
         sg.rate = typeof C.rates[stored[C.rateKey]] === 'number'
           ? stored[C.rateKey] : C.defaultRate;
@@ -33011,6 +33395,13 @@
           syncAutoUi();
           syncPanel();   // the repeat key is only listed while it does something
         }
+        if (changes[C.mediaKey]) {
+          sg.media.on = changes[C.mediaKey].newValue === true;
+          sg.media.dead = false;
+          sg.media.note = '';
+          syncMediaKeys();
+          syncAutoUi();
+        }
         if (changes[C.rateKey] && typeof C.rates[changes[C.rateKey].newValue] === 'number') {
           sg.rate = changes[C.rateKey].newValue;
           syncAutoUi();
@@ -33038,6 +33429,12 @@
       if (sg.menuOpen) closeMenu(); // dismissed rather than chased, like the others
       if ((sg.active || leadActive()) && drawing()) positionBoard();
     });
+    // 23d: the claim follows the tab. On the poll alone the ring would be dead
+    // for up to a second after coming back, because a hidden tab's timers are
+    // clamped — and that second is exactly when the user presses.
+    document.addEventListener('visibilitychange', () => {
+      try { syncMediaKeys(); } catch (err) { warn('show-and-grade: media keys:', err); }
+    });
     // Dismissal for the popover: capture phase, by containment rather than
     // stopPropagation — the trainer underneath is entitled to the event.
     document.addEventListener('pointerdown', (e) => {
@@ -33063,6 +33460,10 @@
       clearInterval(pollTimer);
       endLead('page left');   // …and with the mode off, this is what un-pauses
       stop('page left');
+      // NOT inside `stop()` (23d): the claim deliberately outlives a running
+      // mode — it is what lets the ring START one — so the only things that may
+      // drop it are `syncMediaKeys` and the page going away.
+      releaseMediaKeys('page left');
     });
     tick();
     log('show-and-grade watcher active (top document)');

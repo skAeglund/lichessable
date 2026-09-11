@@ -629,11 +629,16 @@ re-queued: playing the move correctly IS knowing it.
 intention is one entry rather than a code change:
 
 ```
-next:   ['2'],       // → ['2', 'MediaTrackNext']
-wrong:  ['4'],       // → ['4', 'MediaTrackPrevious']
-alts:   ['3', ' '],  // the ring's fourth button sends a space
+next:   ['2', 'MediaTrackPrevious', 'MediaPreviousTrack'],
+wrong:  ['4', 'MediaTrackNext', 'MediaNextTrack'],
+alts:   ['3', ' ', 'MediaPlayPause', 'MediaPlay', 'MediaPause'],
 repeat: ['1'],       // "say that again" — only ours while the audio is on
 ```
+
+The media spellings are §13's half of this; they are bound **here** so that the
+two transports cannot drift apart. `KEY_LABEL` gives each of them a transport
+symbol (⏭ ⏮ ⏯) and `keyName` **dedupes on the printed label**, so three names
+for one physical button print as one.
 
 Matched on `e.key`, swallowed on `document` in **capture** phase while the mode
 is active — section 18's discipline, and for its reason: MoveTrainer2 binds
@@ -668,9 +673,7 @@ false otherwise. The continuation module's own space listener STANDS DOWN on
 `initContinuationReview` BEFORE `initShowGrade`, so as the earlier capture-phase
 listener it would otherwise swallow space before this mode ever saw it.
 
-**Media keys are still unresolved.** On most platforms they never reach a page as
-key events — the OS routes them to the media session, which a page can only claim
-by playing audio. Until a real ring is captured, only the digits are bound.
+**Media keys are §13.**
 
 ---
 
@@ -815,7 +818,137 @@ not parse is spoken as it stands rather than dropped.
 
 ---
 
-## 13. Architecture
+## 13. The media-key ring (section 23d)
+
+A second ring, reported 2026-09-11: **it sends Media next, Media previous and
+Media play-pause, and nothing else.** Asked for as
+
+| button | means |
+|---|---|
+| Media **previous** | correct — §10's `next` |
+| Media **next** | wrong — §10's `wrong` |
+| Media play-pause | alternatives, or the heads-up's "Review now" — §10's `alts` |
+
+which is the existing three bindings exactly, so **nothing about the loop, the
+grade, the queue or the panel changed**. What was missing was a way for the
+press to arrive at all.
+
+**The two track buttons are crossed, and that is the asked-for mapping**
+(v0.189.1, after the transport was verified live on the ring). The first draft
+read tidily — next→correct, previous→wrong — and tidily is the trap: these names
+are the *platform's* and they describe a music player, so they say nothing about
+this mode. Which button suits which press is a fact about the hardware in the
+user's hand, and `next` is the press every card takes while `wrong` is reached
+for only when the answer was not known. The crossing lives in the binding arrays
+(so both transports inherit it) **and** in the handler registration (so the
+physical button that fired is the one named), and `dev/check-media-keys.js`
+asserts both halves — uncrossing either one alone is a ring whose two buttons do
+the same thing.
+
+### 13.1 Two transports, one decision path
+
+A media key is not on the keyboard transport. **Some** platforms also deliver it
+to a focused page as a `key` event — which §10's new spellings catch, for
+nothing — and most route it to the **media session** instead, which a page is
+handed only while it is playing audio.
+
+So 23d claims that session and hands what it receives back to `onKey` **as a
+KeyboardEvent carrying the very names §10 binds** (`ringKey`). That is the whole
+design, and it is `advance()`'s own idiom — a synthetic key dispatched on
+`document`, which section 22 already relies on. Three things fall out of it:
+
+* **There is one decision path**, whichever way the press arrived. No second
+  copy of `onKeyInner`'s phase ladder, and nothing that can disagree with it.
+* **§9's other hosts are served with no bridge.** The drill and the
+  clickable-line quiz read `CONFIG.showGrade.keys` off the same object in
+  section 18's own capture listener, so they answer a ring press already.
+* **`maybeStartFromKey` is served too**, which matters more here than it did for
+  the digits: a ring with no digits has no other way to *begin*.
+
+Dispatched on `document` and **not** on `document.activeElement`: a media key
+types no character, so a focused text field has no claim on it — and that is the
+reading `onKeyInner`'s own tag test already gives a real media key arriving while
+something else is focused. The two must not disagree.
+
+### 13.2 The claim, and what it costs
+
+`navigator.mediaSession.setActionHandler` for `nexttrack` / `previoustrack` /
+`play` / `pause`. **`play` and `pause` are one button**: which of the pair a
+toggle sends depends on what the platform believes about playback, so both are
+ours, both mean `alts`, and `mediaPress` collapses a pair fired for one tap
+(`media.repeatMs`, 150 — deliberately **below** §8's ~200 ms hardware floor, so
+it can never eat a real double tap). `playbackState` is re-asserted as
+`'playing'` on every press, or the UA starts answering the next `play` itself.
+
+**The audio is an AudioContext → MediaStream → `<audio srcObject>`**, not a
+`data:` URI: chessable.com's CSP governs what a content script's elements may
+*load*, and `srcObject` loads nothing. No vendored asset, no remote resource,
+**and no new permission of any kind** — the Media Session API needs none.
+
+It is a 30 Hz tone at a gain of 0.0015, which is samples rather than zeroes: a
+track of digital silence can be classified inaudible and dropped, and a page
+that is not playing anything is not handed the session. **UNMEASURED on real
+hardware** — if a hum is ever audible, `media.gain` is the dial.
+
+**Opt-IN** (`cloShowGradeMediaKeys`, absent = off), in the mode's own cog beside
+the audio rows. It has to be: claiming the session takes the platform's media
+keys away from whatever the user is really playing, for as long as a trainer
+session is open. Section 26's gate, for section 26's reason.
+
+### 13.3 When it is held
+
+`mediaWanted()` — the preference on, the mode enabled, **not** a hidden
+document, and either a trainer session or one of our own boards. So it is held
+exactly where the keys are *bound*, which is deliberately wider than "a running
+mode": §10's `next` also starts the mode.
+
+`!document.hidden` is the term that is easy to leave out and expensive to lose.
+A **background overstudy tab** is on `/learn/`, so it passes every other term,
+and the platform hands the media keys to whichever page claimed them *last* — a
+tab the user cannot see would take the ring off the one they are playing, at
+whatever moment it happened to boot. A `visibilitychange` listener reclaims on
+the way back, because a hidden tab's timers are clamped to ~1 s and that second
+is exactly when the user presses.
+
+`syncMediaKeys()` is polled from the **top** of `tick`, above its own gate: two
+of the three states that gate returns on are states the claim must survive (one
+of our own boards is up, and the keys are bound there too) and the third is the
+one it must be dropped in. `releaseMediaKeys` fails open, every step guarded —
+`stop()`'s rule, for `stop()`'s reason — and is **not** called from `stop()`,
+since the claim outliving a running mode is what lets the ring start one. Only
+`syncMediaKeys` and `pagehide` drop it.
+
+### 13.4 Autoplay
+
+An AudioContext needs a gesture, and a poll is not one. The preference is turned
+on by a **click**, which is; anywhere else `armMediaGesture` arms a one-shot
+`pointerdown`/`keydown` and the claim goes up on the next thing the user does.
+The cog's tooltip says which of the two states it is in, and `mediaNote` logs
+each distinct reason once.
+
+### 13.5 What is checked, and what is not
+
+`node dev/check-media-keys.js` executes the shipped `KEY_LABEL`, `keyName`,
+`ringKey` and `mediaPress`, and asserts the claim's own terms against the source
+text. Thirteen controls, all recorded in its header, all of which fail it. Every
+failure mode it covers is silent, and three of them look exactly like "the ring
+is faulty".
+
+**What no check and no automated tab can answer**, and what a live sitting with
+the ring has to:
+
+* whether this platform hands the page the media session at all, and whether the
+  near-silent tone is enough to be given it;
+* whether the tone is audible;
+* whether the ring's toggle really does arrive as `play`/`pause` rather than as
+  something else entirely;
+* whether any of the three ALSO arrives as a plain `key` event, which would make
+  the claim unnecessary on this device — the console says which transport fired,
+  since a claim logs itself.
+
+---
+
+## 14. Architecture
 
 **It is NOT a `cr.mode`.** The continuation module's `startLine`/`step`/`tryMove`
 walk a stored line; this follows the live trainer, so sharing that driver would
@@ -874,7 +1007,7 @@ pressed, so the preference only decides whether that button is offered.
 
 ---
 
-## 14. GROUND TRUTH (live, 2026-08-04)
+## 15. GROUND TRUTH (live, 2026-08-04)
 
 `/practice/` review session, course 453453, variation "4" (oid 70382663), read
 through `readLessonLine()` before and after each action.
@@ -925,7 +1058,7 @@ own `advance()` should be re-tested for the states where a real control exists.
 
 ---
 
-## 15. What must never happen
+## 16. What must never happen
 
 * **A failure graded as a pass.** The give-up path makes this structurally
   impossible — nothing legal-but-wrong is ever played. **No wrong-move injection,
@@ -939,9 +1072,8 @@ own `advance()` should be re-tested for the states where a real control exists.
 
 ---
 
-## 16. What is NOT built
+## 17. What is NOT built
 
-* Media-key bindings (§10).
 * A third grade ("hard").
 * Reading a **placement** out (blindfold on a course that starts mid-game: the
   run-up says "From a set position" instead).
@@ -952,7 +1084,7 @@ own `advance()` should be re-tested for the states where a real control exists.
 
 ---
 
-## 17. Confirmed working live
+## 18. Confirmed working live
 
 * **The core loop** (user-confirmed, v0.70.0): the two-press cycle, the reveal
   with its glide, **the "I knew it" injection path** — the one thing everything
@@ -982,7 +1114,7 @@ own `advance()` should be re-tested for the states where a real control exists.
 
 ---
 
-## 18. Still open
+## 19. Still open
 
 * **The hand-back at the first unproven move.** Every card of every variation
   tested so far was proven, so the replay has never had to stop mid-line. Wanted

@@ -977,6 +977,9 @@ body {
               <option>Brisk (&times;1.8)</option>
             </select>
           </label>
+          <label class="clo-sg-menu-row">Media-key ring
+            <input type="checkbox" class="clo-sg-media">
+          </label>
           <label class="clo-sg-menu-row">Board
             <select class="clo-sg-board-sel">
               <option selected>Pieces shown</option>
@@ -1001,22 +1004,22 @@ body {
         <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
           <div class="clo-cr-title">Show and grade</div>
           <div class="clo-cr-prompt clo-sg-prompt">Opponent played Bc4</div>
-          <div class="clo-sg-keys">2 — show me the move   ·   4 — I don't know it</div>
+          <div class="clo-sg-keys">2 / ⏮ — show me the move   ·   4 / ⏭ — I don't know it</div>
         </div>
         <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
           <div class="clo-cr-title">Show and grade</div>
           <div class="clo-cr-prompt clo-sg-prompt">Opponent played Bc4</div>
-          <div class="clo-sg-keys">2 — show me the move   ·   4 — I don't know it   ·   1 — read it again</div>
+          <div class="clo-sg-keys">2 / ⏮ — show me the move   ·   4 / ⏭ — I don't know it   ·   1 — read it again</div>
         </div>
         <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
           <div class="clo-cr-title">Show and grade</div>
           <div class="clo-cr-prompt clo-sg-prompt">e6</div>
-          <div class="clo-sg-keys">2 — I knew it   ·   4 — I didn't know</div>
+          <div class="clo-sg-keys">2 / ⏮ — I knew it   ·   4 / ⏭ — I didn't know</div>
         </div>
         <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
           <div class="clo-cr-title">Show and grade</div>
           <div class="clo-cr-prompt clo-sg-prompt">e6</div>
-          <div class="clo-sg-keys">2 — the opponent's reply (marked as not known)</div>
+          <div class="clo-sg-keys">2 / ⏮ — the opponent's reply (marked as not known)</div>
         </div>
       </div>
       <p class="hx-note">And the KEY-MOVE LEAD-IN (section 23c) on the same panel: the moves the
@@ -1036,7 +1039,7 @@ body {
             <button type="button" class="clo-sg-lead-btn">›</button>
             <button type="button" class="clo-sg-lead-btn">Skip</button>
           </div>
-          <div class="clo-sg-keys">2 — next move   ·   3 / Space — back   ·   4 — skip   (3 of 4)</div>
+          <div class="clo-sg-keys">2 / ⏮ — next move   ·   3 / Space / ⏯ — back   ·   4 / ⏭ — skip   (3 of 4)</div>
         </div>
         <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
           <div class="clo-cr-title">The moves that led here</div>
@@ -1046,7 +1049,7 @@ body {
             <button type="button" class="clo-sg-lead-btn" disabled>›</button>
             <button type="button" class="clo-sg-lead-btn">Skip</button>
           </div>
-          <div class="clo-sg-keys">2 — next move   ·   3 / Space — back   ·   4 — skip   (4 of 4)</div>
+          <div class="clo-sg-keys">2 / ⏮ — next move   ·   3 / Space / ⏯ — back   ·   4 / ⏭ — skip   (4 of 4)</div>
         </div>
       </div>
       <p class="hx-note">The VOICE says less than these lines (v0.89.0): <em>Your move</em> and the
@@ -1069,12 +1072,12 @@ body {
         <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
           <div class="clo-cr-title">Show and grade</div>
           <div class="clo-cr-prompt clo-sg-prompt">Your move — repeat</div>
-          <div class="clo-sg-keys">2 — show me the move   ·   4 — I don't know it</div>
+          <div class="clo-sg-keys">2 / ⏮ — show me the move   ·   4 / ⏭ — I don't know it</div>
         </div>
         <div class="clo-cr-panel clo-sg-panel hx-pos" style="width:320px">
           <div class="clo-cr-title">Show and grade</div>
           <div class="clo-cr-prompt clo-sg-prompt">e6</div>
-          <div class="clo-sg-keys">2 — on to the next card (marked as not known)</div>
+          <div class="clo-sg-keys">2 / ⏮ — on to the next card (marked as not known)</div>
         </div>
       </div>
       <p class="hx-note">And the same two keys on a DRILL card (section 20), where the panel is the
@@ -1598,10 +1601,10 @@ body {
             </div>
           </div>
           <div class="clo-cr-nav">
-            <button type="button" class="clo-cr-btn">⏮</button>
+            <button type="button" class="clo-cr-btn">⏭</button>
             <button type="button" class="clo-cr-btn">◀</button>
             <button type="button" class="clo-cr-btn">▶</button>
-            <button type="button" class="clo-cr-btn">⏭</button>
+            <button type="button" class="clo-cr-btn">⏮</button>
           </div>
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn">Quiz</button>
@@ -1636,10 +1639,10 @@ body {
             </div>
           </div>
           <div class="clo-cr-nav">
-            <button type="button" class="clo-cr-btn" disabled>⏮</button>
+            <button type="button" class="clo-cr-btn" disabled>⏭</button>
             <button type="button" class="clo-cr-btn" disabled>◀</button>
             <button type="button" class="clo-cr-btn">▶</button>
-            <button type="button" class="clo-cr-btn">⏭</button>
+            <button type="button" class="clo-cr-btn">⏮</button>
           </div>
           <div class="clo-cr-actions">
             <button type="button" class="clo-cr-btn">Quiz</button>
@@ -1890,7 +1893,7 @@ body {
             </div>
           </div>
           <div class="clo-cr-actions">
-            <button type="button" class="clo-cr-btn">⏮</button>
+            <button type="button" class="clo-cr-btn">⏭</button>
             <button type="button" class="clo-cr-btn">◀</button>
             <button type="button" class="clo-cr-btn">▶</button>
             <button type="button" class="clo-cr-btn">Remove from here</button>
@@ -1930,7 +1933,7 @@ body {
         <div class="clo-cr-panel hx-pos" style="width:300px">
           <div class="clo-cr-title">Analysis</div>
           <div class="clo-cr-actions">
-            <button type="button" class="clo-cr-btn">⏮</button>
+            <button type="button" class="clo-cr-btn">⏭</button>
             <button type="button" class="clo-cr-btn">◀</button>
             <button type="button" class="clo-cr-btn">▶</button>
             <button type="button" class="clo-cr-btn">Remove from here</button>

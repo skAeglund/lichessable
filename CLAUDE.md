@@ -33,7 +33,7 @@ read first.
 | 20 | the mistake drill — failed moves, one card each, on our own board |
 | 21 | repertoire coverage: what this course has that your repertoire lacks |
 | 22 | type a move: answer the live card from the keyboard |
-| 23, 23b, 23c | show and grade (two keys, no move); speech and blindfold; the key-move lead-in |
+| 23, 23b, 23c, 23d | show and grade (two keys, no move); speech and blindfold; the key-move lead-in; the media-key ring |
 | 24, 24b-h | the course tree; the Lichess scan; splits; an analysis board inside it |
 | 25, 25b-d | key moves vs difficult moves — lower a key range to cover what you get wrong |
 | 26 | the ChessDB eval column, and ChessDB as an engine source |
@@ -178,7 +178,7 @@ read first.
   | `DESIGN-add-as-variation.md` | 19c, 19g |
   | `DESIGN-add-as-puzzle.md` | 19d, 19e |
   | `DESIGN-repertoire-coverage.md` | 21 |
-  | `DESIGN-show-and-grade.md` | 23, 23b |
+  | `DESIGN-show-and-grade.md` | 23, 23b, 23d |
   | `DESIGN-key-move-leadin.md` | 23c |
   | `DESIGN-course-tree.md` | 24, 24b-24h |
   | `DESIGN-key-moves.md` | 25, 25b-25d |
@@ -2396,6 +2396,56 @@ read first.
   * It appends `.clo-sg` to the trainer row at `order: 2` (see the TRAINER ROW
     rules above; green outline idle, `.clo-rowprimary` while running, and a
     fourth collapsed-mid-quiz exception at (0,4,0)).
+- THE MEDIA-KEY RING (section 23d, v0.189.0): a ring that sends only Media next
+  / previous / play-pause, mapped onto the THREE BINDINGS THAT ALREADY EXIST —
+  `next`, `wrong` and `alts`. Nothing about the loop, the grade, the queue or
+  the panel changed. **READ `DESIGN-show-and-grade.md` §13** — §13.1 the two
+  transports, §13.3 the claim's own terms, §13.5 what only the hardware can
+  answer. What an edit ELSEWHERE can break:
+  * THE TWO TRACK BUTTONS ARE CROSSED AND MUST STAY CROSSED (v0.189.1):
+    PREVIOUS is `next` and NEXT is `wrong`. It reads backwards and is not —
+    those names are the PLATFORM's and describe a music player, so they say
+    nothing about this mode, and which button suits which press was decided with
+    the ring in hand. It lives in BOTH the binding arrays (so the key-event
+    transport inherits it) and the `setActionHandler` registration (so the
+    physical button that fired is the one named); uncrossing EITHER ALONE is a
+    ring whose two buttons do the same thing, which is why the check asserts
+    both halves.
+  * IT IS ONE DECISION PATH, and that is the whole design. The media session's
+    handlers do not re-implement `onKeyInner`: `ringKey` DISPATCHES A SYNTHETIC
+    KEY EVENT on `document` carrying the very names `CONFIG.showGrade.keys`
+    binds — section 22's and `advance()`'s idiom — so section 18's drill and
+    clickable-line hosts, which read that same object, and `maybeStartFromKey`,
+    which is how a ring with no digits STARTS the mode, are all served with no
+    bridge and no second binding. Anything that starts matching on something
+    other than `e.key` breaks both transports at once.
+  * NO NEW PERMISSION AND NO NEW HOST. The Media Session API needs neither, and
+    the silence is an AudioContext → MediaStream → `<audio srcObject>` — NEVER a
+    `data:` URI, which chessable.com's CSP governs and `srcObject` escapes. The
+    manifest's four hosts are untouched; this is not a fifth.
+  * THE TONE IS NOT DIGITAL SILENCE (`media.gain`/`media.hz`), and that is
+    load-bearing: a page that is not playing anything AUDIBLE is not handed the
+    session, so zeroes would hand back a feature that looks implemented and
+    never fires. UNMEASURED on real hardware — `gain` is the dial if a hum is
+    ever heard.
+  * `mediaWanted()` HAS FIVE TERMS AND `!document.hidden` IS THE ONE THAT LOOKS
+    OPTIONAL. A background overstudy tab is on `/learn/`, so it passes every
+    other term — and the platform gives the media keys to whichever page claimed
+    them LAST, so that tab would take the ring off the one being played. A
+    `visibilitychange` listener reclaims on the way back, the poll being clamped
+    in a hidden tab.
+  * `syncMediaKeys()` IS CALLED FROM THE TOP OF `tick`, ABOVE ITS OWN GATE: two
+    of the three states that gate returns on are states the claim must SURVIVE
+    (one of our own boards is up, where the keys are bound too) and the third is
+    the one it must be dropped in. And it is deliberately NOT in `stop()` — the
+    claim outliving a running mode is what lets the ring start one, so only
+    `syncMediaKeys` and `pagehide` drop it.
+  * `play` AND `pause` ARE ONE BUTTON, and `media.repeatMs` (150) is what makes
+    a pair fired for one tap one press. BELOW the ring's own ~200ms floor (§8),
+    so it can never eat a real double tap — both bounds are asserted.
+  * `KEY_LABEL` MUST NAME EVERY SPELLING and `keyName` DEDUPES ON THE LABEL, or
+    the panel's legend prints "MediaTrackNext" or "⏯ / ⏯ / ⏯".
+  * IT OWNS NO BRIDGES and is called by nothing.
 - The key-move lead-in (section 23c, v0.113.0): under Study **Key Moves** the
   trainer plays the whole non-key prefix ITSELF at variation load and quizzes
   only from the first key move on — so you arrive at a position with no memory of
@@ -3711,6 +3761,19 @@ It executes the real `initPinnedMistakes` against a fake `chrome.storage` with
 TWO devices sharing one sync area — migration off the pre-v0.105.0 blob, the
 write diff, deletion-by-absent-key, the global cap, retirement, and that a
 device still hears about the other one after saving itself.
+
+After touching section 23d — `CONFIG.showGrade.keys`, `KEY_LABEL`, `keyName`,
+`ringKey`, `mediaPress`, `mediaWanted`, `syncMediaKeys` or where they are called
+from:
+
+```
+node dev/check-media-keys.js
+```
+
+Nothing about this feature can be exercised from an automated tab: a driven tab
+reports itself hidden (which is exactly when the claim must NOT be held), and
+there is no ring in it. So the check is the whole of what can be asserted
+without the hardware, and its header says what the hardware still has to answer.
 
 After touching section 23's auto-play walk — `computePrefix`, `cardIsProven`, or
 `sg.firstCard` where `anchor` sets it:
